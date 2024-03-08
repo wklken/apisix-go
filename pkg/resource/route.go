@@ -23,6 +23,32 @@ package resource
 
 type PluginConfig map[string]interface{}
 
+//	"upstream": {
+//		"type": "roundrobin",
+//		"nodes": {
+//			"127.0.0.1:1980": 1
+//		}
+//	}
+type Upstream struct {
+	Type    string  `json:"type,omitempty"`
+	Nodes   []Node  `json:"nodes,omitempty"`
+	Scheme  string  `json:"schema,omitempty"`
+	Timeout Timeout `json:"timeout,omitempty"`
+}
+
+type Timeout struct {
+	Connect int `json:"connect,omitempty"`
+	Send    int `json:"send,omitempty"`
+	Read    int `json:"read,omitempty"`
+}
+
+type Node struct {
+	Host     string `json:"host,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Weight   int    `json:"weight,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+}
+
 type Route struct {
 	ID          string                  `json:"id,omitempty"`
 	Uris        []string                `json:"uris,omitempty"`
@@ -35,7 +61,7 @@ type Route struct {
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
 	UpstreamID  string                  `json:"upstream_id,omitempty"`
-	Upstream    map[string]interface{}  `json:"upstream,omitempty"`
+	Upstream    Upstream                `json:"upstream,omitempty"`
 	Timeout     struct {
 		Connect int `json:"connect,omitempty"`
 		Send    int `json:"send,omitempty"`

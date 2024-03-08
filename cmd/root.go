@@ -30,7 +30,7 @@ func init() {
 	viper.SetDefault("author", "blueking-paas")
 
 	viper.AutomaticEnv()
-	viper.SetEnvPrefix("APIGW")
+	viper.SetEnvPrefix("APISIXGO")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 }
 

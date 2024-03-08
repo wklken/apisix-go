@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/store"
-	"go.etcd.io/etcd/clientv3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type ConfigClient struct {

@@ -32,7 +32,7 @@ type PluginConfig map[string]interface{}
 type Upstream struct {
 	Type    string  `json:"type,omitempty"`
 	Nodes   []Node  `json:"nodes,omitempty"`
-	Scheme  string  `json:"schema,omitempty"`
+	Scheme  string  `json:"scheme,omitempty"`
 	Timeout Timeout `json:"timeout,omitempty"`
 }
 
@@ -51,6 +51,7 @@ type Node struct {
 
 type Route struct {
 	ID          string                  `json:"id,omitempty"`
+	Uri         string                  `json:"uri,omitempty"`
 	Uris        []string                `json:"uris,omitempty"`
 	Methods     []string                `json:"methods,omitempty"`
 	Hosts       []string                `json:"hosts,omitempty"`
@@ -60,6 +61,7 @@ type Route struct {
 	Desc        string                  `json:"desc,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
+	ServiceID   string                  `json:"service_id,omitempty"`
 	UpstreamID  string                  `json:"upstream_id,omitempty"`
 	Upstream    Upstream                `json:"upstream,omitempty"`
 	Timeout     struct {

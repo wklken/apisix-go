@@ -24,3 +24,4 @@ vendor
 .vscode
 my.db
 apisix-go
+apisix

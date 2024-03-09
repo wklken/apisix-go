@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/goccy/go-json"
 	"github.com/unrolled/render"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -33,8 +34,10 @@ func BuildRoute(routes [][]byte) *chi.Mux {
 		methods, uris, handler, err := parseRouteConfig(config)
 		if err != nil {
 			// log error
+			logger.Errorf("err: %s", err)
 			continue
 		}
+		logger.Infof("methods: %v, uris: %v", methods, uris)
 		// add route to mux
 		for _, uri := range uris {
 			if len(methods) == 0 {
@@ -59,9 +62,15 @@ func parseRouteConfig(config []byte) (methods []string, uris []string, handler h
 	if err != nil {
 		return
 	}
+	fmt.Printf("the config is: %s\n", config)
+
+	fmt.Printf("route: %v\n", r)
+	uris = r.Uris
+	if len(uris) == 0 && r.Uri != "" {
+		uris = append(uris, r.Uri)
+	}
 
 	methods = r.Methods
-	uris = r.Uris
 	handler = buildHandler(r)
 
 	return
@@ -73,62 +82,32 @@ func buildHandler(r resource.Route) http.Handler {
 	p := plugin.New("request_id")
 	p.Init(`{"header_name": "X-Request-ID", "set_in_response": true}`)
 
-	p1 := plugin.New("basic_auth")
-	p1.Init(`{"credentials": {"admin": "admin"}, "realm": "Restricted"}`)
+	// p1 := plugin.New("basic_auth")
+	// p1.Init(`{"credentials": {"admin": "admin"}, "realm": "Restricted"}`)
 
 	p2 := plugin.New("file_logger")
 	p2.Init(`{"level": "info", "filename": "test.log"}`)
 
-	chain := plugin.BuildPluginChain(p, p1, p2)
+	// chain := plugin.BuildPluginChain(p, p1, p2)
+	chain := plugin.BuildPluginChain(p, p2)
 	// myHandler := http.HandlerFunc(welcomeHandler)
 	handler := buildReverseHandler(r)
 
 	return chain.Then(handler)
 }
 
-// {
-// 	"uri": "/api/c/self-service-api/*",
-// 	"name": "_bk-esb-buffet-legacy-route",
-// 	"plugins": {
-// 	  "proxy-rewrite": {
-// 		"regex_uri": [
-// 		  "/api/c/self-service-api/(.*)",
-// 		  "/api/bk-esb-buffet/prod/$1"
-// 		]
-// 	  }
-// 	},
-//  "service": {
-//
-//  },
-// 	"upstream": {
-// 	  "nodes": [
-// 		{
-// 		  "host": "localhost",
-// 		  "port": 6006,
-// 		  "weight": 1
-// 		}
-// 	  ],
-// 	  "type": "roundrobin",
-// 	  "pass_host": "pass"
-// 	},
-// 	"labels": {
-// 	  "gateway.bk.tencent.com/gateway": "-",
-// 	  "gateway.bk.tencent.com/stage": "-"
-// 	},
-// 	"status": 1
-//   }
-
 func buildReverseHandler(r resource.Route) http.Handler {
 	servers := make(map[string]int, len(r.Upstream.Nodes))
-	schema := r.Upstream.Scheme
+	scheme := r.Upstream.Scheme
 	for _, node := range r.Upstream.Nodes {
 		host := node.Host
 		port := node.Port
 		weight := node.Weight
 
-		uri := fmt.Sprintf("%s://%s:%d", schema, host, port)
+		uri := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 		servers[uri] = weight
 	}
+	fmt.Printf("servers: %v\n", servers)
 
 	lb := pxy.NewWeightedRRLoadBalance(servers)
 

@@ -15,16 +15,15 @@ import (
 	"github.com/wklken/apisix-go/pkg/server"
 )
 
-var (
-	cfgFile string
-	addr    string
-)
+var cfgFile string
+
+// addr    string
 
 func init() {
 	// cobra.OnInitialize(initConfig)
 	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "", "config file (default is config.yml;required)")
 	rootCmd.PersistentFlags().Bool("viper", true, "Use Viper for configuration")
-	rootCmd.PersistentFlags().StringVar(&addr, "addr", "", "addr like 0.0.0.0:9100")
+	// rootCmd.PersistentFlags().StringVar(&addr, "addr", "", "addr like 0.0.0.0:9100")
 
 	rootCmd.MarkFlagRequired("config")
 	viper.SetDefault("author", "blueking-paas")
@@ -63,10 +62,10 @@ func Start() {
 		viper.SetConfigFile(cfgFile)
 
 		// if addr from command line args
-		if addr != "" {
-			logger.Infof("Get addr from command line: %s", addr)
-			viper.SetDefault("server.addr", addr)
-		}
+		// if addr != "" {
+		// 	logger.Infof("Get addr from command line: %s", addr)
+		// 	viper.SetDefault("server.addr", addr)
+		// }
 	}
 	// initConfig()
 
@@ -82,6 +81,7 @@ func Start() {
 	}()
 
 	// 3. new and start server
+	logger.Info("Starting server")
 	server, err := server.NewServer()
 	if err != nil {
 		panic(err)

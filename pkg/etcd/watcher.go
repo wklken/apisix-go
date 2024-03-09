@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/store"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -57,10 +58,14 @@ func (c *ConfigClient) Watch() {
 }
 
 func (c *ConfigClient) FetchAll() error {
-	resp, err := c.client.Get(context.Background(), c.prefix, clientv3.WithPrefix())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := c.client.Get(ctx, c.prefix, clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
+	logger.Info("got response")
 
 	for _, kv := range resp.Kvs {
 		e := store.NewEvent()

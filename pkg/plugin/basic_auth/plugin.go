@@ -4,8 +4,13 @@ import (
 	"fmt"
 	"net/http"
 
-	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
+
+type Plugin struct {
+	base.BasePlugin
+	config Config
+}
 
 const (
 	// version  = "0.1"
@@ -13,24 +18,6 @@ const (
 	name     = "basic_auth"
 )
 
-type Plugin struct {
-	config Config
-}
-
-// FIXME: use jsonschema to unmarshal the config dynamic
-
-// 1. use json schema? => gojsonschema => 更通用
-// 2. use go struct tag? => validator => go native
-//
-//	const schema = `{
-//		"credentials": {
-//			"type": "object",
-//		},
-//		"realm": {
-//			"type": "string",
-//			"required": false
-//		}
-//	}`
 const schema = `
 {
 	"$schema": "http://json-schema.org/draft-04/schema#",
@@ -54,38 +41,16 @@ type Config struct {
 	Realm       string            `json:"realm"`
 }
 
-func (p *Plugin) Name() string {
-	return name
-}
-
-func (p *Plugin) Priority() int {
-	return priority
-}
-
-func (p *Plugin) Schema() string {
-	return schema
-}
-
-func (p *Plugin) Init(pc interface{}) error {
-	// j, err := json.Marshal(pc)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// var c Config
-	// err = json.Unmarshal(j, &c)
-	// if err != nil {
-	// 	return err
-	// }
-	var c Config
-	plugin_config.Parse(pc, &c)
-
-	p.config = c
-	fmt.Printf("%s parsed config %+v\n", name, c)
-
-	p.config = c
+func (p *Plugin) Init() error {
+	p.Name = name
+	p.Priority = priority
+	p.Schema = schema
 
 	return nil
+}
+
+func (p *Plugin) Config() interface{} {
+	return &p.config
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

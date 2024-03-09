@@ -108,14 +108,21 @@ func buildHandler(r resource.Route) http.Handler {
 	plugins := make([]plugin.Plugin, 0, len(r.Plugins))
 	for name, config := range r.Plugins {
 		p := plugin.New(name)
+		p.Init()
 
-		err := plugin_config.Validate(config, p.Schema())
+		err := plugin_config.Validate(config, p.GetSchema())
 		if err != nil {
 			logger.Errorf("validate plugin config fail: %s", err)
 			continue
 		}
 
-		p.Init(config)
+		err = plugin_config.Parse(config, p.Config())
+		if err != nil {
+			logger.Errorf("parse plugin config fail: %s", err)
+			continue
+		}
+
+		logger.Infof("after parse, config: %v", p.Config())
 
 		plugins = append(plugins, p)
 	}

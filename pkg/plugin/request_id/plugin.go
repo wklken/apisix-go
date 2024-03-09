@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gofrs/uuid"
-	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 const (
@@ -34,48 +34,23 @@ const schema = `
 `
 
 type Plugin struct {
+	base.BasePlugin
 	config Config
 }
-
-// FIXME: use jsonschema to unmarshal the config dynamic
 
 type Config struct {
 	HeaderName    string `json:"header_name"`
 	SetInResponse bool   `json:"set_in_response"`
 }
 
-func (p *Plugin) Name() string {
-	return name
+func (p *Plugin) Config() interface{} {
+	return &p.config
 }
 
-func (p *Plugin) Priority() int {
-	return priority
-}
-
-func (p *Plugin) Schema() string {
-	return schema
-}
-
-func (p *Plugin) Init(pc interface{}) error {
-	// j, err := json.Marshal(pc)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// var c Config
-	// err = json.Unmarshal(j, &c)
-	// if err != nil {
-	// 	return err
-	// }
-
-	var c Config
-	err := plugin_config.Parse(pc, &c)
-	fmt.Printf("%s config before parse %+v, err=%+v\n", name, pc, err)
-
-	p.config = c
-	fmt.Printf("%s parsed config %+v\n", name, c)
-
-	p.config = c
+func (p *Plugin) Init() error {
+	p.Name = name
+	p.Priority = priority
+	p.Schema = schema
 
 	return nil
 }

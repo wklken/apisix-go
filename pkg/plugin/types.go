@@ -3,8 +3,9 @@ package plugin
 import "net/http"
 
 type Plugin interface {
-	Init(pc interface{}) error
-	Schema() string
+	Init() error
 	Handler(next http.Handler) http.Handler
-	Priority() int
+	Config() interface{}
+	GetSchema() string
+	GetPriority() int
 }

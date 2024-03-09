@@ -24,7 +24,7 @@ func New(name string) Plugin {
 func BuildPluginChain(plugins ...Plugin) alice.Chain {
 	// sort the plugin by priority
 	sort.Slice(plugins, func(i, j int) bool {
-		return plugins[i].Priority() < plugins[j].Priority()
+		return plugins[i].GetPriority() < plugins[j].GetPriority()
 	})
 
 	// build the alice chain

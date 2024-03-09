@@ -1,12 +1,10 @@
 package basic_auth
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
+	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
 )
 
 const (
@@ -64,33 +62,26 @@ func (p *Plugin) Priority() int {
 	return priority
 }
 
-func (p *Plugin) Init(config string) error {
-	fmt.Println("init the basic_auth plugin", config)
-	// v := viper.New()
-	// v.SetConfigType("json")
+func (p *Plugin) Schema() string {
+	return schema
+}
 
-	sch, err := jsonschema.CompileString("schema.json", schema)
-	if err != nil {
-		log.Fatalf("--- compile json schema fail: %#v", err)
-	}
+func (p *Plugin) Init(pc interface{}) error {
+	// j, err := json.Marshal(pc)
+	// if err != nil {
+	// 	return err
+	// }
 
-	var v interface{}
-	if err := json.Unmarshal([]byte(config), &v); err != nil {
-		log.Fatalf("--- unmarshal string fail: %#v", err)
-	}
-	fmt.Printf("the config %+v\n", v)
-	if err = sch.Validate(v); err != nil {
-		log.Fatalf("--- validate fail: %#v", err)
-	}
-
+	// var c Config
+	// err = json.Unmarshal(j, &c)
+	// if err != nil {
+	// 	return err
+	// }
 	var c Config
-	if err := json.Unmarshal([]byte(config), &c); err != nil {
-		log.Fatalf("--- unmarshal config string fail: %#v", err)
-	}
+	plugin_config.Parse(pc, &c)
 
-	// TODO: how to make the default value
-	// v.SetDefault("header_name", "X-Request-ID")
-	// v.SetDefault("set_in_response", true)
+	p.config = c
+	fmt.Printf("%s parsed config %+v\n", name, c)
 
 	p.config = c
 

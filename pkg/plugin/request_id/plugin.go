@@ -1,13 +1,12 @@
 package request_id
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 
 	"github.com/gofrs/uuid"
-	"github.com/spf13/viper"
+	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
 )
 
 const (
@@ -16,6 +15,24 @@ const (
 	name     = "request_id"
 )
 
+const schema = `
+{
+	"$schema": "http://json-schema.org/draft-04/schema#",
+	"type": "object",
+	"properties": {
+	  "header_name": {
+		"type": "string"
+	  },
+	  "set_in_response": {
+		"type": "boolean"
+	  }
+	},
+	"required": [
+	  "header_name"
+	]
+  }
+`
+
 type Plugin struct {
 	config Config
 }
@@ -23,8 +40,8 @@ type Plugin struct {
 // FIXME: use jsonschema to unmarshal the config dynamic
 
 type Config struct {
-	HeaderName    string `mapstructure:"header_name"`
-	SetInResponse bool   `mapstructure:"set_in_response"`
+	HeaderName    string `json:"header_name"`
+	SetInResponse bool   `json:"set_in_response"`
 }
 
 func (p *Plugin) Name() string {
@@ -35,25 +52,29 @@ func (p *Plugin) Priority() int {
 	return priority
 }
 
-func (p *Plugin) Init(config string) error {
-	fmt.Println("init the request_id plugin", config)
-	v := viper.New()
-	v.SetConfigType("json")
+func (p *Plugin) Schema() string {
+	return schema
+}
 
-	// TODO: how to make the default value
-	// v.SetDefault("header_name", "X-Request-ID")
-	// v.SetDefault("set_in_response", true)
+func (p *Plugin) Init(pc interface{}) error {
+	// j, err := json.Marshal(pc)
+	// if err != nil {
+	// 	return err
+	// }
 
-	v.ReadConfig(bytes.NewBuffer([]byte(config)))
-
-	fmt.Println("config: ", v.AllSettings())
+	// var c Config
+	// err = json.Unmarshal(j, &c)
+	// if err != nil {
+	// 	return err
+	// }
 
 	var c Config
-	err := v.Unmarshal(&c)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("config: %+v\n", c)
+	err := plugin_config.Parse(pc, &c)
+	fmt.Printf("%s config before parse %+v, err=%+v\n", name, pc, err)
+
+	p.config = c
+	fmt.Printf("%s parsed config %+v\n", name, c)
+
 	p.config = c
 
 	return nil

@@ -1,13 +1,12 @@
 package file_logger
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/spf13/viper"
+	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
 	"go.uber.org/zap"
 )
 
@@ -17,13 +16,34 @@ const (
 	name     = "file_logger"
 )
 
+const schema = `
+{
+	"$schema": "http://json-schema.org/draft-04/schema#",
+	"type": "object",
+	"properties": {
+	  "level": {
+		"type": "string"
+	  },
+	  "filename": {
+		"type": "string"
+	  }
+	},
+	"required": [
+	  "level"
+	]
+  }
+`
+
 type Plugin struct {
 	config Config
 }
 
 // FIXME: use jsonschema to unmarshal the config dynamic
 
-type Config struct{}
+type Config struct {
+	Level    string `json:"level"`
+	Filename string `json:"filename"`
+}
 
 func (p *Plugin) Name() string {
 	return name
@@ -33,26 +53,28 @@ func (p *Plugin) Priority() int {
 	return priority
 }
 
-func (p *Plugin) Init(config string) error {
-	fmt.Println("init the request_id plugin", config)
-	v := viper.New()
-	v.SetConfigType("json")
+func (p *Plugin) Schema() string {
+	return schema
+}
 
-	// TODO: how to make the default value
-	// v.SetDefault("header_name", "X-Request-ID")
-	// v.SetDefault("set_in_response", true)
+func (p *Plugin) Init(pc interface{}) error {
+	// j, err := json.Marshal(pc)
+	// if err != nil {
+	// 	return err
+	// }
 
-	v.ReadConfig(bytes.NewBuffer([]byte(config)))
-
-	fmt.Println("config: ", v.AllSettings())
+	// var c Config
+	// err = json.Unmarshal(j, &c)
+	// if err != nil {
+	// 	return err
+	// }
 
 	var c Config
-	err := v.Unmarshal(&c)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("config: %+v\n", c)
+	err := plugin_config.Parse(pc, &c)
+	fmt.Printf("%s config before parse %+v, err=%+v\n", name, pc, err)
+
 	p.config = c
+	fmt.Printf("%s parsed config %+v\n", name, c)
 
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -21,12 +22,37 @@ import (
 const (
 	StatusClientClosedRequest = 499
 	defaultUserAgent          = "apisix-go"
+	defaultTimeout            = 300
+	defaultDNSTimeout         = 5 * time.Second
 )
 
 // FIXME: build the route incrementally in the future
 // currently, we build the route in one shot
+var dummyResource = []byte(`{
+	"uri": "/get",
+	"name": "dummy_get",
+	"plugins": {
+		"request_id": {"header_name": "X-Request-ID", "set_in_response": true},
+		"file_logger": {"level": "info", "filename": "test.log"}
+	},
+	"service": {},
+	"upstream": {
+		"nodes": [
+		{
+			"host": "httpbin.org",
+			"port": 80,
+			"weight": 100
+		}
+		],
+		"type": "roundrobin",
+		"scheme": "http",
+		"pass_host": "pass"
+	}
+}`)
 
 func BuildRoute(routes [][]byte) *chi.Mux {
+	routes = append(routes, dummyResource)
+
 	mux := chi.NewRouter()
 
 	for _, config := range routes {
@@ -79,17 +105,33 @@ func parseRouteConfig(config []byte) (methods []string, uris []string, handler h
 func buildHandler(r resource.Route) http.Handler {
 	// build the route and http.Handler
 
-	p := plugin.New("request_id")
-	p.Init(`{"header_name": "X-Request-ID", "set_in_response": true}`)
+	plugins := make([]plugin.Plugin, 0, len(r.Plugins))
+	for name, config := range r.Plugins {
+		p := plugin.New(name)
+
+		err := plugin_config.Validate(config, p.Schema())
+		if err != nil {
+			logger.Errorf("validate plugin config fail: %s", err)
+			continue
+		}
+
+		p.Init(config)
+
+		plugins = append(plugins, p)
+	}
+
+	// p := plugin.New("request_id")
+	// p.Init(`{"header_name": "X-Request-ID", "set_in_response": true}`)
 
 	// p1 := plugin.New("basic_auth")
 	// p1.Init(`{"credentials": {"admin": "admin"}, "realm": "Restricted"}`)
 
-	p2 := plugin.New("file_logger")
-	p2.Init(`{"level": "info", "filename": "test.log"}`)
+	// p2 := plugin.New("file_logger")
+	// p2.Init(`{"level": "info", "filename": "test.log"}`)
 
 	// chain := plugin.BuildPluginChain(p, p1, p2)
-	chain := plugin.BuildPluginChain(p, p2)
+	// chain := plugin.BuildPluginChain(p, p2)
+	chain := plugin.BuildPluginChain(plugins...)
 	// myHandler := http.HandlerFunc(welcomeHandler)
 	handler := buildReverseHandler(r)
 
@@ -155,16 +197,28 @@ func buildReverseHandler(r resource.Route) http.Handler {
 		// 	req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 		// }
 	}
-	timeout := 30
 
-	responseHeaderTimeout := time.Duration(timeout) * time.Second
+	//	    "timeout": {                          # Set the upstream timeout for connecting, sending and receiving messages of the route.
+	//	        "connect": 3,
+	//	        "send": 3,
+	//	        "read": 3
+	//	    },
+	// 	WithResponseHeaderTimeout(responseHeaderTimeout).
+	// 	Build()
+
 	opt := (&pxy.TransportOptionBuilder{}).
 		WithIdleConnTimeout(30 * time.Second).
-		WithInsecureSkipVerify(true).
-		WithResponseHeaderTimeout(responseHeaderTimeout).
-		Build()
-		// WithDialTimeout(dialTimeout).
-	transport := pxy.NewTransport(opt)
+		WithInsecureSkipVerify(true)
+
+	// NOTE: cant set the timeout here, the openresty timeouts not match the golang timeouts
+	// if r.Timeout.Connect > 0 {
+	// 	connectTimeout := time.Duration(r.Timeout.Connect) * time.Second
+	// 	opt = opt.WithDialTimeout(connectTimeout)
+	// }
+
+	// responseHeaderTimeout := time.Duration(timeout) * time.Second
+
+	transport := pxy.NewTransport(opt.Build())
 
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()

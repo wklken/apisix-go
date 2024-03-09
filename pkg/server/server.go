@@ -24,25 +24,6 @@ func NewServer() (*Server, error) {
 	}, nil
 }
 
-var dummyResource = []byte(`{
-	"uri": "/get",
-	"name": "dummy_get",
-	"plugins": {},
-	"service": {},
-	"upstream": {
-		"nodes": [
-		{
-			"host": "httpbin.org",
-			"port": 80,
-			"weight": 100
-		}
-		],
-		"type": "roundrobin",
-		"scheme": "http",
-		"pass_host": "pass"
-	}
-}`)
-
 func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
@@ -75,7 +56,6 @@ func (s *Server) Start(ctx context.Context) error {
 
 	logger.Info("build the routes")
 	routes := storage.GetBucketData("routes")
-	routes = append(routes, dummyResource)
 	s.server.Handler = route.BuildRoute(routes)
 
 	logger.Info("server started")

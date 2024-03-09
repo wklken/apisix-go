@@ -21,7 +21,7 @@ package resource
 //	    "filter_func": ""                     # User-defined filtering function
 //	}
 
-type PluginConfig map[string]interface{}
+type PluginConfig interface{}
 
 //	"upstream": {
 //		"type": "roundrobin",

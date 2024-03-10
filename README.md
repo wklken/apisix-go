@@ -28,7 +28,7 @@ Let's see how far I can go.
 - [x] json lib => [go-json](https://github.com/goccy/go-json) 2024-03-09
 - [x] plugin config validate => [jsonschema](https://github.com/santhosh-tekuri/jsonschema) 2024-03-09
 - [x] add prometheus => [client_golang](https://github.com/prometheus/client_golang) 2024-03-10
-
+- [x] base apisix context for all plugins 2024-03-10
 
 
 ## TODO

@@ -106,6 +106,24 @@ func BuildLogFields(r *http.Request, extraFields ...zap.Field) []zap.Field {
 		requestID = requestIDValue.(string)
 	}
 
+	routeIDValue := ctx.Value("route_id")
+	routeID := ""
+	if routeIDValue != nil {
+		routeID = routeIDValue.(string)
+	}
+
+	routeNameValue := ctx.Value("route_name")
+	routeName := ""
+	if routeNameValue != nil {
+		routeName = routeNameValue.(string)
+	}
+
+	serviceIDValue := ctx.Value("service_id")
+	serviceID := ""
+	if serviceIDValue != nil {
+		serviceID = serviceIDValue.(string)
+	}
+
 	fields := []zap.Field{
 		zap.String("method", r.Method),
 		zap.String("path", r.URL.Path),
@@ -114,6 +132,9 @@ func BuildLogFields(r *http.Request, extraFields ...zap.Field) []zap.Field {
 		zap.String("scheme", scheme),
 		zap.String("requestID", requestID),
 		zap.String("matchedURI", matchedURI),
+		zap.String("route_id", routeID),
+		zap.String("route_name", routeName),
+		zap.String("service_id", serviceID),
 	}
 	for _, f := range extraFields {
 		fields = append(fields, f)

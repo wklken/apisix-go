@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
+	pctx "github.com/wklken/apisix-go/pkg/plugin/ctx"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -29,6 +30,7 @@ const (
 // FIXME: build the route incrementally in the future
 // currently, we build the route in one shot
 var dummyResource = []byte(`{
+	"id": "123",
 	"uri": "/get",
 	"name": "dummy_get",
 	"plugins": {
@@ -108,7 +110,11 @@ func parseRouteConfig(config []byte) (methods []string, uris []string, handler h
 func buildHandler(r resource.Route) http.Handler {
 	// build the route and http.Handler
 
-	plugins := make([]plugin.Plugin, 0, len(r.Plugins))
+	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+1)
+
+	// FIXME: add a context plugin, set the default vars
+	plugins = append(plugins, pctx.New(r))
+
 	for name, config := range r.Plugins {
 		p := plugin.New(name)
 		p.Init()

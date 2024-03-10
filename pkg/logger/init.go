@@ -49,3 +49,11 @@ func Debug(msg string, fields ...zap.Field) {
 func Debugf(template string, args ...interface{}) {
 	sugarLogger.Debugf(template, args...)
 }
+
+func Fatal(msg string, fields ...zap.Field) {
+	logger.Fatal(msg, fields...)
+}
+
+func Fatalf(template string, args ...interface{}) {
+	sugarLogger.Fatalf(template, args...)
+}

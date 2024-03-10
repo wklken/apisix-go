@@ -23,17 +23,36 @@ package resource
 
 type PluginConfig interface{}
 
-//	"upstream": {
-//		"type": "roundrobin",
-//		"nodes": {
-//			"127.0.0.1:1980": 1
-//		}
+//	{
+//	    "id": "1",                  # id
+//	    "retries": 1,               # 请求重试次数
+//	    "timeout": {                # 设置连接、发送消息、接收消息的超时时间，每项都为 15 秒
+//	        "connect":15,
+//	        "send":15,
+//	        "read":15
+//	    },
+//	    "nodes": {"host:80": 100},  # 上游机器地址列表，格式为`地址 + 端口`
+//	                                # 等价于 "nodes": [ {"host":"host", "port":80, "weight": 100} ],
+//	    "type":"roundrobin",
+//	    "checks": {},               # 配置健康检查的参数
+//	    "hash_on": "",
+//	    "key": "",
+//	    "name": "upstream-xxx",     # upstream 名称
+//	    "desc": "hello world",      # upstream 描述
+//	    "scheme": "http"            # 跟上游通信时使用的 scheme，默认是 `http`
 //	}
 type Upstream struct {
 	Type    string  `json:"type,omitempty"`
 	Nodes   []Node  `json:"nodes,omitempty"`
 	Scheme  string  `json:"scheme,omitempty"`
 	Timeout Timeout `json:"timeout,omitempty"`
+
+	Retries int                    `json:"retries,omitempty"`
+	Checks  map[string]interface{} `json:"checks,omitempty"`
+	HashOn  string                 `json:"hash_on,omitempty"`
+	Key     string                 `json:"key,omitempty"`
+	Name    string                 `json:"name,omitempty"`
+	Desc    string                 `json:"desc,omitempty"`
 }
 
 type Timeout struct {
@@ -70,4 +89,16 @@ type Route struct {
 		Read    int `json:"read,omitempty"`
 	} `json:"timeout,omitempty"`
 	FilterFunc string `json:"filter_func,omitempty"`
+}
+
+type Service struct {
+	ID         string                  `json:"id,omitempty"`
+	Plugins    map[string]PluginConfig `json:"plugins,omitempty"`
+	UpstreamID string                  `json:"upstream_id,omitempty"`
+	Upstream   Upstream                `json:"upstream,omitempty"`
+
+	Name            string   `json:"name,omitempty"`
+	Desc            string   `json:"desc,omitempty"`
+	EnableWebsocket bool     `json:"enable_websocket,omitempty"`
+	Hosts           []string `json:"hosts,omitempty"`
 }

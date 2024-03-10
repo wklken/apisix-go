@@ -1,12 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -36,8 +33,6 @@ func init() {
 var rootCmd = &cobra.Command{
 	Use:   "apisix",
 	Short: "an golang version of apisix",
-	// Long: `A Fast and Flexible Static Site Generator built with love by spf13 and friends in Go.
-	// 			  Complete documentation is available at http://hugo.spf13.com`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Do Stuff Here
 		Start()
@@ -74,29 +69,11 @@ func Start() {
 	// 	fmt.Println(globalConfig)
 	// }
 
-	// 2. watch the signal
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	go func() {
-		interrupt(cancelFunc)
-	}()
-
 	// 3. new and start server
 	logger.Info("Starting server")
 	server, err := server.NewServer()
 	if err != nil {
 		panic(err)
 	}
-	server.Start(ctx)
-}
-
-// a context canceled when SIGINT or SIGTERM are notified
-func interrupt(onSignal func()) {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-
-	for s := range c {
-		logger.Infof("Caught signal %s. Exiting.", s)
-		onSignal()
-		close(c)
-	}
+	server.Start()
 }

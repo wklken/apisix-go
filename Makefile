@@ -1,5 +1,6 @@
 BINARY_NAME=apisix
 
+
 .PHONY: dep
 dep:
 	go mod tidy

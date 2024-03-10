@@ -10,6 +10,8 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/server"
+
+	_ "github.com/wklken/apisix-go/pkg/observability/metrics"
 )
 
 var cfgFile string

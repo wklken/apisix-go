@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"go.uber.org/zap"
 )
@@ -119,4 +120,9 @@ func BuildLogFields(r *http.Request, extraFields ...zap.Field) []zap.Field {
 	}
 
 	return fields
+}
+
+func Observe() {
+	metrics.Requests.Inc()
+	metrics.HostInfo.WithLabelValues("demo").Set(1)
 }

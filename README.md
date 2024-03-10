@@ -27,10 +27,25 @@ Let's see how far I can go.
 - [x] chi graceful shutdown 2024-03-09
 - [x] json lib => [go-json](https://github.com/goccy/go-json) 2024-03-09
 - [x] plugin config validate => [jsonschema](https://github.com/santhosh-tekuri/jsonschema) 2024-03-09
+- [x] add prometheus => [client_golang](https://github.com/prometheus/client_golang) 2024-03-10
 
 
 
 ## TODO
+
+- [ ] plugins
+  - cors
+  - basic_auth
+  - file-logger
+  - syslog
+  - http-logger
+  - ip-restriction
+  - limit-count
+  - prometheus
+  - opentelemetry
+- [ ] plugins
+  - tcp-logger
+  - udp-logger
 
 - [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
 - [ ] global vars for all plugins, and the logger plugin
@@ -41,6 +56,9 @@ Let's see how far I can go.
 - [ ] the plugin attr
 - [ ] the plugin which modify response, how?
 - [ ] plugins
+  - cors
+  - basic_auth
+  - file-logger
   - [ ] [redirect](https://apisix.apache.org/docs/apisix/plugins/redirect/)
   - [ ] [real-ip](https://apisix.apache.org/docs/apisix/plugins/real-ip/)
 

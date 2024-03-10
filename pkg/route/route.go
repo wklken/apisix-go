@@ -77,6 +77,9 @@ func BuildRoute(routes [][]byte) *chi.Mux {
 		}
 	}
 
+	// add extra route
+	registerExtraRoutes(mux)
+
 	return mux
 }
 

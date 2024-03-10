@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/route"
@@ -22,7 +24,7 @@ type Server struct {
 
 func NewServer() (*Server, error) {
 	return &Server{
-		addr:   ":8080",
+		addr:   ":9080",
 		server: &http.Server{},
 	}, nil
 }
@@ -36,6 +38,17 @@ func (s *Server) Start() {
 	s.startEtcdClient(events)
 
 	s.buildRoutes(storage)
+
+	// FIXME: port and path should be configurable
+	// start prometheus at another port
+	go func() {
+		mux := chi.NewRouter()
+		mux.Get("/apisix/prometheus/metrics", promhttp.Handler().ServeHTTP)
+		// server := &http.Server{}
+		// server.Handler = mux
+		http.ListenAndServe(":9091", mux)
+	}()
+
 	s.startServer(ctx)
 }
 

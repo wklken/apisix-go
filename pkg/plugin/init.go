@@ -6,6 +6,7 @@ import (
 	"github.com/justinas/alice"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
 )
 
@@ -17,6 +18,8 @@ func New(name string) Plugin {
 		return &basic_auth.Plugin{}
 	case "file_logger":
 		return &file_logger.Plugin{}
+	case "otel":
+		return &otel.Plugin{}
 	}
 	return nil
 }

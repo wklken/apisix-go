@@ -13,6 +13,7 @@ require (
 	github.com/justinas/alice v1.2.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/prometheus/client_golang v1.19.0
+	github.com/riandyrn/otelchi v0.5.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a
 	github.com/spf13/cobra v1.8.0
@@ -20,6 +21,10 @@ require (
 	github.com/unrolled/render v1.6.1
 	go.etcd.io/bbolt v1.3.9
 	go.etcd.io/etcd/client/v3 v3.5.12
+	go.opentelemetry.io/otel v1.24.0
+	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.24.0
+	go.opentelemetry.io/otel/sdk v1.24.0
+	go.opentelemetry.io/otel/trace v1.24.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.22.0
 )
@@ -29,7 +34,10 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
+	github.com/felixge/httpsnoop v1.0.2 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/go-logr/logr v1.4.1 // indirect
+	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
@@ -49,6 +57,8 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.12 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.12 // indirect
+	go.opentelemetry.io/contrib v1.0.0 // indirect
+	go.opentelemetry.io/otel/metric v1.24.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
 	golang.org/x/sys v0.18.0 // indirect

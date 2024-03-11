@@ -35,7 +35,8 @@ var dummyResource = []byte(`{
 	"name": "dummy_get",
 	"plugins": {
 		"request_id": {"header_name": "X-Request-ID", "set_in_response": true},
-		"file_logger": {"level": "info", "filename": "test.log"}
+		"file_logger": {"level": "info", "filename": "test.log"},
+		"otel": {"server_name": "dummy_server"}
 	},
 	"service": {},
 	"upstream": {

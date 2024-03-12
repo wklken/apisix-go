@@ -30,7 +30,7 @@ Let's see how far I can go.
 - [x] add prometheus => [client_golang](https://github.com/prometheus/client_golang) 2024-03-10
 - [x] base apisix context for all plugins 2024-03-10
 - [x] add otel 2024-03-11
-
+- [x] add config file and parse => [viper](https://github.com/spf13/viper) 2024-03-12
 
 ## TODO
 

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/server"
 
@@ -17,16 +18,24 @@ import (
 
 var cfgFile string
 
-// addr    string
+var globalConfig *config.Config
+
+func initConfig() {
+	var err error
+	globalConfig, err = config.Load()
+	if err != nil {
+		logger.Fatalf("could not load configurations from file, %s", err)
+	}
+}
 
 func init() {
 	// cobra.OnInitialize(initConfig)
-	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "", "config file (default is config.yml;required)")
+	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "conf/config-default.yaml", "config file")
 	rootCmd.PersistentFlags().Bool("viper", true, "Use Viper for configuration")
 	// rootCmd.PersistentFlags().StringVar(&addr, "addr", "", "addr like 0.0.0.0:9100")
 
-	rootCmd.MarkFlagRequired("config")
-	viper.SetDefault("author", "blueking-paas")
+	// rootCmd.MarkFlagRequired("config")
+	viper.SetDefault("author", "wklken")
 
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("APISIXGO")
@@ -65,12 +74,12 @@ func Start() {
 		// 	viper.SetDefault("server.addr", addr)
 		// }
 	}
-	// initConfig()
+	initConfig()
 
-	// if globalConfig.Debug {
-	// 	fmt.Println(viper.AllSettings())
-	// 	fmt.Println(globalConfig)
-	// }
+	if globalConfig.Debug {
+		fmt.Println(viper.AllSettings())
+		fmt.Println(globalConfig)
+	}
 
 	// 3. new and start server
 	logger.Info("Starting server")

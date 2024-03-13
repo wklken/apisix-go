@@ -13,6 +13,7 @@ require (
 	github.com/justinas/alice v1.2.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/prometheus/client_golang v1.19.0
+	github.com/redis/rueidis v1.0.31
 	github.com/riandyrn/otelchi v0.5.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a

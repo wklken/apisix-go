@@ -31,9 +31,11 @@ Let's see how far I can go.
 - [x] base apisix context for all plugins 2024-03-10
 - [x] add otel 2024-03-11
 - [x] add config file and parse => [viper](https://github.com/spf13/viper) 2024-03-12
+- [x] add redis client => [rueidis](https://github.com/redis/rueidis)
 
 ## TODO
 
+- [ ] add local memory cache? [go-cache](https://github.com/patrickmn/go-cache)?
 - [ ] plugins
   - cors
   - basic_auth
@@ -47,7 +49,7 @@ Let's see how far I can go.
 - [ ] plugins
   - tcp-logger
   - udp-logger
-
+- [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)
 - [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
 - [ ] global vars for all plugins, and the logger plugin
 - [ ] mock nginx vars?

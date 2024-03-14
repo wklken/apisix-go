@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/goccy/go-json"
 	"github.com/unrolled/render"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"

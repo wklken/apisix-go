@@ -31,11 +31,11 @@ Let's see how far I can go.
 - [x] base apisix context for all plugins 2024-03-10
 - [x] add otel 2024-03-11
 - [x] add config file and parse => [viper](https://github.com/spf13/viper) 2024-03-12
-- [x] add redis client => [rueidis](https://github.com/redis/rueidis)
+- [x] add redis client => [rueidis](https://github.com/redis/rueidis) 2024-03-13
+- [x] add local memory cache(lrucache) => [golang-lru](https://github.com/hashicorp/golang-lru)
 
 ## TODO
 
-- [ ] add local memory cache? [go-cache](https://github.com/patrickmn/go-cache)?
 - [ ] plugins
   - cors
   - basic_auth

@@ -10,6 +10,7 @@ require (
 	github.com/go-chi/chi/v5 v5.0.12
 	github.com/goccy/go-json v0.10.2
 	github.com/gofrs/uuid v4.4.0+incompatible
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/justinas/alice v1.2.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/prometheus/client_golang v1.19.0

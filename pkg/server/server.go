@@ -20,12 +20,15 @@ import (
 type Server struct {
 	addr   string
 	server *http.Server
+
+	reloadEventChan chan struct{}
 }
 
 func NewServer() (*Server, error) {
 	return &Server{
-		addr:   ":9080",
-		server: &http.Server{},
+		addr:            ":9080",
+		server:          &http.Server{},
+		reloadEventChan: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -38,6 +41,10 @@ func (s *Server) Start() {
 	s.startEtcdClient(events)
 
 	s.buildRoutes(storage)
+
+	// start the reloader
+	reloadCheckInterval := 30 * time.Second
+	go s.listenReloadEvent(ctx, reloadCheckInterval, storage)
 
 	// FIXME: port and path should be configurable
 	// start prometheus at another port
@@ -74,7 +81,11 @@ func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.C
 
 func (s *Server) startStorage(events chan *store.Event) *store.Store {
 	logger.Info("Starting storage")
-	storage := store.NewStore("my.db", events)
+	storage := store.NewStore("my.db", events, []store.EventUpdateHook{
+		func(event *store.Event) {
+			s.SendReloadEvent()
+		},
+	})
 	go storage.Start()
 	return storage
 }

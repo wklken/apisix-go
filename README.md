@@ -32,7 +32,8 @@ Let's see how far I can go.
 - [x] add otel 2024-03-11
 - [x] add config file and parse => [viper](https://github.com/spf13/viper) 2024-03-12
 - [x] add redis client => [rueidis](https://github.com/redis/rueidis) 2024-03-13
-- [x] add local memory cache(lrucache) => [golang-lru](https://github.com/hashicorp/golang-lru)
+- [x] add local memory cache(lrucache) => [golang-lru](https://github.com/hashicorp/golang-lru) 2024-03-14
+- [x] rebuild the whole radixtree after the route/service/upstrem changed 2024-03-16
 
 ## TODO
 

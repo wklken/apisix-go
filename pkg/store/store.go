@@ -8,13 +8,19 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// eventUpdateHook is a function that is called when an event is updated.
+type EventUpdateHook func(event *Event)
+
 type Store struct {
 	events chan *Event
 	// Add other fields for kv storage in memory
 	db *bolt.DB
+
+	// eventUpdateHooks is a list of hooks that are called when an event is updated.
+	eventUpdateHooks []EventUpdateHook
 }
 
-func NewStore(dbPath string, events chan *Event) *Store {
+func NewStore(dbPath string, events chan *Event, eventUpdateHooks []EventUpdateHook) *Store {
 	db, err := bolt.Open(dbPath, 0o600, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -23,7 +29,8 @@ func NewStore(dbPath string, events chan *Event) *Store {
 	store := &Store{
 		events: events,
 		// Initialize other fields for kv storage in memory
-		db: db,
+		db:               db,
+		eventUpdateHooks: eventUpdateHooks,
 	}
 
 	store.InitBuckets()
@@ -31,12 +38,12 @@ func NewStore(dbPath string, events chan *Event) *Store {
 }
 
 var builtInBuckets = [][]byte{
-	[]byte("plugin_metadata"),
 	[]byte("routes"),
-	[]byte("global_rules"),
 	[]byte("services"),
-	[]byte("plugin_configs"),
 	[]byte("upstreams"),
+	[]byte("global_rules"),
+	[]byte("plugin_metadata"),
+	[]byte("plugin_configs"),
 	[]byte("secrets"),
 	[]byte("consumers"),
 	[]byte("consumer_groups"),
@@ -126,5 +133,17 @@ func (s *Store) processEvents() {
 				return nil
 			})
 		}
+
+		// FIXME: what type of event should trigger the hooks?
+		if bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("services")) || bytes.Equal(bucketName, []byte("upstreams")) {
+			s.triggerEventUpdateHooks(event)
+		}
+	}
+}
+
+// trigger the hooks
+func (s *Store) triggerEventUpdateHooks(event *Event) {
+	for _, hook := range s.eventUpdateHooks {
+		hook(event)
 	}
 }

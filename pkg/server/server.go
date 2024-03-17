@@ -18,33 +18,46 @@ import (
 )
 
 type Server struct {
-	addr   string
-	server *http.Server
-
+	addr            string
+	server          *http.Server
 	reloadEventChan chan struct{}
+
+	events  chan *store.Event
+	storage *store.Store
 }
 
 func NewServer() (*Server, error) {
+	events := make(chan *store.Event)
+	storage := store.NewStore("my.db", events)
 	return &Server{
 		addr:            ":9080",
 		server:          &http.Server{},
 		reloadEventChan: make(chan struct{}, 1),
+		events:          events,
+		storage:         storage,
 	}, nil
 }
 
 func (s *Server) Start() {
+	s.storage.AddEventUpdateHook(
+		func(event *store.Event) {
+			s.SendReloadEvent()
+		},
+	)
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	s.registerSignalHandler(ctx, cancelFunc)
 
-	events := make(chan *store.Event)
-	storage := s.startStorage(events)
-	s.startEtcdClient(events)
+	logger.Info("Starting storage")
+	s.storage.Start()
+	s.startEtcdWatcher()
 
-	s.buildRoutes(storage)
+	logger.Info("build the routes")
+	s.server.Handler = route.NewBuilder(s.storage).Build()
 
 	// start the reloader
 	reloadCheckInterval := 30 * time.Second
-	go s.listenReloadEvent(ctx, reloadCheckInterval, storage)
+	go s.listenReloadEvent(ctx, reloadCheckInterval)
 
 	// FIXME: port and path should be configurable
 	// start prometheus at another port
@@ -79,22 +92,11 @@ func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.C
 	}()
 }
 
-func (s *Server) startStorage(events chan *store.Event) *store.Store {
-	logger.Info("Starting storage")
-	storage := store.NewStore("my.db", events, []store.EventUpdateHook{
-		func(event *store.Event) {
-			s.SendReloadEvent()
-		},
-	})
-	go storage.Start()
-	return storage
-}
-
-func (s *Server) startEtcdClient(events chan *store.Event) {
+func (s *Server) startEtcdWatcher() {
 	prefix := "/apisix"
 	endpoints := []string{"127.0.0.1:2379"}
 	logger.Info("Starting etcd client")
-	etcdClient, err := etcd.NewConfigClient(endpoints, prefix, events)
+	etcdClient, err := etcd.NewConfigClient(endpoints, prefix, s.events)
 	if err != nil {
 		panic(err)
 	}
@@ -105,12 +107,6 @@ func (s *Server) startEtcdClient(events chan *store.Event) {
 	}
 	logger.Info("watch etcd")
 	go etcdClient.Watch()
-}
-
-func (s *Server) buildRoutes(storage *store.Store) {
-	logger.Info("build the routes")
-	routes := storage.GetBucketData("routes")
-	s.server.Handler = route.BuildRoute(routes)
 }
 
 func (s *Server) startServer(ctx context.Context) {

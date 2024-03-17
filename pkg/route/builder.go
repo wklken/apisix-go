@@ -18,6 +18,8 @@ import (
 	pctx "github.com/wklken/apisix-go/pkg/plugin/ctx"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 const (
@@ -53,14 +55,27 @@ var dummyResource = []byte(`{
 	}
 }`)
 
-func BuildRoute(routes [][]byte) *chi.Mux {
-	routes = append(routes, dummyResource)
+type Builder struct {
+	storage *store.Store
+}
+
+func NewBuilder(storage *store.Store) *Builder {
+	return &Builder{
+		storage: storage,
+	}
+}
+
+func (b *Builder) Build() *chi.Mux {
+	routes := b.storage.GetBucketData("routes")
+
+	// routes = append(routes, dummyResource)
 
 	mux := chi.NewRouter()
 
 	for _, config := range routes {
+		fmt.Printf("the config of routes: %v\n", string(config))
 		// parse route
-		methods, uris, handler, err := parseRouteConfig(config)
+		methods, uris, handler, err := b.parseRouteConfig(config)
 		if err != nil {
 			// log error
 			logger.Errorf("err: %s", err)
@@ -86,35 +101,54 @@ func BuildRoute(routes [][]byte) *chi.Mux {
 	return mux
 }
 
-func parseRouteConfig(config []byte) (methods []string, uris []string, handler http.Handler, err error) {
-	// parse route
-	// return methods, uris, handler
-	var r resource.Route
-	err = json.Unmarshal(config, &r)
+func (b *Builder) parseRouteConfig(config []byte) (methods []string, uris []string, handler http.Handler, err error) {
+	r, err := parseRoute(config)
 	if err != nil {
+		logger.Errorf("parse route fail: %s", err)
 		return
 	}
 	fmt.Printf("the config is: %s\n", config)
 
-	fmt.Printf("route: %v\n", r)
+	fmt.Printf("route: %+v\n", r)
 	uris = r.Uris
 	if len(uris) == 0 && r.Uri != "" {
 		uris = append(uris, r.Uri)
 	}
 
 	methods = r.Methods
-	handler = buildHandler(r)
+	handler = b.buildHandler(r)
 
 	return
 }
 
-func buildHandler(r resource.Route) http.Handler {
+func (b *Builder) buildHandler(r resource.Route) http.Handler {
+	// if service_id is not empty, get the service config
+	var service resource.Service
+	var err error
+	if r.ServiceID != "" {
+		service, err = b.getService(r.ServiceID)
+		if err != nil {
+			logger.Errorf("get service fail: %s", err)
+			return nil
+		}
+	}
+
 	// build the route and http.Handler
 
 	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+1)
 
 	// FIXME: add a context plugin, set the default vars
 	plugins = append(plugins, pctx.New(r))
+
+	// add the plugins from service
+	if len(service.Plugins) > 0 {
+		for name, config := range service.Plugins {
+			// if not in r.Plugins, add
+			if _, ok := r.Plugins[name]; !ok {
+				r.Plugins[name] = config
+			}
+		}
+	}
 
 	for name, config := range r.Plugins {
 		p := plugin.New(name)
@@ -137,28 +171,37 @@ func buildHandler(r resource.Route) http.Handler {
 		plugins = append(plugins, p)
 	}
 
-	// p := plugin.New("request_id")
-	// p.Init(`{"header_name": "X-Request-ID", "set_in_response": true}`)
-
-	// p1 := plugin.New("basic_auth")
-	// p1.Init(`{"credentials": {"admin": "admin"}, "realm": "Restricted"}`)
-
-	// p2 := plugin.New("file_logger")
-	// p2.Init(`{"level": "info", "filename": "test.log"}`)
-
-	// chain := plugin.BuildPluginChain(p, p1, p2)
-	// chain := plugin.BuildPluginChain(p, p2)
 	chain := plugin.BuildPluginChain(plugins...)
-	// myHandler := http.HandlerFunc(welcomeHandler)
-	handler := buildReverseHandler(r)
+	handler, err := b.buildReverseHandler(r, service)
+	if err != nil {
+		logger.Errorf("build reverse handler fail: %s", err)
+		return nil
+	}
 
 	return chain.Then(handler)
 }
 
-func buildReverseHandler(r resource.Route) http.Handler {
-	servers := make(map[string]int, len(r.Upstream.Nodes))
-	scheme := r.Upstream.Scheme
-	for _, node := range r.Upstream.Nodes {
+func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service) (http.Handler, error) {
+	var err error
+	var upstream resource.Upstream
+	// FIXME: if both upstream and upstream_id are not empty, which one should be used?
+	if len(r.Upstream.Nodes) > 0 {
+		upstream = r.Upstream
+	} else if r.UpstreamID != "" {
+		upstream, err = b.getUpstream(r.UpstreamID)
+	} else if service.Upstream.Nodes != nil {
+		upstream = service.Upstream
+	} else if service.UpstreamID != "" {
+		upstream, err = b.getUpstream(service.UpstreamID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get upstream fail: %s", err)
+	}
+
+	servers := make(map[string]int, len(upstream.Nodes))
+	fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
+	scheme := upstream.Scheme
+	for _, node := range upstream.Nodes {
 		host := node.Host
 		port := node.Port
 		weight := node.Weight
@@ -168,6 +211,7 @@ func buildReverseHandler(r resource.Route) http.Handler {
 	}
 	fmt.Printf("servers: %v\n", servers)
 
+	// FIXME: do service discovery here
 	lb := pxy.NewWeightedRRLoadBalance(servers)
 
 	director := func(req *http.Request) {
@@ -240,11 +284,7 @@ func buildReverseHandler(r resource.Route) http.Handler {
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()
 	proxyHandler := pxy.NewProxyHandler(transport, director, modifyResponse, errorHandler)
-	return proxyHandler
-}
-
-func welcomeHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("welcome"))
+	return proxyHandler, nil
 }
 
 func newModifyResponse() pxy.ModifyResponse {
@@ -333,4 +373,49 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! here, not clean the body first, what will happen?
 		render.New().JSON(w, status, err.Error())
 	}
+}
+
+func (b *Builder) getUpstream(id string) (resource.Upstream, error) {
+	config := b.storage.GetFromBucket("upstreams", util.StringToBytes(id))
+	if config == nil {
+		return resource.Upstream{}, fmt.Errorf("upstream not found")
+	}
+
+	return parseUpstream(config)
+}
+
+func (b *Builder) getService(id string) (resource.Service, error) {
+	config := b.storage.GetFromBucket("services", util.StringToBytes(id))
+	if config == nil {
+		return resource.Service{}, fmt.Errorf("service not found")
+	}
+
+	return parseService(config)
+}
+
+func parseRoute(config []byte) (resource.Route, error) {
+	var r resource.Route
+	err := json.Unmarshal(config, &r)
+	if err != nil {
+		return r, err
+	}
+	return r, nil
+}
+
+func parseService(config []byte) (resource.Service, error) {
+	var s resource.Service
+	err := json.Unmarshal(config, &s)
+	if err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+func parseUpstream(config []byte) (resource.Upstream, error) {
+	var u resource.Upstream
+	err := json.Unmarshal(config, &u)
+	if err != nil {
+		return u, err
+	}
+	return u, nil
 }

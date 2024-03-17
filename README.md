@@ -34,6 +34,7 @@ Let's see how far I can go.
 - [x] add redis client => [rueidis](https://github.com/redis/rueidis) 2024-03-13
 - [x] add local memory cache(lrucache) => [golang-lru](https://github.com/hashicorp/golang-lru) 2024-03-14
 - [x] rebuild the whole radixtree after the route/service/upstrem changed 2024-03-16
+- [x] watch and use the real data from etcd  2024-03-17
 
 ## TODO
 

@@ -1,5 +1,12 @@
 package resource
 
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
 //	{
 //	    "id": "1",                            # id, unnecessary.
 //	    "uris": ["/a","/b"],                  # A set of uri.
@@ -55,6 +62,92 @@ type Upstream struct {
 	Desc    string                 `json:"desc,omitempty"`
 }
 
+func (s *Upstream) UnmarshalJSON(data []byte) error {
+	// FIXME: refactor it
+	var upstreamData map[string]json.RawMessage
+	if err := json.Unmarshal(data, &upstreamData); err != nil {
+		return fmt.Errorf("unmarshal to json.RawMessage fail, %w", err)
+	}
+
+	var nodes []Node
+	if err := json.Unmarshal(upstreamData["nodes"], &nodes); err == nil {
+		s.Nodes = nodes
+	} else {
+		/*
+			"nodes": {
+				"httpbin.org": 1
+			}
+		*/
+		var nodes map[string]int
+		if err := json.Unmarshal(upstreamData["nodes"], &nodes); err == nil {
+			for host, weight := range nodes {
+				port := 80
+				if strings.Contains(host, ":") {
+					port, _ = strconv.Atoi(strings.Split(host, ":")[1])
+				}
+
+				s.Nodes = append(s.Nodes, Node{
+					Host:   host,
+					Port:   port,
+					Weight: weight,
+				})
+			}
+		} else {
+			return fmt.Errorf("unmarshal field `nodes` fail, %w", err)
+		}
+	}
+
+	if err := json.Unmarshal(upstreamData["type"], &s.Type); err != nil {
+		return fmt.Errorf("unmarshal field `type` fail, %w", err)
+	}
+
+	if err := json.Unmarshal(upstreamData["scheme"], &s.Scheme); err != nil {
+		return fmt.Errorf("unmarshal field `scheme` fail, %w", err)
+	}
+
+	if err := json.Unmarshal(upstreamData["timeout"], &s.Timeout); err != nil {
+		return fmt.Errorf("unmarshal field `timeout` fail, %w", err)
+	}
+
+	if upstreamData["retries"] != nil {
+		if err := json.Unmarshal(upstreamData["retries"], &s.Retries); err != nil {
+			return fmt.Errorf("unmarshal field `retries` fail, %w", err)
+		}
+	}
+
+	if upstreamData["checks"] != nil {
+		if err := json.Unmarshal(upstreamData["checks"], &s.Checks); err != nil {
+			return fmt.Errorf("unmarshal field `checks` fail, %w", err)
+		}
+	}
+
+	if upstreamData["hash_on"] != nil {
+		if err := json.Unmarshal(upstreamData["hash_on"], &s.HashOn); err != nil {
+			return fmt.Errorf("unmarshal field `hash_on` fail, %w", err)
+		}
+	}
+
+	if upstreamData["key"] != nil {
+		if err := json.Unmarshal(upstreamData["key"], &s.Key); err != nil {
+			return fmt.Errorf("unmarshal field `key` fail, %w", err)
+		}
+	}
+
+	if upstreamData["name"] != nil {
+		if err := json.Unmarshal(upstreamData["name"], &s.Name); err != nil {
+			return fmt.Errorf("unmarshal field `name` fail, %w", err)
+		}
+	}
+
+	if upstreamData["desc"] != nil {
+		if err := json.Unmarshal(upstreamData["desc"], &s.Desc); err != nil {
+			return fmt.Errorf("unmarshal field `desc` fail, %w", err)
+		}
+	}
+
+	return nil
+}
+
 type Timeout struct {
 	Connect int `json:"connect,omitempty"`
 	Send    int `json:"send,omitempty"`
@@ -89,6 +182,10 @@ type Route struct {
 		Read    int `json:"read,omitempty"`
 	} `json:"timeout,omitempty"`
 	FilterFunc string `json:"filter_func,omitempty"`
+
+	CreateTime int64 `json:"create_time,omitempty"`
+	UpdateTime int64 `json:"update_time,omitempty"`
+	Status     int   `json:"status,omitempty"`
 }
 
 type Service struct {

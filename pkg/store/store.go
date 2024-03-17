@@ -20,7 +20,9 @@ type Store struct {
 	eventUpdateHooks []EventUpdateHook
 }
 
-func NewStore(dbPath string, events chan *Event, eventUpdateHooks []EventUpdateHook) *Store {
+// should it be global store?
+
+func NewStore(dbPath string, events chan *Event) *Store {
 	db, err := bolt.Open(dbPath, 0o600, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -29,12 +31,15 @@ func NewStore(dbPath string, events chan *Event, eventUpdateHooks []EventUpdateH
 	store := &Store{
 		events: events,
 		// Initialize other fields for kv storage in memory
-		db:               db,
-		eventUpdateHooks: eventUpdateHooks,
+		db: db,
 	}
 
 	store.InitBuckets()
 	return store
+}
+
+func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
+	s.eventUpdateHooks = append(s.eventUpdateHooks, hook)
 }
 
 var builtInBuckets = [][]byte{
@@ -83,6 +88,20 @@ func (s *Store) GetBucketData(bucketName string) [][]byte {
 	return data
 }
 
+// get specific key from bucket
+func (s *Store) GetFromBucket(bucketName string, id []byte) []byte {
+	var value []byte
+	s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(bucketName))
+		if b == nil {
+			return fmt.Errorf("bucket not found")
+		}
+		value = b.Get(id)
+		return nil
+	})
+	return value
+}
+
 func (s *Store) Start() {
 	// Start goroutine to receive and process events
 	go s.processEvents()
@@ -96,14 +115,16 @@ func (s *Store) Stop() {
 
 // []byte{}  get the last part split by / in the key
 
-func getLastPart(key []byte) []byte {
+// /apisix/routes/505192286146003655
+func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 	parts := bytes.Split(key, []byte("/"))
-	return parts[len(parts)-2]
+
+	return parts[len(parts)-2], parts[len(parts)-1]
 }
 
 func (s *Store) processEvents() {
 	for event := range s.events {
-		bucketName := getLastPart(event.Key)
+		bucketName, id := getTypeAndIDFromKey(event.Key)
 		defer PutBack(event)
 
 		if event.Type == EventTypePut {
@@ -113,7 +134,7 @@ func (s *Store) processEvents() {
 					return fmt.Errorf("bucket not found")
 				}
 
-				err := b.Put(event.Key, event.Value)
+				err := b.Put(id, event.Value)
 				if err != nil {
 					return fmt.Errorf("put key-value fail: %s", err)
 				}
@@ -126,7 +147,7 @@ func (s *Store) processEvents() {
 					return fmt.Errorf("bucket not found")
 				}
 
-				err := b.Delete(event.Key)
+				err := b.Delete(id)
 				if err != nil {
 					return fmt.Errorf("delete key-value fail: %s", err)
 				}

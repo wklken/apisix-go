@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/route"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func (s *Server) SendReloadEvent() {
@@ -21,7 +20,7 @@ func (s *Server) SendReloadEvent() {
 	}
 }
 
-func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Duration, storage *store.Store) {
+func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Duration) {
 	logger.Info("listen to the reload event")
 
 	t := time.NewTicker(checkInterval)
@@ -37,7 +36,7 @@ func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Durat
 			case reloadEvent := <-s.reloadEventChan:
 				logger.Infof("receive reload event: %+v", reloadEvent)
 				// do reload
-				s.reload(ctx, storage)
+				s.reload(ctx)
 			default:
 				logger.Debug("get nothing, will not do reload")
 			}
@@ -48,7 +47,7 @@ func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Durat
 var reloadMu sync.Mutex
 
 // reload will do the reload
-func (s *Server) reload(ctx context.Context, storage *store.Store) {
+func (s *Server) reload(ctx context.Context) {
 	reloadMu.Lock()
 	defer reloadMu.Unlock()
 
@@ -72,8 +71,7 @@ func (s *Server) reload(ctx context.Context, storage *store.Store) {
 		}
 	}()
 
-	routes := storage.GetBucketData("routes")
-	r = route.BuildRoute(routes)
+	r = route.NewBuilder(s.storage).Build()
 
 	logger.Info("reload done")
 }

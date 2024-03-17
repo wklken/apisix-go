@@ -29,12 +29,9 @@ func initConfig() {
 }
 
 func init() {
-	// cobra.OnInitialize(initConfig)
 	rootCmd.Flags().StringVarP(&cfgFile, "config", "c", "conf/config-default.yaml", "config file")
 	rootCmd.PersistentFlags().Bool("viper", true, "Use Viper for configuration")
-	// rootCmd.PersistentFlags().StringVar(&addr, "addr", "", "addr like 0.0.0.0:9100")
 
-	// rootCmd.MarkFlagRequired("config")
 	viper.SetDefault("author", "wklken")
 
 	viper.AutomaticEnv()
@@ -44,9 +41,8 @@ func init() {
 
 var rootCmd = &cobra.Command{
 	Use:   "apisix",
-	Short: "an golang version of apisix",
+	Short: "an golang version of apisix, not production ready",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Do Stuff Here
 		Start()
 	},
 }
@@ -61,18 +57,12 @@ func Execute() {
 func Start() {
 	fmt.Println("It's apisix")
 
-	// 1. do init first
+	// FIXME: merge config.yaml and config-default.yaml
 	// load global config
 	if cfgFile != "" {
 		// Use config file from the flag.
 		// log.Infof("Load config file: %s", cfgFile)
 		viper.SetConfigFile(cfgFile)
-
-		// if addr from command line args
-		// if addr != "" {
-		// 	logger.Infof("Get addr from command line: %s", addr)
-		// 	viper.SetDefault("server.addr", addr)
-		// }
 	}
 	initConfig()
 
@@ -81,7 +71,6 @@ func Start() {
 		fmt.Println(globalConfig)
 	}
 
-	// 3. new and start server
 	logger.Info("Starting server")
 	server, err := server.NewServer()
 	if err != nil {

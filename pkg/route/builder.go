@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/unrolled/render"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
@@ -19,7 +18,6 @@ import (
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 const (
@@ -55,32 +53,39 @@ var dummyResource = []byte(`{
 	}
 }`)
 
-type Builder struct {
-	storage *store.Store
-}
+type Builder struct{}
 
 func NewBuilder(storage *store.Store) *Builder {
-	return &Builder{
-		storage: storage,
-	}
+	return &Builder{}
 }
 
 func (b *Builder) Build() *chi.Mux {
-	routes := b.storage.GetBucketData("routes")
+	routes, err := store.ListRoutes()
+	if err != nil {
+		logger.Errorf("list routes fail: %s", err)
+		return nil
+	}
 
 	// routes = append(routes, dummyResource)
 
 	mux := chi.NewRouter()
 
-	for _, config := range routes {
-		fmt.Printf("the config of routes: %v\n", string(config))
+	for _, r := range routes {
 		// parse route
-		methods, uris, handler, err := b.parseRouteConfig(config)
-		if err != nil {
-			// log error
-			logger.Errorf("err: %s", err)
-			continue
+		// methods, uris, handler, err := b.parseRouteConfig(r)
+		uris := r.Uris
+		if len(uris) == 0 && r.Uri != "" {
+			uris = append(uris, r.Uri)
 		}
+
+		methods := r.Methods
+		handler := b.buildHandler(r)
+
+		// if err != nil {
+		// 	// log error
+		// 	logger.Errorf("err: %s", err)
+		// 	continue
+		// }
 		logger.Infof("methods: %v, uris: %v", methods, uris)
 		// add route to mux
 		for _, uri := range uris {
@@ -101,32 +106,12 @@ func (b *Builder) Build() *chi.Mux {
 	return mux
 }
 
-func (b *Builder) parseRouteConfig(config []byte) (methods []string, uris []string, handler http.Handler, err error) {
-	r, err := parseRoute(config)
-	if err != nil {
-		logger.Errorf("parse route fail: %s", err)
-		return
-	}
-	fmt.Printf("the config is: %s\n", config)
-
-	fmt.Printf("route: %+v\n", r)
-	uris = r.Uris
-	if len(uris) == 0 && r.Uri != "" {
-		uris = append(uris, r.Uri)
-	}
-
-	methods = r.Methods
-	handler = b.buildHandler(r)
-
-	return
-}
-
 func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	// if service_id is not empty, get the service config
 	var service resource.Service
 	var err error
 	if r.ServiceID != "" {
-		service, err = b.getService(r.ServiceID)
+		service, err = store.GetService(r.ServiceID)
 		if err != nil {
 			logger.Errorf("get service fail: %s", err)
 			return nil
@@ -184,15 +169,16 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service) (http.Handler, error) {
 	var err error
 	var upstream resource.Upstream
+	// TODO: check the real priority in apisix
 	// FIXME: if both upstream and upstream_id are not empty, which one should be used?
 	if len(r.Upstream.Nodes) > 0 {
 		upstream = r.Upstream
 	} else if r.UpstreamID != "" {
-		upstream, err = b.getUpstream(r.UpstreamID)
+		upstream, err = store.GetUpstream(r.UpstreamID)
 	} else if service.Upstream.Nodes != nil {
 		upstream = service.Upstream
 	} else if service.UpstreamID != "" {
-		upstream, err = b.getUpstream(service.UpstreamID)
+		upstream, err = store.GetUpstream(service.UpstreamID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get upstream fail: %s", err)
@@ -373,49 +359,4 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! here, not clean the body first, what will happen?
 		render.New().JSON(w, status, err.Error())
 	}
-}
-
-func (b *Builder) getUpstream(id string) (resource.Upstream, error) {
-	config := b.storage.GetFromBucket("upstreams", util.StringToBytes(id))
-	if config == nil {
-		return resource.Upstream{}, fmt.Errorf("upstream not found")
-	}
-
-	return parseUpstream(config)
-}
-
-func (b *Builder) getService(id string) (resource.Service, error) {
-	config := b.storage.GetFromBucket("services", util.StringToBytes(id))
-	if config == nil {
-		return resource.Service{}, fmt.Errorf("service not found")
-	}
-
-	return parseService(config)
-}
-
-func parseRoute(config []byte) (resource.Route, error) {
-	var r resource.Route
-	err := json.Unmarshal(config, &r)
-	if err != nil {
-		return r, err
-	}
-	return r, nil
-}
-
-func parseService(config []byte) (resource.Service, error) {
-	var s resource.Service
-	err := json.Unmarshal(config, &s)
-	if err != nil {
-		return s, err
-	}
-	return s, nil
-}
-
-func parseUpstream(config []byte) (resource.Upstream, error) {
-	var u resource.Upstream
-	err := json.Unmarshal(config, &u)
-	if err != nil {
-		return u, err
-	}
-	return u, nil
 }

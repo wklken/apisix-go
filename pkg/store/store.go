@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"sync"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -21,21 +22,28 @@ type Store struct {
 }
 
 // should it be global store?
+var (
+	once sync.Once
+	s    *Store
+)
 
+// FIXME: use init()?
 func NewStore(dbPath string, events chan *Event) *Store {
-	db, err := bolt.Open(dbPath, 0o600, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	once.Do(func() {
+		db, err := bolt.Open(dbPath, 0o600, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	store := &Store{
-		events: events,
-		// Initialize other fields for kv storage in memory
-		db: db,
-	}
+		s = &Store{
+			events: events,
+			// Initialize other fields for kv storage in memory
+			db: db,
+		}
 
-	store.InitBuckets()
-	return store
+		s.InitBuckets()
+	})
+	return s
 }
 
 func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
@@ -46,12 +54,17 @@ var builtInBuckets = [][]byte{
 	[]byte("routes"),
 	[]byte("services"),
 	[]byte("upstreams"),
-	[]byte("global_rules"),
-	[]byte("plugin_metadata"),
-	[]byte("plugin_configs"),
-	[]byte("secrets"),
+	// []byte("secrets"),
+
 	[]byte("consumers"),
 	[]byte("consumer_groups"),
+	[]byte("global_rules"),
+	[]byte("plugin_configs"),
+	[]byte("plugin_metadata"),
+	[]byte("plugins"),
+	[]byte("protos"),
+	[]byte("ssls"),
+	[]byte("stream_routes"),
 }
 
 func (s *Store) InitBuckets() {

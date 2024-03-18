@@ -35,9 +35,12 @@ Let's see how far I can go.
 - [x] add local memory cache(lrucache) => [golang-lru](https://github.com/hashicorp/golang-lru) 2024-03-14
 - [x] rebuild the whole radixtree after the route/service/upstrem changed 2024-03-16
 - [x] watch and use the real data from etcd  2024-03-17
+- [x] add get pluginmetadata 2024-03-18
 
 ## TODO
 
+
+- [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] plugins
   - cors
   - basic_auth

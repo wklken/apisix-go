@@ -16,7 +16,7 @@ func New(name string) Plugin {
 		return &request_id.Plugin{}
 	case "basic_auth":
 		return &basic_auth.Plugin{}
-	case "file_logger":
+	case "file-logger":
 		return &file_logger.Plugin{}
 	case "otel":
 		return &otel.Plugin{}

@@ -29,7 +29,7 @@ func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Durat
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			logger.Info("reload event check after 30s")
+			logger.Debug("reload event check after 30s")
 
 			// check the chan without block here
 			select {

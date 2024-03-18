@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
 )
 
@@ -22,18 +23,19 @@ const schema = `
 	"$schema": "http://json-schema.org/draft-04/schema#",
 	"type": "object",
 	"properties": {
-	  "level": {
-		"type": "string"
-	  },
-	  "filename": {
+	  "path": {
 		"type": "string"
 	  }
 	},
 	"required": [
-	  "level"
+	  "path"
 	]
   }
 `
+
+type pluginMetadata struct {
+	LogFormat map[string]string `json:"log_format"`
+}
 
 type Plugin struct {
 	base.BasePlugin
@@ -41,8 +43,7 @@ type Plugin struct {
 }
 
 type Config struct {
-	Level    string `json:"level"`
-	Filename string `json:"filename"`
+	Path string `json:"path"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -66,6 +67,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// logger := zap.NewExample()
 		// defer logger.Sync()
 		// ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		var metadata pluginMetadata
+		store.GetPluginMetadata("file-logger", &metadata)
+		fmt.Printf("metadata: %+v\n", metadata)
 
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 

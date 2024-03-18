@@ -30,7 +30,7 @@ func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
 	storage := store.NewStore("my.db", events)
 	return &Server{
-		addr:            ":9080",
+		addr:            ":8080",
 		server:          &http.Server{},
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,

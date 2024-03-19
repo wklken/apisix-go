@@ -12,6 +12,7 @@ var (
 func init() {
 	cfg := zap.NewProductionConfig()
 	cfg.OutputPaths = []string{"stdout"} // Replace with your desired log file path
+	cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 	logger, _ = cfg.Build()
 
 	sugarLogger = logger.Sugar()

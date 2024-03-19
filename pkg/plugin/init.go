@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/justinas/alice"
@@ -11,6 +12,7 @@ import (
 )
 
 func New(name string) Plugin {
+	fmt.Println("plugin name:", name)
 	switch name {
 	case "request_id":
 		return &request_id.Plugin{}
@@ -20,6 +22,7 @@ func New(name string) Plugin {
 		return &file_logger.Plugin{}
 	case "otel":
 		return &otel.Plugin{}
+		// TODO: proxy-rewrite
 	}
 	return nil
 }

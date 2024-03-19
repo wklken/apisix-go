@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +55,53 @@ var dummyResource = []byte(`{
 	}
 }`)
 
+var parameterInPathRegexp = regexp.MustCompile(`:(\w+)`)
+
+// ConvertURI convert the apisix uri to chi compatible uri
+// NOTE:
+// 1. full path match: /blog/bar   same
+// 2. prefix match: /blog/bar*     same
+// 3. parameters in path: /blog/:name => /blog/{name} ok
+// FIXME:
+//
+//	https://github.com/api7/lua-resty-radixtree/#parameters-in-path
+//	4. not supported yet:
+//	   - /user/:user/*action
+//	   this will match `/user/john/` and also `/user/john/send`
+//	   - /user/*action
+func convertURI(uri string) (string, error) {
+	// if Asterisk in the uri, and endswith it, just return
+	withColon := strings.ContainsRune(uri, ':')
+	withAsterisk := strings.ContainsRune(uri, '*')
+
+	if !withColon && !withAsterisk {
+		return uri, nil
+	}
+
+	if withColon && !withAsterisk {
+		// replace :name with {name} in url, use regex
+		uri = parameterInPathRegexp.ReplaceAllString(uri, `{$1}`)
+		return uri, nil
+	}
+
+	if !withColon && withAsterisk {
+		// prefix match
+		if strings.HasSuffix(uri, "*") {
+			return uri, nil
+		}
+		// not supported yet
+
+		return "", fmt.Errorf("not supported uri: %s", uri)
+	}
+
+	if withColon && withAsterisk {
+		// not supported yet
+		return "", fmt.Errorf("not supported uri: %s", uri)
+	}
+
+	return "", fmt.Errorf("not supported uri: %s", uri)
+}
+
 type Builder struct{}
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -94,7 +143,19 @@ func (b *Builder) Build() *chi.Mux {
 				continue
 			}
 
+			uri, err = convertURI(uri)
+			if err != nil {
+				logger.Warnf("convert uri fail: %w", err)
+				continue
+			}
+
 			for _, method := range methods {
+				if method == "PURGE" {
+					logger.Warnf("http method: %s is not supported", method)
+					continue
+				}
+				logger.Debugf("add route: %s %s", method, uri)
+
 				mux.Method(method, uri, handler)
 			}
 		}
@@ -137,6 +198,10 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 	for name, config := range r.Plugins {
 		p := plugin.New(name)
+		if p == nil {
+			logger.Warnf("plugin %s not supported yet", name)
+			continue
+		}
 		p.Init()
 
 		err := plugin_config.Validate(config, p.GetSchema())

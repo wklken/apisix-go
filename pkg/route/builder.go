@@ -206,7 +206,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 		err := plugin_config.Validate(config, p.GetSchema())
 		if err != nil {
-			logger.Errorf("validate plugin config fail: %s", err)
+			logger.Errorf("validate plugin %s config fail: %s", name, err)
 			continue
 		}
 
@@ -275,23 +275,55 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 
 		// 2. host: use RR/Weighted-RR to select target host
 		// target is like: http://127.0.0.1 => schema + host
-		target := lb.Next()
-		u, err := url.Parse(target)
-		if err != nil {
-			// log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
-			// 	Error("parse host fail, invalid target")
-			// ! invalid host, just return error for the request
-			panic("parse host fail, invalid target")
+
+		ctx := req.Context()
+		rewriteValue := ctx.Value("proxy-rewrite")
+		uri := ""
+		method := ""
+		host := ""
+		scheme := ""
+		// FIXME: how to read the headers?
+		if rewriteValue != nil {
+			rewrite := rewriteValue.(map[string]interface{})
+			uri = rewrite["uri"].(string)
+			method = rewrite["method"].(string)
+			host = rewrite["host"].(string)
+			scheme = rewrite["scheme"].(string)
 		}
+		if uri != "" {
+			fmt.Println("rewrite uri:", uri)
+			req.URL.Path = uri
+		}
+		if method != "" {
+			req.Method = method
+		}
+
+		if host != "" {
+			req.URL.Host = host
+			req.Host = host
+		} else {
+			target := lb.Next()
+			u, err := url.Parse(target)
+			if err != nil {
+				// log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
+				// 	Error("parse host fail, invalid target")
+				// ! invalid host, just return error for the request
+				panic("parse host fail, invalid target")
+			}
+			req.URL.Scheme = u.Scheme
+			req.URL.Host = u.Host
+			req.Host = u.Host
+		}
+
+		if scheme != "" {
+			req.URL.Scheme = scheme
+		}
+
 		// if u.Scheme == "" || u.Host == "" {
 		// 	log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
 		// 		Error("parse host fail, invalid scheme or host")
 		// 	panic("parse host fail, invalid scheme or host")
 		// }
-
-		req.URL.Scheme = u.Scheme
-		req.URL.Host = u.Host
-		req.Host = u.Host
 
 		// 3. render path
 

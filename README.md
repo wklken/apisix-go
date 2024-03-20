@@ -36,10 +36,13 @@ Let's see how far I can go.
 - [x] rebuild the whole radixtree after the route/service/upstrem changed 2024-03-16
 - [x] watch and use the real data from etcd  2024-03-17
 - [x] add get pluginmetadata 2024-03-18
+- [x] convert apisix uri to chi uri 2024-03-19
+- [x] plugin: proxy-rewrite according to  [proxy-rewrite](https://apisix.apache.org/docs/apisix/plugins/proxy-rewrite/) 2024-03-20
 
 ## TODO
 
 
+- [ ] choose an httpclient lib for all plugins
 - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] plugins
   - cors
@@ -58,7 +61,7 @@ Let's see how far I can go.
 - [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
 - [ ] global vars for all plugins, and the logger plugin
 - [ ] mock nginx vars?
-- [ ] [proxy-rewrite](https://apisix.apache.org/docs/apisix/plugins/proxy-rewrite/)
+- [ ]
 - [ ] route + service + upstream, merge the config
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin attr

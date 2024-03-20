@@ -8,11 +8,13 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
 )
 
 func New(name string) Plugin {
 	fmt.Println("plugin name:", name)
+	// FIXME: use the plugin name to do the register
 	switch name {
 	case "request_id":
 		return &request_id.Plugin{}
@@ -22,6 +24,8 @@ func New(name string) Plugin {
 		return &file_logger.Plugin{}
 	case "otel":
 		return &otel.Plugin{}
+	case "proxy-rewrite":
+		return &proxy_rewrite.Plugin{}
 		// TODO: proxy-rewrite
 	}
 	return nil

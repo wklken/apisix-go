@@ -1,4 +1,4 @@
-package file_logger
+package http_logger
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	c "github.com/wklken/apisix-go/pkg/plugin/ctx"
@@ -52,6 +53,8 @@ func (p *Plugin) Config() interface{} {
 }
 
 func (p *Plugin) Init() error {
+	_ = resty.New()
+
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema

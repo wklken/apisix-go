@@ -8,6 +8,7 @@ replace github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.9
 
 require (
 	github.com/go-chi/chi/v5 v5.0.12
+	github.com/go-resty/resty/v2 v2.12.0
 	github.com/goccy/go-json v0.10.2
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/hashicorp/golang-lru/v2 v2.0.7

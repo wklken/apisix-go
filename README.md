@@ -38,6 +38,8 @@ Let's see how far I can go.
 - [x] add get pluginmetadata 2024-03-18
 - [x] convert apisix uri to chi uri 2024-03-19
 - [x] plugin: proxy-rewrite according to  [proxy-rewrite](https://apisix.apache.org/docs/apisix/plugins/proxy-rewrite/) 2024-03-20
+- [x] use go-resty/rest  => [go-resty/rest](https://github.com/go-resty/resty) 2024-03-21
+- [x] add plugin ctx utils => inspired by [gin/context.go](https://github.com/gin-gonic/gin/blob/7a865dcf1dbe6ec52e074b1ddce830d278eb72cf/context.go) 2024-03-24
 
 ## TODO
 

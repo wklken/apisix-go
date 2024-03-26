@@ -7,6 +7,7 @@ import (
 	"github.com/justinas/alice"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
@@ -26,6 +27,8 @@ func New(name string) Plugin {
 		return &otel.Plugin{}
 	case "proxy-rewrite":
 		return &proxy_rewrite.Plugin{}
+	case "mocking":
+		return &mocking.Plugin{}
 		// TODO: proxy-rewrite
 	}
 	return nil

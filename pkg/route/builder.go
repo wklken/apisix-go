@@ -16,7 +16,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
-	pctx "github.com/wklken/apisix-go/pkg/plugin/ctx"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -184,7 +183,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+1)
 
 	// FIXME: add a context plugin, set the default vars
-	plugins = append(plugins, pctx.New(r))
+	// plugins = append(plugins, pctx.New(r))
 
 	// add the plugins from service
 	if len(service.Plugins) > 0 {

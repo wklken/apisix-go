@@ -40,11 +40,47 @@ Let's see how far I can go.
 - [x] plugin: proxy-rewrite according to  [proxy-rewrite](https://apisix.apache.org/docs/apisix/plugins/proxy-rewrite/) 2024-03-20
 - [x] use go-resty/rest  => [go-resty/rest](https://github.com/go-resty/resty) 2024-03-21
 - [x] add plugin ctx utils => inspired by [gin/context.go](https://github.com/gin-gonic/gin/blob/7a865dcf1dbe6ec52e074b1ddce830d278eb72cf/context.go) 2024-03-24
+- [x] plugin mocking => [apisix doc: mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 2024-03-26
+
+## doing
+
+- [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
+- [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 
 ## TODO
 
+- [ ] plugin request-id [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) easy
+- [ ] plugin uri-blocker [text](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) easy
+- [ ] plugin client-control [text](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) easy
+- [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
+- [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
+- [ ] handle etcd compact
+- [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
+- [ ] plugin config id in route
+- [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
+- [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
+- [ ] plugin real-ip [text](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
+- [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
+- [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
+- [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
+- [ ] plugin key-auth [text](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) ?
+- [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
+- [ ] plugin ua-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/)
+- [ ] plugin referer-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)
+- [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
+- [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
+- [ ] plugin limit-count [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/)
+- [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
+- [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
+- [ ] plugin api-breaker [text](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/)
+- [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
+- [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
+- [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
+- [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 
-- [ ] choose an httpclient lib for all plugins
+- [ ] how to impl the serverless
+
+- [ ] admin api
 - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] plugins
   - cors

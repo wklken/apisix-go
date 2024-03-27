@@ -2,7 +2,6 @@ package proxy_rewrite
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -97,9 +96,4 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 	return http.HandlerFunc(fn)
-}
-
-func basicAuthFailed(w http.ResponseWriter, realm string) {
-	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, realm))
-	w.WriteHeader(http.StatusUnauthorized)
 }

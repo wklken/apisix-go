@@ -8,4 +8,5 @@ type Plugin interface {
 	Config() interface{}
 	GetSchema() string
 	GetPriority() int
+	GetName() string
 }

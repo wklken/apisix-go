@@ -6,6 +6,7 @@ import (
 
 	"github.com/justinas/alice"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
@@ -29,6 +30,8 @@ func New(name string) Plugin {
 		return &proxy_rewrite.Plugin{}
 	case "mocking":
 		return &mocking.Plugin{}
+	case "client-control":
+		return &client_control.Plugin{}
 		// TODO: proxy-rewrite
 	}
 	return nil
@@ -42,9 +45,43 @@ func BuildPluginChain(plugins ...Plugin) alice.Chain {
 
 	// build the alice chain
 	chain := alice.New()
+	// chain = chain.Append(Recoverer)
 	for _, plugin := range plugins {
+		fmt.Println("plugin name:", plugin.GetName())
 		chain = chain.Append(plugin.Handler)
 	}
 
 	return chain
 }
+
+// func Recoverer(next http.Handler) http.Handler {
+// 	fn := func(w http.ResponseWriter, r *http.Request) {
+// 		defer func() {
+// 			fmt.Println("calling recover")
+// 			if rvr := recover(); rvr != nil {
+// 				fmt.Println("recover:", rvr)
+// 				var err error
+// 				switch x := rvr.(type) {
+// 				case string:
+// 					err = errors.New(x)
+// 				case error:
+// 					err = x
+// 				default:
+// 					panic(rvr)
+// 					// Fallback err (per specs, error strings should be lowercase w/o punctuation
+// 					// err = errors.New("unknown panic")
+// 				}
+
+// 				if err.Error() == "http: request body too large" {
+// 					w.WriteHeader(http.StatusRequestEntityTooLarge)
+// 				} else {
+// 					panic(rvr)
+// 				}
+// 			}
+// 		}()
+
+// 		next.ServeHTTP(w, r)
+// 	}
+
+// 	return http.HandlerFunc(fn)
+// }

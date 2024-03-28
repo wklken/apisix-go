@@ -84,7 +84,7 @@ type Config struct {
 	ContentType     string            `json:"content_type"`
 	ResponseExample *string           `json:"response_example,omitempty"`
 	ResponseSchema  *map[string]any   `json:"response_schema,omitempty"`
-	WithMockHeader  bool              `json:"with_mock_header"`
+	WithMockHeader  *bool             `json:"with_mock_header"`
 	ResponseHeaders map[string]string `json:"response_headers"`
 }
 
@@ -92,6 +92,22 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+
+	return nil
+}
+
+func (p *Plugin) PostInit() error {
+	if p.config.ResponseStatus == 0 {
+		p.config.ResponseStatus = 200
+	}
+	if p.config.ContentType != "" {
+		p.config.ContentType = "application/json"
+	}
+
+	if p.config.WithMockHeader == nil {
+		defaultValue := true
+		p.config.WithMockHeader = &defaultValue
+	}
 
 	return nil
 }
@@ -109,23 +125,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		// Set content type
-		if p.config.ContentType != "" {
-			w.Header().Set("Content-Type", p.config.ContentType)
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-		}
+		w.Header().Set("Content-Type", p.config.ContentType)
 
 		// Set response headers
 		for key, value := range p.config.ResponseHeaders {
 			w.Header().Add(key, value)
 		}
 
-		// if response status is not set, default to 200
-		if p.config.ResponseStatus != 0 {
-			w.WriteHeader(p.config.ResponseStatus)
-		} else {
-			w.WriteHeader(200)
-		}
+		w.WriteHeader(p.config.ResponseStatus)
 
 		// NOTE: not support response_schema yet
 		if p.config.ResponseExample != nil {
@@ -135,7 +142,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		// mock header
-		if p.config.WithMockHeader {
+		if *p.config.WithMockHeader {
 			// FIXME: change 0.0.1 to real version
 			w.Header().Add("x-mock-by", "APISIX-GO/0.0.1")
 		}

@@ -59,6 +59,10 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) PostInit() error {
+	return nil
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// TODO: path/filename/rotate

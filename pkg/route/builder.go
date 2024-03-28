@@ -215,6 +215,8 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 			continue
 		}
 
+		p.PostInit()
+
 		logger.Infof("after parse, config: %v", p.Config())
 
 		plugins = append(plugins, p)

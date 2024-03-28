@@ -13,6 +13,7 @@ require (
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/justinas/alice v1.2.0
+	github.com/matoous/go-nanoid/v2 v2.0.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/prometheus/client_golang v1.19.0
 	github.com/redis/rueidis v1.0.31

@@ -14,7 +14,7 @@ Let's see how far I can go.
 
 ## Supported Features
 
-Plugins: (3/50)
+Plugins: (4/50)
 
 - [x] proxy-rewrite 80%
   - not support `regex_uri`
@@ -22,6 +22,7 @@ Plugins: (3/50)
 - [x] mocking 90%
   - not support `response_schema`
 - [x] client-control 100%
+- [x] request-id 100%
 
 ## DONE
 
@@ -53,6 +54,7 @@ Plugins: (3/50)
 - [x] add plugin ctx utils => inspired by [gin/context.go](https://github.com/gin-gonic/gin/blob/7a865dcf1dbe6ec52e074b1ddce830d278eb72cf/context.go) 2024-03-24
 - [x] plugin mocking => [apisix doc: mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 2024-03-26
 - [x] plugin client-control [apisix doc: client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 2024-03-28
+- [x] plugin request-id [apisix doc: request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 2024-03-29
 
 ## doing
 
@@ -61,32 +63,33 @@ Plugins: (3/50)
 
 ## TODO
 
+- [ ] plugin uri-blocker [text](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) easy
+- [ ] plugin ua-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/)
+- [ ] plugin referer-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)
+
+- [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
+
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-count [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 
-- [ ] plugin request-id [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) easy
 - [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
+- [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
+- [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
 
-- [ ] plugin uri-blocker [text](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) easy
 - [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
-- [ ] plugin ua-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/)
 
-- [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 - [ ] plugin api-breaker [text](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/)
 
 - [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
 - [ ] handle etcd compact
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin config id in route
-- [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
-- [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
 - [ ] plugin real-ip [text](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
 - [ ] plugin key-auth [text](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) ?
-- [ ] plugin referer-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)
 - [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)

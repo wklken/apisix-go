@@ -48,6 +48,10 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) PostInit() error {
+	return nil
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	opts := otelchi.WithFilter(func(r *http.Request) bool {
 		if r.URL.Path == "/healthz" {

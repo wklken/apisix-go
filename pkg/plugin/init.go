@@ -18,8 +18,6 @@ func New(name string) Plugin {
 	fmt.Println("plugin name:", name)
 	// FIXME: use the plugin name to do the register
 	switch name {
-	case "request_id":
-		return &request_id.Plugin{}
 	case "basic_auth":
 		return &basic_auth.Plugin{}
 	case "file-logger":
@@ -32,6 +30,8 @@ func New(name string) Plugin {
 		return &mocking.Plugin{}
 	case "client-control":
 		return &client_control.Plugin{}
+	case "request-id":
+		return &request_id.Plugin{}
 		// TODO: proxy-rewrite
 	}
 	return nil

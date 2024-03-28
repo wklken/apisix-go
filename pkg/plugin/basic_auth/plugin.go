@@ -49,6 +49,10 @@ func (p *Plugin) Init() error {
 	return nil
 }
 
+func (p *Plugin) PostInit() error {
+	return nil
+}
+
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }

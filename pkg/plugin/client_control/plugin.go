@@ -61,6 +61,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				if err.Error() == "http: request body too large" {
+					// TODO: change to http.Error?
 					w.WriteHeader(http.StatusRequestEntityTooLarge)
 					return
 				}

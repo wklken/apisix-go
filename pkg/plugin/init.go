@@ -12,6 +12,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
+	"github.com/wklken/apisix-go/pkg/plugin/uri_blocker"
 )
 
 func New(name string) Plugin {
@@ -32,6 +33,8 @@ func New(name string) Plugin {
 		return &client_control.Plugin{}
 	case "request-id":
 		return &request_id.Plugin{}
+	case "uri-blocker":
+		return &uri_blocker.Plugin{}
 		// TODO: proxy-rewrite
 	}
 	return nil

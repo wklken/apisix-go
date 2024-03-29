@@ -23,6 +23,7 @@ Plugins: (4/50)
   - not support `response_schema`
 - [x] client-control 100%
 - [x] request-id 100%
+- [x] uri-blocker 100%
 
 ## DONE
 
@@ -53,8 +54,9 @@ Plugins: (4/50)
 - [x] use go-resty/rest  => [go-resty/rest](https://github.com/go-resty/resty) 2024-03-21
 - [x] add plugin ctx utils => inspired by [gin/context.go](https://github.com/gin-gonic/gin/blob/7a865dcf1dbe6ec52e074b1ddce830d278eb72cf/context.go) 2024-03-24
 - [x] plugin mocking => [apisix doc: mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 2024-03-26
-- [x] plugin client-control [apisix doc: client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 2024-03-28
-- [x] plugin request-id [apisix doc: request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 2024-03-29
+- [x] plugin client-control [apisix doc: client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 2024-03-27
+- [x] plugin request-id [apisix doc: request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 2024-03-28
+- [ ] plugin uri-blocker [apisix doc: uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 2024-03-29
 
 ## doing
 
@@ -63,7 +65,6 @@ Plugins: (4/50)
 
 ## TODO
 
-- [ ] plugin uri-blocker [text](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) easy
 - [ ] plugin ua-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/)
 - [ ] plugin referer-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)
 

@@ -22,6 +22,7 @@ require (
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
+	github.com/ulule/limiter/v3 v3.11.2
 	github.com/unrolled/render v1.6.1
 	go.etcd.io/bbolt v1.3.9
 	go.etcd.io/etcd/client/v3 v3.5.12
@@ -50,6 +51,7 @@ require (
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.1.1 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.50.0 // indirect
 	github.com/prometheus/procfs v0.13.0 // indirect

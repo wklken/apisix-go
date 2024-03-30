@@ -8,6 +8,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
@@ -35,7 +36,9 @@ func New(name string) Plugin {
 		return &request_id.Plugin{}
 	case "uri-blocker":
 		return &uri_blocker.Plugin{}
-		// TODO: proxy-rewrite
+	case "limit-count":
+		return &limit_count.Plugin{}
+
 	}
 	return nil
 }

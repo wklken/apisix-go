@@ -14,6 +14,13 @@ Let's see how far I can go.
 
 ## Supported Features
 
+Base Features:
+
+- not supported:
+  - http method `PURGE` is not supported
+
+
+
 Plugins: (4/50)
 
 - [x] proxy-rewrite 80%
@@ -24,6 +31,10 @@ Plugins: (4/50)
 - [x] client-control 100%
 - [x] request-id 100%
 - [x] uri-blocker 100%
+- [x] limit-count ?%
+  - local done
+  - redis todo
+  - redis-cluster todo
 
 ## DONE
 
@@ -56,10 +67,12 @@ Plugins: (4/50)
 - [x] plugin mocking => [apisix doc: mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 2024-03-26
 - [x] plugin client-control [apisix doc: client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 2024-03-27
 - [x] plugin request-id [apisix doc: request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 2024-03-28
-- [ ] plugin uri-blocker [apisix doc: uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 2024-03-29
+- [x] plugin uri-blocker [apisix doc: uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 2024-03-29
+- [x] plugin limit-count local [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) => [ulule/limiter](https://github.com/ulule/limiter)
 
 ## doing
 
+- [ ] plugin limit-count redis [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/)
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 
@@ -71,12 +84,12 @@ Plugins: (4/50)
 - [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
-- [ ] plugin limit-count [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 
 - [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
 - [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
+  - [text](https://github.com/go-chi/chi/blob/master/middleware/compress.go)
 
 - [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
 
@@ -96,6 +109,7 @@ Plugins: (4/50)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
 - [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
+- [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
 
 - [ ] how to impl the serverless
 

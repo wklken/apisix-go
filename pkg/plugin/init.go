@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/justinas/alice"
+	"github.com/wklken/apisix-go/pkg/plugin/api_breaker"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
@@ -38,7 +39,8 @@ func New(name string) Plugin {
 		return &uri_blocker.Plugin{}
 	case "limit-count":
 		return &limit_count.Plugin{}
-
+	case "api-breaker":
+		return &api_breaker.Plugin{}
 	}
 	return nil
 }

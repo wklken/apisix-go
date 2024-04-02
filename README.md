@@ -33,8 +33,12 @@ Plugins: (4/50)
 - [x] uri-blocker 100%
 - [x] limit-count ?%
   - local done
-  - redis todo
+  - redis done
+  - keys todo
   - redis-cluster todo
+- [x] api-breaker
+  - basic logical done
+  - reset the status and body todo
 
 ## DONE
 
@@ -68,11 +72,13 @@ Plugins: (4/50)
 - [x] plugin client-control [apisix doc: client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 2024-03-27
 - [x] plugin request-id [apisix doc: request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 2024-03-28
 - [x] plugin uri-blocker [apisix doc: uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 2024-03-29
-- [x] plugin limit-count local [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) => [ulule/limiter](https://github.com/ulule/limiter)
+- [x] plugin limit-count local [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) => [ulule/limiter](https://github.com/ulule/limiter) 2024-03-30
+- [x] plugin limit-count redis  2024-03-31
+- [x] plugin api-breaker basic logical [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 2024-04-02
 
 ## doing
 
-- [ ] plugin limit-count redis [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/)
+- [ ] plugin api-breaker reset the response
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 
@@ -93,7 +99,6 @@ Plugins: (4/50)
 
 - [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
 
-- [ ] plugin api-breaker [text](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/)
 
 - [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
 - [ ] handle etcd compact

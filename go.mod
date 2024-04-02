@@ -16,10 +16,12 @@ require (
 	github.com/matoous/go-nanoid/v2 v2.0.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/prometheus/client_golang v1.19.0
+	github.com/redis/go-redis/v9 v9.0.4
 	github.com/redis/rueidis v1.0.31
 	github.com/riandyrn/otelchi v0.5.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a
+	github.com/sony/gobreaker v0.5.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
 	github.com/ulule/limiter/v3 v3.11.2
@@ -40,6 +42,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/felixge/httpsnoop v1.0.2 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/go-logr/logr v1.4.1 // indirect

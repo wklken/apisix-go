@@ -6,8 +6,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/ulule/limiter/v3/drivers/store/memory"
+	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -175,8 +177,8 @@ type RedisConfig struct {
 	RedisPassword  string `json:"redis_password,omitempty"`
 	RedisDatabase  int    `json:"redis_database,omitempty"`
 	RedisTimeout   int    `json:"redis_timeout,omitempty"`
-	RedisSSL       bool   `json:"redis_ssl,omitempty"`
-	RedisSSLVerify bool   `json:"redis_ssl_verify,omitempty"`
+	RedisSSL       *bool  `json:"redis_ssl,omitempty"`
+	RedisSSLVerify *bool  `json:"redis_ssl_verify,omitempty"`
 }
 
 // RedisClusterConfig holds fields specific to the "redis-cluster" policy.
@@ -213,6 +215,31 @@ func (p *Plugin) PostInit() error {
 		p.config.Policy = "local"
 	}
 
+	if p.config.Policy == "redis" {
+		if p.config.Redis.RedisPort == 0 {
+			p.config.Redis.RedisPort = 6379
+		}
+
+		// if p.config.Redis.RedisDatabase == 0 {
+		// 	p.config.Redis.RedisDatabase = 0
+		// }
+
+		if p.config.Redis.RedisTimeout == 0 {
+			p.config.Redis.RedisTimeout = 1000
+		}
+
+		if p.config.Redis.RedisSSL == nil {
+			b := false
+			p.config.Redis.RedisSSL = &b
+		}
+
+		if p.config.Redis.RedisSSLVerify == nil {
+			b := false
+			p.config.Redis.RedisSSLVerify = &b
+		}
+
+	}
+
 	if p.config.AllowDegradation == nil {
 		b := false
 		p.config.AllowDegradation = &b
@@ -228,7 +255,46 @@ func (p *Plugin) PostInit() error {
 		Limit:  p.config.Count,
 	}
 
-	store := memory.NewStore()
+	var store limiter.Store
+
+	if p.config.Policy == "local" {
+		store = memory.NewStore()
+	} else if p.config.Policy == "redis" {
+		// FIXME: each route has its own limit => we should share the redis client
+		client := redis.NewClient(&redis.Options{
+			Addr:     fmt.Sprintf("%s:%d", p.config.Redis.RedisHost, p.config.Redis.RedisPort),
+			Username: p.config.Redis.RedisUsername,
+			Password: p.config.Redis.RedisPassword,
+			DB:       p.config.Redis.RedisDatabase,
+		})
+		// RedisTimeout   int    `json:"redis_timeout,omitempty"`
+		// RedisSSL       bool   `json:"redis_ssl,omitempty"`
+		// RedisSSLVerify bool   `json:"redis_ssl_verify,omitempty"`
+
+		// BREAKPOINT: add redis into docker-compose, then test it
+		var err error
+		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
+			Prefix:   "limit-count",
+			MaxRetry: 3,
+		})
+		// TODO: handle the error
+		if err != nil {
+			// logger.Fatal(err.Error())
+			return err
+		}
+	} else if p.config.Policy == "redis-cluster" {
+		// client := redis.NewClusterClient(&redis.ClusterOptions{
+		// 	Addrs:    p.config.RedisCluster.RedisClusterNodes,
+		// 	Password: p.config.RedisCluster.RedisPassword,
+		// })
+		// RedisTimeout          int      `json:"redis_timeout,omitempty"`
+		// RedisClusterName      string   `json:"redis_cluster_name,omitempty"`
+		// RedisClusterSSL       bool     `json:"redis_cluster_ssl,omitempty"`
+		// RedisClusterSSLVerify bool     `json:"redis_cluster_ssl_verify,omitempty"`
+
+		return fmt.Errorf("not supported yet: %s", p.config.Policy)
+	}
+
 	p.limiter = limiter.New(store, rate, limiter.WithTrustForwardHeader(true))
 
 	return nil

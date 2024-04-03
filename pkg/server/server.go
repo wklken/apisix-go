@@ -56,7 +56,7 @@ func (s *Server) Start() {
 	s.server.Handler = route.NewBuilder(s.storage).Build()
 
 	// start the reloader
-	reloadCheckInterval := 100 * time.Second
+	reloadCheckInterval := 60 * time.Second
 	go s.listenReloadEvent(ctx, reloadCheckInterval)
 
 	// FIXME: port and path should be configurable

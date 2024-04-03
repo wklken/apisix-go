@@ -9,6 +9,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/plugin/gzip"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
@@ -41,6 +42,8 @@ func New(name string) Plugin {
 		return &limit_count.Plugin{}
 	case "api-breaker":
 		return &api_breaker.Plugin{}
+	case "gzip":
+		return &gzip.Plugin{}
 	}
 	return nil
 }

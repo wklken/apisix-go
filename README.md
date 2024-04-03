@@ -19,9 +19,7 @@ Base Features:
 - not supported:
   - http method `PURGE` is not supported
 
-
-
-Plugins: (4/50)
+Plugins: (8/50)
 
 - [x] proxy-rewrite 80%
   - not support `regex_uri`
@@ -39,6 +37,10 @@ Plugins: (4/50)
 - [x] api-breaker 90%
   - not support `healthy.http_statuse`
   - not support `break_response_headers` vars
+- [x] gzip 90%
+  - not support `types = ["*"]`
+  - not support `min_length`
+  - not support `buffers`(it's nginx native feature)
 
 ## DONE
 
@@ -75,10 +77,10 @@ Plugins: (4/50)
 - [x] plugin limit-count redis  2024-03-31
 - [x] plugin api-breaker basic logical [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 2024-04-02
 - [x] plugin api-breaker reset the response 2024-04-03
+- [x] plugin gzip [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 2024-04-03
 
 ## doing
 
-- [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
 
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)

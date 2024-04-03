@@ -207,6 +207,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			return
 		}
+		// FIXME: when the breaker is half-open, should not block the request?
 
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 

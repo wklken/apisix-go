@@ -1,7 +1,7 @@
 package api_breaker
 
 import (
-	"log"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -162,19 +162,27 @@ func (p *Plugin) PostInit() error {
 		p.config.Healthy.Successes = &defaultSuccesses
 	}
 
+	fmt.Println("the maxRequests: ", *p.config.Healthy.Successes)
+	fmt.Println("the interval: ", p.config.MaxBreakerSec)
+
+	// FIXME: the same upstream host should share the same circuit breaker
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        "api-breaker",
 		MaxRequests: uint32(*p.config.Healthy.Successes),
-		Interval:    time.Duration(p.config.MaxBreakerSec) * time.Second,
+		// Interval:    time.Duration(p.config.MaxBreakerSec) * time.Second,
+		Interval: 0,
+		// reach timeout, open -> half-open
+		Timeout: time.Duration(p.config.MaxBreakerSec) * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.TotalFailures >= uint32(*p.config.Unhealthy.Failures)
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			log.Printf("circuit breaker %s state change: %s -> %s\n", name, from, to)
+			// log.Printf("circuit breaker %s state change: %s -> %s\n", name, from, to)
+			fmt.Printf("circuit breaker %s state change: %s -> %s\n", name, from, to)
 		},
-		IsSuccessful: func(err error) bool {
-			return true
-		},
+		// IsSuccessful: func(err error) bool {
+		// 	return err == nil
+		// },
 	})
 	p.cb = cb
 
@@ -187,17 +195,29 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if p.cb.State() == gobreaker.StateOpen {
+			w.WriteHeader(p.config.BreakResponseCode)
+			if p.config.BreakResponseHeaders != nil {
+				for _, h := range p.config.BreakResponseHeaders {
+					w.Header().Set(h.Key, h.Value)
+				}
+			}
+			if p.config.BreakResponseBody != nil {
+				w.Write([]byte(*p.config.BreakResponseBody))
+			}
+			return
+		}
+
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
 		next.ServeHTTP(ww, r)
 
 		status := ww.Status()
-
 		// stats the status code
-		_, err := p.cb.Execute(func() (interface{}, error) {
+		p.cb.Execute(func() (interface{}, error) {
 			for _, s := range p.config.Unhealthy.HTTPStatuses {
 				if status == s {
-					return nil, gobreaker.ErrOpenState
+					return nil, fmt.Errorf("unhealthy status")
 				}
 			}
 			// for _, s := range p.config.Healthy.HTTPStatuses {
@@ -207,20 +227,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			// }
 			return nil, nil
 		})
-		if err != nil {
-			// FIXME: reset the response?
-
-			if p.config.BreakResponseBody != nil {
-				w.Write([]byte(*p.config.BreakResponseBody))
-			}
-			if p.config.BreakResponseHeaders != nil {
-				for _, h := range p.config.BreakResponseHeaders {
-					w.Header().Set(h.Key, h.Value)
-				}
-			}
-			w.WriteHeader(p.config.BreakResponseCode)
-			return
-		}
 	}
 	return http.HandlerFunc(fn)
 }

@@ -36,12 +36,11 @@ Plugins: (4/50)
   - redis done
   - keys todo
   - redis-cluster todo
-- [x] api-breaker
-  - basic logical done
-  - reset the status and body todo
+- [x] api-breaker 90%
+  - not support `healthy.http_statuse`
+  - not support `break_response_headers` vars
 
 ## DONE
-
 
 - [x] choose router => [chi](https://github.com/go-chi/chi) 2024-03-08
 - [x] reverse proxy => [httputil/reverseproxy](https://go.dev/src/net/http/httputil/reverseproxy.go) 2024-03-08
@@ -75,10 +74,12 @@ Plugins: (4/50)
 - [x] plugin limit-count local [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) => [ulule/limiter](https://github.com/ulule/limiter) 2024-03-30
 - [x] plugin limit-count redis  2024-03-31
 - [x] plugin api-breaker basic logical [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 2024-04-02
+- [x] plugin api-breaker reset the response 2024-04-03
 
 ## doing
 
-- [ ] plugin api-breaker reset the response
+- [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
+
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 
@@ -94,7 +95,6 @@ Plugins: (4/50)
 
 - [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
-- [ ] plugin gzip [text](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/)
   - [text](https://github.com/go-chi/chi/blob/master/middleware/compress.go)
 
 - [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)

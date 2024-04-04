@@ -14,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
+	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/plugin/referer_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
 	"github.com/wklken/apisix-go/pkg/plugin/ua_restriction"
@@ -50,6 +51,8 @@ func New(name string) Plugin {
 		return &referer_restriction.Plugin{}
 	case "ua-restriction":
 		return &ua_restriction.Plugin{}
+	case "real-ip":
+		return &real_ip.Plugin{}
 	}
 	return nil
 }

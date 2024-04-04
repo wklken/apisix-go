@@ -1,91 +1,156 @@
 # apisix-go
 
-This is an `apisix` implemented via Go
+This is an `apisix` Data Plane(DP) implemented via Go
 
-just a toy project for now, not for production use.
+NOT READY FOR PRODUCTION!
 
-no lint, no tests, no docs! I will use any libs, just for fun!
+## Features
 
-I will try to implement the `apisix` features one by one.
+### Supported
 
-Build in public!
+### Not Supported
 
-Let's see how far I can go.
-
-## Supported Features
-
-Base Features:
-
-- not supported:
-  - http method `PURGE` is not supported
+- http method `PURGE` is not supported
 
 ## Plugins
 
-progress percentage: 10/50
+progress:
+$$ 10  / 76  (13.15\%) $$
 
-- [x] proxy-rewrite 80%
-  - not support `regex_uri`
-  - not support `use_real_request_uri_unsafe`
-- [x] mocking 90%
-  - not support `response_schema`
-- [x] client-control 100%
-- [x] request-id 100%
-- [x] uri-blocker 100%
-- [x] limit-count ?%
-  - local done
-  - redis done
-  - keys todo
-  - redis-cluster todo
-- [x] api-breaker 90%
-  - not support `healthy.http_statuse`
-  - not support `break_response_headers` vars
-- [x] gzip 90%
+### General
+
+> 1/7
+
+- [ ] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/)
+- [ ] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
+- [ ] [echo](https://apisix.apache.org/zh/docs/apisix/plugins/echo/)
+- [x] [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 90%
   - not support `types = ["*"]`
   - not support `min_length`
   - not support `buffers`(it's nginx native feature)
-- [x] referer-restriction 100%
-- [x] ua-restriction 100%
+- [ ] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/)
+- [ ] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
+- [ ] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
+- &#x2612; [ext-plugin-pre-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-pre-req/)      NOT SUPPORTED, No need
+- &#x2612; [ext-plugin-post-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-req/)    NOT SUPPORTED, No need
+- &#x2612; [ext-plugin-post-resp](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-resp/)  NOT SUPPORTED, No need
+- &#x2612; [inspect](https://apisix.apache.org/zh/docs/apisix/plugins/inspect/)                            NOT SUPPORTED, lua feature
+- &#x2612; [ocsp-stapling](https://apisix.apache.org/zh/docs/apisix/plugins/ocsp-stapling/)                NOT SUPPORTED, nginx feature
 
-## DONE
+### Transformation
 
-- [x] choose router => [chi](https://github.com/go-chi/chi) 2024-03-08
-- [x] reverse proxy => [httputil/reverseproxy](https://go.dev/src/net/http/httputil/reverseproxy.go) 2024-03-08
-- [x] bpool  => [bpool](http://github.com/oxtoacart/bpool)
-- [x] etcd fetch all + watch => [etcd/client/v3](https://pkg.go.dev/go.etcd.io/etcd/client/v3) 2024-03-08
-- [x] local kv storage  => [bbolt](https://github.com/etcd-io/bbolt) 2024-03-08
-- [x] loadbalance weighted rr => [weighted](http://github.com/smallnest/weighted) 2024-03-08
-- [x] plugin model 2024-03-09
-- [x] plugin chain => [alice](https://github.com/justinas/alice) 2024-03-09
-- [x] demo etcd config to httpbin get => httpbin.org 2024-03-09
-- [x] chi graceful shutdown 2024-03-09
-- [x] json lib => [go-json](https://github.com/goccy/go-json) 2024-03-09
-- [x] plugin config validate => [jsonschema](https://github.com/santhosh-tekuri/jsonschema) 2024-03-09
-- [x] add prometheus => [client_golang](https://github.com/prometheus/client_golang) 2024-03-10
-- [x] base apisix context for all plugins 2024-03-10
-- [x] add otel 2024-03-11
-- [x] add config file and parse => [viper](https://github.com/spf13/viper) 2024-03-12
-- [x] add redis client => [rueidis](https://github.com/redis/rueidis) 2024-03-13
-- [x] add local memory cache(lrucache) => [golang-lru](https://github.com/hashicorp/golang-lru) 2024-03-14
-- [x] rebuild the whole radixtree after the route/service/upstrem changed 2024-03-16
-- [x] watch and use the real data from etcd  2024-03-17
-- [x] add get pluginmetadata 2024-03-18
-- [x] convert apisix uri to chi uri 2024-03-19
-- [x] plugin: proxy-rewrite according to  [proxy-rewrite](https://apisix.apache.org/docs/apisix/plugins/proxy-rewrite/) 2024-03-20
-- [x] use go-resty/rest  => [go-resty/rest](https://github.com/go-resty/resty) 2024-03-21
-- [x] add plugin ctx utils => inspired by [gin/context.go](https://github.com/gin-gonic/gin/blob/7a865dcf1dbe6ec52e074b1ddce830d278eb72cf/context.go) 2024-03-24
-- [x] plugin mocking => [apisix doc: mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 2024-03-26
-- [x] plugin client-control [apisix doc: client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 2024-03-27
-- [x] plugin request-id [apisix doc: request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 2024-03-28
-- [x] plugin uri-blocker [apisix doc: uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 2024-03-29
-- [x] plugin limit-count local [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) => [ulule/limiter](https://github.com/ulule/limiter) 2024-03-30
-- [x] plugin limit-count redis  2024-03-31
-- [x] plugin api-breaker basic logical [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 2024-04-02
-- [x] plugin api-breaker reset the response 2024-04-03
-- [x] plugin gzip [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 2024-04-03
-- [x] plugin referer-restriction [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)  => [gobwas/glob](https://github.com/gobwas/glob) / [Shopify/goreferrer](github.com/Shopify/goreferrer) 2024-04-03
-- [x] plugin ua-restriction [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 2024-04-04
+> 2/8
 
-## doing
+- [ ] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/)
+- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 80%
+  - not support `regex_uri`
+  - not support `use_real_request_uri_unsafe`
+- [ ] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/)
+- [ ] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/)
+- [ ] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
+- [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 90%
+  - not support `response_schema`
+- [ ] [degraphql](https://apisix.apache.org/zh/docs/apisix/plugins/degraphql/)
+- [ ] [body-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/body-transformer/)
+
+### Authentication
+
+> 0/15
+
+- [ ] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/)
+- [ ] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/)
+- [ ] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/)
+- [ ] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/)
+- [ ] [authz-keycloak](https://apisix.apache.org/zh/docs/apisix/plugins/authz-keycloak/)
+- [ ] [authz-casdoor](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casdoor/)
+- [ ] [wolf-rbac](https://apisix.apache.org/zh/docs/apisix/plugins/wolf-rbac/)
+- [ ] [openid-connect](https://apisix.apache.org/zh/docs/apisix/plugins/openid-connect/)
+- [ ] [cas-auth](https://apisix.apache.org/zh/docs/apisix/plugins/cas-auth/)
+- [ ] [hmac-auth](https://apisix.apache.org/zh/docs/apisix/plugins/hmac-auth/)
+- [ ] [authz-casbin](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casbin/)
+- [ ] [ldap-auth](https://apisix.apache.org/zh/docs/apisix/plugins/ldap-auth/)
+- [ ] [opa](https://apisix.apache.org/zh/docs/apisix/plugins/opa/)
+- [ ] [forward-auth](https://apisix.apache.org/zh/docs/apisix/plugins/forward-auth/)
+- [ ] [multi-auth](https://apisix.apache.org/zh/docs/apisix/plugins/multi-auth/)
+
+### Security
+
+> 3/10
+
+- [ ] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/)
+- [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
+- [ ] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
+- [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
+- [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
+- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
+- [ ] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
+- [ ] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/)
+- [ ] [GM](https://apisix.apache.org/zh/docs/apisix/plugins/GM/)
+- [ ] [chaitin-waf](https://apisix.apache.org/zh/docs/apisix/plugins/chaitin-waf/)
+
+### Traffic
+
+> 4/12
+
+- [ ] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
+- [ ] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/)
+- [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 50%
+  - keys todo
+  - redis-cluster todo
+- [ ] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/)
+- [ ] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
+- [ ] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/)
+- [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 90%
+  - not support `healthy.http_statuse`
+  - not support `break_response_headers` vars
+- [ ] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/)
+- [x] [request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 100%
+- [ ] [proxy-control](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-control/)
+- [x] [client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 100%
+- [ ] [workflow](https://apisix.apache.org/zh/docs/apisix/plugins/workflow/)
+
+### Observability
+
+Tracers:
+
+> 0/3
+
+- [ ] [zipkin](https://apisix.apache.org/zh/docs/apisix/plugins/zipkin/)
+- [ ] [skywalking](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking/)
+- [ ] [opentelemetry](https://apisix.apache.org/zh/docs/apisix/plugins/opentelemetry/)
+
+Metrics:
+
+> 0/3
+
+- [ ] [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/)
+- [ ] [node-status](https://apisix.apache.org/zh/docs/apisix/plugins/node-status/)
+- [ ] [datadog](https://apisix.apache.org/zh/docs/apisix/plugins/datadog/)
+
+Loggers:
+
+> 0/18
+
+- [ ] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
+- [ ] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/)
+- [ ] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
+- [ ] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/)
+- [ ] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/)
+- [ ] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
+- [ ] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/)
+- [ ] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
+- [ ] [log-rotate](https://apisix.apache.org/zh/docs/apisix/plugins/log-rotate/)
+- [ ] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/)
+- [ ] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/)
+- [ ] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/)
+- [ ] [splunk-hec-logging](https://apisix.apache.org/zh/docs/apisix/plugins/splunk-hec-logging/)
+- [ ] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/)
+- [ ] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/)
+- [ ] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/)
+- [ ] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/)
+- [ ] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/)
+
+## TODO
 
 - [ ] plugin real-ip [text](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
 - [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
@@ -98,22 +163,16 @@ progress percentage: 10/50
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
 - [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
-
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
-
-## TODO
-
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
 - [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
-
 - [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
   - [text](https://github.com/go-chi/chi/blob/master/middleware/compress.go)
-
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
@@ -141,5 +200,3 @@ progress percentage: 10/50
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin attr
 - [ ] the plugin which modify response, how?
-
-

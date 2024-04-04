@@ -14,7 +14,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
+	"github.com/wklken/apisix-go/pkg/plugin/referer_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
+	"github.com/wklken/apisix-go/pkg/plugin/ua_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/uri_blocker"
 )
 
@@ -44,6 +46,10 @@ func New(name string) Plugin {
 		return &api_breaker.Plugin{}
 	case "gzip":
 		return &gzip.Plugin{}
+	case "referer-restriction":
+		return &referer_restriction.Plugin{}
+	case "ua-restriction":
+		return &ua_restriction.Plugin{}
 	}
 	return nil
 }

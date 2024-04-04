@@ -19,7 +19,9 @@ Base Features:
 - not supported:
   - http method `PURGE` is not supported
 
-Plugins: (8/50)
+## Plugins
+
+progress percentage: 10/50
 
 - [x] proxy-rewrite 80%
   - not support `regex_uri`
@@ -41,6 +43,8 @@ Plugins: (8/50)
   - not support `types = ["*"]`
   - not support `min_length`
   - not support `buffers`(it's nginx native feature)
+- [x] referer-restriction 100%
+- [x] ua-restriction 100%
 
 ## DONE
 
@@ -78,20 +82,31 @@ Plugins: (8/50)
 - [x] plugin api-breaker basic logical [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 2024-04-02
 - [x] plugin api-breaker reset the response 2024-04-03
 - [x] plugin gzip [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 2024-04-03
+- [x] plugin referer-restriction [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)  => [gobwas/glob](https://github.com/gobwas/glob) / [Shopify/goreferrer](github.com/Shopify/goreferrer) 2024-04-03
+- [x] plugin ua-restriction [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 2024-04-04
 
 ## doing
 
+- [ ] plugin real-ip [text](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
+- [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
+  - [text](https://github.com/jpillora/ipfilter)
+- [ ] nginx vars mocking
+  - [text](https://nginx.org/en/docs/varindex.html)
+- [ ] plugin logger context
+- [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
+    - we need a logger collector, add into context, all other log plugins can use it directly
+- [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
+- [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
+- [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 
 ## TODO
 
-- [ ] plugin ua-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/)
-- [ ] plugin referer-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)
-
+- [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
+- [ ] how to impl the serverless
 - [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
-
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 
@@ -99,56 +114,32 @@ Plugins: (8/50)
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
   - [text](https://github.com/go-chi/chi/blob/master/middleware/compress.go)
 
-- [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
-
-
-- [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
-- [ ] handle etcd compact
-- [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
-- [ ] plugin config id in route
-- [ ] plugin real-ip [text](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
+- [ ] handle etcd compact
+- [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
+- [ ] plugin config id in route
 - [ ] plugin key-auth [text](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) ?
 - [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
-- [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
-- [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
-- [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
-- [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 - [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
-
-- [ ] how to impl the serverless
-
+- [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)
 - [ ] admin api
 - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] plugins
   - cors
   - basic_auth
-  - file-logger
   - syslog
-  - http-logger
   - ip-restriction
-  - limit-count
   - prometheus
   - opentelemetry
-- [ ] plugins
-  - tcp-logger
-  - udp-logger
 - [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)
 - [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
 - [ ] global vars for all plugins, and the logger plugin
 - [ ] mock nginx vars?
-- [ ]
 - [ ] route + service + upstream, merge the config
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin attr
 - [ ] the plugin which modify response, how?
-- [ ] plugins
-  - cors
-  - basic_auth
-  - file-logger
-  - [ ] [redirect](https://apisix.apache.org/docs/apisix/plugins/redirect/)
-  - [ ] [real-ip](https://apisix.apache.org/docs/apisix/plugins/real-ip/)
 
 

@@ -7,8 +7,10 @@ replace github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.9
 // replace google.golang.org/grpc => google.golang.org/grpc v1.29.0
 
 require (
+	github.com/Shopify/goreferrer v0.0.0-20220729165902-8cddb4f5de06
 	github.com/go-chi/chi/v5 v5.0.12
 	github.com/go-resty/resty/v2 v2.12.0
+	github.com/gobwas/glob v0.2.3
 	github.com/goccy/go-json v0.10.2
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/hashicorp/golang-lru/v2 v2.0.7

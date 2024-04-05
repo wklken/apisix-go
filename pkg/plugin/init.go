@@ -10,6 +10,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
+	"github.com/wklken/apisix-go/pkg/plugin/ip_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
@@ -53,6 +54,8 @@ func New(name string) Plugin {
 		return &ua_restriction.Plugin{}
 	case "real-ip":
 		return &real_ip.Plugin{}
+	case "ip-restriction":
+		return &ip_restriction.Plugin{}
 	}
 	return nil
 }

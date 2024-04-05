@@ -15,11 +15,11 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 10  / 76  (13.15\%) $$
+$$ 12  / 76  (15.78\%) $$
 
 ### General
 
-> 1/7
+> 2/7
 
 - [ ] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/)
 - [ ] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
@@ -29,7 +29,7 @@ $$ 10  / 76  (13.15\%) $$
   - not support `min_length`
   - not support `buffers`(it's nginx native feature)
 - [ ] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/)
-- [ ] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
+- [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 100%
 - [ ] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
 - &#x2612; [ext-plugin-pre-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-pre-req/)      NOT SUPPORTED, No need
 - &#x2612; [ext-plugin-post-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-req/)    NOT SUPPORTED, No need
@@ -75,11 +75,11 @@ $$ 10  / 76  (13.15\%) $$
 
 ### Security
 
-> 3/10
+> 4/10
 
 - [ ] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/)
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
-- [ ] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
+- [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
 - [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
@@ -152,9 +152,7 @@ Loggers:
 
 ## TODO
 
-- [ ] plugin real-ip [text](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/)
-- [ ] plugin ip-restriction [text](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/)
-  - [text](https://github.com/jpillora/ipfilter)
+- [ ] basic_auth
 - [ ] nginx vars mocking
   - [text](https://nginx.org/en/docs/varindex.html)
 - [ ] plugin logger context
@@ -187,7 +185,6 @@ Loggers:
 - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] plugins
   - cors
-  - basic_auth
   - syslog
   - ip-restriction
   - prometheus

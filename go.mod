@@ -14,6 +14,7 @@ require (
 	github.com/goccy/go-json v0.10.2
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/jpillora/ipfilter v1.2.9
 	github.com/justinas/alice v1.2.0
 	github.com/matoous/go-nanoid/v2 v2.0.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
@@ -56,6 +57,7 @@ require (
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.1.1 // indirect
+	github.com/phuslu/iploc v1.0.20230201 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.50.0 // indirect
@@ -67,6 +69,7 @@ require (
 	github.com/spf13/cast v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce // indirect
 	go.etcd.io/etcd/api/v3 v3.5.12 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.12 // indirect
 	go.opentelemetry.io/contrib v1.0.0 // indirect

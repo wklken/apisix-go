@@ -1,10 +1,12 @@
 package basic_auth
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -14,31 +16,24 @@ type Plugin struct {
 
 const (
 	// version  = "0.1"
-	priority = 102
-	name     = "basic_auth"
+	priority = 2520
+	name     = "basic-auth"
 )
 
 const schema = `
 {
-	"$schema": "http://json-schema.org/draft-04/schema#",
 	"type": "object",
+	"title": "work with route or service object",
 	"properties": {
-	  "credentials": {
-		"type": "object"
-	  },
-	  "realm": {
-		"type": "string"
+	  "hide_credentials": {
+		"type": "boolean",
+		"default": false
 	  }
-	},
-	"required": [
-	  "credentials"
-	]
-  }
-`
+	}
+}`
 
 type Config struct {
-	Credentials map[string]string `json:"credentials"`
-	Realm       string            `json:"realm"`
+	HideCredentials *bool `json:"hide_credentials"`
 }
 
 func (p *Plugin) Init() error {
@@ -50,6 +45,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.HideCredentials == nil {
+		hideCredentials := false
+		p.config.HideCredentials = &hideCredentials
+	}
+
 	return nil
 }
 
@@ -57,26 +57,51 @@ func (p *Plugin) Config() interface{} {
 	return &p.config
 }
 
+type basicAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok {
-			basicAuthFailed(w, p.config.Realm)
+			w.Header().Add("WWW-Authenticate", `Basic realm='.'`)
+			http.Error(w, `{"message": "Missing authorization in request"}`, http.StatusUnauthorized)
 			return
 		}
 
-		credPass, credUserOk := p.config.Credentials[user]
-		if !credUserOk || pass != credPass {
-			basicAuthFailed(w, p.config.Realm)
+		consumer, err := store.GetConsumer(user)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
 			return
 		}
+
+		consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
+		if !exists {
+			http.Error(w, `{"message": "Missing authorization config in consumer settings"}`, http.StatusUnauthorized)
+			return
+		}
+
+		var ba basicAuth
+		err = plugin_config.Parse(consumerPluginConfig, &ba)
+		if err != nil {
+			http.Error(w, `{"message": "Invalid authorization config in consumer settings"}`, http.StatusUnauthorized)
+			return
+		}
+
+		if pass != ba.Password {
+			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+			return
+		}
+
+		if *p.config.HideCredentials {
+			r.Header.Del("Authorization")
+		}
+
+		// FIXME: attach current_consumer
 
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
-}
-
-func basicAuthFailed(w http.ResponseWriter, realm string) {
-	w.Header().Add("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, realm))
-	w.WriteHeader(http.StatusUnauthorized)
 }

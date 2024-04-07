@@ -39,3 +39,4 @@
 - [x] plugin referer-restriction [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/)  => [gobwas/glob](https://github.com/gobwas/glob) / [Shopify/goreferrer](github.com/Shopify/goreferrer) 2024-04-03
 - [x] plugin ua-restriction [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 2024-04-04
 - [x] ip-restriction [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) [ipfilter](https://github.com/jpillora/ipfilter) 2024-04-05
+- [x] basic-auth [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/) 2024-04-07

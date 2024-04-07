@@ -26,8 +26,6 @@ func New(name string) Plugin {
 	fmt.Println("plugin name:", name)
 	// FIXME: use the plugin name to do the register
 	switch name {
-	case "basic_auth":
-		return &basic_auth.Plugin{}
 	case "file-logger":
 		return &file_logger.Plugin{}
 	case "otel":
@@ -56,6 +54,8 @@ func New(name string) Plugin {
 		return &real_ip.Plugin{}
 	case "ip-restriction":
 		return &ip_restriction.Plugin{}
+	case "basic-auth":
+		return &basic_auth.Plugin{}
 	}
 	return nil
 }

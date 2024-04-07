@@ -8,6 +8,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
+var ErrNotFound = fmt.Errorf("not found")
+
+// FIXME: add a cache layer here, if the source data changed, del the cache at the same time
+
 func GetPluginMetadata(id string, v any) error {
 	config := s.GetFromBucket("plugin_metadata", []byte(id))
 
@@ -20,7 +24,7 @@ func GetPluginMetadata(id string, v any) error {
 func GetUpstream(id string) (resource.Upstream, error) {
 	config := s.GetFromBucket("upstreams", util.StringToBytes(id))
 	if config == nil {
-		return resource.Upstream{}, fmt.Errorf("upstream not found")
+		return resource.Upstream{}, ErrNotFound
 	}
 
 	return ParseUpstream(config)
@@ -29,10 +33,19 @@ func GetUpstream(id string) (resource.Upstream, error) {
 func GetService(id string) (resource.Service, error) {
 	config := s.GetFromBucket("services", util.StringToBytes(id))
 	if config == nil {
-		return resource.Service{}, fmt.Errorf("service not found")
+		return resource.Service{}, ErrNotFound
 	}
 
 	return ParseService(config)
+}
+
+func GetConsumer(id string) (resource.Consumer, error) {
+	config := s.GetFromBucket("consumers", util.StringToBytes(id))
+	if config == nil {
+		return resource.Consumer{}, ErrNotFound
+	}
+
+	return ParseConsumer(config)
 }
 
 func ListRoutes() ([]resource.Route, error) {
@@ -76,4 +89,13 @@ func ParseUpstream(config []byte) (resource.Upstream, error) {
 		return u, err
 	}
 	return u, nil
+}
+
+func ParseConsumer(config []byte) (resource.Consumer, error) {
+	var c resource.Consumer
+	err := json.Unmarshal(config, &c)
+	if err != nil {
+		return c, err
+	}
+	return c, nil
 }

@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 12  / 76  (15.78\%) $$
+$$ 13  / 76  (17.10\%) $$
 
 ### General
 
@@ -55,12 +55,12 @@ $$ 12  / 76  (15.78\%) $$
 
 ### Authentication
 
-> 0/15
+> 1/15
 
 - [ ] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/)
 - [ ] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/)
 - [ ] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/)
-- [ ] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/)
+- [x] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/)
 - [ ] [authz-keycloak](https://apisix.apache.org/zh/docs/apisix/plugins/authz-keycloak/)
 - [ ] [authz-casdoor](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casdoor/)
 - [ ] [wolf-rbac](https://apisix.apache.org/zh/docs/apisix/plugins/wolf-rbac/)
@@ -152,7 +152,6 @@ Loggers:
 
 ## TODO
 
-- [ ] basic_auth
 - [ ] nginx vars mocking
   - [text](https://nginx.org/en/docs/varindex.html)
 - [ ] plugin logger context
@@ -175,6 +174,7 @@ Loggers:
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
 - [ ] handle etcd compact
+- [ ] attach the consumer
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin config id in route
 - [ ] plugin key-auth [text](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) ?

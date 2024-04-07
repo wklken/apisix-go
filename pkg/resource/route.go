@@ -199,3 +199,9 @@ type Service struct {
 	EnableWebsocket bool     `json:"enable_websocket,omitempty"`
 	Hosts           []string `json:"hosts,omitempty"`
 }
+
+// {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}
+type Consumer struct {
+	Username string `json:"username,required"`
+	Plugins  map[string]PluginConfig
+}

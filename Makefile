@@ -1,10 +1,22 @@
 BINARY_NAME=apisix
 
+.PHONY: init
+init:
+	# for gofumpt
+	go install mvdan.cc/gofumpt@latest
+	# for golines
+	go install github.com/segmentio/golines@latest
+
 
 .PHONY: dep
 dep:
 	go mod tidy
 	go mod vendor
+
+.PHONY: fmt
+fmt:
+	golines ./ -m 120 -w --base-formatter gofmt --no-reformat-tags
+	gofumpt -l -w .
 
 .PHONY: build
 build:

@@ -155,7 +155,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		reqHttpVersion := fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
 		// only request header Content-Type with accept-encoding: gzip will be compressed
 		acceptEncoding := r.Header.Get("Accept-Encoding")
-		if (strings.Contains(acceptEncoding, "gzip") || strings.Contains(acceptEncoding, "deflate")) && reqHttpVersion >= p.config.HTTPVersionStr {
+		if (strings.Contains(acceptEncoding, "gzip") || strings.Contains(acceptEncoding, "deflate")) &&
+			reqHttpVersion >= p.config.HTTPVersionStr {
 			mcw := &maybeCompressResponseWriter{
 				ResponseWriter: w,
 				w:              w,

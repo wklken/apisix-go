@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -84,7 +84,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		var ba basicAuth
-		err = plugin_config.Parse(consumerPluginConfig, &ba)
+		err = util.Parse(consumerPluginConfig, &ba)
 		if err != nil {
 			http.Error(w, `{"message": "Invalid authorization config in consumer settings"}`, http.StatusUnauthorized)
 			return

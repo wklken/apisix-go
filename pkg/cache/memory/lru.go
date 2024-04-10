@@ -18,7 +18,11 @@ func NewLRU[K comparable, V any](size int, defaultTTL time.Duration) (*expirable
 	return expirable.NewLRU[K, V](size, nil, defaultTTL), nil
 }
 
-func NewLRUWithEvict[K comparable, V any](size int, defaultTTL time.Duration, onEvict expirable.EvictCallback[K, V]) (*expirable.LRU[K, V], error) {
+func NewLRUWithEvict[K comparable, V any](
+	size int,
+	defaultTTL time.Duration,
+	onEvict expirable.EvictCallback[K, V],
+) (*expirable.LRU[K, V], error) {
 	if size < 0 {
 		return nil, fmt.Errorf("size must be greater than 0")
 	}

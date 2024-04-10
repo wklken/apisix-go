@@ -19,6 +19,7 @@ import (
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 const (
@@ -209,7 +210,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 			continue
 		}
 
-		err = plugin_config.Parse(config, p.Config())
+		err = util.Parse(config, p.Config())
 		if err != nil {
 			logger.Errorf("parse plugin config fail: %s", err)
 			continue

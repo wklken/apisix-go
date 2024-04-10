@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -18,18 +17,5 @@ func Validate(config interface{}, schema string) error {
 		return fmt.Errorf("validate fail: %w", err)
 	}
 
-	return nil
-}
-
-func Parse(source interface{}, dest interface{}) error {
-	j, err := json.Marshal(source)
-	if err != nil {
-		return err
-	}
-
-	err = json.Unmarshal(j, dest)
-	if err != nil {
-		return err
-	}
 	return nil
 }

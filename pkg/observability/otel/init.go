@@ -25,7 +25,9 @@ func init() {
 	}()
 	// set global tracer provider & text propagators
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
+	)
 	// initialize tracer
 	tracer = otel.Tracer("mux-server")
 }

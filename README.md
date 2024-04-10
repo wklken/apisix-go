@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 13  / 76  (17.10\%) $$
+$$ 14  / 76  (18.40\%) $$
 
 ### General
 
@@ -55,9 +55,9 @@ $$ 13  / 76  (17.10\%) $$
 
 ### Authentication
 
-> 1/15
+> 2/15
 
-- [ ] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/)
+- [x] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/)
 - [ ] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/)
 - [ ] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/)
 - [x] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/)

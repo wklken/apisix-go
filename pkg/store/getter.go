@@ -99,3 +99,12 @@ func ParseConsumer(config []byte) (resource.Consumer, error) {
 	}
 	return c, nil
 }
+
+func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {
+	id, err := s.GetConsumerNameByPluginKey(pluginName, key)
+	if err != nil {
+		return resource.Consumer{}, err
+	}
+
+	return GetConsumer(util.BytesToString(id))
+}

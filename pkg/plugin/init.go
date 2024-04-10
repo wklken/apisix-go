@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
 	"github.com/wklken/apisix-go/pkg/plugin/ip_restriction"
+	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/mocking"
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
@@ -56,6 +57,8 @@ func New(name string) Plugin {
 		return &ip_restriction.Plugin{}
 	case "basic-auth":
 		return &basic_auth.Plugin{}
+	case "key-auth":
+		return &key_auth.Plugin{}
 	}
 	return nil
 }

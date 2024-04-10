@@ -6,6 +6,9 @@ import (
 	"log"
 	"sync"
 
+	"github.com/wklken/apisix-go/pkg/logger"
+	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
+	"github.com/wklken/apisix-go/pkg/util"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -19,6 +22,10 @@ type Store struct {
 
 	// eventUpdateHooks is a list of hooks that are called when an event is updated.
 	eventUpdateHooks []EventUpdateHook
+
+	// FIXME: not so sure about this
+	consumerKV     map[string][]byte
+	consumerToKeys map[string][]string
 }
 
 // should it be global store?
@@ -39,6 +46,9 @@ func NewStore(dbPath string, events chan *Event) *Store {
 			events: events,
 			// Initialize other fields for kv storage in memory
 			db: db,
+
+			consumerKV:     map[string][]byte{},
+			consumerToKeys: map[string][]string{},
 		}
 
 		s.InitBuckets()
@@ -151,6 +161,12 @@ func (s *Store) processEvents() {
 				if err != nil {
 					return fmt.Errorf("put key-value fail: %s", err)
 				}
+
+				err = s.consumerKVAdd(id, event.Value)
+				if err != nil {
+					logger.Errorf("store process the consumer fail, err=%w", err)
+				}
+
 				return nil
 			})
 		} else if event.Type == EventTypeDelete {
@@ -164,6 +180,12 @@ func (s *Store) processEvents() {
 				if err != nil {
 					return fmt.Errorf("delete key-value fail: %s", err)
 				}
+
+				err = s.consumerKVDelete(id)
+				if err != nil {
+					logger.Errorf("store process the consumer fail, err=%w", err)
+				}
+
 				return nil
 			})
 		}
@@ -180,4 +202,71 @@ func (s *Store) triggerEventUpdateHooks(event *Event) {
 	for _, hook := range s.eventUpdateHooks {
 		hook(event)
 	}
+}
+
+type keyAuth struct {
+	Key string `json:"key"`
+}
+
+func (s *Store) consumerKVAdd(id []byte, value []byte) error {
+	consumer, err := ParseConsumer(value)
+	if err != nil {
+		return err
+	}
+	key := util.BytesToString(id)
+
+	// clear old keys
+	if keys, ok := s.consumerToKeys[key]; ok {
+		for _, k := range keys {
+			delete(s.consumerKV, k)
+		}
+	}
+	s.consumerToKeys[key] = []string{}
+
+	// add self
+	s.consumerKV[key] = id
+
+	// add plugin unique keys
+
+	// if "key-auth" in consumer.Plugins
+	keyAuthPlugin, ok := consumer.Plugins["key-auth"]
+	if ok {
+		var ka keyAuth
+		err = plugin_config.Parse(keyAuthPlugin, &ka)
+		if err != nil {
+			return err
+		}
+		k := fmt.Sprintf("key-auth:%s", ka.Key)
+		s.consumerKV[k] = id
+
+		// add to consumerToKeys
+		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+	}
+	return nil
+}
+
+func (s *Store) consumerKVDelete(id []byte) error {
+	key := util.BytesToString(id)
+
+	// clear old keys
+	if keys, ok := s.consumerToKeys[key]; ok {
+		for _, k := range keys {
+			delete(s.consumerKV, k)
+		}
+		delete(s.consumerToKeys, key)
+	}
+
+	// delete self
+	delete(s.consumerKV, key)
+
+	return nil
+}
+
+func (s *Store) GetConsumerNameByPluginKey(pluginName string, key string) ([]byte, error) {
+	k := fmt.Sprintf("%s:%s", pluginName, key)
+	id, ok := s.consumerKV[k]
+	if !ok {
+		return []byte{}, ErrNotFound
+	}
+	return id, nil
 }

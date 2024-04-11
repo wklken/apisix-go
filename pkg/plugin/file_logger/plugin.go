@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	c "github.com/wklken/apisix-go/pkg/plugin/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/log"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
 )
@@ -80,6 +79,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(ww, r)
 
+		// FIXME: status should be set in proxy, here we just get it from context
 		status := ww.Status()
 
 		config := zap.NewProductionConfig()
@@ -91,7 +91,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		// https://pkg.go.dev/go.uber.org/zap#hdr-Configuring_Zap
 
-		fields := BuildLogFields(r, zap.Int("status", status))
+		logFields := log.GetFields(r, []string{"method", "path", "remoteIP", "proto", "scheme", "request_id", "matched_uri", "route_id", "route_name", "service_id"})
+		fields := make([]zap.Field, 0, len(logFields)+2)
+		for k, v := range logFields {
+			fields = append(fields, zap.String(k, v))
+		}
+		fields = append(fields, zap.Int("status", status))
 
 		logger.Info("-",
 			// Structured context as strongly typed Field values.
@@ -99,39 +104,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		)
 	}
 	return http.HandlerFunc(fn)
-}
-
-func BuildLogFields(r *http.Request, extraFields ...zap.Field) []zap.Field {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	ctx := r.Context()
-
-	matchedURI := chi.RouteContext(ctx).RoutePattern()
-
-	requestID := c.GetString(ctx, "request_id")
-	routeID := c.GetString(ctx, "route_id")
-	routeName := c.GetString(ctx, "route_name")
-	serviceID := c.GetString(ctx, "service_id")
-
-	fields := []zap.Field{
-		zap.String("method", r.Method),
-		zap.String("path", r.URL.Path),
-		zap.String("remoteIP", r.RemoteAddr),
-		zap.String("proto", r.Proto),
-		zap.String("scheme", scheme),
-		zap.String("requestID", requestID),
-		zap.String("matchedURI", matchedURI),
-		zap.String("route_id", routeID),
-		zap.String("route_name", routeName),
-		zap.String("service_id", serviceID),
-	}
-	for _, f := range extraFields {
-		fields = append(fields, f)
-	}
-
-	return fields
 }
 
 func Observe() {

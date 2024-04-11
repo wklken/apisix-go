@@ -41,3 +41,4 @@
 - [x] ip-restriction [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) [ipfilter](https://github.com/jpillora/ipfilter) 2024-04-05
 - [x] basic-auth [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/) 2024-04-07
 - [x] key-auth [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) 2024-04-10
+- [x] logger fields getter 2024-04-11

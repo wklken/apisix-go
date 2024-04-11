@@ -152,10 +152,14 @@ Loggers:
 
 ## TODO
 
+- [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
+
+- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
+- [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
+- [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
+
 - [ ] nginx vars mocking
   - [text](https://nginx.org/en/docs/varindex.html)
-- [ ] plugin logger context
-- [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
     - we need a logger collector, add into context, all other log plugins can use it directly
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
@@ -164,10 +168,8 @@ Loggers:
 - [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
-- [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
-- [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
   - [text](https://github.com/go-chi/chi/blob/master/middleware/compress.go)
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
@@ -177,7 +179,6 @@ Loggers:
 - [ ] attach the consumer
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin config id in route
-- [ ] plugin key-auth [text](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) ?
 - [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
 - [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)

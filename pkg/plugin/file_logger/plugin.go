@@ -5,9 +5,9 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/log"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
 )
@@ -59,6 +59,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	// FIXME: create the logger here
 	return nil
 }
 
@@ -91,7 +92,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		// https://pkg.go.dev/go.uber.org/zap#hdr-Configuring_Zap
 
-		logFields := log.GetFields(r, []string{"method", "path", "remoteIP", "proto", "scheme", "request_id", "matched_uri", "route_id", "route_name", "service_id"})
+		logFields := log.GetFields(r, []string{
+			"request_method",
+			"uri",
+			"remote_addr",
+			"proto",
+			"scheme",
+			"request_id",
+			"matched_uri",
+			"route_id",
+			"route_name",
+			"service_id",
+		})
 		fields := make([]zap.Field, 0, len(logFields)+2)
 		for k, v := range logFields {
 			fields = append(fields, zap.String(k, v))

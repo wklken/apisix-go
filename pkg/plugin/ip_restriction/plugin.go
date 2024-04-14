@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	"github.com/jpillora/ipfilter"
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/plugin/ctx"
 )
 
 type Plugin struct {

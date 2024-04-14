@@ -2,6 +2,7 @@ package ctx
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -77,4 +78,32 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 		d, _ = val.(time.Duration)
 	}
 	return
+}
+
+const RequestVarsKey = "request_vars"
+
+func WithRequestVars(r *http.Request) *http.Request {
+	// FIXME: use a pool, and in the last middleware, we should put the vars into pool
+	vars := map[string]any{}
+	r = r.WithContext(context.WithValue(r.Context(), RequestVarsKey, vars))
+	return r
+}
+
+func GetRequestVars(r *http.Request) map[string]any {
+	vars, _ := r.Context().Value(RequestVarsKey).(map[string]any)
+	return vars
+}
+
+func GetRequestVar(r *http.Request, key string) any {
+	vars := GetRequestVars(r)
+	if val, ok := vars[key]; ok {
+		return val
+	}
+	return ""
+}
+
+func RegisterRequestVar(r *http.Request, key string, val any) {
+	// FIXME: should add a lock here?
+	vars := GetRequestVars(r)
+	vars[key] = val
 }

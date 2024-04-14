@@ -26,3 +26,4 @@ my.db
 apisix-go
 /apisix
 dashboard
+*.log

@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
 	"github.com/wklken/apisix-go/pkg/plugin/referer_restriction"
+	"github.com/wklken/apisix-go/pkg/plugin/request_context"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
 	"github.com/wklken/apisix-go/pkg/plugin/ua_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/uri_blocker"
@@ -59,6 +60,8 @@ func New(name string) Plugin {
 		return &basic_auth.Plugin{}
 	case "key-auth":
 		return &key_auth.Plugin{}
+	case "request-context":
+		return &request_context.Plugin{}
 	}
 	return nil
 }
@@ -73,7 +76,7 @@ func BuildPluginChain(plugins ...Plugin) alice.Chain {
 	chain := alice.New()
 	// chain = chain.Append(Recoverer)
 	for _, plugin := range plugins {
-		fmt.Println("plugin name:", plugin.GetName())
+		fmt.Println("plugin name:", plugin.GetName(), "priority:", plugin.GetPriority())
 		chain = chain.Append(plugin.Handler)
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/unrolled/render"
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
@@ -179,13 +180,6 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		}
 	}
 
-	// build the route and http.Handler
-
-	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+1)
-
-	// FIXME: add a context plugin, set the default vars
-	// plugins = append(plugins, pctx.New(r))
-
 	// add the plugins from service
 	if len(service.Plugins) > 0 {
 		for name, config := range service.Plugins {
@@ -195,8 +189,40 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 			}
 		}
 	}
+	// FIXME: add a context plugin, set the default vars
+	systemPlugins := map[string]resource.PluginConfig{
+		"request-context": new(resource.PluginConfig),
+	}
 
+	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+len(systemPlugins))
 	for name, config := range r.Plugins {
+		p := plugin.New(name)
+		if p == nil {
+			logger.Warnf("plugin %s not supported yet", name)
+			continue
+		}
+		p.Init()
+
+		err := plugin_config.Validate(config, p.GetSchema())
+		if err != nil {
+			logger.Errorf("validate plugin %s config fail: %s", name, err)
+			continue
+		}
+
+		err = util.Parse(config, p.Config())
+		if err != nil {
+			logger.Errorf("parse plugin config fail: %s", err)
+			continue
+		}
+
+		p.PostInit()
+
+		logger.Infof("after parse, config: %v", p.Config())
+
+		plugins = append(plugins, p)
+	}
+
+	for name, config := range systemPlugins {
 		p := plugin.New(name)
 		if p == nil {
 			logger.Warnf("plugin %s not supported yet", name)
@@ -374,6 +400,22 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 
 func newModifyResponse() pxy.ModifyResponse {
 	return func(resp *http.Response) error {
+		// set the status into request ctx
+		// ctx := resp.Request.Context()
+		// ctx = context.WithValue(ctx, "status", status)
+
+		// fmt.Println("in modify response, status:", status)
+
+		// resp.Request = resp.Request.WithContext(ctx)
+
+		status := resp.StatusCode
+		ctx.RegisterRequestVar(resp.Request, "$status", status)
+
+		// status := resp.StatusCode
+
+		// req := resp.Request
+		// ctx := req.Context()
+
 		// request := resp.Request
 
 		// // read response body and truncated

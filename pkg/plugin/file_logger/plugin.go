@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
@@ -40,10 +39,15 @@ type pluginMetadata struct {
 type Plugin struct {
 	base.BasePlugin
 	config Config
+
+	logger *zap.Logger
+
+	logFormat map[string]string
 }
 
 type Config struct {
-	Path string `json:"path"`
+	Path      string            `json:"path"`
+	LogFormat map[string]string `json:"log_format,omitempty"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -59,66 +63,40 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	// FIXME: create the logger here
+	cfg := zap.NewProductionConfig()
+	cfg.DisableCaller = true
+	cfg.OutputPaths = []string{p.config.Path}
+	cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+
+	// TODO: add buffered here?
+
+	var logger *zap.Logger
+	logger, _ = cfg.Build()
+	p.logger = logger
+
+	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
+		var metadata pluginMetadata
+		store.GetPluginMetadata("file-logger", &metadata)
+		p.logFormat = metadata.LogFormat
+	} else {
+		p.logFormat = p.config.LogFormat
+	}
+
 	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		// TODO: path/filename/rotate
-		// TODO: custom fields
+		next.ServeHTTP(w, r)
+		fmt.Println("status:", ctx.GetRequestVar(r, "$status"))
 
-		// logger, _ := zap.NewProduction()
-		// logger := zap.NewExample()
-		// defer logger.Sync()
-		// ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		var metadata pluginMetadata
-		store.GetPluginMetadata("file-logger", &metadata)
-		fmt.Printf("metadata: %+v\n", metadata)
-
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-
-		next.ServeHTTP(ww, r)
-
-		// FIXME: status should be set in proxy, here we just get it from context
-		status := ww.Status()
-
-		config := zap.NewProductionConfig()
-		config.OutputPaths = []string{"stdout"}
-		config.DisableCaller = true
-		logger, _ := config.Build()
-
-		fmt.Println("file_logger getting")
-
-		// https://pkg.go.dev/go.uber.org/zap#hdr-Configuring_Zap
-
-		logFields := log.GetFields(r, []string{
-			"request_method",
-			"uri",
-			"remote_addr",
-			"proto",
-			"scheme",
-			"request_id",
-			"matched_uri",
-			"route_id",
-			"route_name",
-			"service_id",
-		})
+		logFields := log.GetFields(r, p.logFormat)
 		fields := make([]zap.Field, 0, len(logFields)+2)
 		for k, v := range logFields {
-			fields = append(fields, zap.String(k, v))
+			fields = append(fields, zap.Any(k, v))
 		}
-		fields = append(fields, zap.Int("status", status))
 
-		logger.Info("-",
-			// Structured context as strongly typed Field values.
-			fields...,
-		)
+		p.logger.Info("", fields...)
 	}
 	return http.HandlerFunc(fn)
-}
-
-func Observe() {
-	metrics.Requests.Inc()
-	metrics.HostInfo.WithLabelValues("demo").Set(1)
 }

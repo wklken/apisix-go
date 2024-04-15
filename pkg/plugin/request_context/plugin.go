@@ -20,7 +20,12 @@ const (
 
 const schema = `{}`
 
-type Config struct{}
+type Config struct {
+	RouteID     string `json:"$route_id"`
+	RouteName   string `json:"$route_name"`
+	ServiceID   string `json:"$service_id"`
+	ServiceName string `json:"$service_name"`
+}
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -40,6 +45,14 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		c := ctx.WithApisixVars(r.Context(), map[string]string{
+			"$route_id":     p.config.RouteID,
+			"$route_name":   p.config.RouteName,
+			"$service_id":   p.config.ServiceID,
+			"$service_name": p.config.ServiceName,
+		})
+		r = r.WithContext(c)
+
 		// just init the request vars
 		next.ServeHTTP(w, ctx.WithRequestVars(r))
 	}

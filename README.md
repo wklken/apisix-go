@@ -129,7 +129,7 @@ Metrics:
 
 Loggers:
 
-> 0/18
+> 1/18
 
 - [ ] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/)
@@ -144,7 +144,10 @@ Loggers:
 - [ ] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/)
 - [ ] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/)
 - [ ] [splunk-hec-logging](https://apisix.apache.org/zh/docs/apisix/plugins/splunk-hec-logging/)
-- [ ] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/)
+- [x] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) 50%
+  - not support `include_req_body` and `include_req_body_expr`
+  - not support `include_resp_body` and `include_resp_body_expr`
+  - not support `match`
 - [ ] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/)
 - [ ] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/)
 - [ ] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/)
@@ -152,20 +155,15 @@ Loggers:
 
 ## TODO
 
-- [ ] plugin file-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) easy
+- add service_id/service_name/route_id/route_name to the request context
 
-- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
 - [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
-
-- [ ] nginx vars mocking
-  - [text](https://nginx.org/en/docs/varindex.html)
-    - we need a logger collector, add into context, all other log plugins can use it directly
+- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
 - [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
-- [ ] plugin metadata => 如果没有自定义,会使用metadata中定义的 [text](https://apisix.apache.org/zh/docs/apisix/terminology/plugin-metadata/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
@@ -184,16 +182,8 @@ Loggers:
 - [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)
 - [ ] admin api
 - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
-- [ ] plugins
-  - cors
-  - syslog
-  - ip-restriction
-  - prometheus
-  - opentelemetry
 - [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)
 - [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
-- [ ] global vars for all plugins, and the logger plugin
-- [ ] mock nginx vars?
 - [ ] route + service + upstream, merge the config
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin attr

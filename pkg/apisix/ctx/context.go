@@ -80,6 +80,13 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 	return
 }
 
+func WithApisixVars(c context.Context, vars map[string]string) context.Context {
+	for k, v := range vars {
+		c = context.WithValue(c, k, v)
+	}
+	return c
+}
+
 const RequestVarsKey = "request_vars"
 
 func WithRequestVars(r *http.Request) *http.Request {

@@ -42,3 +42,7 @@
 - [x] basic-auth [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/) 2024-04-07
 - [x] key-auth [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) 2024-04-10
 - [x] logger fields getter 2024-04-11
+- [x] file-logger [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) 2024-04-12/13/15
+- [x] nginx and apisix vars 2024-04-13
+- [x] request vars 2024-04-14
+- [x] add apisix vars into ctx 2024-04-15

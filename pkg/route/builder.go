@@ -191,7 +191,12 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	}
 	// FIXME: add a context plugin, set the default vars
 	systemPlugins := map[string]resource.PluginConfig{
-		"request-context": new(resource.PluginConfig),
+		"request-context": map[string]string{
+			"$route_id":     r.ID,
+			"$route_name":   r.Name,
+			"$service_id":   service.ID,
+			"$service_name": service.Name,
+		},
 	}
 
 	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+len(systemPlugins))

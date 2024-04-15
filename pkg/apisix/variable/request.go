@@ -11,16 +11,5 @@ var RequestVars = map[string]struct{}{
 }
 
 func GetRequestVar(r *http.Request, key string) any {
-	if _, ok := RequestVars[key]; !ok {
-		return ""
-	}
-
-	vars := ctx.GetRequestVars(r)
-	if vars == nil {
-		return ""
-	}
-	if val, ok := vars[key]; ok {
-		return val
-	}
-	return ""
+	return ctx.GetRequestVar(r, key)
 }

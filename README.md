@@ -155,8 +155,7 @@ Loggers:
 
 ## TODO
 
-- add service_id/service_name/route_id/route_name to the request context
-
+- [ ] attach the consumer
 - [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 - [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
@@ -169,12 +168,10 @@ Loggers:
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
-  - [text](https://github.com/go-chi/chi/blob/master/middleware/compress.go)
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
 - [ ] handle etcd compact
-- [ ] attach the consumer
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin config id in route
 - [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)

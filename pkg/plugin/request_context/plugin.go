@@ -45,16 +45,18 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		c := ctx.WithApisixVars(r.Context(), map[string]string{
+		r = ctx.WithApisixVars(r, map[string]string{
 			"$route_id":     p.config.RouteID,
 			"$route_name":   p.config.RouteName,
 			"$service_id":   p.config.ServiceID,
 			"$service_name": p.config.ServiceName,
 		})
-		r = r.WithContext(c)
+		r = ctx.WithRequestVars(r)
 
 		// just init the request vars
-		next.ServeHTTP(w, ctx.WithRequestVars(r))
+		next.ServeHTTP(w, r)
+
+		ctx.RecycleVars(r)
 	}
 	return http.HandlerFunc(fn)
 }

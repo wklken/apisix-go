@@ -80,17 +80,40 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 	return
 }
 
-func WithApisixVars(c context.Context, vars map[string]string) context.Context {
+const ApisixVarsKey = "apisix_vars"
+
+func WithApisixVars(r *http.Request, vars map[string]string) *http.Request {
+	apisixVars := newVars()
 	for k, v := range vars {
-		c = context.WithValue(c, k, v)
+		apisixVars[k] = v
 	}
-	return c
+
+	r = r.WithContext(context.WithValue(r.Context(), ApisixVarsKey, apisixVars))
+	return r
+}
+
+func GetApisixVars(r *http.Request) map[string]any {
+	vars, _ := r.Context().Value(ApisixVarsKey).(map[string]any)
+	return vars
+}
+
+func GetApisixVar(r *http.Request, key string) any {
+	vars := GetApisixVars(r)
+	if val, ok := vars[key]; ok {
+		return val
+	}
+	return ""
+}
+
+func RecycleVars(r *http.Request) {
+	putBack(GetApisixVars(r))
+
+	putBack(GetRequestVars(r))
 }
 
 const RequestVarsKey = "request_vars"
 
 func WithRequestVars(r *http.Request) *http.Request {
-	// FIXME: use a pool, and in the last middleware, we should put the vars into pool
 	vars := newVars()
 	r = r.WithContext(context.WithValue(r.Context(), RequestVarsKey, vars))
 	return r
@@ -99,11 +122,6 @@ func WithRequestVars(r *http.Request) *http.Request {
 func GetRequestVars(r *http.Request) map[string]any {
 	vars, _ := r.Context().Value(RequestVarsKey).(map[string]any)
 	return vars
-}
-
-func RecycleRequestVars(r *http.Request) {
-	vars := GetRequestVars(r)
-	PutBack(vars)
 }
 
 func GetRequestVar(r *http.Request, key string) any {
@@ -115,7 +133,6 @@ func GetRequestVar(r *http.Request, key string) any {
 }
 
 func RegisterRequestVar(r *http.Request, key string, val any) {
-	// FIXME: should add a lock here?
 	vars := GetRequestVars(r)
 	vars[key] = val
 }

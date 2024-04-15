@@ -14,7 +14,7 @@ func newVars() map[string]any {
 	return varsPool.Get().(map[string]any)
 }
 
-func PutBack(vars map[string]any) {
+func putBack(vars map[string]any) {
 	// Reset fields
 	clear(vars)
 

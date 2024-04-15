@@ -18,6 +18,6 @@ var ApisixVars = map[string]struct{}{
 }
 
 // all apisix vars are in ctx
-func GetApisixVar(r *http.Request, key string) string {
-	return ctx.GetString(r.Context(), key)
+func GetApisixVar(r *http.Request, key string) any{
+	return ctx.GetApisixVar(r, key)
 }

@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 14  / 76  (18.40\%) $$
+$$ 15  / 76  (18.40\%) $$
 
 ### General
 
@@ -75,9 +75,9 @@ $$ 14  / 76  (18.40\%) $$
 
 ### Security
 
-> 4/10
+> 5/10
 
-- [ ] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/)
+- [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/)
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
 - [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
@@ -155,16 +155,18 @@ Loggers:
 
 ## TODO
 
-- [ ] attach the consumer
-- [ ] plugin cors [text](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) easy
 - [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 - [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
+- [ ] upgrade to go 1.22
+- [ ] attach the consumer
+- [ ] consumer group id
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
 - [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
+- [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
@@ -174,7 +176,6 @@ Loggers:
 - [ ] handle etcd compact
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin config id in route
-- [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
 - [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)
 - [ ] admin api

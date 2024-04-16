@@ -7,9 +7,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-resty/resty/v2"
+	c "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	c "github.com/wklken/apisix-go/pkg/plugin/ctx"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
 )

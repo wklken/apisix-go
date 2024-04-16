@@ -8,6 +8,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/api_breaker"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
+	"github.com/wklken/apisix-go/pkg/plugin/cors"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
 	"github.com/wklken/apisix-go/pkg/plugin/ip_restriction"
@@ -26,7 +27,7 @@ import (
 
 func New(name string) Plugin {
 	fmt.Println("plugin name:", name)
-	// FIXME: use the plugin name to do the register
+	// FIXME: auto detecting the plugins under dir `plugin`
 	switch name {
 	case "file-logger":
 		return &file_logger.Plugin{}
@@ -62,6 +63,8 @@ func New(name string) Plugin {
 		return &key_auth.Plugin{}
 	case "request-context":
 		return &request_context.Plugin{}
+	case "cors":
+		return &cors.Plugin{}
 	}
 	return nil
 }

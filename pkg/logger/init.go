@@ -1,6 +1,8 @@
 package logger
 
 import (
+	"fmt"
+
 	"go.uber.org/zap"
 )
 
@@ -57,4 +59,10 @@ func Fatal(msg string, fields ...zap.Field) {
 
 func Fatalf(template string, args ...interface{}) {
 	sugarLogger.Fatalf(template, args...)
+}
+
+type DebugLogger struct{}
+
+func (d *DebugLogger) Printf(template string, args ...interface{}) {
+	fmt.Printf(template+"\n", args...)
 }

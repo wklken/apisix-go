@@ -21,6 +21,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/referer_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/request_context"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
+	"github.com/wklken/apisix-go/pkg/plugin/request_validation"
 	"github.com/wklken/apisix-go/pkg/plugin/ua_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/uri_blocker"
 )
@@ -65,6 +66,8 @@ func New(name string) Plugin {
 		return &request_context.Plugin{}
 	case "cors":
 		return &cors.Plugin{}
+	case "request-validation":
+		return &request_validation.Plugin{}
 	}
 	return nil
 }

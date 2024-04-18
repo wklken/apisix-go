@@ -1,9 +1,13 @@
 package ctx
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
@@ -38,6 +42,16 @@ func GetBool(c context.Context, key string) (b bool) {
 		b, _ = val.(bool)
 	}
 	return
+}
+
+func GetBytes(c context.Context, key string) (b []byte) {
+	val := c.Value(key)
+	if val == nil {
+		return nil
+	}
+
+	b, _ = val.([]byte)
+	return b
 }
 
 // GetMapStringString returns the value associated with the key as a map[string]string.
@@ -79,6 +93,16 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 	}
 	return
 }
+
+// func GetRequestBody(r *http.Request) []byte {
+// 	body, _ := r.Context().Value(RequestBodyKey).([]byte)
+// 	return body
+// }
+
+// func WithRequestBody(r *http.Request, body []byte) *http.Request {
+// 	r = r.WithContext(context.WithValue(r.Context(), RequestBodyKey, body))
+// 	return r
+// }
 
 const ApisixVarsKey = "apisix_vars"
 
@@ -129,10 +153,31 @@ func GetRequestVar(r *http.Request, key string) any {
 	if val, ok := vars[key]; ok {
 		return val
 	}
-	return ""
+	return nil
 }
 
 func RegisterRequestVar(r *http.Request, key string, val any) {
 	vars := GetRequestVars(r)
 	vars[key] = val
+}
+
+const RequestBodyKey = "$request_body"
+
+// ReadRequestBody will return the body in []byte, without change the origin body
+func ReadRequestBody(r *http.Request) ([]byte, error) {
+	bodyInCtx := GetRequestVar(r, RequestBodyKey)
+	if bodyInCtx != nil {
+		return bodyInCtx.([]byte), nil
+	}
+
+	body, err := io.ReadAll(r.Body)
+
+	if cerr := r.Body.Close(); cerr != nil {
+		logger.Errorf("request body close fail: %s", cerr)
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	RegisterRequestVar(r, RequestBodyKey, body)
+	return body, err
 }

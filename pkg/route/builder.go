@@ -16,7 +16,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
-	plugin_config "github.com/wklken/apisix-go/pkg/plugin/config"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -208,7 +207,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		}
 		p.Init()
 
-		err := plugin_config.Validate(config, p.GetSchema())
+		err := util.Validate(config, p.GetSchema())
 		if err != nil {
 			logger.Errorf("validate plugin %s config fail: %s", name, err)
 			continue
@@ -235,7 +234,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		}
 		p.Init()
 
-		err := plugin_config.Validate(config, p.GetSchema())
+		err := util.Validate(config, p.GetSchema())
 		if err != nil {
 			logger.Errorf("validate plugin %s config fail: %s", name, err)
 			continue

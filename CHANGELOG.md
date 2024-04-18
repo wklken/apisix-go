@@ -47,3 +47,4 @@
 - [x] request vars 2024-04-14
 - [x] add apisix vars into ctx 2024-04-15
 - [x] plugin cors [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) 2024-04-16
+- [x] plugin request-validateion [request-validateion](https://apisix.apache.org/zh/docs/apisix/plugins/request-validateion/) 2024-04-18

@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 15  / 76  (18.40\%) $$
+$$ 17  / 76  (22.36\%) $$
 
 ### General
 
@@ -90,7 +90,7 @@ $$ 15  / 76  (18.40\%) $$
 
 ### Traffic
 
-> 4/12
+> 5/12
 
 - [ ] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/)
@@ -98,7 +98,8 @@ $$ 15  / 76  (18.40\%) $$
   - keys todo
   - redis-cluster todo
 - [ ] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/)
-- [ ] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
+- [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
+  - not support `header_schema`
 - [ ] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/)
 - [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 90%
   - not support `healthy.http_statuse`
@@ -155,7 +156,6 @@ Loggers:
 
 ## TODO
 
-- [ ] plugin request-validation [text](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
 - [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
 - [ ] upgrade to go 1.22
 - [ ] attach the consumer

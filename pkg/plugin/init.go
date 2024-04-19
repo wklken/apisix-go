@@ -9,6 +9,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/cors"
+	"github.com/wklken/apisix-go/pkg/plugin/fault_injection"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
 	"github.com/wklken/apisix-go/pkg/plugin/ip_restriction"
@@ -68,6 +69,8 @@ func New(name string) Plugin {
 		return &cors.Plugin{}
 	case "request-validation":
 		return &request_validation.Plugin{}
+	case "fault-injection":
+		return &fault_injection.Plugin{}
 	}
 	return nil
 }

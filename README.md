@@ -47,7 +47,7 @@ $$ 17  / 76  (22.36\%) $$
   - not support `use_real_request_uri_unsafe`
 - [ ] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/)
 - [ ] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/)
-- [ ] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
+- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
 - [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 90%
   - not support `response_schema`
 - [ ] [degraphql](https://apisix.apache.org/zh/docs/apisix/plugins/degraphql/)
@@ -172,7 +172,6 @@ Loggers:
 - [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
-- [ ] plugin fault-injection [text](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
 - [ ] handle etcd compact
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin config id in route

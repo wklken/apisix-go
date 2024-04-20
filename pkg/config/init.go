@@ -6,6 +6,8 @@ import (
 	"github.com/spf13/viper"
 )
 
+var GlobalConfig *Config
+
 func Load() (*Config, error) {
 	// viper.SetConfigName("config")
 	// viper.AddConfigPath(".")
@@ -20,6 +22,8 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	GlobalConfig = &cfg
 
 	return &cfg, nil
 }

@@ -15,14 +15,17 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 17  / 76  (22.36\%) $$
+$$ 19  / 76  (25\%) $$
 
 ### General
 
-> 2/7
+> 3/7
 
 - [ ] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/)
-- [ ] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
+- [x] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
+  - not support regex_uri
+  - not support encode_uri
+  - not support plugin_attr get random https port from apisix.ssl.listen
 - [ ] [echo](https://apisix.apache.org/zh/docs/apisix/plugins/echo/)
 - [x] [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 90%
   - not support `types = ["*"]`
@@ -169,8 +172,6 @@ Loggers:
 - [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
-- [ ] plugin redirect [text](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
-- [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] handle etcd compact
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
@@ -185,3 +186,4 @@ Loggers:
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin attr
 - [ ] the plugin which modify response, how?
+- [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard

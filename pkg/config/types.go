@@ -10,14 +10,15 @@ type Config struct {
 	// use proxy instead
 	Proxy Proxy `mapstructure:"proxy"`
 
-	Discovery     Discovery  `mapstructure:"discovery"`
-	GraphQL       GraphQL    `mapstructure:"graphql"`
-	Plugins       []string   `mapstructure:"plugins"`
-	StreamPlugins []string   `mapstructure:"stream_plugins"`
-	PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
-	Deployment    Deployment `mapstructure:"deployment"`
-	Admin         Admin      `mapstructure:"admin"`
-	Etcd          Etcd       `mapstructure:"etcd"`
+	Discovery     Discovery `mapstructure:"discovery"`
+	GraphQL       GraphQL   `mapstructure:"graphql"`
+	Plugins       []string  `mapstructure:"plugins"`
+	StreamPlugins []string  `mapstructure:"stream_plugins"`
+	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
+	PluginAttr map[string]map[string]interface{} `mapstructure:"plugin_attr"`
+	Deployment Deployment                        `mapstructure:"deployment"`
+	Admin      Admin                             `mapstructure:"admin"`
+	Etcd       Etcd                              `mapstructure:"etcd"`
 }
 
 // section: apisix

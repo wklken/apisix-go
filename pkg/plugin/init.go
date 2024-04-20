@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/otel"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/plugin/real_ip"
+	"github.com/wklken/apisix-go/pkg/plugin/redirect"
 	"github.com/wklken/apisix-go/pkg/plugin/referer_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/request_context"
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
@@ -71,6 +72,8 @@ func New(name string) Plugin {
 		return &request_validation.Plugin{}
 	case "fault-injection":
 		return &fault_injection.Plugin{}
+	case "redirect":
+		return &redirect.Plugin{}
 	}
 	return nil
 }

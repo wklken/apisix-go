@@ -415,6 +415,11 @@ func newModifyResponse() pxy.ModifyResponse {
 		status := resp.StatusCode
 		ctx.RegisterRequestVar(resp.Request, "$status", status)
 
+		// FIXME: the status here is upstream status, not the http status finally
+
+		// FIXME: metric.UpstreamStatus
+		// FIXME: metric.HttpLatency type=upstream
+
 		// status := resp.StatusCode
 
 		// req := resp.Request

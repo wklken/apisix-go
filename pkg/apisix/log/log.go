@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 )
 
@@ -26,14 +25,15 @@ func GetField(r *http.Request, key string) any {
 	if _, ok := v.RequestVars[key]; ok {
 		return v.GetRequestVar(r, key)
 	}
+	return ""
 
-	ctx := r.Context()
-	switch key {
-	case "$matched_uri":
-		return chi.RouteContext(ctx).RoutePattern()
-	default:
-		return ""
-	}
+	// ctx := r.Context()
+	// switch key {
+	// case "$matched_uri":
+	// 	return chi.RouteContext(ctx).RoutePattern()
+	// default:
+	// 	return ""
+	// }
 }
 
 func GetFields(r *http.Request, logFormat map[string]string) map[string]any {

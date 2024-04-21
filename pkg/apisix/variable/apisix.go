@@ -3,6 +3,7 @@ package variable
 import (
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
@@ -15,9 +16,16 @@ var ApisixVars = map[string]struct{}{
 	"$service_name":      {},
 	"$consumer_name":     {},
 	"$consumer_group_id": {},
+	"$matched_uri":       {},
 }
 
 // all apisix vars are in ctx
 func GetApisixVar(r *http.Request, key string) any {
-	return ctx.GetApisixVar(r, key)
+	switch key {
+	case "$matched_uri":
+		return chi.RouteContext(r.Context()).RoutePattern()
+	default:
+		return ctx.GetApisixVar(r, key)
+
+	}
 }

@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 20  / 76  (26.3\%) $$
+$$ 21  / 76  (27.6\%) $$
 
 ### General
 
@@ -42,7 +42,7 @@ $$ 20  / 76  (26.3\%) $$
 
 ### Transformation
 
-> 2/8
+> 3/8
 
 - [ ] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/)
 - [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 80%
@@ -125,9 +125,9 @@ Tracers:
 
 Metrics:
 
-> 0/3
+> 1/3
 
-- [ ] [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/)
+- [x] [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/)
 - [ ] [node-status](https://apisix.apache.org/zh/docs/apisix/plugins/node-status/)
 - [ ] [datadog](https://apisix.apache.org/zh/docs/apisix/plugins/datadog/)
 

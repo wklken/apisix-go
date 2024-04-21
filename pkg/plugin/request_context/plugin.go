@@ -2,8 +2,11 @@ package request_context
 
 import (
 	"net/http"
+	"time"
 
+	"github.com/spf13/cast"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -45,6 +48,18 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		// metrics
+		metrics.Requests.Inc()
+		begin := time.Now()
+
+		metrics.Bandwidth.WithLabelValues(
+			"ingress",
+			p.config.RouteName,
+			p.config.ServiceName,
+			"",
+			"127.0.0.1",
+		).Add(float64(r.ContentLength))
+
 		r = ctx.WithApisixVars(r, map[string]string{
 			"$route_id":     p.config.RouteID,
 			"$route_name":   p.config.RouteName,
@@ -55,6 +70,24 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		// just init the request vars
 		next.ServeHTTP(w, r)
+
+		latency := time.Since(begin).Milliseconds()
+		metrics.HttpLatency.WithLabelValues(
+			"request",
+			p.config.RouteName,
+			p.config.ServiceName,
+			"",
+			"127.0.0.1",
+		).Observe(float64(latency))
+		metrics.HttpStatus.WithLabelValues(
+			cast.ToString(ctx.GetRequestVar(r, "$status")),
+			p.config.RouteName,
+			ctx.GetApisixVar(r, "$matched_uri").(string),
+			"",
+			p.config.ServiceName,
+			"",
+			"127.0.0.1",
+		).Inc()
 
 		ctx.RecycleVars(r)
 	}

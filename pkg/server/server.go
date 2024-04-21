@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -11,8 +12,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -61,13 +64,37 @@ func (s *Server) Start() {
 
 	// FIXME: port and path should be configurable
 	// start prometheus at another port
-	go func() {
-		mux := chi.NewRouter()
-		mux.Get("/apisix/prometheus/metrics", promhttp.Handler().ServeHTTP)
-		// server := &http.Server{}
-		// server.Handler = mux
-		http.ListenAndServe(":9091", mux)
-	}()
+	for _, plugin := range config.GlobalConfig.Plugins {
+		// prometheus enabled
+		if plugin == "prometheus" {
+			metrics.Init()
+
+			go func() {
+				exportUri := "/apisix/prometheus/metrics"
+				exportIP := "127.0.0.1"
+				exportPort := 9091
+				attr, ok := config.GlobalConfig.PluginAttr["prometheus"]
+				if ok {
+					if v, ok := attr["export_ip"]; ok {
+						exportIP = v.(string)
+					}
+					if v, ok := attr["export_port"]; ok {
+						exportPort = v.(int)
+					}
+					if v, ok := attr["export_uri"]; ok {
+						exportUri = v.(string)
+					}
+				}
+
+				// FIXME: not support `enable_export_server == false`
+
+				mux := chi.NewRouter()
+				mux.Get(exportUri, promhttp.Handler().ServeHTTP)
+				address := fmt.Sprintf("%s:%d", exportIP, exportPort)
+				http.ListenAndServe(address, mux)
+			}()
+		}
+	}
 
 	s.startServer(ctx)
 }

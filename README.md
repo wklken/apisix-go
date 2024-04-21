@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 19  / 76  (25\%) $$
+$$ 20  / 76  (26.3\%) $$
 
 ### General
 
@@ -78,7 +78,7 @@ $$ 19  / 76  (25\%) $$
 
 ### Security
 
-> 5/10
+> 6/10
 
 - [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/)
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
@@ -86,7 +86,7 @@ $$ 19  / 76  (25\%) $$
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
 - [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
-- [ ] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
+- [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/)
 - [ ] [GM](https://apisix.apache.org/zh/docs/apisix/plugins/GM/)
 - [ ] [chaitin-waf](https://apisix.apache.org/zh/docs/apisix/plugins/chaitin-waf/)
@@ -169,7 +169,6 @@ Loggers:
 - [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
-- [ ] plugin csrf [text](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
@@ -184,6 +183,6 @@ Loggers:
 - [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
 - [ ] route + service + upstream, merge the config
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
-- [ ] the plugin attr
 - [ ] the plugin which modify response, how?
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
+- [ ] consumer plugins?

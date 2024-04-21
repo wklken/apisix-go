@@ -9,6 +9,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
 	"github.com/wklken/apisix-go/pkg/plugin/cors"
+	"github.com/wklken/apisix-go/pkg/plugin/csrf"
 	"github.com/wklken/apisix-go/pkg/plugin/fault_injection"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
@@ -74,6 +75,8 @@ func New(name string) Plugin {
 		return &fault_injection.Plugin{}
 	case "redirect":
 		return &redirect.Plugin{}
+	case "csrf":
+		return &csrf.Plugin{}
 	}
 	return nil
 }

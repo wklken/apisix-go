@@ -50,3 +50,4 @@
 - [x] plugin request-validateion [request-validateion](https://apisix.apache.org/zh/docs/apisix/plugins/request-validateion/) 2024-04-18
 - [x] plugin fault-injection [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 2024-04-19
 - [x] plugin redirect [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/) 2024-04-20
+- [x] plugin csrf [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 2024-04-21

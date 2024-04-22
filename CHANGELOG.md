@@ -52,3 +52,4 @@
 - [x] plugin redirect [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/) 2024-04-20
 - [x] plugin csrf [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 2024-04-21
 - [x] plugin prometheus [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/) 2024-04-21
+- [x] standalone mode file watcher 2024-04-22

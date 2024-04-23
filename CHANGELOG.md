@@ -53,3 +53,4 @@
 - [x] plugin csrf [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 2024-04-21
 - [x] plugin prometheus [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/) 2024-04-21
 - [x] standalone mode file watcher 2024-04-22
+- [x] global rules 2024-04-23

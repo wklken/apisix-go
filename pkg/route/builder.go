@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/justinas/alice"
 	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -201,62 +202,30 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		},
 	}
 
-	plugins := make([]plugin.Plugin, 0, len(r.Plugins)+len(systemPlugins))
-	for name, config := range r.Plugins {
-		p := plugin.New(name)
-		if p == nil {
-			logger.Warnf("plugin %s not supported yet", name)
-			continue
-		}
-		p.Init()
+	var chain alice.Chain
 
-		err := util.Validate(config, p.GetSchema())
-		if err != nil {
-			logger.Errorf("validate plugin %s config fail: %s", name, err)
-			continue
-		}
+	localPlugins := make([]plugin.Plugin, 0, len(r.Plugins)+len(systemPlugins))
+	localPlugins = append(localPlugins, b.initPlugins(r.Plugins)...)
+	localPlugins = append(localPlugins, b.initPlugins(systemPlugins)...)
+	localChain := plugin.BuildPluginChain(localPlugins...)
 
-		err = util.Parse(config, p.Config())
-		if err != nil {
-			logger.Errorf("parse plugin config fail: %s", err)
-			continue
-		}
+	globalRules, err := store.ListGlobalRules()
+	if err != nil {
+		logger.Errorf("list global rules fail: %s", err)
+		return nil
+	}
+	globalPlugins := make([]plugin.Plugin, 0, len(globalRules))
+	for _, rule := range globalRules {
+		globalPlugins = append(globalPlugins, b.initPlugins(rule.Plugins)...)
+	}
+	if len(globalPlugins) > 0 {
+		globalChain := plugin.BuildPluginChain(globalPlugins...)
 
-		p.PostInit()
-
-		logger.Infof("after parse, config: %v", p.Config())
-
-		plugins = append(plugins, p)
+		chain = globalChain.Extend(localChain)
+	} else {
+		chain = localChain
 	}
 
-	for name, config := range systemPlugins {
-		p := plugin.New(name)
-		if p == nil {
-			logger.Warnf("plugin %s not supported yet", name)
-			continue
-		}
-		p.Init()
-
-		err := util.Validate(config, p.GetSchema())
-		if err != nil {
-			logger.Errorf("validate plugin %s config fail: %s", name, err)
-			continue
-		}
-
-		err = util.Parse(config, p.Config())
-		if err != nil {
-			logger.Errorf("parse plugin config fail: %s", err)
-			continue
-		}
-
-		p.PostInit()
-
-		logger.Infof("after parse, config: %v", p.Config())
-
-		plugins = append(plugins, p)
-	}
-
-	chain := plugin.BuildPluginChain(plugins...)
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
 		logger.Errorf("build reverse handler fail: %s", err)
@@ -264,6 +233,38 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	}
 
 	return chain.Then(handler)
+}
+
+func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []plugin.Plugin {
+	logger.Debugf("==== init plugins: %v", pluginConfigs)
+	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	for name, config := range pluginConfigs {
+		p := plugin.New(name)
+		if p == nil {
+			logger.Warnf("plugin %s not supported yet", name)
+			continue
+		}
+		p.Init()
+
+		err := util.Validate(config, p.GetSchema())
+		if err != nil {
+			logger.Errorf("validate plugin %s config fail: %s", name, err)
+			continue
+		}
+
+		err = util.Parse(config, p.Config())
+		if err != nil {
+			logger.Errorf("parse plugin config fail: %s", err)
+			continue
+		}
+
+		p.PostInit()
+
+		logger.Infof("after parse, config: %v", p.Config())
+
+		plugins = append(plugins, p)
+	}
+	return plugins
 }
 
 func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service) (http.Handler, error) {

@@ -8,6 +8,18 @@ NOT READY FOR PRODUCTION!
 
 ### Supported
 
+- [x] Route
+- [x] Service
+- [x] Upstream
+- [x] Plugin Metadata
+- [x] Global Rules
+- [x] Plugin Attr
+- [x] Consumer
+- [ ] Plugin Config
+- [ ] Consumer Group
+- [ ] Script
+- [ ] Secret
+
 ### Not Supported
 
 - http method `PURGE` is not supported

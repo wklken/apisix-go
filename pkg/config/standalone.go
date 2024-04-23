@@ -29,6 +29,8 @@ func ReadAndReload(path string, events chan *store.Event) {
 	// how to cmp the current config and the new config?
 	// store the latest file content?
 
+	// save the previous config => diff => send event
+
 	// read the config file
 	// v := viper.New()
 	// v.SetConfigFile(path)

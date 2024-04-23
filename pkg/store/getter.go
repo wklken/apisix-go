@@ -64,6 +64,19 @@ func ListRoutes() ([]resource.Route, error) {
 	return routes, nil
 }
 
+func ListGlobalRules() ([]resource.GlobalRule, error) {
+	var rules []resource.GlobalRule
+	data := s.GetBucketData("global_rules")
+	for _, d := range data {
+		r, err := ParseGlobalRule(d)
+		if err != nil {
+			continue
+		}
+		rules = append(rules, r)
+	}
+	return rules, nil
+}
+
 func ParseRoute(config []byte) (resource.Route, error) {
 	var r resource.Route
 	err := json.Unmarshal(config, &r)
@@ -98,6 +111,15 @@ func ParseConsumer(config []byte) (resource.Consumer, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+func ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
+	var s resource.GlobalRule
+	err := json.Unmarshal(config, &s)
+	if err != nil {
+		return s, err
+	}
+	return s, nil
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {

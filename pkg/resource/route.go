@@ -205,3 +205,7 @@ type Consumer struct {
 	Username string `json:"username,required"`
 	Plugins  map[string]PluginConfig
 }
+
+type GlobalRule struct {
+	Plugins map[string]PluginConfig `json:"plugins,omitempty"`
+}

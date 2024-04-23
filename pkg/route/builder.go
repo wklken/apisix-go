@@ -188,6 +188,9 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 			}
 		}
 	}
+
+	// FIXME: the global rules plugins is run before the route plugins, so how to make the order right?
+
 	// FIXME: add a context plugin, set the default vars
 	systemPlugins := map[string]resource.PluginConfig{
 		"request-context": map[string]string{

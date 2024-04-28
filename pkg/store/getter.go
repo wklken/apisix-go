@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -48,12 +49,22 @@ func GetConsumer(id string) (resource.Consumer, error) {
 	return ParseConsumer(config)
 }
 
+func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
+	config := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
+	if config == nil {
+		return resource.PluginConfigRule{}, ErrNotFound
+	}
+
+	return ParsePluginConfigRule(config)
+}
+
 func ListRoutes() ([]resource.Route, error) {
 	var routes []resource.Route
 	data := s.GetBucketData("routes")
 	for _, d := range data {
 		r, err := ParseRoute(d)
 		if err != nil {
+			logger.Errorf("parse route error: %s, skip", err)
 			continue
 			// FIXME: do skip, process
 			// FIXME: append d and error
@@ -115,6 +126,15 @@ func ParseConsumer(config []byte) (resource.Consumer, error) {
 
 func ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
 	var s resource.GlobalRule
+	err := json.Unmarshal(config, &s)
+	if err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+func ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
+	var s resource.PluginConfigRule
 	err := json.Unmarshal(config, &s)
 	if err != nil {
 		return s, err

@@ -30,7 +30,7 @@ import (
 )
 
 func New(name string) Plugin {
-	fmt.Println("plugin name:", name)
+	// fmt.Println("plugin name:", name)
 	// FIXME: auto detecting the plugins under dir `plugin`
 	switch name {
 	case "file-logger":

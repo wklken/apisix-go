@@ -173,10 +173,12 @@ type Route struct {
 	Desc        string                  `json:"desc,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
-	ServiceID   string                  `json:"service_id,omitempty"`
-	UpstreamID  string                  `json:"upstream_id,omitempty"`
-	Upstream    Upstream                `json:"upstream,omitempty"`
-	Timeout     struct {
+	// FIXME: the ID maybe number => will unmarshal fail
+	PluginConfigID string   `json:"plugin_config_id,omitempty"`
+	ServiceID      string   `json:"service_id,omitempty"`
+	UpstreamID     string   `json:"upstream_id,omitempty"`
+	Upstream       Upstream `json:"upstream,omitempty"`
+	Timeout        struct {
 		Connect int `json:"connect,omitempty"`
 		Send    int `json:"send,omitempty"`
 		Read    int `json:"read,omitempty"`
@@ -207,5 +209,10 @@ type Consumer struct {
 }
 
 type GlobalRule struct {
+	Plugins map[string]PluginConfig `json:"plugins,omitempty"`
+}
+
+type PluginConfigRule struct {
+	Desc    string                  `json:"desc,omitempty"`
 	Plugins map[string]PluginConfig `json:"plugins,omitempty"`
 }

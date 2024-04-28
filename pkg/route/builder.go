@@ -115,6 +115,7 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Errorf("list routes fail: %s", err)
 		return nil
 	}
+	fmt.Printf("routes: %+v\n", routes)
 
 	// routes = append(routes, dummyResource)
 
@@ -160,6 +161,7 @@ func (b *Builder) Build() *chi.Mux {
 				mux.Method(method, uri, handler)
 			}
 		}
+		fmt.Println("===============================")
 	}
 
 	// add extra route
@@ -169,6 +171,25 @@ func (b *Builder) Build() *chi.Mux {
 }
 
 func (b *Builder) buildHandler(r resource.Route) http.Handler {
+	resourcePlugins := r.Plugins
+	// handle plugin_config_id
+	// fmt.Println("r.Uri", r.Uri, "r.PluginConfigID", r.PluginConfigID)
+	if r.PluginConfigID != "" {
+		pluginConfigRule, err := store.GetPluginConfigRule(r.PluginConfigID)
+		if err != nil {
+			// FIXME: should return 503
+			logger.Errorf("get plugin config rule fail: %s", err)
+			return nil
+		}
+		for name, config := range pluginConfigRule.Plugins {
+			// priority: Consumer > Route > Plugin Config > Service
+			// so if not in r.Plugins, add, else skip
+			if _, ok := resourcePlugins[name]; !ok {
+				resourcePlugins[name] = config
+			}
+		}
+	}
+
 	// if service_id is not empty, get the service config
 	var service resource.Service
 	var err error
@@ -184,8 +205,8 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	if len(service.Plugins) > 0 {
 		for name, config := range service.Plugins {
 			// if not in r.Plugins, add
-			if _, ok := r.Plugins[name]; !ok {
-				r.Plugins[name] = config
+			if _, ok := resourcePlugins[name]; !ok {
+				resourcePlugins[name] = config
 			}
 		}
 	}
@@ -204,8 +225,8 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 	var chain alice.Chain
 
-	localPlugins := make([]plugin.Plugin, 0, len(r.Plugins)+len(systemPlugins))
-	localPlugins = append(localPlugins, b.initPlugins(r.Plugins)...)
+	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
+	localPlugins = append(localPlugins, b.initPlugins(resourcePlugins)...)
 	localPlugins = append(localPlugins, b.initPlugins(systemPlugins)...)
 	localChain := plugin.BuildPluginChain(localPlugins...)
 
@@ -236,7 +257,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 }
 
 func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []plugin.Plugin {
-	logger.Debugf("==== init plugins: %v", pluginConfigs)
+	// logger.Debugf("==== init plugins: %v", pluginConfigs)
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
@@ -260,7 +281,7 @@ func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []
 
 		p.PostInit()
 
-		logger.Infof("after parse, config: %v", p.Config())
+		// logger.Infof("after parse, config: %v", p.Config())
 
 		plugins = append(plugins, p)
 	}
@@ -286,7 +307,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
-	fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
+	// fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
 	scheme := upstream.Scheme
 	for _, node := range upstream.Nodes {
 		host := node.Host
@@ -296,7 +317,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		uri := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 		servers[uri] = weight
 	}
-	fmt.Printf("servers: %v\n", servers)
+	// fmt.Printf("servers: %v\n", servers)
 
 	// FIXME: do service discovery here
 	lb := pxy.NewWeightedRRLoadBalance(servers)

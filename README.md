@@ -15,7 +15,7 @@ NOT READY FOR PRODUCTION!
 - [x] Global Rules
 - [x] Plugin Attr
 - [x] Consumer
-- [ ] Plugin Config
+- [x] Plugin Config
 - [ ] Consumer Group
 - [ ] Script
 - [ ] Secret
@@ -171,12 +171,9 @@ Loggers:
 
 ## TODO
 
-- [ ] global rules => 插件的优先级最高 [text](https://apisix.apache.org/zh/docs/apisix/terminology/global-rule/)
-- [ ] plugin config id in route
-
-- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
-- [ ] upgrade to go 1.22
 - [ ] attach the consumer
+- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
+
 - [ ] consumer group id
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
@@ -193,7 +190,6 @@ Loggers:
 - [ ] admin api
 - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)
-- [ ] how to know changes, route/service/upstream/plugin_config changes, should keep the relations?
 - [ ] route + service + upstream, merge the config
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin which modify response, how?

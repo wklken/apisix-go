@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
@@ -127,6 +128,18 @@ func GetApisixVar(r *http.Request, key string) any {
 		return val
 	}
 	return ""
+}
+
+func RegisterApisixVar(r *http.Request, key string, val any) {
+	vars := GetApisixVars(r)
+	vars[key] = val
+}
+
+func AttachConsumer(r *http.Request, consumer resource.Consumer) {
+	RegisterApisixVar(r, "$consumer", consumer)
+	RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
+	// FIXME: consumer_group_id / consumer_conf_version
 }
 
 func RecycleVars(r *http.Request) {

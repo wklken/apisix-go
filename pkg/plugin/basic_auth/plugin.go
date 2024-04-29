@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -71,7 +72,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		consumer, err := store.GetConsumer(user)
+		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
 			return
@@ -99,7 +100,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			r.Header.Del("Authorization")
 		}
 
-		// FIXME: attach current_consumer
+		ctx.AttachConsumer(r, consumer)
 
 		next.ServeHTTP(w, r)
 	}

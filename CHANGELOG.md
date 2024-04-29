@@ -55,3 +55,5 @@
 - [x] standalone mode file watcher 2024-04-22
 - [x] global rules 2024-04-23
 - [x] plugin_config_id in route 2024-04-28
+- [x] attach the consumer 2024-04-29
+- [x] plugin consumer-restriction [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/) 2024-04-29

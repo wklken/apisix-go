@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -110,7 +111,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 		}
 
-		// FIXME: attach current_consumer
+		ctx.AttachConsumer(r, consumer)
 
 		next.ServeHTTP(w, r)
 	}

@@ -17,7 +17,7 @@ type Plugin struct {
 
 const (
 	// version  = "0.1"
-	priority = 0
+	priority = 9999999
 	name     = "request_context"
 )
 

@@ -10,6 +10,11 @@ type keyAuth struct {
 	Key string `json:"key"`
 }
 
+type basicAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 	consumer, err := ParseConsumer(value)
 	if err != nil {
@@ -44,6 +49,22 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 		// add to consumerToKeys
 		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
 	}
+
+	// if "basic-auth" in consumer.Plugins
+	basicAuthPlugin, ok := consumer.Plugins["basic-auth"]
+	if ok {
+		var ba basicAuth
+		err = util.Parse(basicAuthPlugin, &ba)
+		if err != nil {
+			return err
+		}
+		k := fmt.Sprintf("basic-auth:%s", ba.Username)
+		s.consumerKV[k] = id
+
+		// add to consumerToKeys
+		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+	}
+
 	return nil
 }
 

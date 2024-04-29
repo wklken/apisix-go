@@ -8,6 +8,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/api_breaker"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/client_control"
+	"github.com/wklken/apisix-go/pkg/plugin/consumer_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/cors"
 	"github.com/wklken/apisix-go/pkg/plugin/csrf"
 	"github.com/wklken/apisix-go/pkg/plugin/fault_injection"
@@ -77,6 +78,8 @@ func New(name string) Plugin {
 		return &redirect.Plugin{}
 	case "csrf":
 		return &csrf.Plugin{}
+	case "consumer-restriction":
+		return &consumer_restriction.Plugin{}
 	}
 	return nil
 }
@@ -84,7 +87,7 @@ func New(name string) Plugin {
 func BuildPluginChain(plugins ...Plugin) alice.Chain {
 	// sort the plugin by priority
 	sort.Slice(plugins, func(i, j int) bool {
-		return plugins[i].GetPriority() < plugins[j].GetPriority()
+		return plugins[i].GetPriority() > plugins[j].GetPriority()
 	})
 
 	// build the alice chain

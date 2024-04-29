@@ -27,7 +27,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 21  / 76  (27.6\%) $$
+$$ 22  / 76  (28.9\%) $$
 
 ### General
 
@@ -90,14 +90,14 @@ $$ 21  / 76  (27.6\%) $$
 
 ### Security
 
-> 6/10
+> 7/10
 
 - [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/)
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
 - [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
-- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
+- [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
 - [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/)
 - [ ] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/)
 - [ ] [GM](https://apisix.apache.org/zh/docs/apisix/plugins/GM/)
@@ -171,9 +171,7 @@ Loggers:
 
 ## TODO
 
-- [ ] attach the consumer
-- [ ] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
-
+- [ ] consumer plugins?
 - [ ] consumer group id
 - [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
@@ -194,4 +192,3 @@ Loggers:
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin which modify response, how?
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
-- [ ] consumer plugins?

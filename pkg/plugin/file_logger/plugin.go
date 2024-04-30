@@ -13,8 +13,8 @@ import (
 
 const (
 	// version  = "0.1"
-	priority = 103
-	name     = "file_logger"
+	priority = 399
+	name     = "file-logger"
 )
 
 const schema = `
@@ -91,7 +91,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		fmt.Println("status:", ctx.GetRequestVar(r, "$status"))
 
 		logFields := log.GetFields(r, p.logFormat)
-		fields := make([]zap.Field, 0, len(logFields)+2)
+		fields := make([]zap.Field, 0, len(logFields))
 		for k, v := range logFields {
 			fields = append(fields, zap.Any(k, v))
 		}

@@ -145,9 +145,9 @@ Metrics:
 
 Loggers:
 
-> 1/18
+> 2/18
 
-- [ ] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
+- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/)
 - [ ] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
 - [ ] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/)
@@ -173,7 +173,6 @@ Loggers:
 
 - [ ] consumer plugins?
 - [ ] consumer group id
-- [ ] plugin http-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
 - [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)

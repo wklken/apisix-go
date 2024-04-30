@@ -14,6 +14,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/fault_injection"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
+	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ip_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
@@ -80,6 +81,8 @@ func New(name string) Plugin {
 		return &csrf.Plugin{}
 	case "consumer-restriction":
 		return &consumer_restriction.Plugin{}
+	case "http-logger":
+		return &http_logger.Plugin{}
 	}
 	return nil
 }

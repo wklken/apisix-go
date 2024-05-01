@@ -1,11 +1,11 @@
 package referer_restriction
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/Shopify/goreferrer"
 	"github.com/gobwas/glob"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"

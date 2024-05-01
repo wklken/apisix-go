@@ -1,12 +1,12 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 
 	apisixv1 "github.com/apache/apisix-ingress-controller/pkg/types/apisix/v1"
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
 	"k8s.io/apimachinery/pkg/runtime"
 )

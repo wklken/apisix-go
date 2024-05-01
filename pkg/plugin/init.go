@@ -28,6 +28,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
 	"github.com/wklken/apisix-go/pkg/plugin/request_validation"
 	"github.com/wklken/apisix-go/pkg/plugin/ua_restriction"
+	"github.com/wklken/apisix-go/pkg/plugin/udp_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/uri_blocker"
 )
 
@@ -83,6 +84,8 @@ func New(name string) Plugin {
 		return &consumer_restriction.Plugin{}
 	case "http-logger":
 		return &http_logger.Plugin{}
+	case "udp-logger":
+		return &udp_logger.Plugin{}
 	}
 	return nil
 }

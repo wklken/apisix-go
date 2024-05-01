@@ -1,11 +1,11 @@
 package ua_restriction
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"

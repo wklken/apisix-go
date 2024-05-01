@@ -6,6 +6,10 @@ NOT READY FOR PRODUCTION!
 
 ## Features
 
+- Small binary size(<50M) and image size
+- Easy to deploy and scale
+- Better performance with io plugins like `*-logger`
+
 ### Supported
 
 - [x] Route
@@ -27,7 +31,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 22  / 76  (28.9\%) $$
+$$ 23  / 76  (30.2\%) $$
 
 ### General
 
@@ -145,11 +149,15 @@ Metrics:
 
 Loggers:
 
-> 2/18
+> 3/18
 
 - [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
+  - not support `include_req_body` and `include_req_body_expr`
+  - not support `include_resp_body` and `include_resp_body_expr`
 - [ ] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/)
-- [ ] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
+- [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
+  - not support `include_req_body` and `include_req_body_expr`
+  - not support `include_resp_body` and `include_resp_body_expr`
 - [ ] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/)
 - [ ] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/)
 - [ ] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
@@ -174,7 +182,6 @@ Loggers:
 - [ ] consumer plugins?
 - [ ] consumer group id
 - [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
-- [ ] plugin udp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 - [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)

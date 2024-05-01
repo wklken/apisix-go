@@ -31,7 +31,7 @@ NOT READY FOR PRODUCTION!
 ## Plugins
 
 progress:
-$$ 23  / 76  (30.2\%) $$
+$$ 24  / 76  (31.5\%) $$
 
 ### General
 
@@ -149,7 +149,7 @@ Metrics:
 
 Loggers:
 
-> 3/18
+> 4/18
 
 - [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
   - not support `include_req_body` and `include_req_body_expr`
@@ -162,7 +162,7 @@ Loggers:
 - [ ] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/)
 - [ ] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/)
 - [ ] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/)
-- [ ] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
+- [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] [log-rotate](https://apisix.apache.org/zh/docs/apisix/plugins/log-rotate/)
 - [ ] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/)
 - [ ] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/)
@@ -179,10 +179,10 @@ Loggers:
 
 ## TODO
 
+- [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
+
 - [ ] consumer plugins?
 - [ ] consumer group id
-- [ ] plugin tcp-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/)
-- [ ] plugin sys-logger [text](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
 - [ ] how to impl the serverless
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard

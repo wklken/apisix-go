@@ -3,9 +3,7 @@ package syslog
 import (
 	"fmt"
 	"log/syslog"
-	"net/http"
 
-	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -91,13 +89,8 @@ type pluginMetadata struct {
 }
 
 type Plugin struct {
-	base.BasePlugin
+	base.BaseLoggerPlugin
 	config Config
-
-	fireChan   chan map[string]any
-	asyncBlock bool
-
-	logFormat map[string]string
 }
 
 type Config struct {
@@ -128,9 +121,10 @@ func (p *Plugin) Init() error {
 	p.Priority = priority
 	p.Schema = schema
 
-	p.fireChan = make(chan map[string]any, 1000)
-	p.asyncBlock = true
+	p.FireChan = make(chan map[string]any, 1000)
+	p.AsyncBlock = true
 
+	p.SendFunc = p.Send
 	return nil
 }
 
@@ -142,9 +136,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
 		var metadata pluginMetadata
 		store.GetPluginMetadata(name, &metadata)
-		p.logFormat = metadata.LogFormat
+		p.LogFormat = metadata.LogFormat
 	} else {
-		p.logFormat = p.config.LogFormat
+		p.LogFormat = p.config.LogFormat
 	}
 
 	if p.config.SockType == "" {
@@ -154,50 +148,12 @@ func (p *Plugin) PostInit() error {
 	p.config.addr = fmt.Sprintf("%s:%d", p.config.Host, p.config.Port)
 
 	// start the consumer
-	p.consume()
+	p.Consume()
 
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-
-		logFields := log.GetFields(r, p.logFormat)
-		p.Fire(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
-func (p *Plugin) Fire(entry map[string]any) error {
-	select {
-	case p.fireChan <- entry: // try and put into chan, if fail will to default
-	default:
-		if p.asyncBlock {
-			fmt.Println("the log buffered chan is full! will block")
-			p.fireChan <- entry // Blocks the goroutine because buffer is full.
-			return nil
-		}
-		fmt.Println("the log buffered chan is full! will drop")
-		// Drop message by default.
-	}
-	return nil
-}
-
-// add a http log consumer here, to consume the log via a channel
-func (p *Plugin) consume() {
-	go func() {
-		for {
-			select {
-			case log := <-p.fireChan:
-				p.send(log)
-				// consume the log
-			}
-		}
-	}()
-}
-
-func (p *Plugin) send(log map[string]any) {
+func (p *Plugin) Send(log map[string]any) {
 	sysLog, err := syslog.Dial(p.config.SockType, p.config.addr,
 		syslog.LOG_INFO|syslog.LOG_DAEMON, "apisix")
 	if err != nil {

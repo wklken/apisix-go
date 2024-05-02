@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/log"
-	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 type BasePlugin struct {
@@ -26,20 +25,28 @@ func (p *BasePlugin) GetSchema() string {
 	return p.Schema
 }
 
+// type LoggerPlugin interface {
+// Fire(entry map[string]any) error
+// Consume()
+// Send(log map[string]any)
+// }
+
 type BaseLoggerPlugin struct {
 	BasePlugin
 
-	fireChan   chan map[string]any
-	asyncBlock bool
+	FireChan   chan map[string]any
+	AsyncBlock bool
 
-	logFormat map[string]string
+	LogFormat map[string]string
+
+	SendFunc func(log map[string]any)
 }
 
 func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
 
-		logFields := log.GetFields(r, p.logFormat)
+		logFields := log.GetFields(r, p.LogFormat)
 		p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
@@ -47,11 +54,11 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 
 func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
 	select {
-	case p.fireChan <- entry: // try and put into chan, if fail will to default
+	case p.FireChan <- entry: // try and put into chan, if fail will to default
 	default:
-		if p.asyncBlock {
+		if p.AsyncBlock {
 			fmt.Println("the log buffered chan is full! will block")
-			p.fireChan <- entry // Blocks the goroutine because buffer is full.
+			p.FireChan <- entry // Blocks the goroutine because buffer is full.
 			return nil
 		}
 		fmt.Println("the log buffered chan is full! will drop")
@@ -65,14 +72,13 @@ func (p *BaseLoggerPlugin) Consume() {
 	go func() {
 		for {
 			select {
-			case log := <-p.fireChan:
-				p.Send(log)
-				// consume the log
+			case log := <-p.FireChan:
+				p.SendFunc(log)
 			}
 		}
 	}()
 }
 
-func (p *BaseLoggerPlugin) Send(log map[string]any) {
-	logger.Errorf("the Send not implemented in sub-class: %s", p.Name)
-}
+// func (p *BaseLoggerPlugin) Send(log map[string]any) {
+// 	logger.Errorf("the Send not implemented in sub-class: %s", p.Name)
+// }

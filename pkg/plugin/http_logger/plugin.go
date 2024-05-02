@@ -3,11 +3,9 @@ package http_logger
 import (
 	"crypto/tls"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -78,14 +76,10 @@ type pluginMetadata struct {
 }
 
 type Plugin struct {
-	base.BasePlugin
+	base.BaseLoggerPlugin
 	config Config
 
-	fireChan   chan map[string]any
-	asyncBlock bool
-
-	logFormat map[string]string
-	client    *resty.Client
+	client *resty.Client
 }
 
 type Config struct {
@@ -116,10 +110,12 @@ func (p *Plugin) Init() error {
 	p.Priority = priority
 	p.Schema = schema
 
-	p.fireChan = make(chan map[string]any, 1000)
-	p.asyncBlock = true
+	p.FireChan = make(chan map[string]any, 1000)
+	p.AsyncBlock = true
 
 	p.client = resty.New()
+
+	p.SendFunc = p.Send
 
 	return nil
 }
@@ -135,9 +131,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
 		var metadata pluginMetadata
 		store.GetPluginMetadata("file-logger", &metadata)
-		p.logFormat = metadata.LogFormat
+		p.LogFormat = metadata.LogFormat
 	} else {
-		p.logFormat = p.config.LogFormat
+		p.LogFormat = p.config.LogFormat
 	}
 
 	if p.config.ConcatMethod == "" || p.config.ConcatMethod == "json" {
@@ -153,50 +149,12 @@ func (p *Plugin) PostInit() error {
 	}
 
 	// start the consumer
-	p.consume()
+	p.Consume()
 
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-
-		logFields := log.GetFields(r, p.logFormat)
-		p.Fire(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
-func (p *Plugin) Fire(entry map[string]any) error {
-	select {
-	case p.fireChan <- entry: // try and put into chan, if fail will to default
-	default:
-		if p.asyncBlock {
-			fmt.Println("the log buffered chan is full! will block")
-			p.fireChan <- entry // Blocks the goroutine because buffer is full.
-			return nil
-		}
-		fmt.Println("the log buffered chan is full! will drop")
-		// Drop message by default.
-	}
-	return nil
-}
-
-// add a http log consumer here, to consume the log via a channel
-func (p *Plugin) consume() {
-	go func() {
-		for {
-			select {
-			case log := <-p.fireChan:
-				p.send(log)
-				// consume the log
-			}
-		}
-	}()
-}
-
-func (p *Plugin) send(log map[string]any) {
+func (p *Plugin) Send(log map[string]any) {
 	fmt.Println("send log to http logger", log)
 	// FIXME: use our own json marshal? for better performance
 	resp, err := p.client.R().SetBody(log).Post(p.config.URI)

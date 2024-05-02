@@ -37,7 +37,7 @@ func GetField(r *http.Request, key string) any {
 }
 
 func GetFields(r *http.Request, logFormat map[string]string) map[string]any {
-	fields := make(map[string]any)
+	fields := make(map[string]any, len(logFormat))
 	for key, value := range logFormat {
 		if strings.HasPrefix(value, "$") {
 			fields[key] = GetField(r, value)

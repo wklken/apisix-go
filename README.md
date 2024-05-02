@@ -182,20 +182,22 @@ Loggers:
 
 ## TODO
 
+- [ ] standalone mode
+- [ ] handle etcd compact
+
+- [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
+  - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
+- [ ] admin api
 - [ ] consumer plugins?
 - [ ] consumer group id
 - [ ] how to impl the serverless
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
-- [ ] handle etcd compact
+- [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
-- [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
 - [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)
-- [ ] admin api
-- [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)
 - [ ] route + service + upstream, merge the config
 - [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
 - [ ] the plugin which modify response, how?
-- [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard

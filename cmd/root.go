@@ -14,8 +14,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/server"
 
-	_ "github.com/wklken/apisix-go/pkg/observability/metrics"
 	_ "github.com/wklken/apisix-go/pkg/observability/otel"
+	_ "github.com/wklken/apisix-go/pkg/proxy"
 )
 
 var cfgFile string

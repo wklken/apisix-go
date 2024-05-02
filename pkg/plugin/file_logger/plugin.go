@@ -3,12 +3,15 @@ package file_logger
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 const (
@@ -65,14 +68,26 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	cfg := zap.NewProductionConfig()
 	cfg.DisableCaller = true
-	cfg.OutputPaths = []string{p.config.Path}
 	cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 
-	// TODO: add buffered here?
+	enc := zapcore.NewJSONEncoder(cfg.EncoderConfig)
 
-	var logger *zap.Logger
-	logger, _ = cfg.Build()
-	p.logger = logger
+	syncWriter := &zapcore.BufferedWriteSyncer{
+		WS: zapcore.AddSync(&lumberjack.Logger{
+			Filename: p.config.Path,
+			// FIXME: use log-rotate params
+			MaxSize:   512,
+			MaxAge:    7,
+			LocalTime: true,
+			Compress:  false,
+		}),
+		Size:          4096,
+		FlushInterval: 5 * time.Second,
+	}
+
+	p.logger = zap.New(
+		zapcore.NewCore(enc, syncWriter, cfg.Level),
+	)
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
 		var metadata pluginMetadata

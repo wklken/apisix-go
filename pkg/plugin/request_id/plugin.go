@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofrs/uuid"
 	gonanoid "github.com/matoous/go-nanoid/v2"
+	"github.com/oxtoacart/bpool"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -59,6 +60,8 @@ const schema = `
 type Plugin struct {
 	base.BasePlugin
 	config Config
+
+	bytePool *bpool.BytePool
 }
 
 type Config struct {
@@ -106,6 +109,8 @@ func (p *Plugin) PostInit() error {
 		if p.config.RangeID.CharSet == "" {
 			p.config.RangeID.CharSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIGKLMNOPQRSTUVWXYZ0123456789"
 		}
+
+		p.bytePool = bpool.NewBytePool(10000, p.config.RangeID.Length)
 	}
 
 	return nil
@@ -122,7 +127,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			} else if p.config.Algorithm == "nanoid" {
 				requestID, _ = gonanoid.New()
 			} else if p.config.Algorithm == "range_id" {
-				requestID = rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
+				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
 			}
 		}
 
@@ -140,9 +145,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func rangeID(charSet string, length int) string {
-	// FIXME: use a pool
-	id := make([]byte, length)
+func (p *Plugin) rangeID(charSet string, length int) string {
+	// id := make([]byte, length)
+	id := p.bytePool.Get()
+	defer p.bytePool.Put(id)
 
 	for i := 0; i < length; i++ {
 		id[i] = charSet[rand.Intn(len(charSet))]

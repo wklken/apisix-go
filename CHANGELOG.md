@@ -60,3 +60,4 @@
 - [x] plugin http-logger [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 2024-04-30
 - [x] plugin udp-logger [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 2024-05-01
 - [x] plugin sys-logger [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 2024-05-01
+- [x] plugin tcp-logger [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 2024-05-02

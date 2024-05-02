@@ -28,6 +28,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/request_id"
 	"github.com/wklken/apisix-go/pkg/plugin/request_validation"
 	"github.com/wklken/apisix-go/pkg/plugin/syslog"
+	"github.com/wklken/apisix-go/pkg/plugin/tcp_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ua_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/udp_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/uri_blocker"
@@ -89,6 +90,8 @@ func New(name string) Plugin {
 		return &udp_logger.Plugin{}
 	case "syslog":
 		return &syslog.Plugin{}
+	case "tcp-logger":
+		return &tcp_logger.Plugin{}
 	}
 	return nil
 }

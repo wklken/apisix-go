@@ -5,7 +5,6 @@ import (
 	"log/syslog"
 	"net/http"
 
-	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -99,7 +98,6 @@ type Plugin struct {
 	asyncBlock bool
 
 	logFormat map[string]string
-	client    *resty.Client
 }
 
 type Config struct {
@@ -133,8 +131,6 @@ func (p *Plugin) Init() error {
 	p.fireChan = make(chan map[string]any, 1000)
 	p.asyncBlock = true
 
-	p.client = resty.New()
-
 	return nil
 }
 
@@ -143,12 +139,9 @@ func (p *Plugin) PostInit() error {
 		p.config.Timeout = 3
 	}
 
-	// p.client.SetTimeout(time.Duration(p.config.Timeout) * time.Second)
-	// p.client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.config.SslVerify})
-
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
 		var metadata pluginMetadata
-		store.GetPluginMetadata("file-logger", &metadata)
+		store.GetPluginMetadata(name, &metadata)
 		p.logFormat = metadata.LogFormat
 	} else {
 		p.logFormat = p.config.LogFormat

@@ -1,4 +1,4 @@
-package udp_logger
+package tcp_logger
 
 import (
 	"fmt"
@@ -15,8 +15,8 @@ import (
 
 const (
 	// version  = "0.1"
-	priority = 400
-	name     = "udp-logger"
+	priority = 405
+	name     = "tcp-logger"
 )
 
 const schema = `
@@ -30,10 +30,17 @@ const schema = `
 		"type": "integer",
 		"minimum": 0
 	  },
+	  "tls": {
+		"type": "boolean",
+		"default": false
+	  },
+	  "tls_options": {
+		"type": "string"
+	  },
 	  "timeout": {
 		"type": "integer",
 		"minimum": 1,
-		"default": 3
+		"default": 1000
 	  },
 	  "log_format": {
 		"type": "object"
@@ -81,14 +88,16 @@ type Plugin struct {
 type Config struct {
 	Host      string            `json:"host"`
 	Port      int               `json:"port"`
-	Timeout   int               `json:"timeout,omitempty"`    // 使用指针以区分默认值和未设置
-	LogFormat map[string]string `json:"log_format,omitempty"` // 使用指针类型以便跳过默认空值
+	Timeout   int               `json:"timeout,omitempty"`
+	LogFormat map[string]string `json:"log_format,omitempty"`
 
 	// FIXME: not support
-	// IncludeReqBody      bool              `json:"include_req_body"`
-	// IncludeReqBodyExpr  [][]interface{}   `json:"include_req_body_expr,omitempty"`
-	// IncludeRespBody     bool              `json:"include_resp_body"`
-	// IncludeRespBodyExpr [][]interface{}   `json:"include_resp_body_expr,omitempty"`
+	// TLS        bool    `json:"tls"`
+	// TLSOptions *string `json:"tls_options,omitempty"`
+	// IncludeReqBody      bool                `json:"include_req_body"`
+	// IncludeReqBodyExpr  [][]interface{}     `json:"include_req_body_expr,omitempty"`
+	// IncludeRespBody     bool                `json:"include_resp_body"`
+	// IncludeRespBodyExpr [][]interface{}     `json:"include_resp_body_expr,omitempty"`
 
 	addr string
 }
@@ -110,7 +119,7 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
-		p.config.Timeout = 3
+		p.config.Timeout = 1
 	}
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
@@ -120,6 +129,7 @@ func (p *Plugin) PostInit() error {
 	} else {
 		p.logFormat = p.config.LogFormat
 	}
+	fmt.Printf("log format: %v\n", p.logFormat)
 
 	p.config.addr = fmt.Sprintf("%s:%d", p.config.Host, p.config.Port)
 
@@ -169,7 +179,7 @@ func (p *Plugin) consume() {
 
 func (p *Plugin) send(log map[string]any) {
 	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
-	conn, err := net.Dial("udp", p.config.addr)
+	conn, err := net.Dial("tcp", p.config.addr)
 	if err != nil {
 		logger.Errorf("failed to connect to udp server: %s", err)
 		return

@@ -7,7 +7,7 @@ import (
 	"github.com/smallnest/weighted"
 )
 
-// TO: performance, genreate the list at startup, then loop over
+// TO: performance, generate the list at startup, then loop over
 // currently:
 // BenchmarkRRLoadBalance-12    	50000000	        32.9 ns/op	       0 B/op	       0 allocs/op
 

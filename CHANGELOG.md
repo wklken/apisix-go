@@ -62,3 +62,4 @@
 - [x] plugin sys-logger [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 2024-05-01
 - [x] plugin tcp-logger [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 2024-05-02
 - [x] refactor base.BaseLoggerPlugin / file-logger with buffered 2024-05-02
+- [x] refactor store/getter.go 2024-05-03

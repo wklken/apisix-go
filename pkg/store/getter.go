@@ -49,6 +49,15 @@ func GetConsumer(id string) (resource.Consumer, error) {
 	return ParseConsumer(config)
 }
 
+func GetConsumerGroup(id string) (resource.ConsumerGroup, error) {
+	config := s.GetFromBucket("consumer_groups", util.StringToBytes(id))
+	if config == nil {
+		return resource.ConsumerGroup{}, ErrNotFound
+	}
+
+	return ParseConsumerGroup(config)
+}
+
 func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 	config := s.GetFromBucket("plugin_configs", util.StringToBytes(id))
 	if config == nil {
@@ -117,6 +126,15 @@ func ParseUpstream(config []byte) (resource.Upstream, error) {
 
 func ParseConsumer(config []byte) (resource.Consumer, error) {
 	var c resource.Consumer
+	err := json.Unmarshal(config, &c)
+	if err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+func ParseConsumerGroup(config []byte) (resource.ConsumerGroup, error) {
+	var c resource.ConsumerGroup
 	err := json.Unmarshal(config, &c)
 	if err != nil {
 		return c, err

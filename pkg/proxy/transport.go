@@ -14,7 +14,7 @@ const (
 	DefaultDialTimeout = 30 * time.Second
 
 	// DefaultIdleConnsPerHost the default value set for http.Transport.MaxIdleConnsPerHost.
-	// krakend is 250 / januse is 64
+	// krakend is 250 / janus is 64
 	DefaultMaxIdleConnsPerHost = 250
 
 	// DefaultIdleConnTimeout is the default value for the the maximum amount of time an idle

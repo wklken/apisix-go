@@ -211,9 +211,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		}
 	}
 
-	// FIXME: the global rules plugins is run before the route plugins, so how to make the order right?
-
-	// FIXME: add a context plugin, set the default vars
+	// add a context plugin, set the default vars
 	systemPlugins := map[string]resource.PluginConfig{
 		"request-context": map[string]string{
 			"$route_id":     r.ID,
@@ -257,7 +255,6 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 }
 
 func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []plugin.Plugin {
-	// logger.Debugf("==== init plugins: %v", pluginConfigs)
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
@@ -280,8 +277,6 @@ func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []
 		}
 
 		p.PostInit()
-
-		// logger.Infof("after parse, config: %v", p.Config())
 
 		plugins = append(plugins, p)
 	}
@@ -317,7 +312,6 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		uri := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 		servers[uri] = weight
 	}
-	// fmt.Printf("servers: %v\n", servers)
 
 	// FIXME: do service discovery here
 	lb := pxy.NewWeightedRRLoadBalance(servers)

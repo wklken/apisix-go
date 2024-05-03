@@ -31,7 +31,7 @@ type Server struct {
 
 func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
-	storage := store.NewStore("my.db", events)
+	storage := store.NewStore("apisix-go-store.db", events)
 	return &Server{
 		addr:            ":8080",
 		server:          &http.Server{},
@@ -62,7 +62,6 @@ func (s *Server) Start() {
 	reloadCheckInterval := 60 * time.Second
 	go s.listenReloadEvent(ctx, reloadCheckInterval)
 
-	// FIXME: port and path should be configurable
 	// start prometheus at another port
 	for _, plugin := range config.GlobalConfig.Plugins {
 		// prometheus enabled

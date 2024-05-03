@@ -208,6 +208,10 @@ type Consumer struct {
 	Plugins  map[string]PluginConfig
 }
 
+type ConsumerGroup struct {
+	Plugins map[string]PluginConfig
+}
+
 type GlobalRule struct {
 	Plugins map[string]PluginConfig `json:"plugins,omitempty"`
 }

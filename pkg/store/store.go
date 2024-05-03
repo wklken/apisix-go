@@ -30,11 +30,11 @@ type Store struct {
 
 // should it be global store?
 var (
-	once sync.Once
-	s    *Store
+	once              sync.Once
+	s                 *Store
+	errBucketNotFound = fmt.Errorf("bucket not found")
 )
 
-// FIXME: use init()?
 func NewStore(dbPath string, events chan *Event) *Store {
 	once.Do(func() {
 		db, err := bolt.Open(dbPath, 0o600, nil)
@@ -64,13 +64,13 @@ var builtInBuckets = [][]byte{
 	[]byte("routes"),
 	[]byte("services"),
 	[]byte("upstreams"),
-	// []byte("secrets"),
-
-	[]byte("consumers"),
-	[]byte("consumer_groups"),
 	[]byte("global_rules"),
 	[]byte("plugin_configs"),
 	[]byte("plugin_metadata"),
+	[]byte("consumers"),
+	// []byte("secrets"),
+
+	[]byte("consumer_groups"),
 	[]byte("plugins"),
 	[]byte("protos"),
 	[]byte("ssls"),
@@ -100,7 +100,7 @@ func (s *Store) GetBucketData(bucketName string) [][]byte {
 	s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
-			return fmt.Errorf("bucket not found")
+			return errBucketNotFound
 		}
 		b.ForEach(func(_, v []byte) error {
 			data = append(data, v)
@@ -117,7 +117,7 @@ func (s *Store) GetFromBucket(bucketName string, id []byte) []byte {
 	s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
-			return fmt.Errorf("bucket not found")
+			return errBucketNotFound
 		}
 		value = b.Get(id)
 		return nil
@@ -154,7 +154,7 @@ func (s *Store) processEvents() {
 			s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
-					return fmt.Errorf("bucket not found")
+					return errBucketNotFound
 				}
 
 				err := b.Put(id, event.Value)
@@ -173,7 +173,7 @@ func (s *Store) processEvents() {
 			s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
-					return fmt.Errorf("bucket not found")
+					return errBucketNotFound
 				}
 
 				err := b.Delete(id)

@@ -184,12 +184,13 @@ Loggers:
 
 - [ ] standalone mode
 - [ ] handle etcd compact
+- [ ] Dockerfile
+- [ ] github action go releaser
 
 - [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
   - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
 - [ ] admin api
-- [ ] consumer plugins?
-- [ ] consumer group id
+- [ ] consumer group id => consumer dynamic plugins
 - [ ] how to impl the serverless
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard

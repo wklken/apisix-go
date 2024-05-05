@@ -33,6 +33,7 @@ func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
 	storage := store.NewStore("apisix-go-store.db", events)
 	return &Server{
+		// FIXME: listen to multiple address from global config
 		addr:            ":8080",
 		server:          &http.Server{},
 		reloadEventChan: make(chan struct{}, 1),
@@ -119,10 +120,15 @@ func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.C
 }
 
 func (s *Server) startEtcdWatcher() {
-	prefix := "/apisix"
-	endpoints := []string{"127.0.0.1:2379"}
+	// prefix := "/apisix"
+	// endpoints := []string{"127.0.0.1:2379"}
+	prefix := config.GlobalConfig.Etcd.Prefix
+	endpoints := config.GlobalConfig.Etcd.Host
+	username := config.GlobalConfig.Etcd.User
+	password := config.GlobalConfig.Etcd.Password
+
 	logger.Info("Starting etcd client")
-	etcdClient, err := etcd.NewConfigClient(endpoints, prefix, s.events)
+	etcdClient, err := etcd.NewConfigClient(endpoints, username, password, prefix, s.events)
 	if err != nil {
 		panic(err)
 	}

@@ -16,10 +16,12 @@ type ConfigClient struct {
 	events chan *store.Event
 }
 
-func NewConfigClient(endpoints []string, prefix string, events chan *store.Event) (*ConfigClient, error) {
+func NewConfigClient(endpoints []string, username string, password string, prefix string, events chan *store.Event) (*ConfigClient, error) {
 	config := clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: 5 * time.Second,
+		Username:    username,
+		Password:    password,
 	}
 
 	client, err := clientv3.New(config)
@@ -44,7 +46,19 @@ func (c *ConfigClient) Watch() {
 
 	for resp := range watchChan {
 		// if resp.Err() != nil {
+		// 	if errors.Is(resp.Err(), v3rpc.ErrCompacted) {
+		// 		logger.Infof("Compaction occurred at revision: %d", resp.CompactRevision)
+		// 		watchChan = watcher.Watch(ctx, c.prefix, clientv3.WithPrefix(), clientv3.WithRev(resp.CompactRevision+1))
+		// 		continue
+		// 	} else {
+		// 		// log.Println("Watch canceled due to compaction")
+		// 		logger.Errorf("Watch fail due to error: %v", resp.Err())
+		// 		// Optionally reset the watch if needed
+		// 		watchChan = watcher.Watch(ctx, c.prefix, clientv3.WithPrefix(), clientv3.WithRev(resp.CompactRevision+1))
+		// 		continue
+		// 	}
 		// }
+
 		for _, event := range resp.Events {
 			e := store.NewEvent()
 

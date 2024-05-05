@@ -191,16 +191,21 @@ type AdminListen struct {
 // section: deployment.etcd
 
 type Etcd struct {
-	Host               []string `mapstructure:"host"`
-	Prefix             string   `mapstructure:"prefix"`
-	Timeout            int      `mapstructure:"timeout"`
-	WatchTimeout       int      `mapstructure:"watch_timeout"`
-	ResyncDelay        int      `mapstructure:"resync_delay"`
-	HealthCheckTimeout int      `mapstructure:"health_check_timeout"`
-	StartupRetry       int      `mapstructure:"startup_retry"`
-	User               string   `mapstructure:"user"`
-	Password           string   `mapstructure:"password"`
-	TLS                EtcdTLS  `mapstructure:"tls"`
+	Host   []string `mapstructure:"host"`
+	Prefix string   `mapstructure:"prefix"`
+
+	// TODO: not support yet
+	Timeout            int `mapstructure:"timeout"`
+	WatchTimeout       int `mapstructure:"watch_timeout"`
+	ResyncDelay        int `mapstructure:"resync_delay"`
+	HealthCheckTimeout int `mapstructure:"health_check_timeout"`
+	StartupRetry       int `mapstructure:"startup_retry"`
+
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+
+	// TODO: not support yet
+	TLS EtcdTLS `mapstructure:"tls"`
 }
 
 type EtcdTLS struct {

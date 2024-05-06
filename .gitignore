@@ -27,3 +27,4 @@ apisix-go
 /apisix
 dashboard
 *.log
+apisix-go-store.db

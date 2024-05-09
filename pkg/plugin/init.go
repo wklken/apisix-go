@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/consumer_restriction"
 	"github.com/wklken/apisix-go/pkg/plugin/cors"
 	"github.com/wklken/apisix-go/pkg/plugin/csrf"
+	"github.com/wklken/apisix-go/pkg/plugin/elasticsearch_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/fault_injection"
 	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
@@ -92,6 +93,8 @@ func New(name string) Plugin {
 		return &syslog.Plugin{}
 	case "tcp-logger":
 		return &tcp_logger.Plugin{}
+	case "elasticsearch-logger":
+		return &elasticsearch_logger.Plugin{}
 	}
 	return nil
 }

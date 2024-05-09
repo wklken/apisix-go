@@ -1,14 +1,15 @@
 # apisix-go
 
-This is an `apisix` Data Plane(DP) implemented via Go
+This is an [apache/apisix](https://github.com/apache/apisix) Data Plane(DP) implemented via Go
 
 NOT READY FOR PRODUCTION!
 
 ## Features
 
-- Small binary size(<50M) and image size
+- Small binary size(<50M) and image size (<60M)
 - Easy to deploy and scale
 - Better performance with io plugins like `*-logger`
+- Easy to extend with Go http middlewares or Go Plugins(develop and test is much easier)
 
 ### Supported
 
@@ -30,8 +31,7 @@ NOT READY FOR PRODUCTION!
 
 ## Plugins
 
-progress:
-$$ 25  / 76  (31.5\%) $$
+> still working on it
 
 ### General
 
@@ -149,7 +149,7 @@ Metrics:
 
 Loggers:
 
-> 5/18
+> 6/18
 
 - [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
   - not support `include_req_body` and `include_req_body_expr`
@@ -176,7 +176,7 @@ Loggers:
   - not support `include_resp_body` and `include_resp_body_expr`
   - not support `match`
 - [ ] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/)
-- [ ] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/)
+- [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/)
 - [ ] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/)
 - [ ] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/)
 
@@ -184,18 +184,19 @@ Loggers:
 
 - [ ] standalone mode
 - [ ] handle etcd compact
-- [ ] Dockerfile
 - [ ] github action go releaser
+- [ ] logforamt change didn't take effect immediately
 
-- [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
-  - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
-- [ ] admin api
-- [ ] consumer group id => consumer dynamic plugins
-- [ ] how to impl the serverless
 - [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
 - [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
 - [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
 - [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
+- [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
+  - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
+
+- [ ] admin api
+- [ ] consumer group id => consumer dynamic plugins
+- [ ] how to impl the serverless
 - [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
 - [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)
 - [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)

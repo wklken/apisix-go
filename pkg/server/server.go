@@ -122,10 +122,10 @@ func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.C
 func (s *Server) startEtcdWatcher() {
 	// prefix := "/apisix"
 	// endpoints := []string{"127.0.0.1:2379"}
-	prefix := config.GlobalConfig.Etcd.Prefix
-	endpoints := config.GlobalConfig.Etcd.Host
-	username := config.GlobalConfig.Etcd.User
-	password := config.GlobalConfig.Etcd.Password
+	prefix := config.GlobalConfig.Deployment.Etcd.Prefix
+	endpoints := config.GlobalConfig.Deployment.Etcd.Host
+	username := config.GlobalConfig.Deployment.Etcd.User
+	password := config.GlobalConfig.Deployment.Etcd.Password
 
 	logger.Info("Starting etcd client")
 	etcdClient, err := etcd.NewConfigClient(endpoints, username, password, prefix, s.events)

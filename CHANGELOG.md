@@ -64,3 +64,5 @@
 - [x] refactor base.BaseLoggerPlugin / file-logger with buffered 2024-05-02
 - [x] refactor store/getter.go 2024-05-03
 - [x] admin api dir 2024-05-06
+- [x] Dockerfile 2024-05-07
+- [x] plugin elasticsearch-logger [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 2024-05-09

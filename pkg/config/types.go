@@ -17,8 +17,6 @@ type Config struct {
 	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
 	PluginAttr map[string]map[string]interface{} `mapstructure:"plugin_attr"`
 	Deployment Deployment                        `mapstructure:"deployment"`
-	Admin      Admin                             `mapstructure:"admin"`
-	Etcd       Etcd                              `mapstructure:"etcd"`
 }
 
 // section: apisix
@@ -149,6 +147,8 @@ type Deployment struct {
 	Role            string                `mapstructure:"role"`
 	RoleTraditional RoleTraditionalConfig `mapstructure:"role_traditional"`
 	// TODO: role_data_plane, role_control_plane
+	Admin Admin `mapstructure:"admin"`
+	Etcd  Etcd  `mapstructure:"etcd"`
 }
 
 type RoleTraditionalConfig struct {

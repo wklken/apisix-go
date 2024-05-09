@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -70,6 +71,10 @@ func Start() {
 		viper.SetConfigFile(cfgFile)
 	}
 	initConfig()
+
+	fmt.Printf("global config: %+v\n", globalConfig)
+	b, _ := json.Marshal(globalConfig)
+	fmt.Println("global config json:", string(b))
 
 	if globalConfig.Debug {
 		fmt.Println(viper.AllSettings())

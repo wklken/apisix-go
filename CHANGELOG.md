@@ -1,6 +1,4 @@
-## develop
-
-> code marathon, for fun!
+## still in progress
 
 - [x] choose router => [chi](https://github.com/go-chi/chi) 2024-03-08
 - [x] reverse proxy => [httputil/reverseproxy](https://go.dev/src/net/http/httputil/reverseproxy.go) 2024-03-08
@@ -66,3 +64,4 @@
 - [x] admin api dir 2024-05-06
 - [x] Dockerfile 2024-05-07
 - [x] plugin elasticsearch-logger [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 2024-05-09
+- [x] support plugin share the same client 2024-05-25

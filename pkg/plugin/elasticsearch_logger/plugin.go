@@ -8,6 +8,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -168,6 +169,10 @@ func (p *Plugin) PostInit() error {
 	}
 	fmt.Printf("log format: %v\n", p.LogFormat)
 
+	// share the same client
+	// FIXME: timeout and ssl_verify not support
+	clientUID := shared.NewConfigUID()
+
 	username := ""
 	password := ""
 	if p.config.Auth != nil {
@@ -175,7 +180,7 @@ func (p *Plugin) PostInit() error {
 		password = p.config.Auth.Password
 	}
 
-	client, err := elasticsearch.NewClient(elasticsearch.Config{
+	c, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses: p.config.EndpointAddrs,
 		Username:  username,
 		Password:  password,
@@ -183,6 +188,10 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
+	clientUID.Add(p.config.EndpointAddrs, username, password)
+
+	client := shared.LoadOrStoreClient(name, clientUID, c).(*elasticsearch.Client)
+
 	p.client = client
 
 	// create the index

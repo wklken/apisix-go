@@ -8,6 +8,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -113,8 +114,6 @@ func (p *Plugin) Init() error {
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
 
-	p.client = resty.New()
-
 	p.SendFunc = p.Send
 
 	return nil
@@ -125,8 +124,30 @@ func (p *Plugin) PostInit() error {
 		p.config.Timeout = 3
 	}
 
-	p.client.SetTimeout(time.Duration(p.config.Timeout) * time.Second)
-	p.client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.config.SslVerify})
+	// client
+	configUID := shared.NewConfigUID()
+	client := resty.New()
+
+	configUID.Add(p.config.Timeout)
+	client.SetTimeout(time.Duration(p.config.Timeout) * time.Second)
+	configUID.Add(p.config.SslVerify)
+	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.config.SslVerify})
+
+	configUID.Add(p.config.ConcatMethod)
+	if p.config.ConcatMethod == "" || p.config.ConcatMethod == "json" {
+		client.SetHeader("content-type", "application/json")
+	} else {
+		client.SetHeader("content-type", "text/plain")
+	}
+	client.SetHeader("User-Agent", "apisix-go-plugin-http-logger")
+
+	configUID.Add(p.config.AuthHeader)
+	if p.config.AuthHeader != nil {
+		// we can't use  p.client.SetAuthToken here
+		client.SetHeader("Authorization", *p.config.AuthHeader)
+	}
+
+	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
 		var metadata pluginMetadata
@@ -134,18 +155,6 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = metadata.LogFormat
 	} else {
 		p.LogFormat = p.config.LogFormat
-	}
-
-	if p.config.ConcatMethod == "" || p.config.ConcatMethod == "json" {
-		p.client.SetHeader("content-type", "application/json")
-	} else {
-		p.client.SetHeader("content-type", "text/plain")
-	}
-	p.client.SetHeader("User-Agent", "apisix-go-plugin-http-logger")
-
-	if p.config.AuthHeader != nil {
-		// we can't use  p.client.SetAuthToken here
-		p.client.SetHeader("Authorization", *p.config.AuthHeader)
 	}
 
 	// start the consumer
@@ -164,7 +173,12 @@ func (p *Plugin) Send(log map[string]any) {
 	}
 
 	if resp.StatusCode() >= 400 {
-		logger.Errorf("server returned status code [%d] uri [%s], body [%s]", resp.StatusCode(), p.config.URI, resp.String())
+		logger.Errorf(
+			"server returned status code [%d] uri [%s], body [%s]",
+			resp.StatusCode(),
+			p.config.URI,
+			resp.String(),
+		)
 		return
 	}
 }

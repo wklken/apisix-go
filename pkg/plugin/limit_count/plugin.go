@@ -1,6 +1,7 @@
 package limit_count
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,6 +12,8 @@ import (
 	"github.com/ulule/limiter/v3/drivers/store/memory"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -181,6 +184,11 @@ type RedisConfig struct {
 	RedisSSLVerify *bool  `json:"redis_ssl_verify,omitempty"`
 }
 
+func (rc *RedisConfig) String() string {
+	c, _ := json.Marshal(rc)
+	return util.BytesToString(c)
+}
+
 // RedisClusterConfig holds fields specific to the "redis-cluster" policy.
 type RedisClusterConfig struct {
 	RedisClusterNodes     []string `json:"redis_cluster_nodes,omitempty"`
@@ -260,16 +268,19 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "local" {
 		store = memory.NewStore()
 	} else if p.config.Policy == "redis" {
-		// FIXME: each route has its own limit => we should share the redis client
-		client := redis.NewClient(&redis.Options{
+		// each route has its own limit => we should share the redis client
+		configUID := shared.NewConfigUID()
+		configUID.Add(p.config.Redis.String())
+		c := redis.NewClient(&redis.Options{
 			Addr:     fmt.Sprintf("%s:%d", p.config.Redis.RedisHost, p.config.Redis.RedisPort),
 			Username: p.config.Redis.RedisUsername,
 			Password: p.config.Redis.RedisPassword,
 			DB:       p.config.Redis.RedisDatabase,
+			// RedisTimeout   int    `json:"redis_timeout,omitempty"`
+			// RedisSSL       bool   `json:"redis_ssl,omitempty"`
+			// RedisSSLVerify bool   `json:"redis_ssl_verify,omitempty"`
 		})
-		// RedisTimeout   int    `json:"redis_timeout,omitempty"`
-		// RedisSSL       bool   `json:"redis_ssl,omitempty"`
-		// RedisSSLVerify bool   `json:"redis_ssl_verify,omitempty"`
+		client := shared.LoadOrStoreClient(name, configUID, c).(*redis.Client)
 
 		// BREAKPOINT: add redis into docker-compose, then test it
 		var err error

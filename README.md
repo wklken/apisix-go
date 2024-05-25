@@ -2,11 +2,11 @@
 
 This is an [apache/apisix](https://github.com/apache/apisix) Data Plane(DP) implemented via Go
 
-NOT READY FOR PRODUCTION!
+This project is still under development and NOT READY FOR PRODUCTION!
 
 ## Features
 
-- Small binary size(<50M) and image size (<60M)
+- Small binary size and image size (<100M)
 - Easy to deploy and scale
 - Better performance with io plugins like `*-logger`
 - Easy to extend with Go http middlewares or Go Plugins(develop and test is much easier)
@@ -184,22 +184,5 @@ Loggers:
 
 - [ ] standalone mode
 - [ ] handle etcd compact
-- [ ] github action go releaser
+- [ ] github action: go releaser
 - [ ] logforamt change didn't take effect immediately
-
-- [ ] plugin limit-req [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/)
-- [ ] plugin limit-conn [text](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) hard
-- [ ] plugin proxy-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 剩余功能
-- [ ] plugin response-rewrite [text](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) a little hard
-- [ ] plugin server-info [text](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/)
-  - [ ] register self to `/apisix/data_plane/server_info/{server_id}`
-
-- [ ] admin api
-- [ ] consumer group id => consumer dynamic plugins
-- [ ] how to impl the serverless
-- [ ] 插件优先级 Consumer > Consumer Group > Route > Plugin Config > Service, 目前没有Consumer, 所以只需要再支持 Plugin Config
-- [ ] plugin brotli [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) via [text](https://pkg.go.dev/github.com/andybalholm/brotli#section-readme)
-- [ ] jwt [go-jose](https://github.com/go-jose/go-jose/)
-- [ ] route + service + upstream, merge the config
-- [ ] read the conf/config-default.yaml and conf/config.yaml, and merge the config
-- [ ] the plugin which modify response, how?

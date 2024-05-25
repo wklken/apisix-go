@@ -75,7 +75,7 @@ func (p *Plugin) PostInit() error {
 	syncWriter := &zapcore.BufferedWriteSyncer{
 		WS: zapcore.AddSync(&lumberjack.Logger{
 			Filename: p.config.Path,
-			// FIXME: use log-rotate params
+			// FIXME: use log-rotate params, the log-rotate plugin only set the params into context
 			MaxSize:   512,
 			MaxAge:    7,
 			LocalTime: true,

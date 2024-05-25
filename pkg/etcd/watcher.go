@@ -16,7 +16,13 @@ type ConfigClient struct {
 	events chan *store.Event
 }
 
-func NewConfigClient(endpoints []string, username string, password string, prefix string, events chan *store.Event) (*ConfigClient, error) {
+func NewConfigClient(
+	endpoints []string,
+	username string,
+	password string,
+	prefix string,
+	events chan *store.Event,
+) (*ConfigClient, error) {
 	config := clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: 5 * time.Second,

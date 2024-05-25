@@ -137,7 +137,9 @@ func (p *Plugin) PostInit() error {
 		p.config.key = "$route_id"
 	}
 
-	p.config.emptyValueErrorMessage = util.BuildMessageResponse(fmt.Sprintf("The request is rejected, please check the %s for this request", p.config.Type))
+	p.config.emptyValueErrorMessage = util.BuildMessageResponse(
+		fmt.Sprintf("The request is rejected, please check the %s for this request", p.config.Type),
+	)
 
 	if p.config.Blacklist != nil {
 		p.config.blacklistMap = make(map[string]struct{})

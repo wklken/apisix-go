@@ -8,9 +8,8 @@ import (
 
 func adminRouter() http.Handler {
 	r := chi.NewRouter()
-	// FIXME: add middlewares
-	// 1. admin key
-	// 2. allow_admin
+	// FIXME: set the admin key here, and `allow_admin`
+	r.Use(AdminKeyMiddleware("admin-key"))
 
 	// r.Use(AdminOnly)
 	// r.Get("/", adminIndex)

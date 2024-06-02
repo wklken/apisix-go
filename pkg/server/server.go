@@ -151,5 +151,6 @@ func (s *Server) startServer(ctx context.Context) {
 	if err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("error serve: %w", err)
 	}
+
 	<-ctx.Done()
 }

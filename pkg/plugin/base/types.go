@@ -31,6 +31,11 @@ func (p *BasePlugin) GetSchema() string {
 // Send(log map[string]any)
 // }
 
+const (
+	MAX_REQ_BODY  = 524288 // 512 KiB
+	MAX_RESP_BODY = 524288 // 512 KiB
+)
+
 type BaseLoggerPlugin struct {
 	BasePlugin
 
@@ -40,13 +45,29 @@ type BaseLoggerPlugin struct {
 	LogFormat map[string]string
 
 	SendFunc func(log map[string]any)
+
+	IncludeRequestBody  bool
+	IncludeResponseBody bool
 }
+
+// func getRequest(r *http.Request, includeRequestBody bool) map[string]any {
+// }
+
+// func getResponse(w http.ResponseWriter, includeResponseBody bool) map[string]any {
+// }
 
 func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
 
 		logFields := log.GetFields(r, p.LogFormat)
+
+		// FIXME: if not LogFormat, will get full log,
+		// reference: https://github.com/apache/apisix/blob/master/apisix/utils/log-util.lua#L136
+
+		// logFields["request"] = getRequest(r, p.IncludeRequestBody)
+		// logFields["response"] = getResponse(w, p.IncludeResponseBody)
+
 		p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)

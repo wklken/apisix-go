@@ -8,7 +8,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 const (
@@ -168,7 +167,7 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf("failed to marshal log message: %s in syslog", err)
 		return
 	}
-	_, err = fmt.Fprintf(sysLog, util.BytesToString(logMessage))
+	_, err = sysLog.Write(logMessage)
 	if err != nil {
 		logger.Errorf("failed to send log message: %s in udp-logger", err)
 		return

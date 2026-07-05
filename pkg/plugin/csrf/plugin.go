@@ -202,7 +202,7 @@ func genCSRFToken(key string) string {
 func genSign(random float64, expires int64, key string) string {
 	// 构造待签名的字符串
 	// FIXME: format float64 here?
-	sign := fmt.Sprintf("{expires:%d,random:%s,key:%s}", expires, random, key)
+	sign := fmt.Sprintf("{expires:%d,random:%v,key:%s}", expires, random, key)
 
 	// 创建一个新的 SHA256 哈希对象
 	hash := sha256.New()

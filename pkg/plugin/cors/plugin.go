@@ -3,6 +3,7 @@ package cors
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/rs/cors"
@@ -14,7 +15,8 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	cors *cors.Cors
+	cors        *cors.Cors
+	originRegex []*regexp.Regexp
 }
 
 const (
@@ -107,8 +109,8 @@ type Config struct {
 	MaxAge          int    `json:"max_age"`
 	AllowCredential bool   `json:"allow_credential"`
 
-	// FIXME: not supported yet
 	AllowOriginsByRegex       []string `json:"allow_origins_by_regex"`
+	// FIXME: not supported yet
 	AllowOriginsByMetadata    []string `json:"allow_origins_by_metadata"`
 	TimingAllowOrigins        *string  `json:"timing_allow_origins,omitempty"`
 	TimingAllowOriginsByRegex []string `json:"timing_allow_origins_by_regex"`
@@ -143,9 +145,15 @@ func (p *Plugin) PostInit() error {
 		p.config.MaxAge = 5
 	}
 
-	fmt.Printf("config: %+v\n", p.config)
+	for _, rule := range p.config.AllowOriginsByRegex {
+		compiled, err := regexp.Compile(rule)
+		if err != nil {
+			return fmt.Errorf("compile allow_origins_by_regex %q: %w", rule, err)
+		}
+		p.originRegex = append(p.originRegex, compiled)
+	}
 
-	p.cors = cors.New(cors.Options{
+	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
 		AllowedMethods:   strings.Split(p.config.AllowMethods, ","),
 		AllowedHeaders:   strings.Split(p.config.AllowHeaders, ","),
@@ -154,7 +162,11 @@ func (p *Plugin) PostInit() error {
 		AllowCredentials: p.config.AllowCredential,
 		// Enable Debugging for testing, consider disabling in production
 		// Debug: true,
-	})
+	}
+	if len(p.originRegex) > 0 {
+		options.AllowOriginFunc = p.allowOrigin
+	}
+	p.cors = cors.New(options)
 	p.cors.Log = new(logger.DebugLogger)
 
 	return nil
@@ -172,4 +184,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	// return http.HandlerFunc(fn)
 
 	return p.cors.Handler(next)
+}
+
+func (p *Plugin) allowOrigin(origin string) bool {
+	for _, allowedOrigin := range strings.Split(p.config.AllowOrigins, ",") {
+		if allowedOrigin == "*" || allowedOrigin == origin {
+			return true
+		}
+		if allowedOrigin == "**" && origin != "" {
+			return true
+		}
+	}
+	for _, rule := range p.originRegex {
+		if rule.MatchString(origin) {
+			return true
+		}
+	}
+	return false
 }

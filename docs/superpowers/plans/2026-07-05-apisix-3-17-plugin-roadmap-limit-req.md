@@ -1520,6 +1520,37 @@ Updated the missing-key response to `{"message": "Missing API key found in reque
 
 Run: `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 160: Implement `cors` Regex Origin Matching
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Add: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: route/service `cors` config with `allow_origins` and `allow_origins_by_regex`.
+- Produces: CORS origin acceptance when literal origins do not match but a configured regex matches the request `Origin`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; APISIX tries `allow_origins` first, then `allow_origins_by_regex`, and returns the request origin when a regex matches.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused handler test for an origin accepted only by `allow_origins_by_regex`. It initially failed because the Go plugin ignored regex origins.
+
+- [x] **Step 3: Implement regex matching**
+
+Compiled configured regex rules during `PostInit` and wired `rs/cors` `AllowOriginFunc` to accept literal origins, `**`, or matching regex origins.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include regex origins and to keep metadata origins, timing origins, and exact wildcard semantics unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

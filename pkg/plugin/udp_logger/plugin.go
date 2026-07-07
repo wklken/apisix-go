@@ -3,6 +3,7 @@ package udp_logger
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -56,6 +57,16 @@ const schema = `
 		"items": {
 		  "type": "array"
 		}
+	  },
+	  "max_req_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
+	  "max_resp_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
 	  }
 	},
 	"required": ["host", "port"]
@@ -71,10 +82,12 @@ type Plugin struct {
 }
 
 type Config struct {
-	Host      string            `json:"host"`
-	Port      int               `json:"port"`
-	Timeout   int               `json:"timeout,omitempty"`    // 使用指针以区分默认值和未设置
-	LogFormat map[string]string `json:"log_format,omitempty"` // 使用指针类型以便跳过默认空值
+	Host             string            `json:"host"`
+	Port             int               `json:"port"`
+	Timeout          int               `json:"timeout,omitempty"`    // 使用指针以区分默认值和未设置
+	LogFormat        map[string]string `json:"log_format,omitempty"` // 使用指针类型以便跳过默认空值
+	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
 
 	// FIXME: not support
 	// IncludeReqBody      bool              `json:"include_req_body"`
@@ -108,14 +121,12 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		var metadata pluginMetadata
-		store.GetPluginMetadata(name, &metadata)
-		p.LogFormat = metadata.LogFormat
+		p.LogFormat = loadMetadataLogFormat()
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
 
-	p.config.addr = fmt.Sprintf("%s:%d", p.config.Host, p.config.Port)
+	p.config.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
 
 	// start the consumer
 	p.Consume()
@@ -125,7 +136,7 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Send(log map[string]any) {
 	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
-	conn, err := net.Dial("udp", p.config.addr)
+	conn, err := p.dial()
 	if err != nil {
 		logger.Errorf("failed to connect to udp server: %s", err)
 		return
@@ -144,4 +155,23 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf("failed to send log message: %s in udp-logger", err)
 		return
 	}
+}
+
+func (p *Plugin) dial() (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Second}
+	return dialer.Dial("udp", p.config.addr)
+}
+
+func loadMetadataLogFormat() (format map[string]string) {
+	defer func() {
+		if recover() != nil {
+			format = nil
+		}
+	}()
+
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil
+	}
+	return metadata.LogFormat
 }

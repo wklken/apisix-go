@@ -438,6 +438,37 @@ Updated `file-logger` support notes to include bounded `match` support, leaving 
 
 Run: `go test ./pkg/plugin/file_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 125: Harden `udp-logger` Delivery And Config Parity
+
+**Files:**
+- Modify: `pkg/plugin/udp_logger/plugin.go`
+- Create: `pkg/plugin/udp_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `udp-logger` `host`, `port`, `timeout`, `log_format`, `max_req_body_bytes`, and `max_resp_body_bytes` config.
+- Produces: UDP logger delivery with official timeout default, safe metadata fallback, and schema acceptance for body-size config.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/udp-logger.lua`; APISIX defaults `timeout` to 3 seconds, sends encoded log entries to the configured UDP host/port, and accepts request/response body-size fields as part of the logger schema.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default initialization without an initialized metadata store, UDP message delivery to a local listener, and schema acceptance for the official body-size fields.
+
+- [x] **Step 3: Implement delivery/config parity**
+
+Added safe metadata fallback, `net.JoinHostPort` address construction, `net.Dialer` timeout usage, config fields for official body-size knobs, and schema entries for those fields.
+
+- [x] **Step 4: Update README**
+
+Updated `udp-logger` support notes to include tested UDP delivery, timeout/log-format behavior, and body-size config validation while keeping request/response body capture unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/udp_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

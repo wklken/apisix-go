@@ -290,7 +290,9 @@ Loggers:
 
 > 19/19
 
-- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/)
+- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 50%
+  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, and official body-size config validation
+  - not support APISIX batch processor behavior or `max_pending_entries`
   - not support `include_req_body` and `include_req_body_expr`
   - not support `include_resp_body` and `include_resp_body_expr`
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 55%

@@ -469,6 +469,37 @@ Updated `udp-logger` support notes to include tested UDP delivery, timeout/log-f
 
 Run: `go test ./pkg/plugin/udp_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 126: Harden `http-logger` Delivery And Config Parity
+
+**Files:**
+- Modify: `pkg/plugin/http_logger/plugin.go`
+- Create: `pkg/plugin/http_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `http-logger` `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, `max_req_body_bytes`, and `max_resp_body_bytes` config.
+- Produces: HTTP logger delivery with tested auth/content-type behavior, official defaults, safe metadata fallback, and schema acceptance for body-size config.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/http-logger.lua`; APISIX defaults `timeout` to 3 seconds and `concat_method` to `json`, posts JSON-encoded log entries, switches content type to `text/plain` for `new_line`, honors `auth_header`, and accepts request/response body-size fields.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default initialization without an initialized metadata store, JSON POST delivery with `Authorization`, `new_line` content type, and schema acceptance for official body-size fields.
+
+- [x] **Step 3: Implement delivery/config parity**
+
+Added safe metadata fallback using the correct `http-logger` metadata key, explicit `concat_method` defaulting, body-size config/schema fields, JSON encoding before POST for both concat modes, and removed debug stdout from the send path.
+
+- [x] **Step 4: Update README**
+
+Updated `http-logger` support notes to include tested delivery/config behavior while keeping APISIX batch processor behavior and request/response body capture unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/http_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

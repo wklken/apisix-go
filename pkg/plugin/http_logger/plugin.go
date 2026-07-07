@@ -2,10 +2,10 @@ package http_logger
 
 import (
 	"crypto/tls"
-	"fmt"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -59,6 +59,16 @@ const schema = `
 		  "type": "array"
 		}
 	  },
+	  "max_req_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
+	  "max_resp_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
 	  "concat_method": {
 		"type": "string",
 		"default": "json",
@@ -84,11 +94,13 @@ type Plugin struct {
 }
 
 type Config struct {
-	URI        string            `json:"uri"`
-	AuthHeader *string           `json:"auth_header,omitempty"`
-	Timeout    int               `json:"timeout"`
-	LogFormat  map[string]string `json:"log_format,omitempty"`
-	SslVerify  bool              `json:"ssl_verify"`
+	URI              string            `json:"uri"`
+	AuthHeader       *string           `json:"auth_header,omitempty"`
+	Timeout          int               `json:"timeout"`
+	LogFormat        map[string]string `json:"log_format,omitempty"`
+	SslVerify        bool              `json:"ssl_verify"`
+	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
 
 	// FIXME: not support
 	// IncludeReqBody      bool                   `json:"include_req_body"`
@@ -123,6 +135,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
 	}
+	if p.config.ConcatMethod == "" {
+		p.config.ConcatMethod = "json"
+	}
 
 	// client
 	configUID := shared.NewConfigUID()
@@ -134,7 +149,7 @@ func (p *Plugin) PostInit() error {
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.config.SslVerify})
 
 	configUID.Add(p.config.ConcatMethod)
-	if p.config.ConcatMethod == "" || p.config.ConcatMethod == "json" {
+	if p.config.ConcatMethod == "json" {
 		client.SetHeader("content-type", "application/json")
 	} else {
 		client.SetHeader("content-type", "text/plain")
@@ -150,9 +165,7 @@ func (p *Plugin) PostInit() error {
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		var metadata pluginMetadata
-		store.GetPluginMetadata("file-logger", &metadata)
-		p.LogFormat = metadata.LogFormat
+		p.LogFormat = loadMetadataLogFormat()
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
@@ -164,9 +177,13 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	fmt.Println("send log to http logger", log)
-	// FIXME: use our own json marshal? for better performance
-	resp, err := p.client.R().SetBody(log).Post(p.config.URI)
+	body, err := json.Marshal(log)
+	if err != nil {
+		logger.Errorf("failed to marshal log message: %s in http-logger", err)
+		return
+	}
+
+	resp, err := p.client.R().SetBody(body).Post(p.config.URI)
 	if err != nil {
 		logger.Errorf("error while sending data to [%s] %s", p.config.URI, err)
 		return
@@ -181,4 +198,18 @@ func (p *Plugin) Send(log map[string]any) {
 		)
 		return
 	}
+}
+
+func loadMetadataLogFormat() (format map[string]string) {
+	defer func() {
+		if recover() != nil {
+			format = nil
+		}
+	}()
+
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil
+	}
+	return metadata.LogFormat
 }

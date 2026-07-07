@@ -97,7 +97,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// note: here it's  unique key => consumer, it's different from basic-auth
 		consumer, err := store.GetConsumerByPluginKey(name, key)
 		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, `{"message": "Missing related consumer"}`, http.StatusUnauthorized)
+			http.Error(w, `{"message": "Invalid API key in request"}`, http.StatusUnauthorized)
 			return
 		}
 

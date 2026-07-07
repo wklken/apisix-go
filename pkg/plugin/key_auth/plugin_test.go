@@ -114,6 +114,27 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsInvalidKey(t *testing.T) {
+	addKeyAuthConsumer(t, "valid-key-user", "valid-key")
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("apikey", "wrong-key")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if !strings.Contains(rr.Body.String(), "Invalid API key in request") {
+		t.Fatalf("body = %q, want invalid key message", rr.Body.String())
+	}
+}
+
 func TestHandlerHideCredentialsRemovesQueryKey(t *testing.T) {
 	addKeyAuthConsumer(t, "query-user", "query-key")
 	hideCredentials := true

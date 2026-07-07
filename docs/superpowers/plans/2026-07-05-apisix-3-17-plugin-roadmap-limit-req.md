@@ -1463,6 +1463,37 @@ Moved APISIX credential whitespace normalization into the supported `basic-auth`
 
 Run: `go test ./pkg/plugin/basic_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 158: Align `key-auth` Invalid-Key Error
+
+**Files:**
+- Modify: `pkg/plugin/key_auth/plugin.go`
+- Modify: `pkg/plugin/key_auth/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: route/service `key-auth` config and indexed consumer keys.
+- Produces: APISIX-style missing key and invalid key error distinction.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/key-auth.lua`; a missing credential returns the missing-key message, while a presented key that does not match an indexed consumer returns `Invalid API key in request`.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused invalid-key test. It initially failed because the Go plugin returned `Missing related consumer` for a bad API key.
+
+- [x] **Step 3: Implement error parity**
+
+Mapped consumer key lookup misses to `{"message": "Invalid API key in request"}` while preserving the existing missing-key behavior.
+
+- [x] **Step 4: Update README**
+
+Updated `key-auth` support notes to include APISIX-style missing/invalid key errors.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

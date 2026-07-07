@@ -196,6 +196,7 @@ func TestHandlerCacheControlRequestNoCacheBypassesStoredEntry(t *testing.T) {
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
+		w.Header().Set("Cache-Control", "max-age=60")
 		_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
 	}))
 
@@ -259,6 +260,108 @@ func TestHandlerCacheControlResponseDirectivesSkipStore(t *testing.T) {
 				t.Fatalf("upstream calls = %d, want 2", calls)
 			}
 		})
+	}
+}
+
+func TestHandlerCacheControlOnlyIfCachedMissReturnsGatewayTimeout(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	res := performRequest(
+		t,
+		handler,
+		http.MethodGet,
+		"/only-if-cached",
+		map[string]string{"Cache-Control": "only-if-cached"},
+	)
+	if res.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusGatewayTimeout)
+	}
+	if res.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("cache status = %q, want MISS", res.Header().Get(cacheStatusHeader))
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls)
+	}
+}
+
+func TestHandlerCacheControlRequiresPositiveResourceTTL(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "missing"},
+		{name: "zero max age", headers: map[string]string{"Cache-Control": "max-age=0"}},
+		{name: "expired expires", headers: map[string]string{
+			"Expires": time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat),
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+			calls := 0
+
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				for name, value := range tt.headers {
+					w.Header().Set(name, value)
+				}
+				_, _ = w.Write([]byte("response"))
+			}))
+
+			first := performRequest(t, handler, http.MethodGet, "/resource-ttl", nil)
+			second := performRequest(t, handler, http.MethodGet, "/resource-ttl", nil)
+
+			if first.Header().Get(cacheStatusHeader) != "MISS" {
+				t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+			}
+			if second.Header().Get(cacheStatusHeader) != "MISS" {
+				t.Fatalf("second cache status = %q, want MISS", second.Header().Get(cacheStatusHeader))
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want 2", calls)
+			}
+		})
+	}
+}
+
+func TestHandlerCacheControlUsesUpstreamMaxAgeTTL(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Cache-Control", "max-age=1")
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	before := time.Now()
+	first := performRequest(t, handler, http.MethodGet, "/resource-max-age", nil)
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+
+	key := p.cacheKey(httptest.NewRequest(http.MethodGet, "/resource-max-age", nil))
+	entry, ok := p.entries[key]
+	if !ok {
+		t.Fatal("cache entry missing")
+	}
+	if entry.expiresAt.Before(before) || entry.expiresAt.After(before.Add(2*time.Second)) {
+		t.Fatalf("expiresAt = %s, want about one second after %s", entry.expiresAt, before)
+	}
+
+	second := performRequest(t, handler, http.MethodGet, "/resource-max-age", nil)
+	if second.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("second cache status = %q, want HIT", second.Header().Get(cacheStatusHeader))
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
 	}
 }
 

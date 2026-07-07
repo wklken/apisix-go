@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 98
+## Official APISIX 3.17 Inventory Audit After Task 99
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 98:
+Suggested next valuable batches after Task 99:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3512,3 +3512,36 @@ Updated `proxy-cache` support notes to include bounded `Cache-Control` support a
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlRequestNoCacheBypassesStoredEntry|TestHandlerCacheControlResponseDirectivesSkipStore' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 99: Implement `proxy-cache` Cache-Control TTL Semantics
+
+**Files:**
+- Modify: `pkg/plugin/proxy_cache/plugin.go`
+- Modify: `pkg/plugin/proxy_cache/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: request `Cache-Control: only-if-cached`, upstream `Cache-Control: s-maxage` / `max-age`, and upstream `Expires`.
+- Produces: APISIX-style `504` on `only-if-cached` misses, positive upstream resource TTL derivation when `cache_control` is enabled, and non-storage for zero/missing/expired resource TTL.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover `only-if-cached` miss behavior, refusal to store missing/zero/expired resource TTL responses, and `max-age` overriding configured `cache_ttl`.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlOnlyIfCachedMissReturnsGatewayTimeout|TestHandlerCacheControlRequiresPositiveResourceTTL|TestHandlerCacheControlUsesUpstreamMaxAgeTTL' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because `only-if-cached` called upstream with 200, resource TTL-less responses were cached, and `max-age=1` still used the configured 60-second TTL.
+
+- [x] **Step 3: Implement TTL and `only-if-cached` handling**
+
+Added response TTL derivation from `s-maxage`, `max-age`, and final `Expires`, positive-TTL storage enforcement under `cache_control`, and `504` handling for `only-if-cached` misses.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-cache` support notes to include TTL derivation and `only-if-cached`, while keeping request stale controls, `Vary`, public purge, stale serving, and disk cache limitations visible.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlOnlyIfCachedMissReturnsGatewayTimeout|TestHandlerCacheControlRequiresPositiveResourceTTL|TestHandlerCacheControlUsesUpstreamMaxAgeTTL' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.

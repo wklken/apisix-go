@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -244,6 +245,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		} else if status == "EXPIRED" {
 			p.fetchAndMaybeStore(w, r, next, key, status, !p.hasTruthyValue(r, p.config.NoCache))
 			return
+		} else if p.onlyIfCachedMiss(r) {
+			w.Header().Set(cacheStatusHeader, "MISS")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
 		}
 
 		p.fetchAndMaybeStore(w, r, next, key, "MISS", !p.hasTruthyValue(r, p.config.NoCache))
@@ -272,9 +277,17 @@ func (p *Plugin) fetchAndMaybeStore(
 	if responseCacheControlSkipsStore(recorder.header) {
 		shouldStore = false
 	}
+	cacheTTL := time.Duration(p.config.CacheTTL) * time.Second
+	if shouldStore && p.config.CacheControl {
+		var ok bool
+		cacheTTL, ok = responseCacheControlTTL(recorder.header)
+		if !ok {
+			shouldStore = false
+		}
+	}
 	if shouldStore && p.cacheableStatus(recorder.statusCode) &&
 		(p.config.CacheSetCookie || recorder.header.Get("Set-Cookie") == "") {
-		p.store(key, recorder)
+		p.store(key, recorder, cacheTTL)
 	}
 	recorder.header.Set(cacheStatusHeader, cacheStatus)
 	recorder.writeTo(w)
@@ -293,12 +306,12 @@ func (p *Plugin) lookup(key string) (cacheEntry, string) {
 	return entry, "HIT"
 }
 
-func (p *Plugin) store(key string, recorder *responseRecorder) {
+func (p *Plugin) store(key string, recorder *responseRecorder, ttl time.Duration) {
 	entry := cacheEntry{
 		header:    cloneHeader(recorder.header),
 		body:      append([]byte(nil), recorder.body.Bytes()...),
 		status:    recorder.statusCode,
-		expiresAt: time.Now().Add(time.Duration(p.config.CacheTTL) * time.Second),
+		expiresAt: time.Now().Add(ttl),
 	}
 	entry.header.Del(cacheStatusHeader)
 	if p.config.HideCacheHeaders {
@@ -364,8 +377,33 @@ func (p *Plugin) requestCacheControlBypass(r *http.Request) bool {
 	return p.config.CacheControl && headerHasCacheControlDirective(r.Header, "no-cache", "no-store")
 }
 
+func (p *Plugin) onlyIfCachedMiss(r *http.Request) bool {
+	return p.config.CacheControl && headerHasCacheControlDirective(r.Header, "only-if-cached")
+}
+
 func responseCacheControlSkipsStore(header http.Header) bool {
 	return headerHasCacheControlDirective(header, "private", "no-store", "no-cache")
+}
+
+func responseCacheControlTTL(header http.Header) (time.Duration, bool) {
+	if value, ok := headerCacheControlDirectiveValue(header, "s-maxage", "max-age"); ok {
+		seconds, err := strconv.Atoi(value)
+		if err != nil || seconds <= 0 {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	values := header.Values("Expires")
+	if len(values) == 0 {
+		return 0, false
+	}
+	expires, err := http.ParseTime(values[len(values)-1])
+	if err != nil {
+		return 0, false
+	}
+	ttl := time.Until(expires)
+	return ttl, ttl > 0
 }
 
 func headerHasCacheControlDirective(header http.Header, names ...string) bool {
@@ -377,22 +415,44 @@ func headerHasCacheControlDirective(header http.Header, names ...string) bool {
 	return false
 }
 
+func headerCacheControlDirectiveValue(header http.Header, names ...string) (string, bool) {
+	var found string
+	ok := false
+	for _, value := range header.Values("Cache-Control") {
+		if directiveValue, foundInValue := cacheControlValueDirective(value, names...); foundInValue {
+			found = directiveValue
+			ok = true
+		}
+	}
+	return found, ok
+}
+
 func cacheControlValueHasDirective(value string, names ...string) bool {
+	_, ok := cacheControlValueDirective(value, names...)
+	return ok
+}
+
+func cacheControlValueDirective(value string, names ...string) (string, bool) {
+	var found string
+	ok := false
 	for _, part := range strings.Split(value, ",") {
 		directive := strings.ToLower(strings.TrimSpace(part))
 		if directive == "" {
 			continue
 		}
+		directiveValue := ""
 		if index := strings.IndexByte(directive, '='); index >= 0 {
+			directiveValue = strings.Trim(strings.TrimSpace(directive[index+1:]), `"`)
 			directive = strings.TrimSpace(directive[:index])
 		}
 		for _, name := range names {
 			if directive == name {
-				return true
+				found = directiveValue
+				ok = true
 			}
 		}
 	}
-	return false
+	return found, ok
 }
 
 func newResponseRecorder() *responseRecorder {

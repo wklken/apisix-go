@@ -186,7 +186,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
-- [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
+- [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/) 80%
+  - support `consumer_name`, `service_id`, `route_id`, `consumer_group_id`, blacklist, whitelist, `allowed_by_methods`, custom rejection status/message, and APISIX-style rejection bodies
+  - not support APISIX schema method enum validation or automatic consumer-group attachment
 - [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 72%
   - support official token cookie/header validation, safe method bypass, token expiry/signature checks including `expires = 0` no-expiry validation, configurable `key` / `expires` / `name`, and APISIX-style JSON error bodies
   - not support encrypted consumer fields or exact Lua random-number formatting parity for token signatures

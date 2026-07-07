@@ -1768,6 +1768,37 @@ Updated `fault-injection` support notes to include `abort`, `delay`, percentage 
 
 Run: `go test ./pkg/plugin/fault_injection -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 168: Align `consumer-restriction` Rejection Responses
+
+**Files:**
+- Modify: `pkg/plugin/consumer_restriction/plugin.go`
+- Add: `pkg/plugin/consumer_restriction/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `consumer-restriction` missing-identity and rejection response behavior.
+- Produces: APISIX-compatible JSON message bodies for missing identity, blacklist, whitelist, and method restriction rejections.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/consumer-restriction.lua`, docs, and tests; missing identity returns `401 {"message":"Missing authentication or identity verification."}`, while default restriction rejection returns `{"message":"The <type> is forbidden."}` with a trailing period.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover missing consumer response body/content type, default blacklist rejection punctuation, and preserving custom rejection messages.
+
+- [x] **Step 3: Implement response parity**
+
+Updated default missing-identity and rejection messages, and routed rejection branches through a JSON response writer instead of `http.Error`.
+
+- [x] **Step 4: Update README**
+
+Updated `consumer-restriction` support notes to include supported restriction types, blacklist/whitelist/method behavior, custom rejection config, and APISIX-style rejection bodies.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/consumer_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

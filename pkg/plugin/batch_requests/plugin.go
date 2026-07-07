@@ -13,6 +13,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -33,6 +34,11 @@ const (
 const schema = `{"type":"object"}`
 
 type Config struct{}
+
+type Limits struct {
+	MaxBodySize      int64 `json:"max_body_size,omitempty"`
+	MaxPipelineItems int   `json:"max_pipeline_items,omitempty"`
+}
 
 type Request struct {
 	Query    map[string]string `json:"query,omitempty"`
@@ -84,8 +90,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func NewHandler(dispatcher http.Handler) http.Handler {
+	return NewHandlerWithLimits(dispatcher, loadLimits())
+}
+
+func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
+	limits = applyLimitDefaults(limits)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		responses, errStatus, err := handleBatchRequest(dispatcher, w, r)
+		responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
 		if err != nil {
 			writeJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
 			return
@@ -98,8 +109,9 @@ func handleBatchRequest(
 	dispatcher http.Handler,
 	w http.ResponseWriter,
 	r *http.Request,
+	limits Limits,
 ) ([]PipelineResponse, int, error) {
-	body, err := readLimitedBody(w, r, defaultMaxBodySize)
+	body, err := readLimitedBody(w, r, limits.MaxBodySize)
 	if err != nil {
 		return nil, http.StatusRequestEntityTooLarge, err
 	}
@@ -111,7 +123,7 @@ func handleBatchRequest(
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
 	}
-	if err := validateRequest(req); err != nil {
+	if err := validateRequest(req, limits); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 
@@ -135,13 +147,13 @@ func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]b
 	return body, nil
 }
 
-func validateRequest(req Request) error {
+func validateRequest(req Request, limits Limits) error {
 	if len(req.Pipeline) == 0 {
 		return fmt.Errorf("pipeline must contain at least one request")
 	}
-	if len(req.Pipeline) > defaultMaxPipelineItems {
+	if len(req.Pipeline) > limits.MaxPipelineItems {
 		return fmt.Errorf("too many pipeline requests, %d exceeds the maximum of %d",
-			len(req.Pipeline), defaultMaxPipelineItems)
+			len(req.Pipeline), limits.MaxPipelineItems)
 	}
 	for i, item := range req.Pipeline {
 		if item.Path == "" {
@@ -152,6 +164,33 @@ func validateRequest(req Request) error {
 		}
 	}
 	return nil
+}
+
+func applyLimitDefaults(limits Limits) Limits {
+	if limits.MaxBodySize <= 0 {
+		limits.MaxBodySize = defaultMaxBodySize
+	}
+	if limits.MaxPipelineItems <= 0 {
+		limits.MaxPipelineItems = defaultMaxPipelineItems
+	}
+	return limits
+}
+
+func loadLimits() Limits {
+	var limits Limits
+	if err := safeGetPluginMetadata(name, &limits); err != nil {
+		return applyLimitDefaults(Limits{})
+	}
+	return applyLimitDefaults(limits)
+}
+
+func safeGetPluginMetadata(id string, v any) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = store.ErrNotFound
+		}
+	}()
+	return store.GetPluginMetadata(id, v)
 }
 
 func validMethod(method string) bool {

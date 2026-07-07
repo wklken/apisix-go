@@ -33,9 +33,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 16/16
 
-- [x] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/) 60%
-  - support `/apisix/batch-requests`, global and per-item query/header merging, default methods, request body forwarding, response aggregation, and `plugin_attr.batch-requests.uri`
-  - not support true HTTP pipelining, plugin metadata `max_body_size` / `max_pipeline_items` overrides, real-ip header injection from NGINX config, or `ssl_verify`
+- [x] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/) 65%
+  - support `/apisix/batch-requests`, global and per-item query/header merging, default methods, request body forwarding, response aggregation, `plugin_attr.batch-requests.uri`, and plugin metadata `max_body_size` / `max_pipeline_items`
+  - not support true HTTP pipelining, real-ip header injection from NGINX config, or `ssl_verify`
 - [x] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/)
   - not support regex_uri
   - not support encode_uri

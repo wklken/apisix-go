@@ -3964,3 +3964,34 @@ Updated `api-breaker` support notes to include healthy statuses and break header
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/api_breaker -run 'TestHandlerResolvesBreakResponseHeaders|TestHandlerUsesConfiguredHealthyStatusesForRecovery' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/api_breaker -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 113: Implement `batch-requests` Metadata Limits
+
+**Files:**
+- Modify: `pkg/plugin/batch_requests/plugin.go`
+- Create: `pkg/plugin/batch_requests/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official plugin metadata `max_body_size` and `max_pipeline_items` for `batch-requests`.
+- Produces: request body size limiting and pipeline item count validation using metadata values when present, with APISIX defaults otherwise.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/batch-requests.lua`; metadata controls `max_body_size` and `max_pipeline_items`, defaults are 1MiB and 1000, oversized request bodies return 413, and too many pipeline items return 400.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover rejecting request bodies above a configured body limit and rejecting pipelines above a configured item limit.
+
+- [x] **Step 3: Implement bounded metadata limits**
+
+Added batch request `Limits`, default application, metadata loading through `store.GetPluginMetadata`, safe fallback when the store is unavailable, and handler plumbing for testable body-size and pipeline-count enforcement.
+
+- [x] **Step 4: Update README**
+
+Updated `batch-requests` support notes to include plugin metadata `max_body_size` and `max_pipeline_items`, leaving pipelining, real-ip header injection, and `ssl_verify` as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/batch_requests -run 'TestHandlerRejectsBodyAboveConfiguredLimit|TestHandlerRejectsPipelineAboveConfiguredLimit' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/batch_requests ./pkg/route -count=1 -timeout=10s`, `go test ./...`, and `make build`.

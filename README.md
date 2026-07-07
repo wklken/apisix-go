@@ -307,10 +307,9 @@ Loggers:
 - [x] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/) 50%
   - support `nameserver_list`, `topic`, `key`, `tag`, `timeout`, `access_key`, `secret_key`, and `log_format` with RocketMQ sync producer delivery
   - not support APISIX batch processor behavior, `max_pending_entries`, request/response body capture, `meta_format = origin`, or `use_tls`
-- [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 45%
-  - support `host`, `port`, `timeout`, `log_format`, UDP delivery, and official body-size config validation
-  - not support `include_req_body` and `include_req_body_expr`
-  - not support `include_resp_body` and `include_resp_body_expr`
+- [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 50%
+  - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_resp_body`, and capped body-size capture
+  - not support `include_req_body_expr` or `include_resp_body_expr`
 - [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 55%
   - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, and `log_format`
   - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture

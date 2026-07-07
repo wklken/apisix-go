@@ -3,6 +3,7 @@ package request_validation
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -122,8 +123,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			// the body is []byte, want to unmarshal to map[string]interface{} or []interface{}, how to?
-			bodyData, err := parseJSON(body)
+			bodyData, err := parseRequestBody(r, body)
 			if err != nil {
 				err = fmt.Errorf("failed to parse request body: %w", err)
 				logger.Error(err.Error())
@@ -164,6 +164,38 @@ func requestHeaders(r *http.Request) map[string]interface{} {
 	}
 
 	return headers
+}
+
+func parseRequestBody(r *http.Request, body []byte) (interface{}, error) {
+	contentType := strings.ToLower(r.Header.Get("Content-Type"))
+	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+		return parseURLEncodedForm(body)
+	}
+
+	return parseJSON(body)
+}
+
+func parseURLEncodedForm(data []byte) (map[string]interface{}, error) {
+	values, err := url.ParseQuery(util.BytesToString(data))
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]interface{}, len(values))
+	for key, vals := range values {
+		if len(vals) == 1 {
+			result[key] = vals[0]
+			continue
+		}
+
+		items := make([]interface{}, len(vals))
+		for i, val := range vals {
+			items[i] = val
+		}
+		result[key] = items
+	}
+
+	return result, nil
 }
 
 // FIXME: if this func show in another plugin, should be refactor, only do it once

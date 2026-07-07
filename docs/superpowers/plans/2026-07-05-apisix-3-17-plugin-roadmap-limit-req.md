@@ -4088,3 +4088,34 @@ Updated `request-validation` support notes to include `header_schema`, keeping f
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/request_validation -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 117: Implement `request-validation` Form Body Validation
+
+**Files:**
+- Modify: `pkg/plugin/request_validation/plugin.go`
+- Modify: `pkg/plugin/request_validation/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `request-validation` body validation for `Content-Type: application/x-www-form-urlencoded`.
+- Produces: form body decoding into schema-validatable objects, including charset content-type prefixes and repeated form keys.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/request-validation.lua`, `t/plugin/request-validation.t`, and docs; APISIX uses `ngx.decode_args(body, 0)` when the request content type starts with `application/x-www-form-urlencoded`, including charset suffixes.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover accepting URL-encoded form bodies, accepting `application/x-www-form-urlencoded; charset=utf-8`, and rejecting form bodies that miss required schema fields with the configured rejection message.
+
+- [x] **Step 3: Implement form body parsing**
+
+Added request body parser selection by content type and URL-encoded form parsing through `url.ParseQuery`, mapping single values to strings and repeated values to arrays for JSON schema validation.
+
+- [x] **Step 4: Update README**
+
+Updated `request-validation` support notes to include URL-encoded `body_schema`, leaving JSON body normalization before proxying as the remaining gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/request_validation -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -95,6 +97,110 @@ func TestHandlerValidatesHeadersBeforeBody(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsURLEncodedBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type":     "object",
+			"required": []any{"required_payload"},
+			"properties": map[string]any{
+				"required_payload": map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	res := performRequest(
+		p,
+		http.MethodPost,
+		"http://example.com/get",
+		"a=b&required_payload=hello",
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+	)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+}
+
+func TestHandlerAcceptsURLEncodedBodyWithCharset(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type":     "object",
+			"required": []any{"required_payload"},
+			"properties": map[string]any{
+				"required_payload": map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	res := performRequest(
+		p,
+		http.MethodPost,
+		"http://example.com/get",
+		"a=b&required_payload=hello",
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
+	)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+}
+
+func TestHandlerAcceptsRepeatedURLEncodedBodyValues(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type":     "object",
+			"required": []any{"tag"},
+			"properties": map[string]any{
+				"tag": map[string]any{
+					"type":     "array",
+					"minItems": 2,
+					"items":    map[string]any{"type": "string"},
+				},
+			},
+		},
+	})
+
+	res := performRequest(
+		p,
+		http.MethodPost,
+		"http://example.com/get",
+		"tag=a&tag=b",
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+	)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+}
+
+func TestHandlerRejectsInvalidURLEncodedBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type":     "object",
+			"required": []any{"required_payload"},
+			"properties": map[string]any{
+				"required_payload": map[string]any{"type": "string"},
+			},
+		},
+		RejectedMsg: "invalid form body",
+	})
+
+	res := performRequest(
+		p,
+		http.MethodPost,
+		"http://example.com/get",
+		"a=b",
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+	)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusBadRequest)
+	}
+	if got := strings.TrimSpace(res.Body.String()); got != "invalid form body" {
+		t.Fatalf("response body = %q, want invalid form body", got)
+	}
+}
+
 func performRequest(
 	p *Plugin,
 	method string,
@@ -103,6 +209,7 @@ func performRequest(
 	headers map[string]string,
 ) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, rawURL, strings.NewReader(body))
+	req = apisixctx.WithRequestVars(req)
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}

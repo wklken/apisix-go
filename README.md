@@ -89,10 +89,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 8/8
 
-- [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 60%
-  - support `status_code`, `body`, `body_base64`, and header `add` / `set` / `remove`
-  - not support `vars`
-  - not support `filters`
+- [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 80%
+  - support `status_code`, `body`, `body_base64`, header `add` / `set` / `remove`, bounded `vars`, header value variable resolution, and response body `filters`
+  - not support full `lua-resty-expr` parity, compressed response-body decoding before filters, or streaming chunk-level body filters
 - [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 90%
   - support `uri`, `regex_uri`, `method`, `host`, `scheme`, and header config passthrough
   - not support `use_real_request_uri_unsafe`

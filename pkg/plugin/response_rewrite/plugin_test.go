@@ -106,6 +106,100 @@ func TestHandlerSupportsOldHeaderSetForm(t *testing.T) {
 	}
 }
 
+func TestHandlerResolvesHeaderValueVariables(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		StatusCode: 201,
+		Headers: Headers{
+			Set: map[string]string{"X-Rewrite-Status": "$status"},
+		},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	if got := res.Header().Get("X-Rewrite-Status"); got != "201" {
+		t.Fatalf("X-Rewrite-Status = %q, want 201", got)
+	}
+}
+
+func TestHandlerSkipsRewriteWhenVarsDoNotMatch(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		StatusCode: 201,
+		Body:       stringPtr("rewritten"),
+		Vars:       []any{[]any{"status", "==", 404}},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("upstream"))
+	})
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusOK)
+	}
+	if got := res.Body.String(); got != "upstream" {
+		t.Fatalf("body = %q, want upstream", got)
+	}
+}
+
+func TestHandlerAppliesRewriteWhenVarsMatchResponseStatus(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		StatusCode: 202,
+		Body:       stringPtr("accepted"),
+		Vars:       []any{[]any{"status", "==", 404}},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("missing"))
+	})
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusAccepted)
+	}
+	if got := res.Body.String(); got != "accepted" {
+		t.Fatalf("body = %q, want accepted", got)
+	}
+}
+
+func TestHandlerAppliesResponseBodyFilters(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Filters: []Filter{
+			{Regex: `token=\w+`, Replace: "token=hidden"},
+			{Regex: `secret`, Replace: "redacted", Scope: "global"},
+		},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "42")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("token=abc token=def secret secret"))
+	})
+
+	if got := res.Body.String(); got != "token=hidden token=def redacted redacted" {
+		t.Fatalf("body = %q, want filtered body", got)
+	}
+	if got := res.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want removed after filters", got)
+	}
+}
+
+func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			Body:    stringPtr("body"),
+			Filters: []Filter{{Regex: "old", Replace: "new"}},
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want body and filters conflict")
+	}
+}
+
 func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	rr := httptest.NewRecorder()

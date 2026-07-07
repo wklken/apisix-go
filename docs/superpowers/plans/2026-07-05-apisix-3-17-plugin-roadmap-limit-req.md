@@ -3711,3 +3711,34 @@ Updated `proxy-rewrite` support notes to include `regex_uri`, leaving `use_real_
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_rewrite -run 'TestHandlerDerivesURIFromRegexURI|TestHandlerUsesFirstMatchingRegexURIPair|TestHandlerURIHasPriorityOverRegexURI|TestPostInitRejectsOddRegexURI' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 105: Implement `response-rewrite` Vars And Filters
+
+**Files:**
+- Modify: `pkg/plugin/response_rewrite/plugin.go`
+- Modify: `pkg/plugin/response_rewrite/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `vars` response expression conditions, response body `filters`, and header values containing APISIX-style `$var` references.
+- Produces: response rewrite gating by common request/response variables, once/global regexp body substitutions, and resolved header add/set values.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/response-rewrite.lua`; `vars` gates header/body rewrite, `body` and `filters` are mutually exclusive, `filters` run once or globally over the captured response body, and header values resolve APISIX variables.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover response-status `vars` skip/match behavior, header value variable resolution, once/global body filters, and rejecting `body` plus `filters` together.
+
+- [x] **Step 3: Implement vars and filters**
+
+Added config/schema support, bounded `vars` expression evaluation for common APISIX request/response variables and comparison operators, regexp filter compilation/defaults, once/global response body substitution, and header value variable resolution.
+
+- [x] **Step 4: Update README**
+
+Updated `response-rewrite` support notes to include bounded `vars`, header variable resolution, and response body `filters`, with full expression, compressed body decoding, and streaming filter limitations.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/response_rewrite -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

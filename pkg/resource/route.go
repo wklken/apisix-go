@@ -206,6 +206,7 @@ type Service struct {
 type Consumer struct {
 	Username string `json:"username,required"`
 	Plugins  map[string]PluginConfig
+	Labels   map[string]any `json:"labels,omitempty"`
 }
 
 type ConsumerGroup struct {
@@ -219,4 +220,9 @@ type GlobalRule struct {
 type PluginConfigRule struct {
 	Desc    string                  `json:"desc,omitempty"`
 	Plugins map[string]PluginConfig `json:"plugins,omitempty"`
+}
+
+type Proto struct {
+	ID      string `json:"id,omitempty"`
+	Content string `json:"content,omitempty"`
 }

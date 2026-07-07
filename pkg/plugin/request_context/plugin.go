@@ -24,10 +24,12 @@ const (
 const schema = `{}`
 
 type Config struct {
-	RouteID     string `json:"$route_id"`
-	RouteName   string `json:"$route_name"`
-	ServiceID   string `json:"$service_id"`
-	ServiceName string `json:"$service_name"`
+	RouteID              string `json:"$route_id"`
+	RouteName            string `json:"$route_name"`
+	MatchedURI           string `json:"$matched_uri"`
+	ServiceID            string `json:"$service_id"`
+	ServiceName          string `json:"$service_name"`
+	PrometheusPreferName bool   `json:"$prometheus_prefer_name"`
 }
 
 func (p *Plugin) Init() error {
@@ -48,14 +50,16 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		labels := p.metricLabels()
+
 		// metrics
 		metrics.Requests.Inc()
 		begin := time.Now()
 
 		metrics.Bandwidth.WithLabelValues(
 			"ingress",
-			p.config.RouteName,
-			p.config.ServiceName,
+			labels.route,
+			labels.service,
 			"",
 			"127.0.0.1",
 		).Add(float64(r.ContentLength))
@@ -63,6 +67,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		r = ctx.WithApisixVars(r, map[string]string{
 			"$route_id":     p.config.RouteID,
 			"$route_name":   p.config.RouteName,
+			"$matched_uri":  p.config.MatchedURI,
 			"$service_id":   p.config.ServiceID,
 			"$service_name": p.config.ServiceName,
 		})
@@ -74,17 +79,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		latency := time.Since(begin).Milliseconds()
 		metrics.HttpLatency.WithLabelValues(
 			"request",
-			p.config.RouteName,
-			p.config.ServiceName,
+			labels.route,
+			labels.service,
 			"",
 			"127.0.0.1",
 		).Observe(float64(latency))
 		metrics.HttpStatus.WithLabelValues(
 			cast.ToString(ctx.GetRequestVar(r, "$status")),
-			p.config.RouteName,
+			labels.route,
 			ctx.GetApisixVar(r, "$matched_uri").(string),
 			"",
-			p.config.ServiceName,
+			labels.service,
 			"",
 			"127.0.0.1",
 		).Inc()
@@ -92,4 +97,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		ctx.RecycleVars(r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type metricLabels struct {
+	route   string
+	service string
+}
+
+func (p *Plugin) metricLabels() metricLabels {
+	return metricLabels{
+		route:   metricResourceLabel(p.config.RouteID, p.config.RouteName, p.config.PrometheusPreferName),
+		service: metricResourceLabel(p.config.ServiceID, p.config.ServiceName, p.config.PrometheusPreferName),
+	}
+}
+
+func metricResourceLabel(id string, name string, preferName bool) string {
+	if preferName && name != "" {
+		return name
+	}
+	if id != "" {
+		return id
+	}
+	return name
 }

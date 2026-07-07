@@ -1,6 +1,7 @@
 package route
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -17,6 +18,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -28,6 +33,8 @@ const (
 	defaultUserAgent          = "apisix-go"
 	defaultTimeout            = 300
 	defaultDNSTimeout         = 5 * time.Second
+	upstreamStartTimeVar      = "$upstream_start_time"
+	upstreamLatencyVar        = "$upstream_latency"
 )
 
 // FIXME: build the route incrementally in the future
@@ -213,12 +220,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 	// add a context plugin, set the default vars
 	systemPlugins := map[string]resource.PluginConfig{
-		"request-context": map[string]string{
-			"$route_id":     r.ID,
-			"$route_name":   r.Name,
-			"$service_id":   service.ID,
-			"$service_name": service.Name,
-		},
+		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
 	}
 
 	var chain alice.Chain
@@ -252,6 +254,46 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	}
 
 	return chain.Then(handler)
+}
+
+func buildRequestContextConfig(
+	r resource.Route,
+	service resource.Service,
+	pluginConfigs map[string]resource.PluginConfig,
+) map[string]any {
+	return map[string]any{
+		"$route_id":               r.ID,
+		"$route_name":             r.Name,
+		"$matched_uri":            matchedURI(r),
+		"$service_id":             r.ServiceID,
+		"$service_name":           service.Name,
+		"$prometheus_prefer_name": prometheusPreferName(pluginConfigs),
+	}
+}
+
+func matchedURI(r resource.Route) string {
+	if r.Uri != "" {
+		return r.Uri
+	}
+	if len(r.Uris) > 0 {
+		return r.Uris[0]
+	}
+	return ""
+}
+
+func prometheusPreferName(pluginConfigs map[string]resource.PluginConfig) bool {
+	config, ok := pluginConfigs["prometheus"]
+	if !ok {
+		return false
+	}
+
+	values, ok := config.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	preferName, _ := values["prefer_name"].(bool)
+	return preferName
 }
 
 func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []plugin.Plugin {
@@ -352,6 +394,8 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		if host != "" {
 			req.URL.Host = host
 			req.Host = host
+		} else if applyTrafficSplitOverride(req) {
+			// traffic-split selected the upstream target for this request.
 		} else {
 			target := lb.Next()
 			u, err := url.Parse(target)
@@ -382,6 +426,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		if _, ok := req.Header["User-Agent"]; !ok {
 			req.Header.Set("User-Agent", defaultUserAgent)
 		}
+		markUpstreamStart(req)
 
 		// ! later, should add target query with the req
 		// ctx := context.WithValue(r.Context(), ctxRequestIDKey, requestID)
@@ -418,7 +463,93 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()
 	proxyHandler := pxy.NewProxyHandler(transport, director, modifyResponse, errorHandler)
-	return proxyHandler, nil
+	streamingProxyHandler := pxy.NewProxyHandlerWithFlushInterval(
+		transport,
+		director,
+		modifyResponse,
+		errorHandler,
+		-1*time.Second,
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveHTTPDubboIfConfigured(w, r, lb) {
+			return
+		}
+		if err := bufferRequestBodyIfNeeded(r); err != nil {
+			render.New().JSON(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
+	}), nil
+}
+
+func serveHTTPDubboIfConfigured(w http.ResponseWriter, r *http.Request, lb pxy.LoadBalancer) bool {
+	cfg, ok := http_dubbo.GetConfig(r)
+	if !ok {
+		return false
+	}
+
+	target, err := selectHTTPDubboTarget(r, lb)
+	if err != nil {
+		render.New().JSON(w, http.StatusBadGateway, err.Error())
+		return true
+	}
+	http_dubbo.ServeDubbo(w, r, target, cfg)
+	return true
+}
+
+func selectHTTPDubboTarget(r *http.Request, lb pxy.LoadBalancer) (string, error) {
+	if override := traffic_split.GetOverride(r); override != nil {
+		return override.Host, nil
+	}
+
+	target := lb.Next()
+	u, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("parse upstream target %q: %w", target, err)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("upstream target %q has no host", target)
+	}
+	return u.Host, nil
+}
+
+func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingHandler http.Handler) http.Handler {
+	if proxy_buffering.GetDisableProxyBuffering(r) {
+		return streamingHandler
+	}
+	return defaultHandler
+}
+
+func bufferRequestBodyIfNeeded(r *http.Request) error {
+	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
+		return nil
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if err := r.Body.Close(); err != nil {
+		return err
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	r.ContentLength = int64(len(body))
+	return nil
+}
+
+func applyTrafficSplitOverride(req *http.Request) bool {
+	override := traffic_split.GetOverride(req)
+	if override == nil {
+		return false
+	}
+	req.URL.Scheme = override.Scheme
+	req.URL.Host = override.Host
+	req.Host = override.Host
+	return true
 }
 
 func newModifyResponse() pxy.ModifyResponse {
@@ -433,6 +564,7 @@ func newModifyResponse() pxy.ModifyResponse {
 
 		status := resp.StatusCode
 		ctx.RegisterRequestVar(resp.Request, "$status", status)
+		recordUpstreamLatency(resp.Request)
 
 		// FIXME: the status here is upstream status, not the http status finally
 
@@ -485,6 +617,25 @@ func newModifyResponse() pxy.ModifyResponse {
 
 		return nil
 	}
+}
+
+func markUpstreamStart(req *http.Request) {
+	if ctx.GetRequestVars(req) == nil {
+		return
+	}
+	ctx.RegisterRequestVar(req, upstreamStartTimeVar, time.Now())
+}
+
+func recordUpstreamLatency(req *http.Request) {
+	start, ok := ctx.GetRequestVar(req, upstreamStartTimeVar).(time.Time)
+	if !ok {
+		return
+	}
+	latency := time.Since(start).Milliseconds()
+	if latency <= 0 {
+		latency = 1
+	}
+	ctx.RegisterRequestVar(req, upstreamLatencyVar, latency)
 }
 
 func newErrorHandler() pxy.ErrorHandler {

@@ -1,0 +1,215 @@
+package lago
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	return p
+}
+
+func TestPostInitSetsLagoDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{"http://127.0.0.1:3000"},
+		Token:               "token",
+		EventTransactionID:  "req-1",
+		EventSubscriptionID: "sub-1",
+		EventCode:           "api-call",
+	})
+
+	if p.config.EndpointURI != "/api/v1/events/batch" {
+		t.Fatalf("endpoint_uri = %q, want /api/v1/events/batch", p.config.EndpointURI)
+	}
+	if p.config.Timeout != 3000 {
+		t.Fatalf("timeout = %d, want 3000", p.config.Timeout)
+	}
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatal("ssl_verify = false, want true")
+	}
+	if !p.keepalive() {
+		t.Fatal("keepalive() = false, want true by default")
+	}
+	if p.config.KeepaliveTimeout != 60000 {
+		t.Fatalf("keepalive_timeout = %d, want 60000", p.config.KeepaliveTimeout)
+	}
+	if p.config.KeepalivePool != 5 {
+		t.Fatalf("keepalive_pool = %d, want 5", p.config.KeepalivePool)
+	}
+}
+
+func TestBuildEventResolvesConfiguredTemplates(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{"http://127.0.0.1:3000"},
+		Token:               "token",
+		EventTransactionID:  "req_${request_id}",
+		EventSubscriptionID: "sub_${consumer_name}",
+		EventCode:           "api-call",
+		EventProperties: map[string]string{
+			"status": "${status}",
+			"tier":   "expensive",
+		},
+	})
+
+	entry := p.buildEvent(map[string]any{
+		"request_id":    "abc",
+		"consumer_name": "alice",
+		"status":        201,
+	})
+
+	if entry.TransactionID != "req_abc" {
+		t.Fatalf("transaction_id = %q, want req_abc", entry.TransactionID)
+	}
+	if entry.ExternalSubscriptionID != "sub_alice" {
+		t.Fatalf("external_subscription_id = %q, want sub_alice", entry.ExternalSubscriptionID)
+	}
+	if entry.Code != "api-call" {
+		t.Fatalf("code = %q, want api-call", entry.Code)
+	}
+	if entry.Properties["status"] != "201" {
+		t.Fatalf("status property = %q, want 201", entry.Properties["status"])
+	}
+	if entry.Properties["tier"] != "expensive" {
+		t.Fatalf("tier property = %q, want expensive", entry.Properties["tier"])
+	}
+	if entry.Timestamp <= 0 {
+		t.Fatalf("timestamp = %f, want positive Unix timestamp", entry.Timestamp)
+	}
+}
+
+func TestSendPostsLagoBatchEvent(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan lagoPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lagoPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- r
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Token:               "lago-token",
+		EventTransactionID:  "${request_id}",
+		EventSubscriptionID: "${consumer_name}",
+		EventCode:           "api-call",
+		Timeout:             1000,
+	})
+
+	p.Send(map[string]any{
+		"request_id":    "req-1",
+		"consumer_name": "sub-1",
+	})
+
+	select {
+	case req := <-requests:
+		if req.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", req.Method)
+		}
+		if req.URL.Path != "/api/v1/events/batch" {
+			t.Fatalf("path = %q, want /api/v1/events/batch", req.URL.Path)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer lago-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		if got := req.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago request")
+	}
+
+	select {
+	case body := <-bodies:
+		if len(body.Events) != 1 {
+			t.Fatalf("events = %d, want 1", len(body.Events))
+		}
+		event := body.Events[0]
+		if event.TransactionID != "req-1" {
+			t.Fatalf("transaction_id = %q, want req-1", event.TransactionID)
+		}
+		if event.ExternalSubscriptionID != "sub-1" {
+			t.Fatalf("external_subscription_id = %q, want sub-1", event.ExternalSubscriptionID)
+		}
+		if event.Code != "api-call" {
+			t.Fatalf("code = %q, want api-call", event.Code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago body")
+	}
+}
+
+func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
+	requests := make(chan lagoPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lagoPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Token:               "token",
+		EventTransactionID:  "${http_x_request_id}",
+		EventSubscriptionID: "${request_method}",
+		EventCode:           "api-call",
+		EventProperties: map[string]string{
+			"path":   "${uri}",
+			"status": "${status}",
+		},
+		Timeout: 1000,
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/orders/1?debug=true", strings.NewReader("request"))
+	req.Header.Set("X-Request-ID", "req-1")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte("created"))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-requests:
+		if len(body.Events) != 1 {
+			t.Fatalf("events = %d, want 1", len(body.Events))
+		}
+		event := body.Events[0]
+		if event.TransactionID != "req-1" {
+			t.Fatalf("transaction_id = %q, want req-1", event.TransactionID)
+		}
+		if event.ExternalSubscriptionID != http.MethodPut {
+			t.Fatalf("external_subscription_id = %q, want PUT", event.ExternalSubscriptionID)
+		}
+		if event.Properties["path"] != "/orders/1" {
+			t.Fatalf("path property = %q, want /orders/1", event.Properties["path"])
+		}
+		if event.Properties["status"] != "201" {
+			t.Fatalf("status property = %q, want 201", event.Properties["status"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago event")
+	}
+}

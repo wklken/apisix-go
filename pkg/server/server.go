@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spf13/cast"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -69,30 +70,16 @@ func (s *Server) Start() {
 		if plugin == "prometheus" {
 			metrics.Init()
 
-			go func() {
-				exportUri := "/apisix/prometheus/metrics"
-				exportIP := "127.0.0.1"
-				exportPort := 9091
-				attr, ok := config.GlobalConfig.PluginAttr["prometheus"]
-				if ok {
-					if v, ok := attr["export_ip"]; ok {
-						exportIP = v.(string)
-					}
-					if v, ok := attr["export_port"]; ok {
-						exportPort = v.(int)
-					}
-					if v, ok := attr["export_uri"]; ok {
-						exportUri = v.(string)
-					}
-				}
+			exportConfig := newPrometheusExportServerConfig(config.GlobalConfig.PluginAttr["prometheus"])
+			if !exportConfig.Enabled {
+				continue
+			}
 
-				// FIXME: not support `enable_export_server == false`
-
+			go func(exportConfig prometheusExportServerConfig) {
 				mux := chi.NewRouter()
-				mux.Get(exportUri, promhttp.Handler().ServeHTTP)
-				address := fmt.Sprintf("%s:%d", exportIP, exportPort)
-				http.ListenAndServe(address, mux)
-			}()
+				mux.Get(exportConfig.ExportURI, promhttp.Handler().ServeHTTP)
+				http.ListenAndServe(exportConfig.Address(), mux)
+			}(exportConfig)
 		}
 	}
 
@@ -153,4 +140,51 @@ func (s *Server) startServer(ctx context.Context) {
 	}
 
 	<-ctx.Done()
+}
+
+type prometheusExportServerConfig struct {
+	Enabled    bool
+	ExportURI  string
+	ExportIP   string
+	ExportPort int
+}
+
+func newPrometheusExportServerConfig(attr map[string]interface{}) prometheusExportServerConfig {
+	cfg := prometheusExportServerConfig{
+		Enabled:    true,
+		ExportURI:  "/apisix/prometheus/metrics",
+		ExportIP:   "127.0.0.1",
+		ExportPort: 9091,
+	}
+
+	if attr == nil {
+		return cfg
+	}
+
+	if v, ok := attr["enable_export_server"].(bool); ok {
+		cfg.Enabled = v
+	}
+	if v, ok := attr["export_uri"].(string); ok && v != "" {
+		cfg.ExportURI = v
+	}
+	if v, ok := attr["export_ip"].(string); ok && v != "" {
+		cfg.ExportIP = v
+	}
+	if v, ok := attr["export_port"]; ok {
+		cfg.ExportPort = cast.ToInt(v)
+	}
+	if v, ok := attr["export_addr"].(map[string]interface{}); ok {
+		if ip, ok := v["ip"].(string); ok && ip != "" {
+			cfg.ExportIP = ip
+		}
+		if port, ok := v["port"]; ok {
+			cfg.ExportPort = cast.ToInt(port)
+		}
+	}
+
+	return cfg
+}
+
+func (c prometheusExportServerConfig) Address() string {
+	return fmt.Sprintf("%s:%d", c.ExportIP, c.ExportPort)
 }

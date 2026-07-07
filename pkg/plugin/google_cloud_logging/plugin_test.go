@@ -1,0 +1,300 @@
+package google_cloud_logging
+
+import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newTestPlugin(t *testing.T, cfg Config) *Plugin {
+	t.Helper()
+
+	p := &Plugin{config: cfg}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	return p
+}
+
+func TestPostInitSetsGoogleDefaults(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    "http://127.0.0.1/token",
+		},
+	})
+
+	if !p.sslVerify() {
+		t.Fatal("sslVerify() = false, want true by default")
+	}
+	if p.config.Resource.Type != "global" {
+		t.Fatalf("resource.type = %q, want global", p.config.Resource.Type)
+	}
+	if p.config.LogID != "apisix.apache.org%2Flogs" {
+		t.Fatalf("log_id = %q, want apisix.apache.org%%2Flogs", p.config.LogID)
+	}
+	if p.config.AuthConfig.EntriesURI != "https://logging.googleapis.com/v2/entries:write" {
+		t.Fatalf("entries_uri = %q, want default Google entries endpoint", p.config.AuthConfig.EntriesURI)
+	}
+}
+
+func TestBuildJWTAssertionUsesServiceAccountClaims(t *testing.T) {
+	pemKey, key := testPrivateKey(t)
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    "http://127.0.0.1/token",
+			Scopes:      []string{"scope-a", "scope-b"},
+		},
+	})
+
+	assertion, err := p.buildJWTAssertion(time.Unix(1700000000, 0))
+	if err != nil {
+		t.Fatalf("buildJWTAssertion() error = %v", err)
+	}
+
+	parts := strings.Split(assertion, ".")
+	if len(parts) != 3 {
+		t.Fatalf("assertion has %d parts, want 3", len(parts))
+	}
+
+	var header map[string]any
+	mustDecodeJWTPart(t, parts[0], &header)
+	if header["alg"] != "RS256" {
+		t.Fatalf("alg = %v, want RS256", header["alg"])
+	}
+
+	var claims map[string]any
+	mustDecodeJWTPart(t, parts[1], &claims)
+	if claims["iss"] != "svc@example.iam.gserviceaccount.com" {
+		t.Fatalf("iss = %v, want service account email", claims["iss"])
+	}
+	if claims["sub"] != "svc@example.iam.gserviceaccount.com" {
+		t.Fatalf("sub = %v, want service account email", claims["sub"])
+	}
+	if claims["aud"] != "http://127.0.0.1/token" {
+		t.Fatalf("aud = %v, want token uri", claims["aud"])
+	}
+	if claims["scope"] != "scope-a scope-b" {
+		t.Fatalf("scope = %v, want joined scopes", claims["scope"])
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	sum := sha256.Sum256([]byte(signingInput))
+	if err := rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, sum[:], signature); err != nil {
+		t.Fatalf("verify jwt signature: %v", err)
+	}
+}
+
+func TestBuildEntryUsesCloudLoggingShape(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    "http://127.0.0.1/token",
+		},
+		Resource: MonitoredResource{
+			Type:   "global",
+			Labels: map[string]string{"project_id": "project-a"},
+		},
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	entry := p.buildEntry(map[string]any{"path": "/orders"})
+	if entry.LogName != "projects/project-a/logs/apisix.apache.org%2Flogs" {
+		t.Fatalf("logName = %q, want project log name", entry.LogName)
+	}
+	if entry.Labels["source"] != "apache-apisix-google-cloud-logging" {
+		t.Fatalf("source label = %q, want apache source label", entry.Labels["source"])
+	}
+	if entry.Resource.Type != "global" {
+		t.Fatalf("resource.type = %q, want global", entry.Resource.Type)
+	}
+	if entry.JSONPayload["path"] != "/orders" {
+		t.Fatalf("jsonPayload path = %v, want /orders", entry.JSONPayload["path"])
+	}
+	if entry.Timestamp == "" {
+		t.Fatal("timestamp is empty")
+	}
+}
+
+func TestSendExchangesTokenAndWritesEntries(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	tokenRequests := make(chan url.Values, 1)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse token form: %v", err)
+		}
+		tokenRequests <- r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	entryRequests := make(chan *http.Request, 1)
+	entryBodies := make(chan map[string]any, 1)
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode entries body: %v", err)
+		}
+		entryRequests <- r
+		entryBodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entryServer.Close)
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    tokenServer.URL,
+			EntriesURI:  entryServer.URL,
+		},
+		SSLVerify: &sslVerify,
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case form := <-tokenRequests:
+		if form.Get("grant_type") != jwtBearerGrantType {
+			t.Fatalf("grant_type = %q, want jwt bearer grant", form.Get("grant_type"))
+		}
+		if form.Get("assertion") == "" {
+			t.Fatal("assertion is empty")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for token request")
+	}
+
+	select {
+	case req := <-entryRequests:
+		if got := req.Header.Get("Authorization"); got != "Bearer token-a" {
+			t.Fatalf("Authorization = %q, want Bearer token-a", got)
+		}
+		if got := req.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for entries request")
+	}
+
+	select {
+	case body := <-entryBodies:
+		if body["partialSuccess"] != false {
+			t.Fatalf("partialSuccess = %v, want false", body["partialSuccess"])
+		}
+		entries, ok := body["entries"].([]any)
+		if !ok || len(entries) != 1 {
+			t.Fatalf("entries = %#v, want one entry", body["entries"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for entries body")
+	}
+}
+
+func testPrivateKey(t *testing.T) (string, *rsa.PrivateKey) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	pemKey := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: mustMarshalPKCS8(t, key),
+	})
+	return string(pemKey), key
+}
+
+func mustMarshalPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {
+	t.Helper()
+
+	encoded, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal pkcs8 key: %v", err)
+	}
+	return encoded
+}
+
+func mustDecodeJWTPart(t *testing.T, part string, v any) {
+	t.Helper()
+
+	data, err := base64.RawURLEncoding.DecodeString(part)
+	if err != nil {
+		t.Fatalf("decode jwt part: %v", err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("unmarshal jwt part: %v", err)
+	}
+}
+
+func TestLoadAuthConfigFromFile(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	file := writeTempAuthFile(t, pemKey)
+	p := newTestPlugin(t, Config{AuthFile: file})
+
+	auth, err := p.authConfig()
+	if err != nil {
+		t.Fatalf("authConfig() error = %v", err)
+	}
+	if auth.ProjectID != "project-from-file" {
+		t.Fatalf("project_id = %q, want project-from-file", auth.ProjectID)
+	}
+}
+
+func writeTempAuthFile(t *testing.T, pemKey string) string {
+	t.Helper()
+
+	body := map[string]any{
+		"client_email": "svc@example.iam.gserviceaccount.com",
+		"private_key":  pemKey,
+		"project_id":   "project-from-file",
+		"token_uri":    "http://127.0.0.1/token",
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal auth file: %v", err)
+	}
+
+	file := t.TempDir() + "/auth.json"
+	if err := writeFile(file, data); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	return file
+}
+
+func writeFile(path string, data []byte) error {
+	return os.WriteFile(path, data, 0o600)
+}

@@ -1,0 +1,435 @@
+package error_log_logger
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"net/http"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/segmentio/kafka-go"
+	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+)
+
+type Plugin struct {
+	base.BasePlugin
+	config Config
+
+	client      *http.Client
+	kafkaSender kafkaSender
+}
+
+const (
+	priority = 1091
+	name     = "error-log-logger"
+)
+
+const schema = `
+{
+  "type": "object"
+}
+`
+
+type Config struct {
+	TCP        *TCPConfig        `json:"tcp,omitempty"`
+	Skywalking *SkywalkingConfig `json:"skywalking,omitempty"`
+	Clickhouse *ClickHouseConfig `json:"clickhouse,omitempty"`
+	Kafka      *KafkaConfig      `json:"kafka,omitempty"`
+
+	Host          string `json:"host,omitempty"`
+	Port          int    `json:"port,omitempty"`
+	TLS           bool   `json:"tls,omitempty"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+
+	Name            string `json:"name,omitempty"`
+	Level           string `json:"level,omitempty"`
+	Timeout         int    `json:"timeout,omitempty"`
+	Keepalive       int    `json:"keepalive,omitempty"`
+	BatchMaxSize    int    `json:"batch_max_size,omitempty"`
+	MaxRetryCount   int    `json:"max_retry_count,omitempty"`
+	RetryDelay      int    `json:"retry_delay,omitempty"`
+	BufferDuration  int    `json:"buffer_duration,omitempty"`
+	InactiveTimeout int    `json:"inactive_timeout,omitempty"`
+}
+
+type TCPConfig struct {
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	TLS           bool   `json:"tls,omitempty"`
+	TLSServerName string `json:"tls_server_name,omitempty"`
+}
+
+type SkywalkingConfig struct {
+	EndpointAddr        string `json:"endpoint_addr,omitempty"`
+	ServiceName         string `json:"service_name,omitempty"`
+	ServiceInstanceName string `json:"service_instance_name,omitempty"`
+}
+
+type ClickHouseConfig struct {
+	EndpointAddr string `json:"endpoint_addr,omitempty"`
+	User         string `json:"user,omitempty"`
+	Password     string `json:"password,omitempty"`
+	Database     string `json:"database,omitempty"`
+	LogTable     string `json:"logtable,omitempty"`
+}
+
+type KafkaConfig struct {
+	Brokers             []KafkaBroker `json:"brokers,omitempty"`
+	KafkaTopic          string        `json:"kafka_topic"`
+	ProducerType        string        `json:"producer_type,omitempty"`
+	RequiredAcks        int           `json:"required_acks,omitempty"`
+	Key                 string        `json:"key,omitempty"`
+	ClusterName         int           `json:"cluster_name,omitempty"`
+	MetaRefreshInterval int           `json:"meta_refresh_interval,omitempty"`
+}
+
+type KafkaBroker struct {
+	Host       string      `json:"host"`
+	Port       int         `json:"port"`
+	SASLConfig *SASLConfig `json:"sasl_config,omitempty"`
+}
+
+type SASLConfig struct {
+	Mechanism string `json:"mechanism,omitempty"`
+	User      string `json:"user"`
+	Password  string `json:"password"`
+}
+
+type kafkaMessage struct {
+	Topic string
+	Key   []byte
+	Value []byte
+}
+
+type kafkaSender interface {
+	Send(ctx context.Context, message kafkaMessage) error
+}
+
+type kafkaGoSender struct {
+	writer *kafka.Writer
+}
+
+var levelPattern = regexp.MustCompile(`\[(stderr|emerg|alert|crit|err|error|warn|notice|info|debug)\]`)
+
+var levelOrder = map[string]int{
+	"STDERR": 0,
+	"EMERG":  1,
+	"ALERT":  2,
+	"CRIT":   3,
+	"ERR":    4,
+	"ERROR":  4,
+	"WARN":   5,
+	"NOTICE": 6,
+	"INFO":   7,
+	"DEBUG":  8,
+}
+
+func (p *Plugin) Init() error {
+	p.Name = name
+	p.Priority = priority
+	p.Schema = schema
+
+	return nil
+}
+
+func (p *Plugin) PostInit() error {
+	p.applyDefaults()
+	p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Second}
+	if p.config.Kafka != nil && p.kafkaSender == nil {
+		p.kafkaSender = &kafkaGoSender{writer: p.newKafkaWriter()}
+	}
+
+	return nil
+}
+
+func (p *Plugin) Config() interface{} {
+	return &p.config
+}
+
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	return next
+}
+
+func (p *Plugin) SendLogs(ctx context.Context, lines []string) error {
+	filtered := p.filterLogs(lines)
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	switch {
+	case p.config.Skywalking != nil:
+		return p.sendToSkywalking(ctx, filtered)
+	case p.config.Clickhouse != nil:
+		return p.sendToClickHouse(ctx, filtered)
+	case p.config.Kafka != nil:
+		return p.sendToKafka(ctx, filtered)
+	default:
+		return p.sendToTCP(filtered)
+	}
+}
+
+func (p *Plugin) applyDefaults() {
+	if p.config.Name == "" {
+		p.config.Name = name
+	}
+	if p.config.Level == "" {
+		p.config.Level = "WARN"
+	}
+	p.config.Level = strings.ToUpper(p.config.Level)
+	if p.config.Timeout == 0 {
+		p.config.Timeout = 3
+	}
+	if p.config.Keepalive == 0 {
+		p.config.Keepalive = 30
+	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = 1000
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = 1
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = 60
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = 3
+	}
+	if p.config.TCP == nil && p.config.Host != "" {
+		p.config.TCP = &TCPConfig{
+			Host:          p.config.Host,
+			Port:          p.config.Port,
+			TLS:           p.config.TLS,
+			TLSServerName: p.config.TLSServerName,
+		}
+	}
+	if p.config.Skywalking != nil {
+		if p.config.Skywalking.EndpointAddr == "" {
+			p.config.Skywalking.EndpointAddr = "http://127.0.0.1:12900/v3/logs"
+		}
+		if p.config.Skywalking.ServiceName == "" {
+			p.config.Skywalking.ServiceName = "APISIX"
+		}
+		if p.config.Skywalking.ServiceInstanceName == "" {
+			p.config.Skywalking.ServiceInstanceName = "APISIX Service Instance"
+		}
+	}
+	if p.config.Clickhouse != nil {
+		if p.config.Clickhouse.EndpointAddr == "" {
+			p.config.Clickhouse.EndpointAddr = "http://127.0.0.1:8123"
+		}
+		if p.config.Clickhouse.User == "" {
+			p.config.Clickhouse.User = "default"
+		}
+	}
+	if p.config.Kafka != nil {
+		if p.config.Kafka.ProducerType == "" {
+			p.config.Kafka.ProducerType = "async"
+		}
+		if p.config.Kafka.RequiredAcks == 0 {
+			p.config.Kafka.RequiredAcks = 1
+		}
+		if p.config.Kafka.ClusterName == 0 {
+			p.config.Kafka.ClusterName = 1
+		}
+		if p.config.Kafka.MetaRefreshInterval == 0 {
+			p.config.Kafka.MetaRefreshInterval = 30
+		}
+	}
+}
+
+func (p *Plugin) filterLogs(lines []string) []string {
+	threshold, ok := levelOrder[p.config.Level]
+	if !ok {
+		threshold = levelOrder["WARN"]
+	}
+
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		level, ok := logLineLevel(line)
+		if !ok || level <= threshold {
+			filtered = append(filtered, line)
+		}
+	}
+	return filtered
+}
+
+func logLineLevel(line string) (int, bool) {
+	match := levelPattern.FindStringSubmatch(strings.ToLower(line))
+	if len(match) != 2 {
+		return 0, false
+	}
+	level, ok := levelOrder[strings.ToUpper(match[1])]
+	return level, ok
+}
+
+func (p *Plugin) sendToTCP(lines []string) error {
+	cfg := p.config.TCP
+	if cfg == nil {
+		return fmt.Errorf("missing tcp config")
+	}
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
+	timeout := time.Duration(p.config.Timeout) * time.Second
+
+	var conn net.Conn
+	var err error
+	if cfg.TLS {
+		dialer := &net.Dialer{Timeout: timeout}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: cfg.TLSServerName})
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(strings.Join(lines, "\n") + "\n"))
+	return err
+}
+
+func (p *Plugin) sendToSkywalking(ctx context.Context, lines []string) error {
+	entries := make([]skywalkingLogEntry, 0, len(lines))
+	for _, line := range lines {
+		entries = append(entries, skywalkingLogEntry{
+			Service:         p.config.Skywalking.ServiceName,
+			ServiceInstance: p.config.Skywalking.ServiceInstanceName,
+			Endpoint:        "",
+			Body: skywalkingLogBody{
+				Text: skywalkingText{Text: line},
+			},
+		})
+	}
+
+	body, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		p.config.Skywalking.EndpointAddr,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return p.do(req)
+}
+
+func (p *Plugin) sendToClickHouse(ctx context.Context, lines []string) error {
+	entries := make([]string, 0, len(lines))
+	for _, line := range lines {
+		body, err := json.Marshal(map[string]string{"data": line})
+		if err != nil {
+			return err
+		}
+		entries = append(entries, string(body))
+	}
+
+	body := "INSERT INTO " + p.config.Clickhouse.LogTable + " FORMAT JSONEachRow " + strings.Join(entries, " ")
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		p.config.Clickhouse.EndpointAddr,
+		strings.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-ClickHouse-User", p.config.Clickhouse.User)
+	req.Header.Set("X-ClickHouse-Key", p.config.Clickhouse.Password)
+	req.Header.Set("X-ClickHouse-Database", p.config.Clickhouse.Database)
+	return p.do(req)
+}
+
+func (p *Plugin) sendToKafka(ctx context.Context, lines []string) error {
+	for _, line := range lines {
+		body, err := json.Marshal(line)
+		if err != nil {
+			return err
+		}
+		if err := p.kafkaSender.Send(ctx, kafkaMessage{
+			Topic: p.config.Kafka.KafkaTopic,
+			Key:   []byte(p.config.Kafka.Key),
+			Value: body,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) do(req *http.Request) error {
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("server returned status code %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (p *Plugin) newKafkaWriter() *kafka.Writer {
+	return &kafka.Writer{
+		Addr:         kafka.TCP(p.kafkaBrokerAddresses()...),
+		Topic:        p.config.Kafka.KafkaTopic,
+		RequiredAcks: kafka.RequiredAcks(p.config.Kafka.RequiredAcks),
+		Async:        p.config.Kafka.ProducerType == "async",
+		WriteTimeout: time.Duration(p.config.Timeout) * time.Second,
+		ReadTimeout:  time.Duration(p.config.Timeout) * time.Second,
+	}
+}
+
+func (p *Plugin) kafkaBrokerAddresses() []string {
+	addresses := make([]string, 0, len(p.config.Kafka.Brokers))
+	for _, broker := range p.config.Kafka.Brokers {
+		addresses = append(addresses, net.JoinHostPort(broker.Host, fmt.Sprint(broker.Port)))
+	}
+	sort.Strings(addresses)
+	return addresses
+}
+
+func (s *kafkaGoSender) Send(ctx context.Context, message kafkaMessage) error {
+	return s.writer.WriteMessages(ctx, kafka.Message{
+		Topic: message.Topic,
+		Key:   message.Key,
+		Value: message.Value,
+	})
+}
+
+type skywalkingLogEntry struct {
+	Service         string            `json:"service"`
+	ServiceInstance string            `json:"serviceInstance"`
+	Endpoint        string            `json:"endpoint"`
+	Body            skywalkingLogBody `json:"body"`
+}
+
+type skywalkingLogBody struct {
+	Text skywalkingText `json:"text"`
+}
+
+type skywalkingText struct {
+	Text string `json:"text"`
+}
+
+func (p *Plugin) Send(log map[string]any) {
+	body, err := json.Marshal(log)
+	if err != nil {
+		logger.Errorf("failed to marshal error log entry: %s", err)
+		return
+	}
+	if err := p.SendLogs(context.Background(), []string{string(body)}); err != nil {
+		logger.Errorf("failed to send error log entry: %s", err)
+	}
+}

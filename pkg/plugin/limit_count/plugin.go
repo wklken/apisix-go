@@ -3,14 +3,18 @@ package limit_count
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/ulule/limiter/v3/drivers/store/memory"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
+	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -27,6 +31,8 @@ const (
 	priority = 1002
 	name     = "limit-count"
 )
+
+var varPattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
 
 const schema = `
 {
@@ -315,27 +321,12 @@ func (p *Plugin) Config() interface{} {
 	return &p.config
 }
 
-func genKey(r *http.Request, key string) string {
-	// FIXME: here is wrong, should use the context like nginx vars
-	switch key {
-	case "remote_addr":
-		return r.Header.Get("X-Real-IP")
-		// return r.RemoteAddr
-	default:
-		return r.Header.Get(key)
-	}
-}
-
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		// NOTE:  we got limit instance for each chain, so we don't need to worry about the key conflict in memory
 		//        but we do share the same redis instance, so we need to make the namespace
 
-		// FIXME: use the route_id?
-		key := genKey(r, p.config.Key)
-
-		fmt.Println("in limit-count, the key is: ", key)
-
+		key := p.resolveKey(r)
 		context, err := p.limiter.Get(r.Context(), key)
 		if err != nil {
 			// middleware.OnError(w, r, err)
@@ -371,4 +362,51 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) resolveKey(r *http.Request) string {
+	var key string
+	switch p.config.KeyType {
+	case "constant":
+		key = p.config.Key
+	case "var_combination":
+		resolved := 0
+		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
+			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
+			name = strings.TrimSuffix(name, "}")
+			value := requestVar(r, name)
+			if value != "" {
+				resolved++
+			}
+			return value
+		})
+		if resolved == 0 {
+			key = ""
+		}
+	default:
+		key = requestVar(r, p.config.Key)
+	}
+
+	if key == "" {
+		key = requestVar(r, "remote_addr")
+	}
+	return key
+}
+
+func requestVar(r *http.Request, key string) string {
+	key = strings.TrimPrefix(key, "$")
+
+	if strings.HasPrefix(key, "http_") {
+		header := strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-")
+		return r.Header.Get(header)
+	}
+
+	value := v.GetNginxVar(r, "$"+key)
+	if key == "remote_addr" {
+		if host, _, err := net.SplitHostPort(value); err == nil {
+			return host
+		}
+	}
+
+	return value
 }

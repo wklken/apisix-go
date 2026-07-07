@@ -67,6 +67,15 @@ func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 	return ParsePluginConfigRule(config)
 }
 
+func GetProto(id string) (resource.Proto, error) {
+	config := s.GetFromBucket("protos", util.StringToBytes(id))
+	if config == nil {
+		return resource.Proto{}, ErrNotFound
+	}
+
+	return ParseProto(config)
+}
+
 func ListRoutes() ([]resource.Route, error) {
 	var routes []resource.Route
 	data := s.GetBucketData("routes")
@@ -158,6 +167,15 @@ func ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
 		return s, err
 	}
 	return s, nil
+}
+
+func ParseProto(config []byte) (resource.Proto, error) {
+	var p resource.Proto
+	err := json.Unmarshal(config, &p)
+	if err != nil {
+		return p, err
+	}
+	return p, nil
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {

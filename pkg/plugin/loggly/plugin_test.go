@@ -1,7 +1,9 @@
 package loggly
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -149,6 +151,73 @@ func TestSendWritesHTTPBulkMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		CustomerToken:    "token",
+		Host:             server.URL,
+		Protocol:         "http",
+		Timeout:          1000,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	select {
+	case payload := <-received:
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("payload request body = %#v, want original request body", request["body"])
+		}
+
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("payload response body = %#v, want upstream response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP bulk log message")
+	}
+}
+
 func TestSchemaAcceptsOfficialBodySizeAndSSLFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -157,6 +226,8 @@ func TestSchemaAcceptsOfficialBodySizeAndSSLFields(t *testing.T) {
 
 	config := map[string]any{
 		"customer_token":      "token",
+		"include_req_body":    true,
+		"include_resp_body":   true,
 		"ssl_verify":          false,
 		"max_req_body_bytes":  1024,
 		"max_resp_body_bytes": 2048,

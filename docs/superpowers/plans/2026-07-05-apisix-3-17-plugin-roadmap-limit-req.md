@@ -1184,6 +1184,37 @@ Updated `syslog` support notes to include `include_req_body`, Go-side `include_r
 
 Run: `go test ./pkg/plugin/syslog -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 149: Implement `loggly` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/loggly/plugin.go`
+- Modify: `pkg/plugin/loggly/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: Loggly HTTP bulk or UDP syslog payloads with APISIX-style nested `request.body` and `response.body` fields while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/loggly.lua`; official schema includes request/response body flags, response-body expression support, severity mapping, tags, and metadata-driven delivery settings. This slice implements the raw body flags for the default log-entry shape.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed at compile time because `Config` lacked `IncludeReqBody` and `IncludeRespBody` fields.
+
+- [x] **Step 3: Implement body capture**
+
+Added body flags to schema/config, defaulted body byte caps, and added a body-aware handler path for Loggly configs with raw body capture enabled, including request body read/restore, response body recording while streaming to the original writer, and nested payload insertion before sending through the logger channel.
+
+- [x] **Step 4: Update README**
+
+Updated `loggly` support notes to include `include_req_body`, `include_resp_body`, and capped body-size capture, while keeping APISIX batch processor behavior, `max_pending_entries`, metadata-only delivery config parity, and `include_resp_body_expr` unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/loggly -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

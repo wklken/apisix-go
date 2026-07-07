@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -43,6 +45,21 @@ const schema = `
     "ssl_verify": {
       "type": "boolean",
       "default": true
+    },
+    "include_req_body": {
+      "type": "boolean",
+      "default": false
+    },
+    "include_resp_body": {
+      "type": "boolean",
+      "default": false
+    },
+    "include_resp_body_expr": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array"
+      }
     },
     "max_req_body_bytes": {
       "type": "integer",
@@ -99,8 +116,13 @@ type Config struct {
 	Port             int               `json:"port,omitempty"`
 	Timeout          int               `json:"timeout,omitempty"`
 	Protocol         string            `json:"protocol,omitempty"`
+	IncludeReqBody   bool              `json:"include_req_body,omitempty"`
+	IncludeRespBody  bool              `json:"include_resp_body,omitempty"`
 	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
+
+	// FIXME: not support
+	// IncludeRespBodyExpr [][]interface{} `json:"include_resp_body_expr,omitempty"`
 }
 
 var severityValues = map[string]int{
@@ -154,6 +176,12 @@ func (p *Plugin) PostInit() error {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
+	if p.config.MaxReqBodyBytes == 0 {
+		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
+	}
+	if p.config.MaxRespBodyBytes == 0 {
+		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
+	}
 
 	p.LogFormat = p.config.LogFormat
 
@@ -163,7 +191,88 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return p.BaseLoggerPlugin.Handler(next)
+	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
+		return p.BaseLoggerPlugin.Handler(next)
+	}
+
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		var requestBody string
+		if p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		writer := w
+		var recorder *logglyResponseRecorder
+		if p.config.IncludeRespBody {
+			recorder = &logglyResponseRecorder{
+				ResponseWriter: w,
+				limit:          p.config.MaxRespBodyBytes,
+			}
+			writer = recorder
+		}
+
+		next.ServeHTTP(writer, r)
+
+		logFields := apisixlog.GetFields(r, p.LogFormat)
+		if requestBody != "" {
+			nestedLogMap(logFields, "request")["body"] = requestBody
+		}
+		if recorder != nil && recorder.body.Len() > 0 {
+			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		}
+
+		p.Fire(logFields)
+	}
+	return http.HandlerFunc(fn)
+}
+
+type logglyResponseRecorder struct {
+	http.ResponseWriter
+	body  bytes.Buffer
+	limit int
+}
+
+func (w *logglyResponseRecorder) Write(body []byte) (int, error) {
+	w.capture(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *logglyResponseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+func nestedLogMap(fields map[string]any, key string) map[string]any {
+	if value, ok := fields[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	fields[key] = value
+	return value
 }
 
 func (p *Plugin) Send(log map[string]any) {

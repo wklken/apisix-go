@@ -1,8 +1,10 @@
 package kafka_logger
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sort"
@@ -13,6 +15,7 @@ import (
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/segmentio/kafka-go/sasl/scram"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -278,7 +281,88 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return p.BaseLoggerPlugin.Handler(next)
+	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
+		return p.BaseLoggerPlugin.Handler(next)
+	}
+
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		var requestBody string
+		if p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		writer := w
+		var recorder *kafkaLogResponseRecorder
+		if p.config.IncludeRespBody {
+			recorder = &kafkaLogResponseRecorder{
+				ResponseWriter: w,
+				limit:          p.config.MaxRespBodyBytes,
+			}
+			writer = recorder
+		}
+
+		next.ServeHTTP(writer, r)
+
+		logFields := apisixlog.GetFields(r, p.LogFormat)
+		if requestBody != "" {
+			nestedLogMap(logFields, "request")["body"] = requestBody
+		}
+		if recorder != nil && recorder.body.Len() > 0 {
+			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		}
+
+		p.Fire(logFields)
+	}
+	return http.HandlerFunc(fn)
+}
+
+type kafkaLogResponseRecorder struct {
+	http.ResponseWriter
+	body  bytes.Buffer
+	limit int
+}
+
+func (w *kafkaLogResponseRecorder) Write(body []byte) (int, error) {
+	w.capture(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *kafkaLogResponseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+func nestedLogMap(fields map[string]any, key string) map[string]any {
+	if value, ok := fields[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	fields[key] = value
+	return value
 }
 
 func (p *Plugin) Send(log map[string]any) {

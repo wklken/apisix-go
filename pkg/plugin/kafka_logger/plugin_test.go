@@ -1,8 +1,10 @@
 package kafka_logger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -150,6 +152,62 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 	if payload["plugin"] != "kafka-logger" {
 		t.Fatalf("plugin = %v, want kafka-logger", payload["plugin"])
+	}
+}
+
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	sender := &captureSender{}
+	p := newTestPlugin(t, Config{
+		Brokers:          []Broker{{Host: "127.0.0.1", Port: 9092}},
+		KafkaTopic:       "apisix-logs",
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	}, sender)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	message := sender.waitForMessage(t)
+	var payload map[string]any
+	if err := json.Unmarshal(message.Value, &payload); err != nil {
+		t.Fatalf("unmarshal kafka payload: %v", err)
+	}
+
+	request, ok := payload["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload request = %#v, want object", payload["request"])
+	}
+	if request["body"] != `{"order":1}` {
+		t.Fatalf("payload request body = %#v, want original request body", request["body"])
+	}
+
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload response = %#v, want object", payload["response"])
+	}
+	if response["body"] != `{"ok":true}` {
+		t.Fatalf("payload response body = %#v, want upstream response body", response["body"])
 	}
 }
 

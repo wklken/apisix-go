@@ -172,6 +172,8 @@ func (p *Plugin) PostInit() error {
 		ExposedHeaders:   strings.Split(p.config.ExposeHeaders, ","),
 		MaxAge:           p.config.MaxAge,
 		AllowCredentials: p.config.AllowCredential,
+		// APISIX exits successful preflight OPTIONS requests with 200.
+		OptionsSuccessStatus: http.StatusOK,
 		// Enable Debugging for testing, consider disabling in production
 		// Debug: true,
 	}

@@ -1644,6 +1644,37 @@ Updated `cors` support notes to include `allow_origins = "**"` request-origin ec
 
 Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 164: Align `cors` Preflight Success Status
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Modify: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: successful CORS preflight OPTIONS requests.
+- Produces: APISIX-style `200 OK` preflight responses.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; the rewrite phase returns `200` for OPTIONS requests.
+
+- [x] **Step 2: Write failing tests**
+
+Tightened the existing preflight test to assert status `200`. It initially failed because `rs/cors` defaulted successful preflights to `204`.
+
+- [x] **Step 3: Implement status parity**
+
+Set `OptionsSuccessStatus` to `http.StatusOK` when constructing the `rs/cors` handler.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include APISIX-style 200 preflight responses.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

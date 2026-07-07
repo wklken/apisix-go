@@ -78,6 +78,9 @@ func TestHandlerReflectsDoubleStarRequestHeaders(t *testing.T) {
 	if got := rr.Header().Get("Access-Control-Allow-Headers"); got != "X-Foo, X-Bar" {
 		t.Fatalf("Access-Control-Allow-Headers = %q, want reflected request headers", got)
 	}
+	if got := rr.Code; got != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", got, http.StatusOK)
+	}
 }
 
 func TestHandlerDoubleStarOriginEchoesRequestOrigin(t *testing.T) {

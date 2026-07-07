@@ -2,9 +2,13 @@ package proxy_rewrite
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -67,9 +71,10 @@ const schema = `
 `
 
 type Headers struct {
-	Add    map[string]string `json:"add"`
-	Set    map[string]string `json:"set"`
-	Remove []string          `json:"remove"`
+	Add       HeaderValues `json:"add"`
+	Set       HeaderValues `json:"set"`
+	Remove    []string     `json:"remove"`
+	LegacySet HeaderValues `json:"-"`
 }
 
 type Config struct {
@@ -87,6 +92,48 @@ type Config struct {
 type regexURIPair struct {
 	pattern     *regexp.Regexp
 	replacement string
+}
+
+type HeaderValues map[string]string
+
+func (h *HeaderValues) UnmarshalJSON(data []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	values := make(HeaderValues, len(raw))
+	for key, value := range raw {
+		switch v := value.(type) {
+		case string:
+			values[key] = v
+		case float64:
+			values[key] = strconv.FormatFloat(v, 'f', -1, 64)
+		default:
+			return fmt.Errorf("invalid header value type for %q", key)
+		}
+	}
+	*h = values
+	return nil
+}
+
+func (h *Headers) UnmarshalJSON(data []byte) error {
+	type headerOperations Headers
+	var operations headerOperations
+	if err := json.Unmarshal(data, &operations); err != nil {
+		return err
+	}
+	if len(operations.Add) > 0 || len(operations.Set) > 0 || len(operations.Remove) > 0 {
+		*h = Headers(operations)
+		return nil
+	}
+
+	var legacy HeaderValues
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	h.LegacySet = legacy
+	return nil
 }
 
 func (p *Plugin) Init() error {
@@ -123,6 +170,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		uri := p.rewriteURI(p.rewriteSourceURI(r))
+		p.config.Headers.apply(r)
 
 		data := map[string]interface{}{
 			"uri":     uri,
@@ -137,6 +185,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (h Headers) apply(r *http.Request) {
+	for name, value := range h.LegacySet {
+		r.Header.Set(name, resolveHeaderValue(r, value))
+	}
+	for name, value := range h.Add {
+		r.Header.Add(name, resolveHeaderValue(r, value))
+	}
+	for name, value := range h.Set {
+		r.Header.Set(name, resolveHeaderValue(r, value))
+	}
+	for _, name := range h.Remove {
+		r.Header.Del(name)
+	}
 }
 
 func (p *Plugin) rewriteSourceURI(r *http.Request) string {
@@ -159,4 +222,46 @@ func (p *Plugin) rewriteURI(path string) string {
 		return path
 	}
 	return ""
+}
+
+var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
+
+func resolveHeaderValue(r *http.Request, value string) string {
+	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
+		return requestVar(r, strings.TrimPrefix(variable, "$"))
+	})
+}
+
+func requestVar(r *http.Request, name string) string {
+	switch {
+	case name == "remote_addr":
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	case name == "request_uri":
+		return r.URL.RequestURI()
+	case name == "uri":
+		return r.URL.Path
+	case name == "method", name == "request_method":
+		return r.Method
+	case name == "host":
+		return r.Host
+	case name == "scheme":
+		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
+			return scheme
+		}
+		if r.TLS != nil {
+			return "https"
+		}
+		return "http"
+	case strings.HasPrefix(name, "arg_"):
+		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "http_"):
+		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
+		return r.Header.Get(header)
+	default:
+		return ""
+	}
 }

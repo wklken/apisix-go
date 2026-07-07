@@ -3902,3 +3902,34 @@ Updated `limit-conn` support notes to include local `rules`, keeping string `con
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_conn ./pkg/plugin -run 'TestHandlerAppliesResolvedRules|TestHandlerReturnsInternalServerErrorWhenAllRulesAreUnresolved|TestHandlerAllowsDegradationWhenAllRulesAreUnresolved|TestNewLimitConnAcceptsRulesOnlyConfig' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/limit_conn ./pkg/plugin -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 111: Implement `proxy-rewrite` Header Mutation
+
+**Files:**
+- Modify: `pkg/plugin/proxy_rewrite/plugin.go`
+- Modify: `pkg/plugin/proxy_rewrite/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `headers.add`, `headers.set`, `headers.remove`, and legacy `headers` set config for `proxy-rewrite`.
+- Produces: request-phase header mutation before the next middleware/proxy handler sees the request.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/proxy-rewrite.lua`; request headers support `add`, `set`, `remove`, legacy object-as-set config, string or numeric values, and variable resolution before mutation.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover `add` / `set` / `remove`, bounded header value variable resolution, legacy object-as-set decoding, and numeric header values decoded as strings.
+
+- [x] **Step 3: Implement header mutation**
+
+Added custom header config decoding, request-phase header application, legacy set support, numeric value stringification, and bounded APISIX-style request variable replacement for common variables and `http_*` headers.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-rewrite` support notes to include request header mutation and keep exact URI safe-encoding plus regex-capture header variable resolution as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_rewrite -run 'TestHandlerMutatesRequestHeaders|TestHeadersUnmarshalLegacySet' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite -count=1 -timeout=10s`, `go test ./...`, and `make build`.

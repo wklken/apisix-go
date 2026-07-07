@@ -1,6 +1,7 @@
 package proxy_rewrite
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -110,6 +111,59 @@ func TestHandlerRegexURIMatchesRealRequestURIUnsafe(t *testing.T) {
 	if got := rewrite["uri"].(string); got != "/private/v1?token=redacted" {
 		t.Fatalf("rewrite uri = %q, want regex rewrite from real request URI", got)
 	}
+}
+
+func TestHandlerMutatesRequestHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Headers: Headers{
+			Add: map[string]string{
+				"X-Trace": "$request_method:$arg_id",
+			},
+			Set: map[string]string{
+				"X-User": "$http_x_original_user",
+			},
+			Remove: []string{"X-Remove"},
+		},
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Values("X-Trace"); len(got) != 1 || got[0] != "GET:42" {
+			t.Fatalf("X-Trace values = %v, want [GET:42]", got)
+		}
+		if got := r.Header.Get("X-User"); got != "alice" {
+			t.Fatalf("X-User = %q, want alice", got)
+		}
+		if got := r.Header.Get("X-Remove"); got != "" {
+			t.Fatalf("X-Remove = %q, want empty", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/users?id=42", nil)
+	req.Header.Set("X-Original-User", "alice")
+	req.Header.Set("X-Remove", "gone")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func TestHeadersUnmarshalLegacySet(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"headers":{"X-Legacy":"$uri","X-Number":7}}`), &cfg); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	p := newTestPlugin(t, cfg)
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Legacy"); got != "/legacy" {
+			t.Fatalf("X-Legacy = %q, want /legacy", got)
+		}
+		if got := r.Header.Get("X-Number"); got != "7" {
+			t.Fatalf("X-Number = %q, want 7", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/legacy", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
 }
 
 func TestPostInitRejectsOddRegexURI(t *testing.T) {

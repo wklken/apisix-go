@@ -175,7 +175,7 @@ func (p *Plugin) PostInit() error {
 		// Enable Debugging for testing, consider disabling in production
 		// Debug: true,
 	}
-	if len(p.originRegex) > 0 {
+	if p.config.AllowOrigins == "**" || len(p.originRegex) > 0 {
 		options.AllowOriginFunc = p.allowOrigin
 	}
 	p.cors = cors.New(options)

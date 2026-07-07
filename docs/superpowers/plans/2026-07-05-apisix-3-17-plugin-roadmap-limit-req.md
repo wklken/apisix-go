@@ -1613,6 +1613,37 @@ Updated `cors` support notes to include `allow_headers = "**"` request-header re
 
 Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 163: Echo `cors` Double-Star Origins
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Modify: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: route/service `cors` config with `allow_origins = "**"`.
+- Produces: `Access-Control-Allow-Origin` set to the incoming request origin.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; `allow_origins = "**"` is converted to the request `Origin` value before setting CORS response headers.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused actual-request test for `allow_origins = "**"`. It initially failed because `rs/cors` rejected the origin when `"**"` was passed as a literal allowed origin pattern.
+
+- [x] **Step 3: Implement origin echo**
+
+Enabled the custom origin matcher when `allow_origins = "**"` so matching succeeds and `rs/cors` echoes the request origin.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include `allow_origins = "**"` request-origin echo behavior.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

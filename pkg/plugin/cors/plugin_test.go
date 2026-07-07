@@ -79,3 +79,20 @@ func TestHandlerReflectsDoubleStarRequestHeaders(t *testing.T) {
 		t.Fatalf("Access-Control-Allow-Headers = %q, want reflected request headers", got)
 	}
 }
+
+func TestHandlerDoubleStarOriginEchoesRequestOrigin(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOrigins: "**",
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want request origin", got)
+	}
+}

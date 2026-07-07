@@ -21,8 +21,9 @@ type Plugin struct {
 
 const (
 	// version  = "0.1"
-	priority = 2980
-	name     = "csrf"
+	priority           = 2980
+	name               = "csrf"
+	defaultCSRFExpires = 7200
 )
 
 const schema = `
@@ -49,7 +50,7 @@ const schema = `
 
 type Config struct {
 	Key     string `json:"key"`
-	Expires int64  `json:"expires,omitempty"`
+	Expires *int64 `json:"expires,omitempty"`
 	Name    string `json:"name,omitempty"`
 
 	safeMethods map[string]struct{}
@@ -70,8 +71,9 @@ func (p *Plugin) PostInit() error {
 		http.MethodOptions: {},
 	}
 
-	if p.config.Expires == 0 {
-		p.config.Expires = 7200
+	if p.config.Expires == nil {
+		expires := int64(defaultCSRFExpires)
+		p.config.Expires = &expires
 	}
 	if p.config.Name == "" {
 		p.config.Name = "apisix-csrf-token"
@@ -110,7 +112,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 
 			// check token expires
-			ok := checkCSRFToken(cookieToken, p.config.Key, p.config.Expires)
+			ok := checkCSRFToken(cookieToken, p.config.Key, p.expires())
 			if !ok {
 				writeCSRFError(w, "Failed to verify the csrf token signature")
 				return
@@ -124,12 +126,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			Value:    csrfToken,
 			Path:     "/",
 			SameSite: http.SameSiteLaxMode,
-			Expires:  time.Now().Add(time.Duration(p.config.Expires) * time.Second),
+			Expires:  time.Now().Add(time.Duration(p.expires()) * time.Second),
 		})
 
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) expires() int64 {
+	if p.config.Expires == nil {
+		return defaultCSRFExpires
+	}
+	return *p.config.Expires
 }
 
 func writeCSRFError(w http.ResponseWriter, message string) {
@@ -162,7 +171,7 @@ func checkCSRFToken(token string, key string, expires int64) bool {
 	}
 
 	// 检查 Token 是否过期
-	if time.Now().Unix()-csrfToken.Expires > expires {
+	if expires > 0 && time.Now().Unix()-csrfToken.Expires > expires {
 		logger.Error("token has expired")
 		return false
 	}

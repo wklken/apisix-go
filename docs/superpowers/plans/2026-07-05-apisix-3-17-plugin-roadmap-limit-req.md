@@ -1706,6 +1706,37 @@ Updated `csrf` support notes with token validation, safe method bypass, configur
 
 Run: `go test ./pkg/plugin/csrf -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 166: Support `csrf` Zero Expiry Validation
+
+**Files:**
+- Modify: `pkg/plugin/csrf/plugin.go`
+- Modify: `pkg/plugin/csrf/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: CSRF token verification with configured `expires = 0`.
+- Produces: no expiry rejection when the signature and token structure are otherwise valid.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/csrf.lua`; expiry rejection only runs when `conf.expires > 0`.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused verifier test for an old but correctly signed token with `expires = 0`. It initially failed because the Go helper always applied the age comparison.
+
+- [x] **Step 3: Implement zero-expiry guard**
+
+Changed token expiry validation to run only when the configured expiry window is positive.
+
+- [x] **Step 4: Update README**
+
+Updated `csrf` support notes to include `expires = 0` no-expiry validation behavior.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/csrf -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

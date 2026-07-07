@@ -185,8 +185,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
 - [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/)
-- [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 70%
-  - support official token cookie/header validation, safe method bypass, token expiry/signature checks, configurable `key` / `expires` / `name`, and APISIX-style JSON error bodies
+- [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 72%
+  - support official token cookie/header validation, safe method bypass, token expiry/signature checks including `expires = 0` no-expiry validation, configurable `key` / `expires` / `name`, and APISIX-style JSON error bodies
   - not support encrypted consumer fields or exact Lua random-number formatting parity for token signatures
 - [x] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/) 60%
   - support exposing registered internal public APIs such as `batch-requests`, `node-status`, and `server-info`, with optional `uri` override

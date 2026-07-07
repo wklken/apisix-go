@@ -967,6 +967,37 @@ Updated `file-logger` support notes to include `include_req_body`, `include_resp
 
 Run: `go test ./pkg/plugin/file_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 142: Implement `skywalking-logger` Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/skywalking_logger/plugin.go`
+- Modify: `pkg/plugin/skywalking_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: existing Go `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: SkyWalking log entries whose `body.json.json` payload includes APISIX-style nested `request.body` and `response.body` fields while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/skywalking-logger.lua`; official schema includes `include_req_body`, and the Go implementation already exposed response-body and body-size config fields. This slice makes those existing Go fields effective.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed because SkyWalking delivery happened but the nested `request` object was missing from the payload.
+
+- [x] **Step 3: Implement body capture**
+
+Added body byte cap defaults, request body read/restore, response body recording while streaming to the original writer, and nested body payload insertion before the entry is sent through the SkyWalking logger channel.
+
+- [x] **Step 4: Update README**
+
+Updated `skywalking-logger` support notes to include `include_req_body`, `include_resp_body`, and capped body-size capture, while keeping batch processor and `max_pending_entries` unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/skywalking_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

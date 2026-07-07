@@ -1,7 +1,9 @@
 package skywalking_logger
 
 import (
+	"bytes"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -143,6 +145,12 @@ func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
 	}
+	if p.config.MaxReqBodyBytes == 0 {
+		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
+	}
+	if p.config.MaxRespBodyBytes == 0 {
+		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddr)
@@ -165,9 +173,33 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		var requestBody string
+		if p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		writer := w
+		var recorder *skyWalkingResponseRecorder
+		if p.config.IncludeRespBody {
+			recorder = &skyWalkingResponseRecorder{
+				ResponseWriter: w,
+				limit:          p.config.MaxRespBodyBytes,
+			}
+			writer = recorder
+		}
+
+		next.ServeHTTP(writer, r)
 
 		logFields := log.GetFields(r, p.LogFormat)
+		if requestBody != "" {
+			nestedLogMap(logFields, "request")["body"] = requestBody
+		}
+		if recorder != nil && recorder.body.Len() > 0 {
+			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		}
 		logFields[internalSkyWalkingEndpoint] = r.URL.Path
 		if trace, ok := parseTraceContext(r.Header.Get("sw8")); ok {
 			logFields[internalSkyWalkingTraceContext] = trace
@@ -175,6 +207,52 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type skyWalkingResponseRecorder struct {
+	http.ResponseWriter
+	body  bytes.Buffer
+	limit int
+}
+
+func (w *skyWalkingResponseRecorder) Write(body []byte) (int, error) {
+	w.capture(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *skyWalkingResponseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+func nestedLogMap(fields map[string]any, key string) map[string]any {
+	if value, ok := fields[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	fields[key] = value
+	return value
 }
 
 func (p *Plugin) Send(log map[string]any) {

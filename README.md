@@ -294,9 +294,9 @@ Loggers:
   - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_resp_body`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`
   - not support `include_req_body_expr` or `include_resp_body_expr`
-- [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 55%
-  - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, and basic `sw8` trace correlation
-  - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
+- [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 60%
+  - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_resp_body`, and capped body-size capture
+  - not support APISIX batch processor behavior or `max_pending_entries`
 - [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 50%
   - support `host`, `port`, `timeout`, `log_format`, `tls`, `tls_options` as TLS server name / SNI, `include_req_body`, `include_resp_body`, and capped body-size capture
   - not support `include_req_body_expr` or `include_resp_body_expr`

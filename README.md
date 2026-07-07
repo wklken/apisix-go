@@ -107,9 +107,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [degraphql](https://apisix.apache.org/zh/docs/apisix/plugins/degraphql/) 65%
   - support GET/POST rewriting to GraphQL `query`, `variables`, and `operationName`
   - not support GraphQL AST validation or multi-operation validation
-- [x] [body-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/body-transformer/) 45%
-  - support request and response body template substitution for `json`, `encoded`, `args`, and `plain`, plus `_body`, `_ctx.var.*`, `_escape_json()`, `_escape_xml()`, and base64 templates
-  - not support XML/multipart decoding or full `lua-resty-template` expression syntax
+- [x] [body-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/body-transformer/) 55%
+  - support request and response body template substitution for `json`, `xml`, `encoded`, `args`, and `plain`, plus `_body`, `_ctx.var.*`, `_escape_json()`, `_escape_xml()`, and base64 templates
+  - not support multipart decoding or full `lua-resty-template` expression syntax
 
 ### Authentication
 

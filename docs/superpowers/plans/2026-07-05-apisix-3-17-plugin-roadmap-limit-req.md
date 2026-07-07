@@ -1308,6 +1308,37 @@ Updated `lago` support notes to include `include_req_body`, `include_resp_body`,
 
 Run: `go test ./pkg/plugin/lago -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 153: Implement `body-transformer` XML Input Decoding
+
+**Files:**
+- Modify: `pkg/plugin/body_transformer/plugin.go`
+- Modify: `pkg/plugin/body_transformer/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: request/response `input_format: "xml"` or XML content-type auto-detection.
+- Produces: dotted template values from XML element text, such as `{{user.name}}`, while preserving the existing template rendering model.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/body-transformer.lua`; official schema supports `input_format` values `xml` and `json`, and XML bodies are decoded before rendering templates.
+
+- [x] **Step 2: Write failing tests**
+
+Focused request-transform test initially failed because XML template values rendered as empty strings.
+
+- [x] **Step 3: Implement XML decoding**
+
+Added standard-library XML decoding that flattens element text into dotted template paths and returns a body decode error for malformed XML, matching the existing JSON decode error flow.
+
+- [x] **Step 4: Update README**
+
+Updated `body-transformer` support notes to include XML input and left multipart decoding plus full `lua-resty-template` syntax as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/body_transformer -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

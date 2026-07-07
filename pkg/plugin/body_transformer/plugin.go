@@ -3,6 +3,7 @@ package body_transformer
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
@@ -246,7 +247,14 @@ func (p *Plugin) buildTemplateContext(
 				ctx.values[key] = value[0]
 			}
 		}
-	case "plain", "", "xml", "multipart":
+	case "xml":
+		if len(bytes.TrimSpace(body)) == 0 {
+			return ctx, nil
+		}
+		if err := flattenXMLValues(body, ctx.values); err != nil {
+			return ctx, fmt.Errorf("%s body decode: %w", phase, err)
+		}
+	case "plain", "", "multipart":
 	}
 	return ctx, nil
 }
@@ -318,6 +326,34 @@ func flattenValues(prefix string, value any, out map[string]string) {
 		}
 	default:
 		out[prefix] = fmt.Sprint(typed)
+	}
+}
+
+func flattenXMLValues(body []byte, out map[string]string) error {
+	decoder := xml.NewDecoder(bytes.NewReader(body))
+	stack := []string{}
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		switch typed := token.(type) {
+		case xml.StartElement:
+			stack = append(stack, typed.Name.Local)
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		case xml.CharData:
+			text := strings.TrimSpace(string(typed))
+			if text != "" && len(stack) > 0 {
+				out[strings.Join(stack, ".")] = text
+			}
+		}
 	}
 }
 

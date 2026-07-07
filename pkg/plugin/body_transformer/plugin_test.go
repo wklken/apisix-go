@@ -54,6 +54,37 @@ func TestHandlerTransformsJSONRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerTransformsXMLRequestBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: &Transform{
+			Template: `{"name":"{{user.name}}","city":"{{user.address.city}}"}`,
+		},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`<user><name>alice</name><address><city>shenzhen</city></address></user>`),
+	)
+	req.Header.Set("Content-Type", "text/xml")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read transformed body: %v", err)
+		}
+		if string(body) != `{"name":"alice","city":"shenzhen"}` {
+			t.Fatalf("transformed body = %q", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerUsesArgsForGETRequest(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: &Transform{

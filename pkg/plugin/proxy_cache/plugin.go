@@ -26,6 +26,7 @@ const (
 	priority          = 1085
 	name              = "proxy-cache"
 	cacheStatusHeader = "Apisix-Cache-Status"
+	purgeMethod       = "PURGE"
 )
 
 var identityVars = map[string]struct{}{
@@ -226,6 +227,15 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == purgeMethod {
+			if p.purge(p.cacheKey(r)) {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
 		if !p.cacheableMethod(r.Method) {
 			next.ServeHTTP(w, r)
 			return
@@ -312,6 +322,16 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 		return cacheEntry{}, "STALE"
 	}
 	return entry, "HIT"
+}
+
+func (p *Plugin) purge(key string) bool {
+	p.lock.Lock()
+	_, ok := p.entries[key]
+	if ok {
+		delete(p.entries, key)
+	}
+	p.lock.Unlock()
+	return ok
 }
 
 func (p *Plugin) store(key string, recorder *responseRecorder, ttl time.Duration) {

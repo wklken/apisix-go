@@ -420,6 +420,58 @@ func TestHandlerCacheControlRequestFreshnessDirectivesForceStaleRefresh(t *testi
 	}
 }
 
+func TestHandlerPurgesCachedEntry(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+	}))
+
+	first := performRequest(t, handler, http.MethodGet, "/purgeable", nil)
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+
+	purge := performRequest(t, handler, purgeMethod, "/purgeable", nil)
+	if purge.Code != http.StatusOK {
+		t.Fatalf("purge status = %d, want %d", purge.Code, http.StatusOK)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls after purge = %d, want 1", calls)
+	}
+
+	second := performRequest(t, handler, http.MethodGet, "/purgeable", nil)
+	if second.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("second cache status = %q, want MISS", second.Header().Get(cacheStatusHeader))
+	}
+	if second.Body.String() != "response-v2" {
+		t.Fatalf("second body = %q, want response-v2", second.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerPurgeMissReturnsNotFound(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	res := performRequest(t, handler, purgeMethod, "/missing", nil)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("purge status = %d, want %d", res.Code, http.StatusNotFound)
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls)
+	}
+}
+
 func TestHandlerSkipsUnsupportedMethods(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0

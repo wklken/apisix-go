@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 100
+## Official APISIX 3.17 Inventory Audit After Task 101
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 100:
+Suggested next valuable batches after Task 101:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3578,3 +3578,36 @@ Updated `proxy-cache` support notes to include request stale refresh controls an
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlRequestFreshnessDirectivesForceStaleRefresh' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 101: Implement `proxy-cache` PURGE
+
+**Files:**
+- Modify: `pkg/plugin/proxy_cache/plugin.go`
+- Modify: `pkg/plugin/proxy_cache/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: request method `PURGE` and the configured proxy-cache key.
+- Produces: APISIX-style cache entry deletion with `200` for existing entries and `404` for misses, without forwarding the request upstream.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover purging an existing cached entry, ensuring the upstream is not called for `PURGE`, and returning `404` for a purge miss.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerPurge' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because `purgeMethod` and `PURGE` handling were undefined.
+
+- [x] **Step 3: Implement PURGE handling**
+
+Added `PURGE` handling before normal cacheable method checks, deleting the matching in-memory cache entry regardless of expiry.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-cache` support notes to include `PURGE`, removed the stale top-level `PURGE` unsupported note, and narrowed remaining proxy-cache gaps to disk cache zones, `Vary`, and stale serving.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerPurge' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.

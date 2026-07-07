@@ -315,7 +315,9 @@ Loggers:
 - [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 50%
   - support `endpoint_addr`, `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, and `log_format`
   - not support random endpoint selection, APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
-- [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/)
+- [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 45%
+  - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, official body-size config validation, and UDP/TCP syslog delivery through the Go syslog writer
+  - not support APISIX batch processor buffering semantics, OpenResty syslog connection pooling/TLS behavior parity, or request/response body capture
 - [x] [log-rotate](https://apisix.apache.org/zh/docs/apisix/plugins/log-rotate/) 60%
   - support `plugin_attr.log-rotate` defaults for `interval`, `max_kept`, `max_size`, `timeout`, and `enable_compression`, APISIX timestamped `__access.log` / `__error.log` naming, max-size rotation, interval checks on request, current-file recreation, history pruning, and `.tar.gz` compression
   - not support OpenResty timer lifecycle, NGINX master `USR1` log reopening, NGINX config path discovery, or shelling out to system `tar`

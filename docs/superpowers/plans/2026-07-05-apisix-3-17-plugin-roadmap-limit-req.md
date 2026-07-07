@@ -531,6 +531,37 @@ Updated `elasticsearch-logger` support notes with the tested bulk delivery/confi
 
 Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 128: Harden `syslog` Delivery And Config Parity
+
+**Files:**
+- Modify: `pkg/plugin/syslog/plugin.go`
+- Create: `pkg/plugin/syslog/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `syslog` `host`, `port`, `flush_limit`, `drop_limit`, `timeout`, `sock_type`, `pool_size`, `tls`, `log_format`, `max_req_body_bytes`, and `max_resp_body_bytes` config.
+- Produces: syslog logger delivery with official defaults, safe metadata fallback, schema acceptance for body-size config, and tested UDP syslog output.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/syslog.lua`; APISIX defaults `timeout` to 3000ms, `sock_type` to `tcp`, `flush_limit` to 4096, `drop_limit` to 1048576, and `pool_size` to 5, and accepts request/response body-size fields.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default initialization without an initialized metadata store, UDP syslog delivery to a local listener, and schema acceptance for official body-size fields.
+
+- [x] **Step 3: Implement config parity**
+
+Added official config fields/defaults, safe metadata fallback, `net.JoinHostPort` address construction, and body-size schema/config fields.
+
+- [x] **Step 4: Update README**
+
+Updated `syslog` support notes to include tested delivery/config behavior and explicit gaps around APISIX batch processor buffering, OpenResty syslog pooling/TLS parity, and body capture.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/syslog -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

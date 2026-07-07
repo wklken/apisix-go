@@ -3,6 +3,7 @@ package syslog
 import (
 	"fmt"
 	"log/syslog"
+	"net"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -78,6 +79,16 @@ const schema = `
 		"items": {
 		  "type": "array"
 		}
+	  },
+	  "max_req_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
+	  "max_resp_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
 	  }
 	},
 	"required": ["host", "port"]
@@ -93,17 +104,19 @@ type Plugin struct {
 }
 
 type Config struct {
-	Host      string            `json:"host"`
-	Port      int               `json:"port"`
-	Timeout   int               `json:"timeout,omitempty"`    // 设置了默认值
-	LogFormat map[string]string `json:"log_format,omitempty"` // 可选且未定的默认值
-	SockType  string            `json:"sock_type,omitempty"`  // 设置了默认值
+	Host             string            `json:"host"`
+	Port             int               `json:"port"`
+	FlushLimit       int               `json:"flush_limit,omitempty"`
+	DropLimit        int               `json:"drop_limit,omitempty"`
+	Timeout          int               `json:"timeout,omitempty"`
+	LogFormat        map[string]string `json:"log_format,omitempty"`
+	SockType         string            `json:"sock_type,omitempty"`
+	PoolSize         int               `json:"pool_size,omitempty"`
+	TLS              bool              `json:"tls,omitempty"`
+	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
 
 	// FIXME: not support
-	// FlushLimit          int             `json:"flush_limit,omitempty"` // 设置了默认值
-	// DropLimit           int             `json:"drop_limit,omitempty"`  // 设置了默认值
-	// PoolSize            int             `json:"pool_size,omitempty"`   // 设置了默认值
-	// TLS                 bool            `json:"tls"`
 	// IncludeReqBody      bool            `json:"include_req_body"`
 	// IncludeReqBodyExpr  [][]interface{} `json:"include_req_body_expr,omitempty"`
 	// IncludeRespBody     bool            `json:"include_resp_body"`
@@ -129,13 +142,20 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
-		p.config.Timeout = 3
+		p.config.Timeout = 3000
+	}
+	if p.config.FlushLimit == 0 {
+		p.config.FlushLimit = 4096
+	}
+	if p.config.DropLimit == 0 {
+		p.config.DropLimit = 1048576
+	}
+	if p.config.PoolSize == 0 {
+		p.config.PoolSize = 5
 	}
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		var metadata pluginMetadata
-		store.GetPluginMetadata(name, &metadata)
-		p.LogFormat = metadata.LogFormat
+		p.LogFormat = loadMetadataLogFormat()
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
@@ -144,7 +164,7 @@ func (p *Plugin) PostInit() error {
 		p.config.SockType = "tcp"
 	}
 
-	p.config.addr = fmt.Sprintf("%s:%d", p.config.Host, p.config.Port)
+	p.config.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
 
 	// start the consumer
 	p.Consume()
@@ -172,4 +192,18 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf("failed to send log message: %s in udp-logger", err)
 		return
 	}
+}
+
+func loadMetadataLogFormat() (format map[string]string) {
+	defer func() {
+		if recover() != nil {
+			format = nil
+		}
+	}()
+
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil
+	}
+	return metadata.LogFormat
 }

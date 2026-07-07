@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -161,13 +162,13 @@ type Config struct {
 	Headers          map[string]string `json:"headers,omitempty"`
 	Timeout          int               `json:"timeout,omitempty"`
 	SslVerify        *bool             `json:"ssl_verify,omitempty"`
+	IncludeReqBody   bool              `json:"include_req_body,omitempty"`
+	IncludeRespBody  bool              `json:"include_resp_body,omitempty"`
 	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
 
 	// FIXME: not support
-	// IncludeReqBody        bool                  `json:"include_req_body"`
 	// IncludeReqBodyExpr    [][]any               `json:"include_req_body_expr,omitempty"`
-	// IncludeRespBody       bool                  `json:"include_resp_body"`
 	// IncludeRespBodyExpr   [][]any               `json:"include_resp_body_expr,omitempty"`
 }
 
@@ -206,6 +207,12 @@ func (p *Plugin) PostInit() error {
 		sslVerify := true
 		p.config.SslVerify = &sslVerify
 	}
+	if p.config.MaxReqBodyBytes == 0 {
+		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
+	}
+	if p.config.MaxRespBodyBytes == 0 {
+		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
+	}
 	if len(p.config.EndpointAddrs) == 0 && p.config.EndpointAddr != "" {
 		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
 	}
@@ -223,13 +230,83 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		var requestBody string
+		if p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		writer := w
+		var recorder *elasticsearchResponseRecorder
+		if p.config.IncludeRespBody {
+			recorder = &elasticsearchResponseRecorder{
+				ResponseWriter: w,
+				limit:          p.config.MaxRespBodyBytes,
+			}
+			writer = recorder
+		}
+
+		next.ServeHTTP(writer, r)
 
 		logFields := apisixlog.GetFields(r, p.LogFormat)
+		if requestBody != "" {
+			nestedLogMap(logFields, "request")["body"] = requestBody
+		}
+		if recorder != nil && recorder.body.Len() > 0 {
+			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		}
 		logFields[elasticsearchIndexField] = resolveIndexVars(p.config.Field.Index, r)
 		p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type elasticsearchResponseRecorder struct {
+	http.ResponseWriter
+	body  bytes.Buffer
+	limit int
+}
+
+func (w *elasticsearchResponseRecorder) Write(body []byte) (int, error) {
+	w.capture(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *elasticsearchResponseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+func nestedLogMap(fields map[string]any, key string) map[string]any {
+	if value, ok := fields[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	fields[key] = value
+	return value
 }
 
 func (p *Plugin) Send(log map[string]any) {

@@ -1215,6 +1215,37 @@ Updated `loggly` support notes to include `include_req_body`, `include_resp_body
 
 Run: `go test ./pkg/plugin/loggly -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 150: Implement `elasticsearch-logger` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/elasticsearch_logger/plugin.go`
+- Modify: `pkg/plugin/elasticsearch_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: existing Go `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: Elasticsearch `_bulk` NDJSON documents with nested `request.body` and `response.body` fields while preserving index variable resolution, the upstream request body stream, and client response body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/elasticsearch-logger.lua`; official schema covers endpoint selection, field index/type, log format, auth, timeout, and SSL verification. The Go implementation already exposed body-capture schema fields, so this slice makes those existing Go fields effective.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed at compile time because `Config` lacked `IncludeReqBody` and `IncludeRespBody` fields even though the schema accepted those keys.
+
+- [x] **Step 3: Implement body capture**
+
+Added body flags to config, defaulted body byte caps, and extended the handler with request body read/restore and response body recording before inserting nested body fields into the log document while keeping resolved Elasticsearch index metadata internal.
+
+- [x] **Step 4: Update README**
+
+Updated `elasticsearch-logger` support notes to include `include_req_body`, `include_resp_body`, and capped body-size capture, while keeping APISIX batch processor behavior, `max_pending_entries`, and expression filters unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=20s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

@@ -1,7 +1,9 @@
 package elasticsearch_logger
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -245,7 +247,85 @@ func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
 	}
 }
 
-func TestSchemaAcceptsOfficialEndpointAddrHeadersAndBodySizeFields(t *testing.T) {
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		if r.URL.Path != "/_bulk" {
+			t.Fatalf("path = %q, want /_bulk", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read bulk body: %v", err)
+		}
+		received <- string(body)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:    []string{server.URL},
+		Field:            FieldConfig{Index: "apisix-logs"},
+		Timeout:          10,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	select {
+	case body := <-received:
+		document := extractBulkDocument(t, body)
+		request, ok := document["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("document request = %#v, want object", document["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("document request body = %#v, want original request body", request["body"])
+		}
+
+		response, ok := document["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("document response = %#v, want object", document["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("document response body = %#v, want upstream response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestSchemaAcceptsEndpointAddrHeadersAndBodyFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -255,10 +335,27 @@ func TestSchemaAcceptsOfficialEndpointAddrHeadersAndBodySizeFields(t *testing.T)
 		"endpoint_addr":       "http://127.0.0.1:9200",
 		"field":               map[string]any{"index": "apisix"},
 		"headers":             map[string]any{"X-Cluster": "logs"},
+		"include_req_body":    true,
+		"include_resp_body":   true,
 		"max_req_body_bytes":  1024,
 		"max_resp_body_bytes": 2048,
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected official config fields: %v", err)
+		t.Fatalf("schema rejected config fields: %v", err)
 	}
+}
+
+func extractBulkDocument(t *testing.T, body string) map[string]any {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("bulk body = %q, want action and document lines", body)
+	}
+
+	var document map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &document); err != nil {
+		t.Fatalf("unmarshal bulk document: %v", err)
+	}
+	return document
 }

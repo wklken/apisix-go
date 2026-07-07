@@ -6,13 +6,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func TestSendWritesTCPMessage(t *testing.T) {
@@ -62,6 +68,87 @@ func TestSendWritesTLSMessageWithServerName(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for tls server name")
+	}
+}
+
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	addr, received := startTCPServer(t)
+	host, port := splitAddr(t, addr)
+
+	p := newTestPlugin(t, Config{
+		Host:             host,
+		Port:             mustAtoi(t, port),
+		Timeout:          1000,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	upstreamBody := make(chan string, 1)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("upstream read body: %v", err)
+		}
+		upstreamBody <- string(body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Body.String() != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream body preserved", rr.Body.String())
+	}
+	select {
+	case body := <-upstreamBody:
+		if body != `{"order":1}` {
+			t.Fatalf("upstream request body = %q, want original body", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream request body")
+	}
+
+	select {
+	case message := <-received:
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(message), &payload); err != nil {
+			t.Fatalf("unmarshal TCP log payload: %v", err)
+		}
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("request = %#v, want object", payload["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("request body = %#v, want captured request body", request["body"])
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("response = %#v, want object", payload["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("response body = %#v, want captured response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tcp log message")
+	}
+}
+
+func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"host":                "127.0.0.1",
+		"port":                9000,
+		"max_req_body_bytes":  1024,
+		"max_resp_body_bytes": 2048,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official body size fields: %v", err)
 	}
 }
 

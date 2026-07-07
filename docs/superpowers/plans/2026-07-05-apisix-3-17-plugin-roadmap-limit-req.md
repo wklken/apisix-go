@@ -905,6 +905,37 @@ Updated `udp-logger` support notes to include `include_req_body`, `include_resp_
 
 Run: `go test ./pkg/plugin/udp_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 140: Implement `tcp-logger` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/tcp_logger/plugin.go`
+- Modify: `pkg/plugin/tcp_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: TCP logger payloads with APISIX-style nested `request.body` and `response.body` fields while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/tcp-logger.lua` and `apisix/utils/log-util.lua`; APISIX reads request body in access phase, collects response body in body filter, and adds bodies to the log entry when the include flags are enabled.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover request body preservation for the upstream handler, response body preservation for the client, emitted TCP logger payloads containing nested `request.body` and `response.body`, and schema acceptance for official body-size caps.
+
+- [x] **Step 3: Implement body capture**
+
+Added `tcp-logger` config/schema fields for raw body include flags and body byte caps, request body read/restore, response body recording while streaming to the original writer, and nested payload insertion.
+
+- [x] **Step 4: Update README**
+
+Updated `tcp-logger` support notes to include `include_req_body`, `include_resp_body`, and capped body-size capture, while keeping expression filters unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/tcp_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

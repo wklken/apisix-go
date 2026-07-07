@@ -297,10 +297,9 @@ Loggers:
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 55%
   - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, and basic `sw8` trace correlation
   - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
-- [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 45%
-  - support `host`, `port`, `timeout`, `log_format`, `tls`, and `tls_options` as TLS server name / SNI
-  - not support `include_req_body` and `include_req_body_expr`
-  - not support `include_resp_body` and `include_resp_body_expr`
+- [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 50%
+  - support `host`, `port`, `timeout`, `log_format`, `tls`, `tls_options` as TLS server name / SNI, `include_req_body`, `include_resp_body`, and capped body-size capture
+  - not support `include_req_body_expr` or `include_resp_body_expr`
 - [x] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/) 55%
   - support `brokers`, deprecated `broker_list`, broker `sasl_config` for `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`, `kafka_topic`, `key`, `producer_type`, `required_acks`, `timeout`, producer batch defaults, and `log_format`
   - not support APISIX batch processor behavior, `max_pending_entries`, request/response body capture, or `meta_format = origin`

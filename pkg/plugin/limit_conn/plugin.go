@@ -42,6 +42,27 @@ const schema = `
       "type": "number",
       "exclusiveMinimum": 0
     },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "conn": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "burst": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": ["conn", "burst", "key"]
+      }
+    },
     "key": {
       "type": "string",
       "minLength": 1
@@ -71,7 +92,10 @@ const schema = `
       "default": false
     }
   },
-  "required": ["conn", "burst", "default_conn_delay", "key"]
+  "oneOf": [
+    {"required": ["conn", "burst", "default_conn_delay", "key"]},
+    {"required": ["default_conn_delay", "rules"]}
+  ]
 }
 `
 
@@ -85,6 +109,17 @@ type Config struct {
 	RejectedCode     int     `json:"rejected_code,omitempty"`
 	RejectedMsg      string  `json:"rejected_msg,omitempty"`
 	AllowDegradation *bool   `json:"allow_degradation,omitempty"`
+	Rules            []Rule  `json:"rules,omitempty"`
+}
+
+type Rule struct {
+	Conn  int    `json:"conn"`
+	Burst int    `json:"burst"`
+	Key   string `json:"key"`
+}
+
+type admission struct {
+	key string
 }
 
 var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
@@ -98,14 +133,6 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.config.Conn <= 0 {
-		return fmt.Errorf("conn must be greater than 0")
-	}
-
-	if p.config.Burst < 0 {
-		return fmt.Errorf("burst must be greater than or equal to 0")
-	}
-
 	if p.config.DefaultConnDelay <= 0 {
 		return fmt.Errorf("default_conn_delay must be greater than 0")
 	}
@@ -134,6 +161,18 @@ func (p *Plugin) PostInit() error {
 		p.conns = make(map[string]int)
 	}
 
+	if len(p.config.Rules) > 0 {
+		return validateRules(p.config.Rules)
+	}
+
+	if p.config.Conn <= 0 {
+		return fmt.Errorf("conn must be greater than 0")
+	}
+
+	if p.config.Burst < 0 {
+		return fmt.Errorf("burst must be greater than or equal to 0")
+	}
+
 	return nil
 }
 
@@ -143,14 +182,34 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		key := p.resolveKey(r)
-		delay, allowed := p.increase(key)
-		if !allowed {
-			rejectedMsg := "Limit exceeded"
-			if p.config.RejectedMsg != "" {
-				rejectedMsg = p.config.RejectedMsg
+		if len(p.config.Rules) > 0 {
+			admissions, delay, allowed := p.increaseRules(r)
+			if !allowed {
+				p.reject(w)
+				return
 			}
-			http.Error(w, rejectedMsg, p.config.RejectedCode)
+			if len(admissions) == 0 {
+				if *p.config.AllowDegradation {
+					next.ServeHTTP(w, r)
+					return
+				}
+				http.Error(w, "failed to get limit conn rules", http.StatusInternalServerError)
+				return
+			}
+			defer p.decreaseAdmissions(admissions)
+
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		key := p.resolveKey(r)
+		delay, allowed := p.increase(key, p.config.Conn, p.config.Burst)
+		if !allowed {
+			p.reject(w)
 			return
 		}
 		defer p.decrease(key)
@@ -164,19 +223,69 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) increase(key string) (time.Duration, bool) {
+func validateRules(rules []Rule) error {
+	for _, rule := range rules {
+		if rule.Conn <= 0 {
+			return fmt.Errorf("rule conn must be greater than 0")
+		}
+		if rule.Burst < 0 {
+			return fmt.Errorf("rule burst must be greater than or equal to 0")
+		}
+		if rule.Key == "" {
+			return fmt.Errorf("limit-conn rule key is required")
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) reject(w http.ResponseWriter) {
+	rejectedMsg := "Limit exceeded"
+	if p.config.RejectedMsg != "" {
+		rejectedMsg = p.config.RejectedMsg
+	}
+	http.Error(w, rejectedMsg, p.config.RejectedCode)
+}
+
+func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, bool) {
+	var admissions []admission
+	var delay time.Duration
+	for i, rule := range p.config.Rules {
+		key, ok := p.resolveRuleKey(r, i, rule)
+		if !ok {
+			continue
+		}
+
+		nextDelay, allowed := p.increase(key, rule.Conn, rule.Burst)
+		if !allowed {
+			p.decreaseAdmissions(admissions)
+			return nil, 0, false
+		}
+		admissions = append(admissions, admission{key: key})
+		delay += nextDelay
+	}
+
+	return admissions, delay, true
+}
+
+func (p *Plugin) decreaseAdmissions(admissions []admission) {
+	for _, admission := range admissions {
+		p.decrease(admission.key)
+	}
+}
+
+func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	current := p.conns[key] + 1
-	limit := p.config.Conn + p.config.Burst
+	limit := conn + burst
 	if current > limit {
 		return 0, false
 	}
 
 	p.conns[key] = current
-	if current > p.config.Conn {
-		multiplier := (current - 1) / p.config.Conn
+	if current > conn {
+		multiplier := (current - 1) / conn
 		return time.Duration(float64(multiplier) * p.config.DefaultConnDelay * float64(time.Second)), true
 	}
 
@@ -219,6 +328,21 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		key = requestVar(r, "remote_addr")
 	}
 	return key
+}
+
+func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, bool) {
+	resolved := 0
+	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
+		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
+		name = strings.TrimSuffix(name, "}")
+		resolved++
+		return requestVar(r, name)
+	})
+	if resolved == 0 {
+		return "", false
+	}
+
+	return fmt.Sprintf("rule:%d:%s", index, key), true
 }
 
 func requestVar(r *http.Request, key string) string {

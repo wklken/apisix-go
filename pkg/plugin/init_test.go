@@ -312,6 +312,31 @@ func TestNewLimitCountAcceptsRulesOnlyConfig(t *testing.T) {
 	}
 }
 
+func TestNewLimitConnAcceptsRulesOnlyConfig(t *testing.T) {
+	p := New("limit-conn")
+	if p == nil {
+		t.Fatal(`New("limit-conn") returned nil`)
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"default_conn_delay": 0.1,
+		"rules": []any{
+			map[string]any{
+				"conn":  1,
+				"burst": 0,
+				"key":   "$http_x_user",
+			},
+		},
+		"policy": "local",
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("limit-conn rules config should validate: %v", err)
+	}
+}
+
 func TestNewGraphQLProxyCacheUsesOfficialPluginName(t *testing.T) {
 	p := New("graphql-proxy-cache")
 	if p == nil {

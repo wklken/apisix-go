@@ -204,10 +204,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/) 70%
   - only support `policy = "local"`
   - not support `redis` or `redis-cluster`
-- [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 60%
-  - only support `policy = "local"`
-  - not support `rules`
-  - not support `redis` or `redis-cluster`
+- [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 68%
+  - support local concurrent request limiting, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, `rejected_msg`, and `allow_degradation`
+  - not support string expression values for `conn` / `burst`, `only_use_default_delay`, `redis`, or `redis-cluster`
 - [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 70%
   - support local/Redis fixed-window quotas, `rules`, per-rule `header_prefix`, `key_type = var`, `constant`, and `var_combination`, HTTP header variables, quota headers, `rejected_code`, `rejected_msg`, and `allow_degradation`
   - not support string expression values for `count` / `time_window`, plugin metadata custom quota header names, or `redis-cluster`

@@ -165,9 +165,125 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 	wg.Wait()
 }
 
+func TestHandlerAppliesResolvedRules(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		DefaultConnDelay: 0.1,
+		RejectedCode:     http.StatusTooManyRequests,
+		Rules: []Rule{
+			{Conn: 2, Burst: 0, Key: "$http_x_tenant"},
+			{Conn: 1, Burst: 0, Key: "$http_x_user"},
+		},
+	})
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-User") == "alice" {
+			startedOnce.Do(func() {
+				close(started)
+			})
+			<-block
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		performRequestWithHeaders(handler, "192.0.2.40:12345", map[string]string{
+			"X-Tenant": "t1",
+			"X-User":   "alice",
+		})
+	}()
+	<-started
+
+	rejected := performRequestWithHeaders(handler, "192.0.2.40:23456", map[string]string{
+		"X-Tenant": "t1",
+		"X-User":   "alice",
+	})
+	if rejected.Code != http.StatusTooManyRequests {
+		t.Fatalf("rejected response code = %d, want %d", rejected.Code, http.StatusTooManyRequests)
+	}
+
+	differentUser := performRequestWithHeaders(handler, "192.0.2.40:34567", map[string]string{
+		"X-Tenant": "t1",
+		"X-User":   "bob",
+	})
+	if differentUser.Code != http.StatusNoContent {
+		t.Fatalf("different user response code = %d, want %d", differentUser.Code, http.StatusNoContent)
+	}
+
+	close(block)
+	wg.Wait()
+
+	afterRelease := performRequestWithHeaders(handler, "192.0.2.40:45678", map[string]string{
+		"X-Tenant": "t1",
+		"X-User":   "alice",
+	})
+	if afterRelease.Code != http.StatusNoContent {
+		t.Fatalf("after release response code = %d, want %d", afterRelease.Code, http.StatusNoContent)
+	}
+}
+
+func TestHandlerReturnsInternalServerErrorWhenAllRulesAreUnresolved(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		DefaultConnDelay: 0.1,
+		Rules: []Rule{
+			{Conn: 1, Burst: 0, Key: "tenant"},
+		},
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := performRequest(handler, "192.0.2.50:12345")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandlerAllowsDegradationWhenAllRulesAreUnresolved(t *testing.T) {
+	allowDegradation := true
+	p := newTestPlugin(t, Config{
+		DefaultConnDelay: 0.1,
+		AllowDegradation: &allowDegradation,
+		Rules: []Rule{
+			{Conn: 1, Burst: 0, Key: "tenant"},
+		},
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := performRequest(handler, "192.0.2.60:12345")
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusNoContent)
+	}
+}
+
 func performRequest(handler http.Handler, remoteAddr string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req.RemoteAddr = remoteAddr
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+
+func performRequestWithHeaders(
+	handler http.Handler,
+	remoteAddr string,
+	headers map[string]string,
+) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.RemoteAddr = remoteAddr
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

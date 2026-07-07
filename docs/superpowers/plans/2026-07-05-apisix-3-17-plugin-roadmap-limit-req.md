@@ -3870,3 +3870,35 @@ Updated `traffic-split` support notes to include bounded `match.vars`, leaving `
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/traffic_split ./pkg/plugin -run 'TestHandler|TestNewTrafficSplitAcceptsMatchVars' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/traffic_split ./pkg/plugin -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 110: Implement `limit-conn` Rules
+
+**Files:**
+- Modify: `pkg/plugin/limit_conn/plugin.go`
+- Modify: `pkg/plugin/limit_conn/plugin_test.go`
+- Modify: `pkg/plugin/init_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `rules` config for `limit-conn` with per-rule `conn`, `burst`, and variable-containing `key`.
+- Produces: local-policy concurrent request limiting across every resolved rule, with prior rule counters released when a later rule rejects.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-conn.lua` and `apisix/plugins/limit-conn/init.lua`; rules are an alternative to top-level `conn` / `burst` / `key`, require shared `default_conn_delay`, skip entries whose `key` resolves no variables, and return 500 when no usable rules remain unless degradation is enabled.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover rules-only schema validation, resolved rule application across multiple rules, release of earlier rule counters when a later rule rejects, and all-unresolved rules returning 500.
+
+- [x] **Step 3: Implement rules**
+
+Added schema/config support, per-rule validation, resolved rule keys, multi-rule admission and release tracking, rule-local counter namespacing, and shared rejection handling for top-level and rules paths.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-conn` support notes to include local `rules`, keeping string `conn` / `burst`, `only_use_default_delay`, Redis, and Redis Cluster as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_conn ./pkg/plugin -run 'TestHandlerAppliesResolvedRules|TestHandlerReturnsInternalServerErrorWhenAllRulesAreUnresolved|TestHandlerAllowsDegradationWhenAllRulesAreUnresolved|TestNewLimitConnAcceptsRulesOnlyConfig' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/limit_conn ./pkg/plugin -count=1 -timeout=10s`, `go test ./...`, and `make build`.

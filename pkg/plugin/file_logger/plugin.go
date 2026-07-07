@@ -1,7 +1,9 @@
 package file_logger
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"regexp"
@@ -102,9 +104,13 @@ type Plugin struct {
 }
 
 type Config struct {
-	Path      string            `json:"path"`
-	LogFormat map[string]string `json:"log_format,omitempty"`
-	Match     []any             `json:"match,omitempty"`
+	Path             string            `json:"path"`
+	LogFormat        map[string]string `json:"log_format,omitempty"`
+	IncludeReqBody   bool              `json:"include_req_body,omitempty"`
+	IncludeRespBody  bool              `json:"include_resp_body,omitempty"`
+	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
+	Match            []any             `json:"match,omitempty"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -120,6 +126,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.MaxReqBodyBytes == 0 {
+		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
+	}
+	if p.config.MaxRespBodyBytes == 0 {
+		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
+	}
+
 	cfg := zap.NewProductionConfig()
 	cfg.DisableCaller = true
 	cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
@@ -144,9 +157,7 @@ func (p *Plugin) PostInit() error {
 	)
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		var metadata pluginMetadata
-		store.GetPluginMetadata("file-logger", &metadata)
-		p.logFormat = metadata.LogFormat
+		p.logFormat = loadMetadataLogFormat()
 	} else {
 		p.logFormat = p.config.LogFormat
 	}
@@ -156,12 +167,37 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		var requestBody string
+		if p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		writer := w
+		var recorder *fileLogResponseRecorder
+		if p.config.IncludeRespBody {
+			recorder = &fileLogResponseRecorder{
+				ResponseWriter: w,
+				limit:          p.config.MaxRespBodyBytes,
+			}
+			writer = recorder
+		}
+
+		next.ServeHTTP(writer, r)
 		if !p.match(r) {
 			return
 		}
 
 		logFields := log.GetFields(r, p.logFormat)
+		if requestBody != "" {
+			nestedLogMap(logFields, "request")["body"] = requestBody
+		}
+		if recorder != nil && recorder.body.Len() > 0 {
+			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		}
+
 		fields := make([]zap.Field, 0, len(logFields))
 		for k, v := range logFields {
 			fields = append(fields, zap.Any(k, v))
@@ -170,6 +206,66 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		p.logger.Info("", fields...)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type fileLogResponseRecorder struct {
+	http.ResponseWriter
+	body  bytes.Buffer
+	limit int
+}
+
+func (w *fileLogResponseRecorder) Write(body []byte) (int, error) {
+	w.capture(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *fileLogResponseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+func nestedLogMap(fields map[string]any, key string) map[string]any {
+	if value, ok := fields[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	fields[key] = value
+	return value
+}
+
+func loadMetadataLogFormat() (format map[string]string) {
+	defer func() {
+		if recover() != nil {
+			format = nil
+		}
+	}()
+
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil
+	}
+	return metadata.LogFormat
 }
 
 func (p *Plugin) match(r *http.Request) bool {

@@ -341,9 +341,9 @@ Loggers:
   - support RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery
   - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, and official body-size config validation
   - not support APISIX batch processor behavior, `max_pending_entries`, metadata-only delivery config parity, or request/response body capture
-- [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 65%
-  - support `endpoint_addr`, random `endpoint_addrs` selection, `field.index`, time/APISIX variable expansion in `field.index`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, official body-size config validation, and `_bulk` NDJSON delivery
-  - not support APISIX batch processor behavior, `max_pending_entries`, Elasticsearch major-version discovery, or request/response body capture
+- [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 70%
+  - support `endpoint_addr`, random `endpoint_addrs` selection, `field.index`, time/APISIX variable expansion in `field.index`, Elasticsearch major-version discovery for legacy `_type`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, official body-size config validation, and `_bulk` NDJSON delivery
+  - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
 - [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 50%
   - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, Tencent CLS sha1 authorization, and `/structuredlog` protobuf delivery
   - not support APISIX batch processor behavior, `max_pending_entries`, request/response body capture, or lz4/zstd compression

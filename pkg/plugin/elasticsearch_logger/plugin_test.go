@@ -43,6 +43,12 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
 		if r.URL.Path != "/_bulk" {
 			t.Fatalf("path = %q, want /_bulk", r.URL.Path)
 		}
@@ -104,6 +110,12 @@ func TestSendSelectsRandomEndpointAddr(t *testing.T) {
 
 	secondRequests := make(chan struct{}, 1)
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
 		if r.URL.Path != "/_bulk" {
 			t.Fatalf("path = %q, want /_bulk", r.URL.Path)
 		}
@@ -145,9 +157,55 @@ func TestSendSelectsRandomEndpointAddr(t *testing.T) {
 	}
 }
 
+func TestSendDiscoversOlderElasticsearchVersion(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"6.8.23"}}`))
+		case "/_bulk":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read bulk body: %v", err)
+			}
+			received <- string(body)
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"errors":false}`))
+		default:
+			t.Fatalf("path = %q, want / or /_bulk", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		Timeout:       10,
+	})
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case body := <-received:
+		if !strings.Contains(body, `"_type":"_doc"`) {
+			t.Fatalf("bulk body = %q, want _type _doc for Elasticsearch 6", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
 func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read bulk body: %v", err)

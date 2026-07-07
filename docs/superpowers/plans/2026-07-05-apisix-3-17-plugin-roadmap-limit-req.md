@@ -812,6 +812,37 @@ Updated `elasticsearch-logger` support notes to include time/APISIX variable exp
 
 Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 137: Implement `elasticsearch-logger` Major-Version Discovery
+
+**Files:**
+- Modify: `pkg/plugin/elasticsearch_logger/plugin.go`
+- Modify: `pkg/plugin/elasticsearch_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: Elasticsearch root endpoint version response and existing auth/header/timeout/SSL configuration.
+- Produces: cached Elasticsearch major-version discovery and automatic `_type: "_doc"` bulk metadata for Elasticsearch 5/6 when `field.type` is not explicitly configured.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/elasticsearch-logger.lua`; APISIX GETs the selected endpoint once, caches the major version, and adds `_type = "_doc"` for ES 5/6 bulk action metadata.
+
+- [x] **Step 2: Write failing tests**
+
+Test covers an Elasticsearch 6 root version response and verifies the emitted `_bulk` action contains `_type:"_doc"`.
+
+- [x] **Step 3: Implement version discovery**
+
+Added root endpoint version probing with configured auth, headers, timeout, and SSL verification; cached the major version under a mutex; and used it when building bulk action metadata while preserving explicit `field.type`.
+
+- [x] **Step 4: Update README**
+
+Updated `elasticsearch-logger` support notes to include Elasticsearch major-version discovery for legacy `_type` behavior and removed that item from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -143,6 +145,9 @@ type pluginMetadata struct {
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
+
+	versionMu sync.Mutex
+	esVersion string
 }
 
 var randomEndpointIndex = rand.Intn
@@ -237,6 +242,7 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf("failed to create Elasticsearch client: %s in elasticsearch-logger", err)
 		return
 	}
+	p.fetchAndUpdateVersion(endpoint)
 
 	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
 	body, err := p.bulkBody(log)
@@ -312,6 +318,8 @@ func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
 	}
 	if p.config.Field.Type != nil && *p.config.Field.Type != "" {
 		action["index"].(map[string]any)["_type"] = *p.config.Field.Type
+	} else if version := p.elasticsearchVersion(); version == "6" || version == "5" {
+		action["index"].(map[string]any)["_type"] = "_doc"
 	}
 
 	actionLine, err := json.Marshal(action)
@@ -329,6 +337,76 @@ func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
 	body = append(body, logLine...)
 	body = append(body, '\n')
 	return body, nil
+}
+
+func (p *Plugin) fetchAndUpdateVersion(endpoint string) {
+	p.versionMu.Lock()
+	defer p.versionMu.Unlock()
+	if p.esVersion != "" {
+		return
+	}
+
+	version, err := p.getMajorVersion(endpoint)
+	if err != nil {
+		logger.Errorf("failed to get Elasticsearch version: %s", err)
+		return
+	}
+	p.esVersion = version
+}
+
+func (p *Plugin) elasticsearchVersion() string {
+	p.versionMu.Lock()
+	defer p.versionMu.Unlock()
+	return p.esVersion
+}
+
+func (p *Plugin) getMajorVersion(endpoint string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	if p.config.Auth != nil {
+		req.SetBasicAuth(p.config.Auth.Username, p.config.Auth.Password)
+	}
+	for key, value := range p.config.Headers {
+		req.Header.Set(key, value)
+	}
+
+	client := &http.Client{
+		Timeout: time.Duration(p.config.Timeout) * time.Second,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout: time.Duration(p.config.Timeout) * time.Second,
+			}).DialContext,
+			ResponseHeaderTimeout: time.Duration(p.config.Timeout) * time.Second,
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: !*p.config.SslVerify},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("server returned status: %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Version struct {
+			Number string `json:"number"`
+		} `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", err
+	}
+	if body.Version.Number == "" {
+		return "", fmt.Errorf("failed to get version from response body")
+	}
+	major, _, found := strings.Cut(body.Version.Number, ".")
+	if !found || major == "" {
+		return "", fmt.Errorf("invalid version format: %s", body.Version.Number)
+	}
+	return major, nil
 }
 
 func elasticsearchDocument(log map[string]any) map[string]any {

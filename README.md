@@ -185,7 +185,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
 - [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
-- [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 100%
+- [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 95%
+  - support `whitelist`, `blacklist`, `bypass_missing`, custom rejection messages, APISIX-style JSON rejection bodies, and leading-`*` suffix host matching
+  - not support APISIX `host_def` schema validation exactly
 - [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/) 80%
   - support `consumer_name`, `service_id`, `route_id`, `consumer_group_id`, blacklist, whitelist, `allowed_by_methods`, custom rejection status/message, and APISIX-style rejection bodies
   - not support APISIX schema method enum validation or automatic consumer-group attachment

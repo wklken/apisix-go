@@ -1830,6 +1830,37 @@ Updated `request-id` support notes to include supported algorithms and the remai
 
 Run: `go test ./pkg/plugin/request_id -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 170: Align `referer-restriction` Rejections And Wildcards
+
+**Files:**
+- Modify: `pkg/plugin/referer_restriction/plugin.go`
+- Add: `pkg/plugin/referer_restriction/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `referer-restriction` whitelist/blacklist host matching and rejection response behavior.
+- Produces: APISIX-compatible JSON rejection bodies and leading-`*` suffix wildcard matching.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/referer-restriction.lua`, docs, and tests; APISIX returns `403 {"message": conf.message}` for blocked referers and treats only leading `*` host entries as suffix wildcards.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover JSON rejection content type/body, `bypass_missing`, leading-star suffix matching, and non-leading `*` remaining literal instead of acting as a glob.
+
+- [x] **Step 3: Implement response and matcher parity**
+
+Replaced `http.Error` rejection paths with a JSON response writer and replaced generic glob matching with exact host plus leading-star suffix matching.
+
+- [x] **Step 4: Update README**
+
+Updated `referer-restriction` support notes to include whitelist/blacklist, missing referer bypass, custom messages, JSON rejections, leading-star suffix matching, and the remaining exact `host_def` validation gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/referer_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

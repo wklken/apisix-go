@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -230,7 +231,7 @@ func dispatchPipelineRequest(
 	req := httptest.NewRequest(method, target, strings.NewReader(item.Body)).WithContext(ctx)
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
-	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers)
+	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
 
 	recorder := httptest.NewRecorder()
 	dispatcher.ServeHTTP(recorder, req)
@@ -270,7 +271,7 @@ func mergeQuery(common map[string]string, item map[string]string) url.Values {
 	return values
 }
 
-func mergeHeaders(outer http.Header, common map[string]string, item map[string]string) http.Header {
+func mergeHeaders(outer http.Header, common map[string]string, item map[string]string, remoteAddr string) http.Header {
 	headers := http.Header{}
 	for key, value := range outer {
 		if strings.HasPrefix(strings.ToLower(key), "content-") {
@@ -284,7 +285,18 @@ func mergeHeaders(outer http.Header, common map[string]string, item map[string]s
 	for key, value := range item {
 		headers.Set(key, value)
 	}
+	if remoteIP := remoteIP(remoteAddr); remoteIP != "" {
+		headers.Set("X-Real-IP", remoteIP)
+	}
 	return headers
+}
+
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {

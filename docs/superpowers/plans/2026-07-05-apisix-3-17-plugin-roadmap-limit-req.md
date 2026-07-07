@@ -345,6 +345,37 @@ Updated `aws-lambda`, `azure-functions`, `openfunction`, and `openwhisk` support
 
 Run: `go test ./pkg/plugin/function_upstream ./pkg/plugin/openwhisk -count=1 -timeout=10s -v`, `go test ./pkg/plugin/aws_lambda ./pkg/plugin/azure_functions ./pkg/plugin/openfunction ./pkg/plugin/openwhisk ./pkg/plugin/function_upstream -count=1 -timeout=10s`, `go test ./...`, and `make build`.
 
+### Task 122: Implement `batch-requests` Real-IP Header Injection
+
+**Files:**
+- Modify: `pkg/plugin/batch_requests/plugin.go`
+- Modify: `pkg/plugin/batch_requests/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `batch-requests` subrequest header behavior.
+- Produces: `X-Real-IP` injection from the outer request remote address into every internal batch subrequest after common/item header merging.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/batch-requests.lua`; APISIX lowercases common and item headers, merges them with outer request headers, then overwrites the configured real-IP header with `core.request.get_remote_client_ip()` for each pipeline request.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover dispatching a pipeline item through the real handler and proving client-provided common/item `X-Real-IP` values are overwritten by the outer request remote IP.
+
+- [x] **Step 3: Implement real-IP injection**
+
+Added remote address parsing and final `X-Real-IP` header assignment after outer/common/item header merges.
+
+- [x] **Step 4: Update README**
+
+Updated `batch-requests` support notes to include fixed `X-Real-IP` subrequest injection while leaving custom NGINX `real_ip_header`, true pipelining, and `ssl_verify` as remaining limitations.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/batch_requests -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

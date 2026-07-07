@@ -109,6 +109,49 @@ func TestNewTrafficLabelUsesOfficialPluginName(t *testing.T) {
 	}
 }
 
+func TestNewTrafficSplitAcceptsMatchVars(t *testing.T) {
+	p := New("traffic-split")
+	if p == nil {
+		t.Fatal(`New("traffic-split") returned nil`)
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if got := p.GetName(); got != "traffic-split" {
+		t.Fatalf("plugin name = %q, want traffic-split", got)
+	}
+	if got := p.GetPriority(); got != 966 {
+		t.Fatalf("priority = %d, want 966", got)
+	}
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match": []any{
+					map[string]any{
+						"vars": []any{[]any{"http_x_stage", "==", "beta"}},
+					},
+				},
+				"weighted_upstreams": []any{
+					map[string]any{
+						"weight": 1,
+						"upstream": map[string]any{
+							"type":   "roundrobin",
+							"scheme": "http",
+							"nodes": []any{
+								map[string]any{"host": "beta.example.com", "port": 80, "weight": 1},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("traffic-split match vars config should validate: %v", err)
+	}
+}
+
 func TestNewWorkflowUsesOfficialPluginName(t *testing.T) {
 	p := New("workflow")
 	if p == nil {

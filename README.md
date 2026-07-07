@@ -238,9 +238,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 90%
   - not support `healthy.http_statuse`
   - not support `break_response_headers` vars
-- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 50%
-  - support weighted inline upstream selection
-  - not support `match.vars`
+- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 65%
+  - support weighted inline upstream selection and bounded `match.vars` for common request variables
   - not support `upstream_id`
 - [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 55%
   - support first-match rules, `set_headers`, weighted actions, `arg_*`, `http_*`, `uri`, `request_uri`, `method`, `host`, `scheme`, and `remote_addr`

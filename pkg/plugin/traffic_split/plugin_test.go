@@ -107,10 +107,90 @@ func TestHandlerFallsBackToRouteUpstreamForEmptyWeightedEntry(t *testing.T) {
 	}
 }
 
+func TestHandlerAppliesFirstMatchingRule(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []Match{
+					{Vars: []any{[]any{"http_x_stage", "==", "beta"}}},
+				},
+				WeightedUpstreams: []WeightedUpstream{
+					{
+						Weight: 1,
+						Upstream: &Upstream{
+							Scheme: "http",
+							Nodes:  []Node{{Host: "beta.example.com", Port: 80, Weight: 1}},
+						},
+					},
+				},
+			},
+			{
+				Match: []Match{
+					{Vars: []any{[]any{"http_x_stage", "==", "stable"}}},
+				},
+				WeightedUpstreams: []WeightedUpstream{
+					{
+						Weight: 1,
+						Upstream: &Upstream{
+							Scheme: "http",
+							Nodes:  []Node{{Host: "stable.example.com", Port: 80, Weight: 1}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("X-Stage", "stable")
+	override := performRequestWithRequest(t, p, req)
+
+	if override == nil {
+		t.Fatal("traffic split override is nil")
+	}
+	if override.Host != "stable.example.com:80" {
+		t.Fatalf("override host = %q, want stable.example.com:80", override.Host)
+	}
+}
+
+func TestHandlerSkipsWhenNoMatchVarsPass(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []Match{
+					{Vars: []any{[]any{"arg_stage", "==", "beta"}}},
+				},
+				WeightedUpstreams: []WeightedUpstream{
+					{
+						Weight: 1,
+						Upstream: &Upstream{
+							Scheme: "http",
+							Nodes:  []Node{{Host: "beta.example.com", Port: 80, Weight: 1}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?stage=stable", nil)
+	override := performRequestWithRequest(t, p, req)
+
+	if override != nil {
+		t.Fatalf("override = %#v, want route-upstream fallback", override)
+	}
+}
+
 func performRequest(t *testing.T, p *Plugin) *Override {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	return performRequestWithRequest(t, p, req)
+}
+
+func performRequestWithRequest(t *testing.T, p *Plugin, req *http.Request) *Override {
+	t.Helper()
+
 	rr := httptest.NewRecorder()
 	var seen *Override
 

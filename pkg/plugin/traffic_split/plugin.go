@@ -16,9 +16,8 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config    Config
-	balancer  pxy.LoadBalancer
-	overrides map[string]*Override
+	config Config
+	rules  []compiledRule
 }
 
 const (
@@ -71,8 +70,12 @@ type Config struct {
 }
 
 type Rule struct {
-	Match             []any              `json:"match,omitempty"`
+	Match             []Match            `json:"match,omitempty"`
 	WeightedUpstreams []WeightedUpstream `json:"weighted_upstreams,omitempty"`
+}
+
+type Match struct {
+	Vars []any `json:"vars,omitempty"`
 }
 
 type WeightedUpstream struct {
@@ -96,6 +99,12 @@ type Node struct {
 type Override struct {
 	Scheme string
 	Host   string
+}
+
+type compiledRule struct {
+	match     []Match
+	balancer  pxy.LoadBalancer
+	overrides map[string]*Override
 }
 
 type overrideKey struct{}
@@ -154,13 +163,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	servers := map[string]int{}
-	p.overrides = map[string]*Override{}
-
+	p.rules = p.rules[:0]
 	for _, rule := range p.config.Rules {
-		if len(rule.Match) > 0 {
-			continue
-		}
+		servers := map[string]int{}
+		overrides := map[string]*Override{}
 		for _, weightedUpstream := range rule.WeightedUpstreams {
 			weight := weightedUpstream.Weight
 			if weight == 0 {
@@ -177,14 +183,18 @@ func (p *Plugin) PostInit() error {
 					nodeWeight = 1
 				}
 				servers[key] += weight * nodeWeight
-				p.overrides[key] = override
+				overrides[key] = override
 			}
 		}
-		break
-	}
 
-	if len(servers) > 0 {
-		p.balancer = pxy.NewWeightedRRLoadBalance(servers)
+		compiled := compiledRule{
+			match:     rule.Match,
+			overrides: overrides,
+		}
+		if len(servers) > 0 {
+			compiled.balancer = pxy.NewWeightedRRLoadBalance(servers)
+		}
+		p.rules = append(p.rules, compiled)
 	}
 
 	return nil
@@ -196,7 +206,7 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		override := p.nextOverride()
+		override := p.nextOverride(r)
 		if override == nil {
 			next.ServeHTTP(w, r)
 			return
@@ -207,12 +217,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) nextOverride() *Override {
-	if p.balancer == nil {
-		return nil
+func (p *Plugin) nextOverride(r *http.Request) *Override {
+	for _, rule := range p.rules {
+		if !matchRule(r, rule.match) {
+			continue
+		}
+		if rule.balancer == nil {
+			return nil
+		}
+		key := rule.balancer.Next()
+		return rule.overrides[key]
 	}
-	key := p.balancer.Next()
-	return p.overrides[key]
+	return nil
 }
 
 func overrideFromNode(scheme string, node Node) *Override {
@@ -257,4 +273,107 @@ func splitAddr(addr string) (string, int) {
 	}
 
 	return addr, 0
+}
+
+func matchRule(r *http.Request, matches []Match) bool {
+	if len(matches) == 0 {
+		return true
+	}
+	for _, match := range matches {
+		if matchVars(r, match.Vars) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchVars(r *http.Request, conditions []any) bool {
+	if len(conditions) == 0 {
+		return false
+	}
+
+	pendingOp := "AND"
+	hasResult := false
+	result := true
+	for _, condition := range conditions {
+		if op, ok := condition.(string); ok {
+			switch strings.ToUpper(op) {
+			case "AND", "OR":
+				pendingOp = strings.ToUpper(op)
+			default:
+				return false
+			}
+			continue
+		}
+
+		matched := matchCondition(r, condition)
+		if !hasResult {
+			result = matched
+			hasResult = true
+			continue
+		}
+		if pendingOp == "OR" {
+			result = result || matched
+		} else {
+			result = result && matched
+		}
+		pendingOp = "AND"
+	}
+	return hasResult && result
+}
+
+func matchCondition(r *http.Request, condition any) bool {
+	parts, ok := condition.([]any)
+	if !ok || len(parts) != 3 {
+		return false
+	}
+
+	left := fmt.Sprint(parts[0])
+	op := fmt.Sprint(parts[1])
+	right := fmt.Sprint(parts[2])
+	actual := requestVar(r, left)
+
+	switch op {
+	case "==":
+		return actual == right
+	case "!=":
+		return actual != right
+	default:
+		return false
+	}
+}
+
+func requestVar(r *http.Request, name string) string {
+	name = strings.TrimPrefix(name, "$")
+	switch {
+	case name == "uri":
+		return r.URL.Path
+	case name == "request_uri":
+		return r.URL.RequestURI()
+	case name == "method", name == "request_method":
+		return r.Method
+	case name == "host":
+		return r.Host
+	case name == "scheme":
+		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
+			return scheme
+		}
+		if r.TLS != nil {
+			return "https"
+		}
+		return "http"
+	case name == "remote_addr":
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	case strings.HasPrefix(name, "arg_"):
+		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "http_"):
+		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
+		return r.Header.Get(header)
+	default:
+		return ""
+	}
 }

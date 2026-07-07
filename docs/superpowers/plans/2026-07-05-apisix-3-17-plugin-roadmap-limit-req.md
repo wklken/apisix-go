@@ -3838,3 +3838,35 @@ Updated `forward-auth` support notes to include `extra_headers` variable resolut
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/forward_auth -run 'TestHandlerResolvesExtraHeaderVariables' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/forward_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 109: Implement `traffic-split` Match Vars
+
+**Files:**
+- Modify: `pkg/plugin/traffic_split/plugin.go`
+- Modify: `pkg/plugin/traffic_split/plugin_test.go`
+- Modify: `pkg/plugin/init_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `rules[].match[].vars` config for traffic-split.
+- Produces: ordered rule matching against common APISIX request variables before selecting a weighted inline upstream.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/traffic-split.lua`; rules are checked in order, a rule without `match` matches immediately, match entries are ORed, and each `vars` expression gates that rule's weighted upstream selection.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover first matching rule selection from request headers, route-upstream fallback when no `match.vars` entry matches, and schema validation for the official `match: [{vars: ...}]` shape.
+
+- [x] **Step 3: Implement match vars**
+
+Changed traffic-split to compile per-rule balancers, evaluate bounded `vars` expressions for common request variables at request time, and select the first matching rule's inline weighted upstream.
+
+- [x] **Step 4: Update README**
+
+Updated `traffic-split` support notes to include bounded `match.vars`, leaving `upstream_id` as the remaining documented gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/traffic_split ./pkg/plugin -run 'TestHandler|TestNewTrafficSplitAcceptsMatchVars' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/traffic_split ./pkg/plugin -count=1 -timeout=10s`, `go test ./...`, and `make build`.

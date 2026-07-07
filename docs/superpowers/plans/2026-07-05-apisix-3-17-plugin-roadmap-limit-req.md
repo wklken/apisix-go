@@ -376,6 +376,37 @@ Updated `batch-requests` support notes to include fixed `X-Real-IP` subrequest i
 
 Run: `go test ./pkg/plugin/batch_requests -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 123: Implement `tcp-logger` TLS Delivery
+
+**Files:**
+- Modify: `pkg/plugin/tcp_logger/plugin.go`
+- Create: `pkg/plugin/tcp_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `tcp-logger` `tls`, `tls_options`, and `timeout` config.
+- Produces: TCP logger delivery over raw TCP or TLS, using `tls_options` as the TLS server name / SNI.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/tcp-logger.lua`; APISIX connects to the configured host/port, sets the timeout, and when `tls=true` performs a TLS handshake with `tls_options` as the server name while disabling certificate verification.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover plain TCP log delivery and TLS log delivery to a self-signed listener while asserting the configured `tls_options` value is sent as SNI.
+
+- [x] **Step 3: Implement TLS delivery**
+
+Added `TLS` and `TLSOptions` config fields, millisecond timeout dialers, TLS dialing with disabled certificate verification, SNI from `tls_options`, safe metadata fallback when the store is unavailable, and `net.JoinHostPort` address construction.
+
+- [x] **Step 4: Update README**
+
+Updated `tcp-logger` support notes to include `tls` and `tls_options`, leaving APISIX batch processor behavior and request/response body capture as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/tcp_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

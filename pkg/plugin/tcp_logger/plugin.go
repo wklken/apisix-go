@@ -1,9 +1,11 @@
 package tcp_logger
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -78,14 +80,14 @@ type Plugin struct {
 }
 
 type Config struct {
-	Host      string            `json:"host"`
-	Port      int               `json:"port"`
-	Timeout   int               `json:"timeout,omitempty"`
-	LogFormat map[string]string `json:"log_format,omitempty"`
+	Host       string            `json:"host"`
+	Port       int               `json:"port"`
+	TLS        bool              `json:"tls,omitempty"`
+	Timeout    int               `json:"timeout,omitempty"`
+	TLSOptions *string           `json:"tls_options,omitempty"`
+	LogFormat  map[string]string `json:"log_format,omitempty"`
 
 	// FIXME: not support
-	// TLS        bool    `json:"tls"`
-	// TLSOptions *string `json:"tls_options,omitempty"`
 	// IncludeReqBody      bool                `json:"include_req_body"`
 	// IncludeReqBodyExpr  [][]interface{}     `json:"include_req_body_expr,omitempty"`
 	// IncludeRespBody     bool                `json:"include_resp_body"`
@@ -113,19 +115,17 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
-		p.config.Timeout = 1
+		p.config.Timeout = 1000
 	}
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		var metadata pluginMetadata
-		store.GetPluginMetadata(name, &metadata)
-		p.LogFormat = metadata.LogFormat
+		p.LogFormat = loadMetadataLogFormat()
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
 	fmt.Printf("log format: %v\n", p.LogFormat)
 
-	p.config.addr = fmt.Sprintf("%s:%d", p.config.Host, p.config.Port)
+	p.config.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
 
 	// start the consumer
 	p.Consume()
@@ -135,9 +135,9 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Send(log map[string]any) {
 	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
-	conn, err := net.Dial("tcp", p.config.addr)
+	conn, err := p.dial()
 	if err != nil {
-		logger.Errorf("failed to connect to udp server: %s", err)
+		logger.Errorf("failed to connect to tcp server: %s", err)
 		return
 	}
 
@@ -151,7 +151,34 @@ func (p *Plugin) Send(log map[string]any) {
 
 	_, err = conn.Write(logMessage)
 	if err != nil {
-		logger.Errorf("failed to send log message: %s in udp-logger", err)
+		logger.Errorf("failed to send log message: %s in tcp-logger", err)
 		return
 	}
+}
+
+func (p *Plugin) dial() (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
+	if !p.config.TLS {
+		return dialer.Dial("tcp", p.config.addr)
+	}
+
+	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	if p.config.TLSOptions != nil {
+		tlsConfig.ServerName = *p.config.TLSOptions
+	}
+	return tls.DialWithDialer(dialer, "tcp", p.config.addr, tlsConfig)
+}
+
+func loadMetadataLogFormat() (format map[string]string) {
+	defer func() {
+		if recover() != nil {
+			format = nil
+		}
+	}()
+
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil
+	}
+	return metadata.LogFormat
 }

@@ -91,6 +91,59 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 	}
 }
 
+func TestSendSelectsRandomEndpointAddr(t *testing.T) {
+	firstRequests := make(chan struct{}, 1)
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstRequests <- struct{}{}
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(first.Close)
+
+	secondRequests := make(chan struct{}, 1)
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_bulk" {
+			t.Fatalf("path = %q, want /_bulk", r.URL.Path)
+		}
+		secondRequests <- struct{}{}
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(second.Close)
+
+	oldRandomEndpointIndex := randomEndpointIndex
+	randomEndpointIndex = func(n int) int {
+		if n != 2 {
+			t.Fatalf("random endpoint count = %d, want 2", n)
+		}
+		return 1
+	}
+	t.Cleanup(func() {
+		randomEndpointIndex = oldRandomEndpointIndex
+	})
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{first.URL, second.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		Timeout:       10,
+	})
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case <-secondRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for selected Elasticsearch endpoint")
+	}
+
+	select {
+	case <-firstRequests:
+		t.Fatal("first Elasticsearch endpoint received request, want selected second endpoint only")
+	default:
+	}
+}
+
 func TestSchemaAcceptsOfficialEndpointAddrHeadersAndBodySizeFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

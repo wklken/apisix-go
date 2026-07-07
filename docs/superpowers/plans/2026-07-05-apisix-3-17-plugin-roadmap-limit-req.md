@@ -750,6 +750,37 @@ Updated `google-cloud-logging` support notes to include default Cloud Logging `h
 
 Run: `go test ./pkg/plugin/google_cloud_logging -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 135: Implement `elasticsearch-logger` Random Endpoint Selection
+
+**Files:**
+- Modify: `pkg/plugin/elasticsearch_logger/plugin.go`
+- Modify: `pkg/plugin/elasticsearch_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official Elasticsearch `endpoint_addr` or `endpoint_addrs` list.
+- Produces: deprecated `endpoint_addr` fixed-address behavior and per-send random `endpoint_addrs` selection for `_bulk` delivery.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/elasticsearch-logger.lua`; APISIX uses `endpoint_addr` when configured, otherwise selects `endpoint_addrs[math.random(#endpoint_addrs)]` before posting to `/_bulk`.
+
+- [x] **Step 2: Write failing tests**
+
+Test forces the endpoint selector to choose the second configured Elasticsearch endpoint and verifies the `_bulk` request is sent only there.
+
+- [x] **Step 3: Implement random selection**
+
+Added injectable random endpoint selection, selected the address at send time, and created/cached the Elasticsearch client for the selected endpoint address.
+
+- [x] **Step 4: Update README**
+
+Updated `elasticsearch-logger` support notes to include random `endpoint_addrs` selection and removed that item from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

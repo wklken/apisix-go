@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"math/rand"
 	"net"
 	"net/http"
 	"time"
@@ -136,9 +137,9 @@ type pluginMetadata struct {
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
-
-	client *elasticsearch.Client
 }
+
+var randomEndpointIndex = rand.Intn
 
 type Config struct {
 	EndpointAddr     string            `json:"endpoint_addr,omitempty"`
@@ -204,8 +205,55 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = p.config.LogFormat
 	}
 
-	clientUID := shared.NewConfigUID()
+	p.Consume()
 
+	return nil
+}
+
+func (p *Plugin) Send(log map[string]any) {
+	endpoint := p.endpointAddr()
+	if endpoint == "" {
+		return
+	}
+	client, err := p.clientForEndpoint(endpoint)
+	if err != nil {
+		logger.Errorf("failed to create Elasticsearch client: %s in elasticsearch-logger", err)
+		return
+	}
+
+	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
+	body, err := p.bulkBody(log)
+	if err != nil {
+		logger.Errorf("failed to marshal log message: %s in elasticsearch-logger", err)
+		return
+	}
+
+	resp, err := client.Bulk(
+		bytes.NewReader(body),
+		client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
+	)
+	if err != nil {
+		logger.Errorf("failed to send log message: %s in elasticsearch-logger", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.IsError() {
+		logger.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
+		return
+	}
+}
+
+func (p *Plugin) endpointAddr() string {
+	if p.config.EndpointAddr != "" {
+		return p.config.EndpointAddr
+	}
+	if len(p.config.EndpointAddrs) == 0 {
+		return ""
+	}
+	return p.config.EndpointAddrs[randomEndpointIndex(len(p.config.EndpointAddrs))]
+}
+
+func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, error) {
 	username := ""
 	password := ""
 	if p.config.Auth != nil {
@@ -214,7 +262,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	c, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: p.config.EndpointAddrs,
+		Addresses: []string{endpoint},
 		Username:  username,
 		Password:  password,
 		Header:    headerFromMap(p.config.Headers),
@@ -227,40 +275,12 @@ func (p *Plugin) PostInit() error {
 		},
 	})
 	if err != nil {
-		return err
-	}
-	clientUID.Add(p.config.EndpointAddrs, username, password, p.config.Headers, p.config.Timeout, *p.config.SslVerify)
-
-	client := shared.LoadOrStoreClient(name, clientUID, c).(*elasticsearch.Client)
-
-	p.client = client
-
-	p.Consume()
-
-	return nil
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
-	body, err := p.bulkBody(log)
-	if err != nil {
-		logger.Errorf("failed to marshal log message: %s in elasticsearch-logger", err)
-		return
+		return nil, err
 	}
 
-	resp, err := p.client.Bulk(
-		bytes.NewReader(body),
-		p.client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
-	)
-	if err != nil {
-		logger.Errorf("failed to send log message: %s in elasticsearch-logger", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.IsError() {
-		logger.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
-		return
-	}
+	clientUID := shared.NewConfigUID()
+	clientUID.Add(endpoint, username, password, p.config.Headers, p.config.Timeout, *p.config.SslVerify)
+	return shared.LoadOrStoreClient(name, clientUID, c).(*elasticsearch.Client), nil
 }
 
 func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {

@@ -4057,3 +4057,34 @@ Updated `traffic-split` support notes to include `upstream_id`, leaving full API
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/traffic_split -run 'TestHandlerSetsUpstreamIDOverride|TestHandlerReturnsInternalServerErrorForMissingUpstreamID' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/traffic_split ./pkg/route -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 116: Implement `request-validation` Header Schema
+
+**Files:**
+- Modify: `pkg/plugin/request_validation/plugin.go`
+- Create: `pkg/plugin/request_validation/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `header_schema`, `rejected_code`, and `rejected_msg` config for `request-validation`.
+- Produces: request-header JSON schema validation before body validation, with APISIX-style lowercase header aliases and custom rejection messages.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/request-validation.lua` and `t/plugin/request-validation.t`; APISIX validates headers before the body using `core.request.headers(ctx)`, returns `rejected_code`, and uses `rejected_msg` when configured.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover rejecting missing/invalid required headers, accepting a valid lowercase header schema, and validating headers before an invalid request body is parsed.
+
+- [x] **Step 3: Implement header schema validation**
+
+Added request-header schema validation before the body path, custom rejection message reuse for header/body schema failures, and canonical plus lowercase request-header keys including `Host`.
+
+- [x] **Step 4: Update README**
+
+Updated `request-validation` support notes to include `header_schema`, keeping form-body validation and JSON body normalization as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/request_validation -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

@@ -105,6 +105,14 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		if p.config.headerSchemaStr != "" {
+			if err := util.Validate(requestHeaders(r), p.config.headerSchemaStr); err != nil {
+				logger.Error("req schema validation failed: " + err.Error())
+				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+				return
+			}
+		}
+
 		if p.config.bodySchemaStr != "" {
 			body, err := ctx.ReadRequestBody(r)
 			if err != nil {
@@ -125,11 +133,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 			err = util.Validate(bodyData, p.config.bodySchemaStr)
 			if err != nil {
-				msg := err.Error()
-				if p.config.RejectedMsg != "" {
-					msg = p.config.RejectedMsg
-				}
-				http.Error(w, msg, p.config.RejectedCode)
+				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
 
@@ -138,6 +142,28 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) rejectedMessage(err error) string {
+	if p.config.RejectedMsg != "" {
+		return p.config.RejectedMsg
+	}
+	return err.Error()
+}
+
+func requestHeaders(r *http.Request) map[string]interface{} {
+	headers := make(map[string]interface{}, len(r.Header)*2+2)
+	for key := range r.Header {
+		value := r.Header.Get(key)
+		headers[key] = value
+		headers[strings.ToLower(key)] = value
+	}
+	if r.Host != "" {
+		headers["Host"] = r.Host
+		headers["host"] = r.Host
+	}
+
+	return headers
 }
 
 // FIXME: if this func show in another plugin, should be refactor, only do it once

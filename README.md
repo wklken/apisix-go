@@ -218,8 +218,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [graphql-proxy-cache](https://apisix.apache.org/docs/apisix/plugins/graphql-proxy-cache/) 55%
   - support official plugin name, priority, schema, GET/POST GraphQL request validation, JSON and `application/graphql` bodies, mutation bypass with `Apisix-Cache-Status: BYPASS`, MD5 cache keys, `APISIX-Cache-Key`, in-memory TTL cache, `consumer_isolation`, and `cache_set_cookie`
   - not support NGINX disk cache zones, APISIX public `PURGE` endpoint, configured `graphql.max_size`, route/service ID participation in cache keys, full GraphQL spec parsing parity, or exact APISIX `proxy-cache` handler behavior
-- [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/)
-  - not support `header_schema`
+- [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/) 75%
+  - support JSON `body_schema`, `header_schema`, `rejected_code`, and `rejected_msg`
+  - not support `application/x-www-form-urlencoded` body validation or JSON body normalization before proxying
 - [x] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/) 70%
   - support HTTP mirror `host`, `path`, `path_concat_mode`, `sample_ratio`
   - not support gRPC mirroring

@@ -236,9 +236,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 95%
   - support `break_response_code`, `break_response_body`, `break_response_headers` with bounded variable resolution, `max_breaker_sec`, `unhealthy.http_statuses`, `unhealthy.failures`, `healthy.http_statuses`, and `healthy.successes`
   - not support APISIX shared-dict state keyed by host and URI, exponential breaker windows, or exact OpenResty log-phase timing
-- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 65%
-  - support weighted inline upstream selection and bounded `match.vars` for common request variables
-  - not support `upstream_id`
+- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 75%
+  - support weighted inline upstream selection, `upstream_id`, and bounded `match.vars` for common request variables
+  - not support APISIX upstream balancer fidelity for all upstream algorithms, health checks, retries, or full `lua-resty-expr` syntax
 - [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 55%
   - support first-match rules, `set_headers`, weighted actions, `arg_*`, `http_*`, `uri`, `request_uri`, `method`, `host`, `scheme`, and `remote_addr`
   - not support full `lua-resty-expr` syntax or full APISIX variable resolution

@@ -4026,3 +4026,34 @@ Updated `redirect` support notes to include `regex_uri` and `encode_uri`, leavin
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/redirect -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 115: Implement `traffic-split` Upstream ID
+
+**Files:**
+- Modify: `pkg/plugin/traffic_split/plugin.go`
+- Modify: `pkg/plugin/traffic_split/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `weighted_upstreams[].upstream_id` traffic-split config.
+- Produces: request upstream override from the referenced upstream's configured nodes, sharing the existing Go weighted override path.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/traffic-split.lua`; weighted upstream entries may reference either inline `upstream`, `upstream_id`, or an empty route-upstream fallback entry. APISIX validates referenced upstream IDs during access and sets the selected upstream ID for later upstream handling.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover resolving a selected `upstream_id` into an override and returning a 500 response when the matched rule references a missing upstream ID.
+
+- [x] **Step 3: Implement upstream ID support**
+
+Added an injectable upstream resolver backed by `store.GetUpstream`, converted stored upstream nodes into the existing traffic-split override balancer, preserved inline upstream behavior, and surfaced matched-rule upstream lookup failures as request-time 500 errors.
+
+- [x] **Step 4: Update README**
+
+Updated `traffic-split` support notes to include `upstream_id`, leaving full APISIX upstream balancer fidelity and full `lua-resty-expr` syntax as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/traffic_split -run 'TestHandlerSetsUpstreamIDOverride|TestHandlerReturnsInternalServerErrorForMissingUpstreamID' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/traffic_split ./pkg/route -count=1 -timeout=10s`, `go test ./...`, and `make build`.

@@ -12,6 +12,8 @@ import (
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -105,9 +107,14 @@ type compiledRule struct {
 	match     []Match
 	balancer  pxy.LoadBalancer
 	overrides map[string]*Override
+	err       error
 }
 
 type overrideKey struct{}
+
+type upstreamResolver func(id string) (*Upstream, error)
+
+var getUpstreamByID upstreamResolver = loadUpstreamByID
 
 func WithOverride(r *http.Request, override *Override) *http.Request {
 	if override == nil {
@@ -167,16 +174,29 @@ func (p *Plugin) PostInit() error {
 	for _, rule := range p.config.Rules {
 		servers := map[string]int{}
 		overrides := map[string]*Override{}
+		var compileErr error
 		for _, weightedUpstream := range rule.WeightedUpstreams {
 			weight := weightedUpstream.Weight
 			if weight == 0 {
 				weight = 1
 			}
-			if weightedUpstream.Upstream == nil {
+			upstream := weightedUpstream.Upstream
+			if upstream == nil && weightedUpstream.UpstreamID != "" {
+				var err error
+				upstream, err = getUpstreamByID(weightedUpstream.UpstreamID)
+				if err != nil {
+					compileErr = fmt.Errorf(
+						"failed to fetch upstream info by upstream id: %s",
+						weightedUpstream.UpstreamID,
+					)
+					continue
+				}
+			}
+			if upstream == nil {
 				continue
 			}
-			for _, node := range weightedUpstream.Upstream.Nodes {
-				override := overrideFromNode(weightedUpstream.Upstream.Scheme, node)
+			for _, node := range upstream.Nodes {
+				override := overrideFromNode(upstream.Scheme, node)
 				key := override.key()
 				nodeWeight := node.Weight
 				if nodeWeight == 0 {
@@ -190,6 +210,7 @@ func (p *Plugin) PostInit() error {
 		compiled := compiledRule{
 			match:     rule.Match,
 			overrides: overrides,
+			err:       compileErr,
 		}
 		if len(servers) > 0 {
 			compiled.balancer = pxy.NewWeightedRRLoadBalance(servers)
@@ -206,7 +227,11 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		override := p.nextOverride(r)
+		override, err := p.nextOverride(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if override == nil {
 			next.ServeHTTP(w, r)
 			return
@@ -217,18 +242,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) nextOverride(r *http.Request) *Override {
+func (p *Plugin) nextOverride(r *http.Request) (*Override, error) {
 	for _, rule := range p.rules {
 		if !matchRule(r, rule.match) {
 			continue
 		}
+		if rule.err != nil {
+			return nil, rule.err
+		}
 		if rule.balancer == nil {
-			return nil
+			return nil, nil
 		}
 		key := rule.balancer.Next()
-		return rule.overrides[key]
+		return rule.overrides[key], nil
 	}
-	return nil
+	return nil, nil
 }
 
 func overrideFromNode(scheme string, node Node) *Override {
@@ -273,6 +301,37 @@ func splitAddr(addr string) (string, int) {
 	}
 
 	return addr, 0
+}
+
+func loadUpstreamByID(id string) (upstream *Upstream, err error) {
+	defer func() {
+		if recover() != nil {
+			upstream = nil
+			err = store.ErrNotFound
+		}
+	}()
+
+	stored, err := store.GetUpstream(id)
+	if err != nil {
+		return nil, err
+	}
+	return upstreamFromResource(stored), nil
+}
+
+func upstreamFromResource(stored resource.Upstream) *Upstream {
+	upstream := &Upstream{
+		Type:   stored.Type,
+		Scheme: stored.Scheme,
+		Nodes:  make([]Node, 0, len(stored.Nodes)),
+	}
+	for _, node := range stored.Nodes {
+		upstream.Nodes = append(upstream.Nodes, Node{
+			Host:   node.Host,
+			Port:   node.Port,
+			Weight: node.Weight,
+		})
+	}
+	return upstream
 }
 
 func matchRule(r *http.Request, matches []Match) bool {

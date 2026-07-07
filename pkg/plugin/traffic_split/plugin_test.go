@@ -1,6 +1,7 @@
 package traffic_split
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -179,6 +180,77 @@ func TestHandlerSkipsWhenNoMatchVarsPass(t *testing.T) {
 	if override != nil {
 		t.Fatalf("override = %#v, want route-upstream fallback", override)
 	}
+}
+
+func TestHandlerSetsUpstreamIDOverride(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		if id != "shadow" {
+			return nil, fmt.Errorf("unexpected upstream id %q", id)
+		}
+		return &Upstream{
+			Scheme: "https",
+			Nodes: []Node{
+				{Host: "shadow.example.com", Port: 9443, Weight: 1},
+			},
+		}, nil
+	})
+
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				WeightedUpstreams: []WeightedUpstream{
+					{UpstreamID: "shadow", Weight: 1},
+				},
+			},
+		},
+	})
+
+	override := performRequest(t, p)
+	if override == nil {
+		t.Fatal("traffic split override is nil")
+	}
+	if override.Scheme != "https" || override.Host != "shadow.example.com:9443" {
+		t.Fatalf("override = %#v, want https://shadow.example.com:9443", override)
+	}
+}
+
+func TestHandlerReturnsInternalServerErrorForMissingUpstreamID(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return nil, fmt.Errorf("missing upstream %s", id)
+	})
+
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				WeightedUpstreams: []WeightedUpstream{
+					{UpstreamID: "missing", Weight: 1},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+	if got := rr.Body.String(); got != "failed to fetch upstream info by upstream id: missing\n" {
+		t.Fatalf("response body = %q, want missing upstream error", got)
+	}
+}
+
+func withTestUpstreamResolver(t *testing.T, resolver upstreamResolver) {
+	t.Helper()
+
+	old := getUpstreamByID
+	getUpstreamByID = resolver
+	t.Cleanup(func() {
+		getUpstreamByID = old
+	})
 }
 
 func performRequest(t *testing.T, p *Plugin) *Override {

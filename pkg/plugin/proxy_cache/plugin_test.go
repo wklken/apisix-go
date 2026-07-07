@@ -1,6 +1,7 @@
 package proxy_cache
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -186,6 +187,78 @@ func TestHandlerHonorsNoCacheAndCacheBypass(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("upstream calls = %d, want 3", calls)
+	}
+}
+
+func TestHandlerCacheControlRequestNoCacheBypassesStoredEntry(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+	}))
+
+	first := performRequest(t, handler, http.MethodGet, "/cache-control", nil)
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+	bypass := performRequest(
+		t,
+		handler,
+		http.MethodGet,
+		"/cache-control",
+		map[string]string{"Cache-Control": "no-cache"},
+	)
+	if bypass.Header().Get(cacheStatusHeader) != "BYPASS" {
+		t.Fatalf("bypass cache status = %q, want BYPASS", bypass.Header().Get(cacheStatusHeader))
+	}
+	hit := performRequest(t, handler, http.MethodGet, "/cache-control", nil)
+	if hit.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("hit cache status = %q, want HIT", hit.Header().Get(cacheStatusHeader))
+	}
+	if hit.Body.String() != "response-v1" {
+		t.Fatalf("cached body = %q, want response-v1", hit.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerCacheControlResponseDirectivesSkipStore(t *testing.T) {
+	tests := []struct {
+		name         string
+		cacheControl string
+	}{
+		{name: "no-store", cacheControl: "no-store"},
+		{name: "private", cacheControl: "private, max-age=600"},
+		{name: "no-cache", cacheControl: "no-cache"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+			calls := 0
+
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Cache-Control", tt.cacheControl)
+				_, _ = w.Write([]byte("response"))
+			}))
+
+			first := performRequest(t, handler, http.MethodGet, "/cache-control-response", nil)
+			second := performRequest(t, handler, http.MethodGet, "/cache-control-response", nil)
+
+			if first.Header().Get(cacheStatusHeader) != "MISS" {
+				t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+			}
+			if second.Header().Get(cacheStatusHeader) != "MISS" {
+				t.Fatalf("second cache status = %q, want MISS", second.Header().Get(cacheStatusHeader))
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want 2", calls)
+			}
+		})
 	}
 }
 

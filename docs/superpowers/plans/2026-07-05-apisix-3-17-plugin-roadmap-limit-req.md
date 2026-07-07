@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 97
+## Official APISIX 3.17 Inventory Audit After Task 98
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 91:
+Suggested next valuable batches after Task 98:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3479,3 +3479,36 @@ Updated `proxy-cache` support notes to include `consumer_isolation` and remove t
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_cache -run 'TestPostInitPreservesExplicitConsumerIsolationFalse|TestHandlerIsolatesCacheByConsumerByDefault' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 98: Implement `proxy-cache` Cache-Control Bypass Semantics
+
+**Files:**
+- Modify: `pkg/plugin/proxy_cache/plugin.go`
+- Modify: `pkg/plugin/proxy_cache/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: request and upstream response `Cache-Control` headers.
+- Produces: APISIX-style request bypass for `cache_control` requests with `no-cache` / `no-store`, and upstream response non-storage for `private` / `no-store` / `no-cache`.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover request `Cache-Control: no-cache` bypassing a stored entry and upstream response `no-store`, `private`, and `no-cache` directives preventing cache storage.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlRequestNoCacheBypassesStoredEntry|TestHandlerCacheControlResponseDirectivesSkipStore' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because request `no-cache` returned `HIT`, and upstream `no-store` / `private` / `no-cache` responses were stored and returned `HIT` on the second request.
+
+- [x] **Step 3: Implement Cache-Control directive handling**
+
+Added `Cache-Control` directive parsing, request-side `cache_control` bypass, and upstream response non-storage for personalized/non-storable directives.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-cache` support notes to include bounded `Cache-Control` support and keep full TTL, `Expires`, `only-if-cached`, stale, `Vary`, public purge, and disk cache limitations visible.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlRequestNoCacheBypassesStoredEntry|TestHandlerCacheControlResponseDirectivesSkipStore' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.

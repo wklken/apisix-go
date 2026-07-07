@@ -233,6 +233,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			p.fetchAndMaybeStore(w, r, next, key, "BYPASS", false)
 			return
 		}
+		if p.requestCacheControlBypass(r) {
+			p.fetchAndMaybeStore(w, r, next, key, "BYPASS", false)
+			return
+		}
 
 		if entry, status := p.lookup(key); status == "HIT" {
 			writeCachedResponse(w, entry, status)
@@ -264,6 +268,9 @@ func (p *Plugin) fetchAndMaybeStore(
 	if p.hasTruthyValue(r, p.config.NoCache) {
 		shouldStore = false
 		cacheStatus = "EXPIRED"
+	}
+	if responseCacheControlSkipsStore(recorder.header) {
+		shouldStore = false
 	}
 	if shouldStore && p.cacheableStatus(recorder.statusCode) &&
 		(p.config.CacheSetCookie || recorder.header.Get("Set-Cookie") == "") {
@@ -348,6 +355,41 @@ func (p *Plugin) hasTruthyValue(r *http.Request, values []string) bool {
 		}
 		if resolved != "" && resolved != "0" {
 			return true
+		}
+	}
+	return false
+}
+
+func (p *Plugin) requestCacheControlBypass(r *http.Request) bool {
+	return p.config.CacheControl && headerHasCacheControlDirective(r.Header, "no-cache", "no-store")
+}
+
+func responseCacheControlSkipsStore(header http.Header) bool {
+	return headerHasCacheControlDirective(header, "private", "no-store", "no-cache")
+}
+
+func headerHasCacheControlDirective(header http.Header, names ...string) bool {
+	for _, value := range header.Values("Cache-Control") {
+		if cacheControlValueHasDirective(value, names...) {
+			return true
+		}
+	}
+	return false
+}
+
+func cacheControlValueHasDirective(value string, names ...string) bool {
+	for _, part := range strings.Split(value, ",") {
+		directive := strings.ToLower(strings.TrimSpace(part))
+		if directive == "" {
+			continue
+		}
+		if index := strings.IndexByte(directive, '='); index >= 0 {
+			directive = strings.TrimSpace(directive[:index])
+		}
+		for _, name := range names {
+			if directive == name {
+				return true
+			}
 		}
 	}
 	return false

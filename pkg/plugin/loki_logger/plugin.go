@@ -3,6 +3,7 @@ package loki_logger
 import (
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -25,6 +26,8 @@ const (
 	priority = 414
 	name     = "loki-logger"
 )
+
+var randomEndpointIndex = rand.Intn
 
 const schema = `
 {
@@ -205,12 +208,13 @@ func (p *Plugin) Send(log map[string]any) {
 		return
 	}
 
+	endpoint := p.endpointURL()
 	resp, err := p.client.R().
 		SetHeaders(p.headers()).
 		SetBody(p.buildPayload(log)).
-		Post(p.endpointURL())
+		Post(endpoint)
 	if err != nil {
-		logger.Errorf("failed to send log to Loki endpoint %s: %s", p.endpointURL(), err)
+		logger.Errorf("failed to send log to Loki endpoint %s: %s", endpoint, err)
 		return
 	}
 
@@ -218,7 +222,7 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf(
 			"Loki endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
-			p.endpointURL(),
+			endpoint,
 			resp.String(),
 		)
 	}
@@ -270,7 +274,7 @@ func (p *Plugin) headers() map[string]string {
 }
 
 func (p *Plugin) endpointURL() string {
-	baseURL := p.config.EndpointAddrs[0]
+	baseURL := p.config.EndpointAddrs[randomEndpointIndex(len(p.config.EndpointAddrs))]
 	if strings.HasSuffix(baseURL, "/") && strings.HasPrefix(p.config.EndpointURI, "/") {
 		return baseURL[:len(baseURL)-1] + p.config.EndpointURI
 	}

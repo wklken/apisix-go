@@ -2,6 +2,8 @@ package clickhouse_logger
 
 import (
 	"crypto/tls"
+	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -23,6 +25,8 @@ const (
 	priority = 398
 	name     = "clickhouse-logger"
 )
+
+var randomEndpointIndex = rand.Intn
 
 const schema = `
 {
@@ -142,7 +146,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	configUID := shared.NewConfigUID()
-	configUID.Add(p.endpointURL())
+	configUID.Add(p.endpointUID())
 	configUID.Add(p.config.User)
 	configUID.Add(p.config.Password)
 	configUID.Add(p.config.Database)
@@ -210,7 +214,14 @@ func (p *Plugin) endpointURL() string {
 	if len(p.config.EndpointAddrs) == 0 {
 		return ""
 	}
-	return p.config.EndpointAddrs[0]
+	return p.config.EndpointAddrs[randomEndpointIndex(len(p.config.EndpointAddrs))]
+}
+
+func (p *Plugin) endpointUID() string {
+	if p.config.EndpointAddr != "" {
+		return p.config.EndpointAddr
+	}
+	return strings.Join(p.config.EndpointAddrs, "\x00")
 }
 
 func (p *Plugin) sslVerify() bool {

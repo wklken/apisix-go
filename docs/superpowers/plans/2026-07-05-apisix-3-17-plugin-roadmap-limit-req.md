@@ -626,6 +626,37 @@ Updated `kafka-logger` support notes to include broker SASL mechanisms and remov
 
 Run: `go test ./pkg/plugin/kafka_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 131: Implement `clickhouse-logger` Random Endpoint Selection
+
+**Files:**
+- Modify: `pkg/plugin/clickhouse_logger/plugin.go`
+- Modify: `pkg/plugin/clickhouse_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `endpoint_addrs` list when deprecated `endpoint_addr` is not configured.
+- Produces: per-send random ClickHouse endpoint selection while preserving stable shared HTTP client cache keys.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/clickhouse-logger.lua`; APISIX chooses `endpoint_addr` when present, otherwise selects a random item from `endpoint_addrs` for each delivery.
+
+- [x] **Step 2: Write failing tests**
+
+Tests force the endpoint selector to pick the second configured endpoint and verify `endpointURL()` returns that selected `endpoint_addrs` entry.
+
+- [x] **Step 3: Implement random selection**
+
+Added random endpoint selection for `endpoint_addrs` and separated the shared-client cache UID from the per-send selected endpoint.
+
+- [x] **Step 4: Update README**
+
+Updated `clickhouse-logger` support notes to include random `endpoint_addrs` selection and removed that item from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/clickhouse_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

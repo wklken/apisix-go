@@ -77,6 +77,31 @@ func TestEndpointURLPrefersDeprecatedEndpointAddr(t *testing.T) {
 	}
 }
 
+func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
+	oldRandomEndpointIndex := randomEndpointIndex
+	randomEndpointIndex = func(n int) int {
+		if n != 2 {
+			t.Fatalf("random endpoint count = %d, want 2", n)
+		}
+		return 1
+	}
+	t.Cleanup(func() {
+		randomEndpointIndex = oldRandomEndpointIndex
+	})
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123", "http://127.0.0.2:8123"},
+		User:          "default",
+		Password:      "secret",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	})
+
+	if got := p.endpointURL(); got != "http://127.0.0.2:8123" {
+		t.Fatalf("endpointURL() = %q, want selected endpoint_addrs entry", got)
+	}
+}
+
 func TestSendPostsClickHouseInsert(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan string, 1)

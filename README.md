@@ -312,9 +312,9 @@ Loggers:
   - support `host`, `port`, `timeout`, `log_format`, UDP delivery, and official body-size config validation
   - not support `include_req_body` and `include_req_body_expr`
   - not support `include_resp_body` and `include_resp_body_expr`
-- [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 50%
-  - support `endpoint_addr`, `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, and `log_format`
-  - not support random endpoint selection, APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
+- [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 55%
+  - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, and `log_format`
+  - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
 - [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 45%
   - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, official body-size config validation, and UDP/TCP syslog delivery through the Go syslog writer
   - not support APISIX batch processor buffering semantics, OpenResty syslog connection pooling/TLS behavior parity, or request/response body capture

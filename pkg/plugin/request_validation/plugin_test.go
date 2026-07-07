@@ -1,6 +1,7 @@
 package request_validation
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -198,6 +199,85 @@ func TestHandlerRejectsInvalidURLEncodedBody(t *testing.T) {
 	}
 	if got := strings.TrimSpace(res.Body.String()); got != "invalid form body" {
 		t.Fatalf("response body = %q, want invalid form body", got)
+	}
+}
+
+func TestHandlerNormalizesValidatedJSONBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type":     "object",
+			"required": []any{"name"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	var upstreamBody string
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/get",
+		strings.NewReader(`{"name":"first","name":"last"}`),
+	)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		if r.ContentLength != int64(len(upstreamBody)) {
+			t.Fatalf("ContentLength = %d, want %d", r.ContentLength, len(upstreamBody))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if upstreamBody != `{"name":"last"}` {
+		t.Fatalf("upstream body = %q, want normalized JSON", upstreamBody)
+	}
+}
+
+func TestHandlerUpdatesCachedRequestBodyAfterJSONNormalization(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type":     "object",
+			"required": []any{"name"},
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	var cachedBody string
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/get",
+		strings.NewReader(`{"name":"first","name":"last"}`),
+	)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := apisixctx.ReadRequestBody(r)
+		if err != nil {
+			t.Fatalf("ReadRequestBody() error = %v", err)
+		}
+		cachedBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if cachedBody != `{"name":"last"}` {
+		t.Fatalf("cached body = %q, want normalized JSON", cachedBody)
 	}
 }
 

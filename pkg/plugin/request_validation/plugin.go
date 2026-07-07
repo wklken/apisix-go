@@ -1,7 +1,9 @@
 package request_validation
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -123,7 +125,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			bodyData, err := parseRequestBody(r, body)
+			bodyData, bodyIsJSON, err := parseRequestBody(r, body)
 			if err != nil {
 				err = fmt.Errorf("failed to parse request body: %w", err)
 				logger.Error(err.Error())
@@ -135,6 +137,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if err != nil {
 				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
+			}
+			if bodyIsJSON {
+				if err := normalizeJSONBody(r, bodyData); err != nil {
+					err = fmt.Errorf("failed to normalize request body: %w", err)
+					logger.Error(err.Error())
+					http.Error(w, err.Error(), p.config.RejectedCode)
+					return
+				}
 			}
 
 		}
@@ -166,13 +176,32 @@ func requestHeaders(r *http.Request) map[string]interface{} {
 	return headers
 }
 
-func parseRequestBody(r *http.Request, body []byte) (interface{}, error) {
+func parseRequestBody(r *http.Request, body []byte) (interface{}, bool, error) {
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
 	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		return parseURLEncodedForm(body)
+		data, err := parseURLEncodedForm(body)
+		return data, false, err
 	}
 
-	return parseJSON(body)
+	data, err := parseJSON(body)
+	return data, true, err
+}
+
+func normalizeJSONBody(r *http.Request, data interface{}) error {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	r.ContentLength = int64(len(body))
+	if ctx.GetRequestVars(r) != nil {
+		ctx.RegisterRequestVar(r, ctx.RequestBodyKey, body)
+	}
+	return nil
 }
 
 func parseURLEncodedForm(data []byte) (map[string]interface{}, error) {

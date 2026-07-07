@@ -4119,3 +4119,34 @@ Updated `request-validation` support notes to include URL-encoded `body_schema`,
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/request_validation -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 118: Implement `request-validation` JSON Body Normalization
+
+**Files:**
+- Modify: `pkg/plugin/request_validation/plugin.go`
+- Modify: `pkg/plugin/request_validation/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `request-validation` JSON body validation behavior.
+- Produces: normalized JSON request bodies after successful schema validation, including the cached request body used by later middleware.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/request-validation.lua`; APISIX decodes JSON bodies, validates the decoded value, re-encodes it, and replaces the request body before proxying to ensure the validated JSON is the upstream JSON.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover duplicate-key JSON normalization before the upstream handler reads the body, and updating the cached body returned by `ctx.ReadRequestBody`.
+
+- [x] **Step 3: Implement JSON body normalization**
+
+Added content-type-aware parse metadata, JSON re-encoding after successful body schema validation, request body replacement, `GetBody` / `ContentLength` updates, and request-body cache replacement when request vars are present.
+
+- [x] **Step 4: Update README**
+
+Updated `request-validation` support notes to include JSON body normalization before proxying.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/request_validation -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

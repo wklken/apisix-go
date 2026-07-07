@@ -57,6 +57,10 @@ const schema = `
 				"type": "array"
 			}
 		}
+	  },
+	  "use_real_request_uri_unsafe": {
+		"type": "boolean",
+		"default": false
 	  }
 	}
   }
@@ -69,12 +73,13 @@ type Headers struct {
 }
 
 type Config struct {
-	Uri      string   `json:"uri"`
-	RegexURI []string `json:"regex_uri"`
-	Method   string   `json:"method"`
-	Host     string   `json:"host"`
-	Scheme   string   `json:"scheme"`
-	Headers  Headers  `json:"headers"`
+	Uri                     string   `json:"uri"`
+	RegexURI                []string `json:"regex_uri"`
+	Method                  string   `json:"method"`
+	Host                    string   `json:"host"`
+	Scheme                  string   `json:"scheme"`
+	Headers                 Headers  `json:"headers"`
+	UseRealRequestURIUnsafe bool     `json:"use_real_request_uri_unsafe"`
 
 	regexURIPairs []regexURIPair
 }
@@ -117,7 +122,7 @@ func (p *Plugin) Config() interface{} {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		uri := p.rewriteURI(r.URL.Path)
+		uri := p.rewriteURI(p.rewriteSourceURI(r))
 
 		data := map[string]interface{}{
 			"uri":     uri,
@@ -134,6 +139,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
+func (p *Plugin) rewriteSourceURI(r *http.Request) string {
+	if p.config.UseRealRequestURIUnsafe {
+		return r.URL.RequestURI()
+	}
+	return r.URL.Path
+}
+
 func (p *Plugin) rewriteURI(path string) string {
 	if p.config.Uri != "" {
 		return p.config.Uri
@@ -142,6 +154,9 @@ func (p *Plugin) rewriteURI(path string) string {
 		if pair.pattern.MatchString(path) {
 			return pair.pattern.ReplaceAllString(path, pair.replacement)
 		}
+	}
+	if p.config.UseRealRequestURIUnsafe {
+		return path
 	}
 	return ""
 }

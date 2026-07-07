@@ -3742,3 +3742,36 @@ Updated `response-rewrite` support notes to include bounded `vars`, header varia
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/response_rewrite -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 106: Implement `proxy-rewrite` Real Request URI Support
+
+**Files:**
+- Modify: `pkg/plugin/proxy_rewrite/plugin.go`
+- Modify: `pkg/plugin/proxy_rewrite/plugin_test.go`
+- Create: `pkg/route/proxy_rewrite_test.go`
+- Modify: `pkg/route/builder.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `use_real_request_uri_unsafe` config and rewritten URI values that may contain query strings.
+- Produces: proxy-rewrite context values derived from `RequestURI()` when configured, regex matching against that real request URI, and route-side path/query splitting for upstream proxy requests.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/proxy-rewrite.lua`; `use_real_request_uri_unsafe` switches the source URI to `real_request_uri`, lets `regex_uri` match that full URI, and skips OpenResty URI safe-encoding before setting `upstream_uri`.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover using the real request URI as the rewrite source, matching `regex_uri` against a URI with query string, and route-side splitting of rewritten `path?query` into `URL.Path` and `URL.RawQuery`.
+
+- [x] **Step 3: Implement unsafe real request URI handling**
+
+Added schema/config support, request URI source selection, no-op real-request rewrite propagation when no explicit `uri` / `regex_uri` is configured, and a route helper that applies rewritten URI path/query pieces to the upstream request.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-rewrite` support notes to include `use_real_request_uri_unsafe` and clarify the remaining exact URI encoding and header mutation gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_rewrite ./pkg/route -run 'TestHandlerUsesRealRequestURIUnsafeAsRewriteSource|TestHandlerRegexURIMatchesRealRequestURIUnsafe|TestApplyProxyRewriteURIUpdatesPathAndQuery' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite ./pkg/route -count=1 -timeout=10s`, `go test ./...`, and `make build`.

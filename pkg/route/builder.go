@@ -385,7 +385,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		}
 		if uri != "" {
 			fmt.Println("rewrite uri:", uri)
-			req.URL.Path = uri
+			applyProxyRewriteURI(req, uri)
 		}
 		if method != "" {
 			req.Method = method
@@ -539,6 +539,14 @@ func bufferRequestBodyIfNeeded(r *http.Request) error {
 	}
 	r.ContentLength = int64(len(body))
 	return nil
+}
+
+func applyProxyRewriteURI(req *http.Request, uri string) {
+	path, rawQuery, hasQuery := strings.Cut(uri, "?")
+	req.URL.Path = path
+	if hasQuery {
+		req.URL.RawQuery = rawQuery
+	}
 }
 
 func applyTrafficSplitOverride(req *http.Request) bool {

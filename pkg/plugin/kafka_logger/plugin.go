@@ -6,9 +6,13 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
+	"github.com/segmentio/kafka-go/sasl/plain"
+	"github.com/segmentio/kafka-go/sasl/scram"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -262,7 +266,11 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.sender == nil {
-		p.sender = &kafkaGoSender{writer: p.newWriter()}
+		writer, err := p.newWriter()
+		if err != nil {
+			return err
+		}
+		p.sender = &kafkaGoSender{writer: writer}
 	}
 
 	p.Consume()
@@ -332,8 +340,13 @@ func (p *Plugin) applyDefaults() {
 	}
 }
 
-func (p *Plugin) newWriter() *kafka.Writer {
-	return &kafka.Writer{
+func (p *Plugin) newWriter() (*kafka.Writer, error) {
+	mechanism, err := p.saslMechanism()
+	if err != nil {
+		return nil, err
+	}
+
+	writer := &kafka.Writer{
 		Addr:         kafka.TCP(p.brokerAddresses()...),
 		Topic:        p.config.KafkaTopic,
 		RequiredAcks: kafka.RequiredAcks(p.config.RequiredAcks),
@@ -344,6 +357,43 @@ func (p *Plugin) newWriter() *kafka.Writer {
 		WriteTimeout: time.Duration(p.config.Timeout) * time.Second,
 		ReadTimeout:  time.Duration(p.config.Timeout) * time.Second,
 	}
+	if mechanism != nil {
+		writer.Transport = &kafka.Transport{
+			DialTimeout: time.Duration(p.config.Timeout) * time.Second,
+			SASL:        mechanism,
+		}
+	}
+
+	return writer, nil
+}
+
+func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
+	for _, broker := range p.config.Brokers {
+		if broker.SASLConfig == nil {
+			continue
+		}
+
+		mechanism := strings.ToUpper(broker.SASLConfig.Mechanism)
+		if mechanism == "" {
+			mechanism = "PLAIN"
+		}
+
+		switch mechanism {
+		case "PLAIN":
+			return plain.Mechanism{
+				Username: broker.SASLConfig.User,
+				Password: broker.SASLConfig.Password,
+			}, nil
+		case "SCRAM-SHA-256":
+			return scram.Mechanism(scram.SHA256, broker.SASLConfig.User, broker.SASLConfig.Password)
+		case "SCRAM-SHA-512":
+			return scram.Mechanism(scram.SHA512, broker.SASLConfig.User, broker.SASLConfig.Password)
+		default:
+			return nil, fmt.Errorf("unsupported Kafka SASL mechanism %q", broker.SASLConfig.Mechanism)
+		}
+	}
+
+	return nil, nil
 }
 
 func (p *Plugin) brokerAddresses() []string {

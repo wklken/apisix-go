@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 type captureSender struct {
@@ -148,5 +150,58 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 	if payload["plugin"] != "kafka-logger" {
 		t.Fatalf("plugin = %v, want kafka-logger", payload["plugin"])
+	}
+}
+
+func TestSASLMechanismDefaultsToPlain(t *testing.T) {
+	p := &Plugin{config: Config{
+		Brokers: []Broker{{
+			Host: "127.0.0.1",
+			Port: 9092,
+			SASLConfig: &SASLConfig{
+				User:     "user",
+				Password: "pass",
+			},
+		}},
+		KafkaTopic: "apisix-logs",
+	}}
+
+	mechanism, err := p.saslMechanism()
+	if err != nil {
+		t.Fatalf("saslMechanism() error = %v", err)
+	}
+	if mechanism == nil {
+		t.Fatal("saslMechanism() returned nil")
+	}
+	if got := mechanism.Name(); got != "PLAIN" {
+		t.Fatalf("SASL mechanism = %q, want PLAIN", got)
+	}
+}
+
+func TestNewWriterUsesBrokerSASLConfig(t *testing.T) {
+	p := &Plugin{config: Config{
+		Brokers: []Broker{{
+			Host: "127.0.0.1",
+			Port: 9092,
+			SASLConfig: &SASLConfig{
+				Mechanism: "SCRAM-SHA-512",
+				User:      "user",
+				Password:  "pass",
+			},
+		}},
+		KafkaTopic: "apisix-logs",
+	}}
+	p.applyDefaults()
+
+	writer, err := p.newWriter()
+	if err != nil {
+		t.Fatalf("newWriter() error = %v", err)
+	}
+	transport, ok := writer.Transport.(*kafka.Transport)
+	if !ok || transport.SASL == nil {
+		t.Fatal("writer does not have a SASL transport")
+	}
+	if got := transport.SASL.Name(); got != "SCRAM-SHA-512" {
+		t.Fatalf("writer SASL mechanism = %q, want SCRAM-SHA-512", got)
 	}
 }

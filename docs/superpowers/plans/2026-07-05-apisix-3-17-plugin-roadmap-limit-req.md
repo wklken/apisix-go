@@ -593,6 +593,39 @@ Updated `loggly` support notes to include HTTP/S bulk delivery and explicit gaps
 
 Run: `go test ./pkg/plugin/loggly -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 130: Implement `kafka-logger` SASL Transport
+
+**Files:**
+- Modify: `pkg/plugin/kafka_logger/plugin.go`
+- Modify: `pkg/plugin/kafka_logger/plugin_test.go`
+- Modify: `go.mod`
+- Modify: `go.sum`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official broker `sasl_config` with `mechanism`, `user`, and `password` on `brokers`.
+- Produces: `segmentio/kafka-go` writer transport using `PLAIN`, `SCRAM-SHA-256`, or `SCRAM-SHA-512` SASL authentication.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/kafka-logger.lua`; APISIX validates broker `sasl_config`, defaults mechanism to `PLAIN`, and accepts `SCRAM-SHA-256` / `SCRAM-SHA-512`.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default `PLAIN` mechanism creation and writer transport wiring for `SCRAM-SHA-512`.
+
+- [x] **Step 3: Implement SASL transport wiring**
+
+Added `kafka-go` SASL mechanism construction from the first configured broker `sasl_config` and attached it to the writer `kafka.Transport`.
+
+- [x] **Step 4: Update README**
+
+Updated `kafka-logger` support notes to include broker SASL mechanisms and removed SASL from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/kafka_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

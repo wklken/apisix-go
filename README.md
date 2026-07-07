@@ -183,8 +183,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/) 60%
   - support exposing registered internal public APIs such as `batch-requests`, `node-status`, and `server-info`, with optional `uri` override
   - not support arbitrary internal API discovery, Prometheus public metrics proxying, or exposing non-registered runtime endpoints
-- [x] [GM](https://apisix.apache.org/zh/docs/apisix/plugins/GM/) 20%
-  - support official plugin name, priority, empty route schema, no-op HTTP handler, and APISIX SSL `gm` marker validation requiring exactly one sign cert/key pair
+- [x] [GM](https://apisix.apache.org/zh/docs/apisix/plugins/GM/) 25%
+  - support official plugin name, priority, empty route schema, no-op HTTP handler, and APISIX SSL `gm` marker validation requiring encryption cert/key plus exactly one sign cert/key pair
   - not support Tongsuo/APISIX-Runtime NTLS enablement, SM2/SM3/SM4 TLS handshakes, dynamic TLS certificate installation, SSL schema injection, or real dual-certificate serving
 - [x] [chaitin-waf](https://apisix.apache.org/zh/docs/apisix/plugins/chaitin-waf/) 55%
   - support `mode`, `match.vars` for common request variables, `append_waf_resp_header`, `append_waf_debug_header`, metadata/config `nodes`, config timeout/body/keepalive defaults, monitor/block/off behavior, request body restoration, official WAF response headers, and block response body with `event_id`

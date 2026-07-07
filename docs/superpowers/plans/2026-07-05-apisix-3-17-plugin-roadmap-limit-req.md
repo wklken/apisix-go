@@ -1339,6 +1339,37 @@ Updated `body-transformer` support notes to include XML input and left multipart
 
 Run: `go test ./pkg/plugin/body_transformer -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 154: Harden `gm` SSL Marker Validation
+
+**Files:**
+- Modify: `pkg/plugin/gm/plugin.go`
+- Modify: `pkg/plugin/gm/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: local SSL config shape with `gm`, `cert`, `key`, `certs`, `keys`, and `snis`.
+- Produces: validation that rejects GM SSL configs without the encryption cert/key or without exactly one signing cert/key pair.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/gm.lua`; GM SSL validation first delegates to the normal SSL config check for encryption cert/key, then requires exactly one signing cert/key pair.
+
+- [x] **Step 2: Write failing tests**
+
+Focused validation test initially failed because `ValidateSSLConfig` allowed `gm: true` configs with a signing pair but no encryption `cert` / `key`.
+
+- [x] **Step 3: Implement validation**
+
+Added encryption cert/key validation before the existing signing cert/key count check while leaving Tongsuo/NTLS runtime behavior unsupported.
+
+- [x] **Step 4: Update README**
+
+Updated `GM` support notes to mention encryption cert/key validation plus the exact one sign cert/key pair requirement.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/gm -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

@@ -61,6 +61,9 @@ func ValidateSSLConfig(cfg SSLConfig) error {
 	if !cfg.GM {
 		return nil
 	}
+	if cfg.Cert == "" || cfg.Key == "" {
+		return errors.New("enc cert/key are required")
+	}
 	if len(cfg.Certs) != 1 || len(cfg.Keys) != 1 {
 		return errors.New("sign cert/key are required")
 	}

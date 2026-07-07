@@ -69,6 +69,19 @@ func TestValidateSSLConfigRequiresSignPairForGM(t *testing.T) {
 	}
 }
 
+func TestValidateSSLConfigRequiresEncryptionPairForGM(t *testing.T) {
+	cfg := SSLConfig{
+		GM:    true,
+		Certs: []string{"sign cert"},
+		Keys:  []string{"sign key"},
+		SNIs:  []string{"example.com"},
+	}
+
+	if err := ValidateSSLConfig(cfg); err == nil {
+		t.Fatal("ValidateSSLConfig() error = nil, want encryption cert/key requirement")
+	}
+}
+
 func TestValidateSSLConfigRejectsWrongGMSignPairCount(t *testing.T) {
 	cfg := SSLConfig{
 		GM:    true,

@@ -244,6 +244,31 @@ func TestNewGraphQLLimitCountUsesOfficialPluginName(t *testing.T) {
 	}
 }
 
+func TestNewLimitCountAcceptsRulesOnlyConfig(t *testing.T) {
+	p := New("limit-count")
+	if p == nil {
+		t.Fatal(`New("limit-count") returned nil`)
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"count":         10,
+				"time_window":   60,
+				"key":           "$http_x_user",
+				"header_prefix": "User",
+			},
+		},
+		"policy": "local",
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("limit-count rules config should validate: %v", err)
+	}
+}
+
 func TestNewGraphQLProxyCacheUsesOfficialPluginName(t *testing.T) {
 	p := New("graphql-proxy-cache")
 	if p == nil {

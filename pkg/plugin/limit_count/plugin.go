@@ -22,8 +22,9 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config  Config
-	limiter *limiter.Limiter
+	config       Config
+	limiter      *limiter.Limiter
+	ruleLimiters []*limiter.Limiter
 }
 
 const (
@@ -45,6 +46,30 @@ const schema = `
 	  "time_window": {
 		"type": "integer",
 		"exclusiveMinimum": 0
+	  },
+	  "rules": {
+		"type": "array",
+		"minItems": 1,
+		"items": {
+		  "type": "object",
+		  "properties": {
+			"count": {
+			  "type": "integer",
+			  "exclusiveMinimum": 0
+			},
+			"time_window": {
+			  "type": "integer",
+			  "exclusiveMinimum": 0
+			},
+			"key": {
+			  "type": "string"
+			},
+			"header_prefix": {
+			  "type": "string"
+			}
+		  },
+		  "required": ["count", "time_window", "key"]
+		}
 	  },
 	  "group": {
 		"type": "string"
@@ -84,7 +109,10 @@ const schema = `
 	  "redis_config": {"$ref": "#/definitions/redis"},
 	  "redis_cluster_config": {"$ref": "#/definitions/redis-cluster"}
 	},
-	"required": ["count", "time_window"],
+	"oneOf": [
+	  {"required": ["count", "time_window"]},
+	  {"required": ["rules"]}
+	],
 	"definitions": {
 	  "redis": {
 			"properties": {
@@ -177,6 +205,14 @@ type Config struct {
 	ShowLimitQuotaHeader *bool              `json:"show_limit_quota_header,omitempty"`
 	Redis                RedisConfig        `json:"redis_config,omitempty"`
 	RedisCluster         RedisClusterConfig `json:"redis_cluster_config,omitempty"`
+	Rules                []Rule             `json:"rules,omitempty"`
+}
+
+type Rule struct {
+	Count        int64  `json:"count"`
+	TimeWindow   int64  `json:"time_window"`
+	Key          string `json:"key"`
+	HeaderPrefix string `json:"header_prefix,omitempty"`
 }
 
 type RedisConfig struct {
@@ -264,13 +300,47 @@ func (p *Plugin) PostInit() error {
 		p.config.ShowLimitQuotaHeader = &b
 	}
 
+	if len(p.config.Rules) > 0 {
+		return p.initRuleLimiters()
+	}
+
+	lim, err := p.newLimiter(p.config.Count, p.config.TimeWindow)
+	if err != nil {
+		return err
+	}
+	p.limiter = lim
+
+	return nil
+}
+
+func (p *Plugin) initRuleLimiters() error {
+	seenKeys := make(map[string]struct{}, len(p.config.Rules))
+	p.ruleLimiters = make([]*limiter.Limiter, len(p.config.Rules))
+	for i, rule := range p.config.Rules {
+		if rule.Key == "" {
+			return fmt.Errorf("limit-count rule key is required")
+		}
+		if _, ok := seenKeys[rule.Key]; ok {
+			return fmt.Errorf("duplicate key %q in rules", rule.Key)
+		}
+		seenKeys[rule.Key] = struct{}{}
+
+		lim, err := p.newLimiter(rule.Count, rule.TimeWindow)
+		if err != nil {
+			return err
+		}
+		p.ruleLimiters[i] = lim
+	}
+	return nil
+}
+
+func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, error) {
 	rate := limiter.Rate{
-		Period: time.Duration(p.config.TimeWindow) * time.Second,
-		Limit:  p.config.Count,
+		Period: time.Duration(timeWindow) * time.Second,
+		Limit:  count,
 	}
 
 	var store limiter.Store
-
 	if p.config.Policy == "local" {
 		store = memory.NewStore()
 	} else if p.config.Policy == "redis" {
@@ -296,8 +366,7 @@ func (p *Plugin) PostInit() error {
 		})
 		// TODO: handle the error
 		if err != nil {
-			// logger.Fatal(err.Error())
-			return err
+			return nil, err
 		}
 	} else if p.config.Policy == "redis-cluster" {
 		// client := redis.NewClusterClient(&redis.ClusterOptions{
@@ -309,12 +378,10 @@ func (p *Plugin) PostInit() error {
 		// RedisClusterSSL       bool     `json:"redis_cluster_ssl,omitempty"`
 		// RedisClusterSSLVerify bool     `json:"redis_cluster_ssl_verify,omitempty"`
 
-		return fmt.Errorf("not supported yet: %s", p.config.Policy)
+		return nil, fmt.Errorf("not supported yet: %s", p.config.Policy)
 	}
 
-	p.limiter = limiter.New(store, rate, limiter.WithTrustForwardHeader(true))
-
-	return nil
+	return limiter.New(store, rate, limiter.WithTrustForwardHeader(true)), nil
 }
 
 func (p *Plugin) Config() interface{} {
@@ -326,42 +393,68 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// NOTE:  we got limit instance for each chain, so we don't need to worry about the key conflict in memory
 		//        but we do share the same redis instance, so we need to make the namespace
 
+		if len(p.config.Rules) > 0 {
+			for i, rule := range p.config.Rules {
+				key, ok := p.resolveRuleKey(r, rule)
+				if !ok {
+					continue
+				}
+				if !p.runLimit(w, r, p.ruleLimiters[i], rule.Count, key, ruleHeaders(rule, i)) {
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		key := p.resolveKey(r)
-		context, err := p.limiter.Get(r.Context(), key)
-		if err != nil {
-			// middleware.OnError(w, r, err)
-			if *p.config.AllowDegradation {
-				next.ServeHTTP(w, r)
-			} else {
-				http.Error(w, "failed to limit count", http.StatusInternalServerError)
-			}
+		if !p.runLimit(w, r, p.limiter, p.config.Count, key, defaultHeaders()) {
 			return
 		}
-
-		if context.Reached {
-			if *p.config.ShowLimitQuotaHeader {
-				w.Header().Add("X-RateLimit-Limit", strconv.FormatInt(p.config.Count, 10))
-				w.Header().Add("X-RateLimit-Remaining", "0")
-				w.Header().Add("X-RateLimit-Reset", strconv.FormatInt(context.Reset, 10))
-			}
-
-			rejectedMsg := "Limit exceeded"
-			if p.config.RejectedMsg != "" {
-				rejectedMsg = p.config.RejectedMsg
-			}
-			http.Error(w, rejectedMsg, p.config.RejectedCode)
-			return
-		}
-
-		if *p.config.ShowLimitQuotaHeader {
-			w.Header().Add("X-RateLimit-Limit", strconv.FormatInt(context.Limit, 10))
-			w.Header().Add("X-RateLimit-Remaining", strconv.FormatInt(context.Remaining, 10))
-			w.Header().Add("X-RateLimit-Reset", strconv.FormatInt(context.Reset, 10))
-		}
-
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) runLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	lim *limiter.Limiter,
+	count int64,
+	key string,
+	headers quotaHeaders,
+) bool {
+	context, err := lim.Get(r.Context(), key)
+	if err != nil {
+		if *p.config.AllowDegradation {
+			return true
+		}
+		http.Error(w, "failed to limit count", http.StatusInternalServerError)
+		return false
+	}
+
+	if context.Reached {
+		if *p.config.ShowLimitQuotaHeader {
+			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
+			w.Header().Add(headers.remaining, "0")
+			w.Header().Add(headers.reset, strconv.FormatInt(context.Reset, 10))
+		}
+
+		rejectedMsg := "Limit exceeded"
+		if p.config.RejectedMsg != "" {
+			rejectedMsg = p.config.RejectedMsg
+		}
+		http.Error(w, rejectedMsg, p.config.RejectedCode)
+		return false
+	}
+
+	if *p.config.ShowLimitQuotaHeader {
+		w.Header().Add(headers.limit, strconv.FormatInt(context.Limit, 10))
+		w.Header().Add(headers.remaining, strconv.FormatInt(context.Remaining, 10))
+		w.Header().Add(headers.reset, strconv.FormatInt(context.Reset, 10))
+	}
+
+	return true
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {
@@ -391,6 +484,49 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		key = requestVar(r, "remote_addr")
 	}
 	return key
+}
+
+func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
+	resolved := 0
+	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
+		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
+		name = strings.TrimSuffix(name, "}")
+		value := requestVar(r, name)
+		if value != "" {
+			resolved++
+		}
+		return value
+	})
+	if resolved == 0 || key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+type quotaHeaders struct {
+	limit     string
+	remaining string
+	reset     string
+}
+
+func defaultHeaders() quotaHeaders {
+	return quotaHeaders{
+		limit:     "X-RateLimit-Limit",
+		remaining: "X-RateLimit-Remaining",
+		reset:     "X-RateLimit-Reset",
+	}
+}
+
+func ruleHeaders(rule Rule, index int) quotaHeaders {
+	prefix := rule.HeaderPrefix
+	if prefix == "" {
+		prefix = strconv.Itoa(index + 1)
+	}
+	return quotaHeaders{
+		limit:     "X-" + prefix + "-RateLimit-Limit",
+		remaining: "X-" + prefix + "-RateLimit-Remaining",
+		reset:     "X-" + prefix + "-RateLimit-Reset",
+	}
 }
 
 func requestVar(r *http.Request, key string) string {

@@ -3775,3 +3775,35 @@ Updated `proxy-rewrite` support notes to include `use_real_request_uri_unsafe` a
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_rewrite ./pkg/route -run 'TestHandlerUsesRealRequestURIUnsafeAsRewriteSource|TestHandlerRegexURIMatchesRealRequestURIUnsafe|TestApplyProxyRewriteURIUpdatesPathAndQuery' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite ./pkg/route -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 107: Implement `limit-count` Rules
+
+**Files:**
+- Modify: `pkg/plugin/limit_count/plugin.go`
+- Modify: `pkg/plugin/limit_count/plugin_test.go`
+- Modify: `pkg/plugin/init_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `rules` config with per-rule `count`, `time_window`, `key`, and optional `header_prefix`.
+- Produces: APISIX-style rule resolution, duplicate-rule-key rejection, independent rule limiters, and per-rule quota response headers.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-count/init.lua`; rules are an alternative to top-level `count` / `time_window`, duplicate rule keys are rejected, unresolved rule keys are skipped, and all resolved rules run in order until one rejects.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover rules-only schema validation, resolved rules applying in order, per-rule header prefixes, duplicate key rejection, and preserving existing HTTP-variable / variable-combination behavior.
+
+- [x] **Step 3: Implement rules**
+
+Added schema/config support, per-rule limiter initialization for local/Redis policies, rule key variable resolution, per-rule header construction, duplicate key validation, and shared request limiting code for top-level and rule configs.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-count` support notes to include `rules` and per-rule `header_prefix`, leaving string `count` / `time_window`, plugin metadata custom quota headers, and `redis-cluster` as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_count ./pkg/plugin -run 'TestHandlerAppliesResolvedRules|TestPostInitRejectsDuplicateRuleKeys|TestHandlerUsesHTTPVariableKey|TestHandlerUsesVariableCombinationKey|TestNewLimitCountAcceptsRulesOnlyConfig' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/limit_count ./pkg/plugin -count=1 -timeout=10s`, `go test ./...`, and `make build`.

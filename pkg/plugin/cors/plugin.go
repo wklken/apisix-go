@@ -168,7 +168,7 @@ func (p *Plugin) PostInit() error {
 	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
 		AllowedMethods:   allowedMethods(p.config.AllowMethods),
-		AllowedHeaders:   strings.Split(p.config.AllowHeaders, ","),
+		AllowedHeaders:   allowedHeaders(p.config.AllowHeaders),
 		ExposedHeaders:   strings.Split(p.config.ExposeHeaders, ","),
 		MaxAge:           p.config.MaxAge,
 		AllowCredentials: p.config.AllowCredential,
@@ -220,4 +220,11 @@ func allowedMethods(methods string) []string {
 		return allMethods
 	}
 	return strings.Split(methods, ",")
+}
+
+func allowedHeaders(headers string) []string {
+	if headers == "**" {
+		return []string{"*"}
+	}
+	return strings.Split(headers, ",")
 }

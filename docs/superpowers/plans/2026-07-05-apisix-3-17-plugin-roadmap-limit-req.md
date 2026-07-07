@@ -1582,6 +1582,37 @@ Updated `cors` support notes to include method wildcards and kept exact wildcard
 
 Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 162: Reflect `cors` Double-Star Request Headers
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Modify: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: CORS preflight requests with `allow_headers = "**"` and `Access-Control-Request-Headers`.
+- Produces: `Access-Control-Allow-Headers` reflecting the requested header list.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; `allow_headers = "**"` sets `Access-Control-Allow-Headers` from the incoming `Access-Control-Request-Headers` value.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused preflight test for `allow_headers = "**"`. It initially failed because `rs/cors` treated `**` as a literal allowed header and rejected `X-Foo, X-Bar`.
+
+- [x] **Step 3: Implement header wildcard handling**
+
+Translated `allow_headers = "**"` to `AllowedHeaders: []string{"*"}`, using the dependency's all-headers mode to reflect requested preflight headers.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include `allow_headers = "**"` request-header reflection.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

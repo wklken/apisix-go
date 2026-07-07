@@ -174,9 +174,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 13/13
 
-- [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) 60%
-  - support `allow_origins`, `allow_origins_by_regex`, method wildcards, headers/exposed headers, `max_age`, and `allow_credential`
-  - not support `allow_origins_by_metadata`, timing allow origins, or exact APISIX wildcard response-header semantics for every option
+- [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) 65%
+  - support `allow_origins`, `allow_origins_by_regex`, method wildcards, `allow_headers = "**"` request-header reflection, headers/exposed headers, `max_age`, and `allow_credential`
+  - not support `allow_origins_by_metadata`, timing allow origins, or exact APISIX wildcard response-header semantics for methods/exposed headers
 - [x] [acl](https://apisix.apache.org/zh/docs/apisix/plugins/acl/) 70%
   - only support authenticated consumer `labels`
   - not support `external_user` label fields

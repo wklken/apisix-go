@@ -59,3 +59,23 @@ func TestHandlerAllowsDefaultWildcardMethods(t *testing.T) {
 		t.Fatalf("response code = %d, want %d", got, http.StatusNoContent)
 	}
 }
+
+func TestHandlerReflectsDoubleStarRequestHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowHeaders: "**",
+		AllowMethods: http.MethodGet,
+	})
+	req := httptest.NewRequest(http.MethodOptions, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", "X-Foo, X-Bar")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("preflight should not reach upstream handler")
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Headers"); got != "X-Foo, X-Bar" {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want reflected request headers", got)
+	}
+}

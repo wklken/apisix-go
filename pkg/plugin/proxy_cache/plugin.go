@@ -2,8 +2,11 @@ package proxy_cache
 
 import (
 	"bytes"
+	"crypto/md5"
+	"encoding/hex"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +22,7 @@ type Plugin struct {
 	config Config
 
 	entries map[string]cacheEntry
+	vary    map[string]varyIndex
 	lock    sync.RWMutex
 }
 
@@ -27,6 +31,7 @@ const (
 	name              = "proxy-cache"
 	cacheStatusHeader = "Apisix-Cache-Status"
 	purgeMethod       = "PURGE"
+	maxVaryVariants   = 64
 )
 
 var identityVars = map[string]struct{}{
@@ -181,6 +186,12 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
+type varyIndex struct {
+	headers    []string
+	signatures []string
+	expiresAt  time.Time
+}
+
 type responseRecorder struct {
 	header      http.Header
 	body        bytes.Buffer
@@ -222,13 +233,14 @@ func (p *Plugin) PostInit() error {
 		p.config.ConsumerIsolation = true
 	}
 	p.entries = map[string]cacheEntry{}
+	p.vary = map[string]varyIndex{}
 	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == purgeMethod {
-			if p.purge(p.cacheKey(r)) {
+			if p.purgeAll(p.cacheKey(r)) {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
@@ -302,7 +314,7 @@ func (p *Plugin) fetchAndMaybeStore(
 	}
 	if shouldStore && p.cacheableStatus(recorder.statusCode) &&
 		(p.config.CacheSetCookie || recorder.header.Get("Set-Cookie") == "") {
-		p.store(key, recorder, cacheTTL)
+		p.store(r, key, recorder, cacheTTL)
 	}
 	recorder.header.Set(cacheStatusHeader, cacheStatus)
 	recorder.writeTo(w)
@@ -310,7 +322,8 @@ func (p *Plugin) fetchAndMaybeStore(
 
 func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 	p.lock.RLock()
-	entry, ok := p.entries[key]
+	storageKey := p.storageKeyLocked(r, key)
+	entry, ok := p.entries[storageKey]
 	p.lock.RUnlock()
 	if !ok {
 		return cacheEntry{}, "MISS"
@@ -324,17 +337,38 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 	return entry, "HIT"
 }
 
-func (p *Plugin) purge(key string) bool {
-	p.lock.Lock()
-	_, ok := p.entries[key]
-	if ok {
-		delete(p.entries, key)
+func (p *Plugin) storageKeyLocked(r *http.Request, key string) string {
+	index, ok := p.vary[key]
+	if !ok || time.Now().After(index.expiresAt) || len(index.headers) == 0 {
+		return key
 	}
+	return key + "::" + varySignature(index.headers, r)
+}
+
+func (p *Plugin) purgeAll(key string) bool {
+	p.lock.Lock()
+	ok := p.purgeAllLocked(key)
 	p.lock.Unlock()
 	return ok
 }
 
-func (p *Plugin) store(key string, recorder *responseRecorder, ttl time.Duration) {
+func (p *Plugin) purgeAllLocked(key string) bool {
+	_, baseOK := p.entries[key]
+	index, indexOK := p.vary[key]
+	for _, signature := range index.signatures {
+		delete(p.entries, key+"::"+signature)
+	}
+	delete(p.vary, key)
+	delete(p.entries, key)
+	return baseOK || indexOK
+}
+
+func (p *Plugin) store(r *http.Request, key string, recorder *responseRecorder, ttl time.Duration) {
+	varyHeaders, cacheable := parseVaryHeader(recorder.header)
+	if !cacheable {
+		return
+	}
+
 	now := time.Now()
 	entry := cacheEntry{
 		header:    cloneHeader(recorder.header),
@@ -350,9 +384,53 @@ func (p *Plugin) store(key string, recorder *responseRecorder, ttl time.Duration
 		entry.header.Del("Cache-Control")
 	}
 
+	storageKey := key
 	p.lock.Lock()
-	p.entries[key] = entry
+	if len(varyHeaders) > 0 {
+		signature := varySignature(varyHeaders, r)
+		storageKey = key + "::" + signature
+		p.updateVaryIndexLocked(key, varyHeaders, signature, entry.expiresAt)
+		delete(p.entries, key)
+	} else if _, ok := p.vary[key]; ok {
+		p.purgeAllLocked(key)
+	}
+	p.entries[storageKey] = entry
 	p.lock.Unlock()
+}
+
+func (p *Plugin) updateVaryIndexLocked(key string, headers []string, signature string, expiresAt time.Time) {
+	index, ok := p.vary[key]
+	if ok && sameStringSlice(index.headers, headers) {
+		found := false
+		for _, existing := range index.signatures {
+			if existing == signature {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for len(index.signatures) >= maxVaryVariants {
+				evicted := index.signatures[0]
+				index.signatures = index.signatures[1:]
+				delete(p.entries, key+"::"+evicted)
+			}
+			index.signatures = append(index.signatures, signature)
+		}
+		index.expiresAt = expiresAt
+		p.vary[key] = index
+		return
+	}
+
+	if ok {
+		for _, existing := range index.signatures {
+			delete(p.entries, key+"::"+existing)
+		}
+	}
+	p.vary[key] = varyIndex{
+		headers:    append([]string(nil), headers...),
+		signatures: []string{signature},
+		expiresAt:  expiresAt,
+	}
 }
 
 func (p *Plugin) cacheKey(r *http.Request) string {
@@ -565,6 +643,55 @@ func cloneHeader(header http.Header) http.Header {
 		cloned[field] = append([]string(nil), values...)
 	}
 	return cloned
+}
+
+func parseVaryHeader(header http.Header) ([]string, bool) {
+	values := header.Values("Vary")
+	if len(values) == 0 {
+		return nil, true
+	}
+
+	seen := map[string]struct{}{}
+	var headers []string
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			name := strings.ToLower(strings.TrimSpace(part))
+			if name == "" {
+				continue
+			}
+			if name == "*" {
+				return nil, false
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			headers = append(headers, name)
+		}
+	}
+	sort.Strings(headers)
+	return headers, true
+}
+
+func varySignature(headers []string, r *http.Request) string {
+	values := make([]string, 0, len(headers))
+	for _, header := range headers {
+		values = append(values, r.Header.Get(header))
+	}
+	sum := md5.Sum([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+func sameStringSlice(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func cacheKeyHasIdentity(cacheKey []string) bool {

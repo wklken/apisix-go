@@ -454,6 +454,87 @@ func TestHandlerPurgesCachedEntry(t *testing.T) {
 	}
 }
 
+func TestHandlerCachesVaryVariantsByRequestHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Vary", "Accept-Language")
+		_, _ = w.Write([]byte("lang-" + r.Header.Get("Accept-Language")))
+	}))
+
+	en := performRequest(t, handler, http.MethodGet, "/vary", map[string]string{"Accept-Language": "en"})
+	if en.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("en cache status = %q, want MISS", en.Header().Get(cacheStatusHeader))
+	}
+	fr := performRequest(t, handler, http.MethodGet, "/vary", map[string]string{"Accept-Language": "fr"})
+	if fr.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("fr cache status = %q, want MISS", fr.Header().Get(cacheStatusHeader))
+	}
+	enHit := performRequest(t, handler, http.MethodGet, "/vary", map[string]string{"Accept-Language": "en"})
+	if enHit.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("en hit cache status = %q, want HIT", enHit.Header().Get(cacheStatusHeader))
+	}
+	if enHit.Body.String() != "lang-en" {
+		t.Fatalf("en hit body = %q, want lang-en", enHit.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerVaryStarSkipsStore(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Vary", "*")
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	first := performRequest(t, handler, http.MethodGet, "/vary-star", nil)
+	second := performRequest(t, handler, http.MethodGet, "/vary-star", nil)
+
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+	if second.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("second cache status = %q, want MISS", second.Header().Get(cacheStatusHeader))
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerPurgeRemovesVaryVariants(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Vary", "Accept-Language")
+		_, _ = w.Write([]byte("lang-" + r.Header.Get("Accept-Language")))
+	}))
+
+	_ = performRequest(t, handler, http.MethodGet, "/vary-purge", map[string]string{"Accept-Language": "en"})
+	_ = performRequest(t, handler, http.MethodGet, "/vary-purge", map[string]string{"Accept-Language": "fr"})
+
+	purge := performRequest(t, handler, purgeMethod, "/vary-purge", nil)
+	if purge.Code != http.StatusOK {
+		t.Fatalf("purge status = %d, want %d", purge.Code, http.StatusOK)
+	}
+
+	en := performRequest(t, handler, http.MethodGet, "/vary-purge", map[string]string{"Accept-Language": "en"})
+	if en.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("en cache status after purge = %q, want MISS", en.Header().Get(cacheStatusHeader))
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3", calls)
+	}
+}
+
 func TestHandlerPurgeMissReturnsNotFound(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0

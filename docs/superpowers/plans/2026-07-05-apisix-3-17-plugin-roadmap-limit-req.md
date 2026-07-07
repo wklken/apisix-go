@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 101
+## Official APISIX 3.17 Inventory Audit After Task 102
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 101:
+Suggested next valuable batches after Task 102:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3611,3 +3611,36 @@ Updated `proxy-cache` support notes to include `PURGE`, removed the stale top-le
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerPurge' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 102: Implement `proxy-cache` Vary Variants
+
+**Files:**
+- Modify: `pkg/plugin/proxy_cache/plugin.go`
+- Modify: `pkg/plugin/proxy_cache/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: upstream `Vary` response headers and request header values named by `Vary`.
+- Produces: APISIX-style in-memory variant cache keys, `Vary: *` non-storage, and PURGE cleanup for variant entries.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover separate variants for `Accept-Language`, `Vary: *` skipping storage, and PURGE deleting variant entries.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCachesVaryVariantsByRequestHeaders|TestHandlerVaryStarSkipsStore|TestHandlerPurgeRemovesVaryVariants' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because request variants shared the base key, `Vary: *` was stored, and PURGE could not clear variant entries.
+
+- [x] **Step 3: Implement Vary variant storage**
+
+Added a bounded in-memory variant index, stable request-header signatures, `Vary: *` non-storage, prior-index cleanup when storing no-Vary responses, and PURGE cleanup across base and variant keys.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-cache` support notes to include in-memory `Vary` support and narrow remaining gaps to disk cache zones and stale serving.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCachesVaryVariantsByRequestHeaders|TestHandlerVaryStarSkipsStore|TestHandlerPurgeRemovesVaryVariants' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.

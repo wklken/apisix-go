@@ -1,7 +1,9 @@
 package lago
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -233,6 +235,76 @@ func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 		}
 		if event.Properties["status"] != "201" {
 			t.Fatalf("status property = %q, want 201", event.Properties["status"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago event")
+	}
+}
+
+func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
+	requests := make(chan lagoPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lagoPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Token:               "token",
+		EventTransactionID:  "${http_x_request_id}",
+		EventSubscriptionID: "${request_method}",
+		EventCode:           "api-call",
+		EventProperties: map[string]string{
+			"request_body":  "${request_body}",
+			"response_body": "${response_body}",
+		},
+		Timeout:          1000,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":1}`))
+	req.Header.Set("X-Request-ID", "req-1")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	select {
+	case body := <-requests:
+		if len(body.Events) != 1 {
+			t.Fatalf("events = %d, want 1", len(body.Events))
+		}
+		event := body.Events[0]
+		if event.Properties["request_body"] != `{"order":1}` {
+			t.Fatalf("request_body property = %q, want original request body", event.Properties["request_body"])
+		}
+		if event.Properties["response_body"] != `{"ok":true}` {
+			t.Fatalf("response_body property = %q, want upstream response body", event.Properties["response_body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Lago event")

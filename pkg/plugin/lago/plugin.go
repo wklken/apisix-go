@@ -1,8 +1,10 @@
 package lago
 
 import (
+	"bytes"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"regexp"
@@ -87,6 +89,24 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 5
+    },
+    "include_req_body": {
+      "type": "boolean",
+      "default": false
+    },
+    "include_resp_body": {
+      "type": "boolean",
+      "default": false
+    },
+    "max_req_body_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 524288
+    },
+    "max_resp_body_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 524288
     }
   },
   "required": ["endpoint_addrs", "token", "event_transaction_id", "event_subscription_id", "event_code"]
@@ -106,6 +126,10 @@ type Config struct {
 	Keepalive           *bool             `json:"keepalive,omitempty"`
 	KeepaliveTimeout    int               `json:"keepalive_timeout,omitempty"`
 	KeepalivePool       int               `json:"keepalive_pool,omitempty"`
+	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
+	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
+	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
 }
 
 type lagoPayload struct {
@@ -123,6 +147,8 @@ type lagoEvent struct {
 type responseRecorder struct {
 	http.ResponseWriter
 	status int
+	body   bytes.Buffer
+	limit  int
 }
 
 func (w *responseRecorder) WriteHeader(status int) {
@@ -134,7 +160,19 @@ func (w *responseRecorder) Write(body []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	w.capture(body)
 	return w.ResponseWriter.Write(body)
+}
+
+func (w *responseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
 }
 
 var templatePattern = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -174,6 +212,12 @@ func (p *Plugin) PostInit() error {
 	if p.config.KeepalivePool == 0 {
 		p.config.KeepalivePool = 5
 	}
+	if p.config.MaxReqBodyBytes == 0 {
+		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
+	}
+	if p.config.MaxRespBodyBytes == 0 {
+		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
+	}
 	if p.config.SSLVerify == nil {
 		value := true
 		p.config.SSLVerify = &value
@@ -197,15 +241,50 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		recorder := &responseRecorder{ResponseWriter: w}
+		var requestBody string
+		if p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		responseLimit := 0
+		if p.config.IncludeRespBody {
+			responseLimit = p.config.MaxRespBodyBytes
+		}
+		recorder := &responseRecorder{
+			ResponseWriter: w,
+			limit:          responseLimit,
+		}
 		next.ServeHTTP(recorder, r)
 		if recorder.status == 0 {
 			recorder.status = http.StatusOK
 		}
 
-		p.Fire(p.logFields(r, recorder.status))
+		var responseBody string
+		if p.config.IncludeRespBody && recorder.body.Len() > 0 {
+			responseBody = recorder.body.String()
+		}
+
+		p.Fire(p.logFields(r, recorder.status, requestBody, responseBody))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
 }
 
 func (p *Plugin) Send(fields map[string]any) {
@@ -251,8 +330,14 @@ func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {
 	return entry
 }
 
-func (p *Plugin) logFields(r *http.Request, status int) map[string]any {
+func (p *Plugin) logFields(r *http.Request, status int, requestBody, responseBody string) map[string]any {
 	fields := map[string]any{"status": status}
+	if p.config.IncludeReqBody {
+		fields["request_body"] = requestBody
+	}
+	if p.config.IncludeRespBody {
+		fields["response_body"] = responseBody
+	}
 	for _, template := range p.templates() {
 		for _, name := range templateVariables(template) {
 			if _, ok := fields[name]; ok {

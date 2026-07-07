@@ -346,9 +346,9 @@ Loggers:
 - [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 60%
   - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`
-- [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 60%
-  - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, `ssl_verify`, timeout, and keepalive config defaults
-  - not support APISIX batch processor buffering/retry semantics, full APISIX/NGINX variable coverage, request start-time fidelity, or request/response body capture
+- [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 64%
+  - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, `include_req_body`, `include_resp_body`, capped body-size capture through `${request_body}` / `${response_body}` templates, `ssl_verify`, timeout, and keepalive config defaults
+  - not support APISIX batch processor buffering/retry semantics, full APISIX/NGINX variable coverage, or request start-time fidelity
 
 ### AI
 

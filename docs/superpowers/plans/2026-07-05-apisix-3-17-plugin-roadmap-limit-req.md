@@ -1277,6 +1277,37 @@ Updated `loki-logger` support notes to include `include_req_body`, `include_resp
 
 Run: `go test ./pkg/plugin/loki_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 152: Implement `lago` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/lago/plugin.go`
+- Modify: `pkg/plugin/lago/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: Lago event property templates that can resolve `${request_body}` and `${response_body}` while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official/local behavior**
+
+Checked the local APISIX 3.17 source checkout and did not find a `lago.lua` plugin there. The Go implementation already supports Lago event property templates, so this slice adds body capture through that existing template model.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed at compile time because `Config` lacked `IncludeReqBody`, `IncludeRespBody`, `MaxReqBodyBytes`, and `MaxRespBodyBytes`.
+
+- [x] **Step 3: Implement body capture**
+
+Added body capture schema/config fields, defaulted body byte caps, read/restored request bodies, recorded response bodies while streaming to the original writer, and exposed `${request_body}` / `${response_body}` template variables for Lago event properties.
+
+- [x] **Step 4: Update README**
+
+Updated `lago` support notes to include `include_req_body`, `include_resp_body`, capped body-size capture, and the body template variables, while keeping APISIX batch processor behavior, complete variable coverage, and request start-time fidelity unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/lago -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

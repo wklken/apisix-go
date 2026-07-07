@@ -1494,6 +1494,32 @@ Updated `key-auth` support notes to include APISIX-style missing/invalid key err
 
 Run: `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 159: Align `key-auth` Missing-Key Error Text
+
+**Files:**
+- Modify: `pkg/plugin/key_auth/plugin.go`
+- Modify: `pkg/plugin/key_auth/plugin_test.go`
+
+**Interfaces:**
+- Consumes: route/service `key-auth` config when no header or query credential is present.
+- Produces: official APISIX missing-key response text.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/key-auth.lua`; missing credentials return `Missing API key found in request`.
+
+- [x] **Step 2: Write failing tests**
+
+Tightened the missing-key handler test to expect official text. It initially failed because the Go plugin returned `Missing API key in request`.
+
+- [x] **Step 3: Implement error text parity**
+
+Updated the missing-key response to `{"message": "Missing API key found in request"}`.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

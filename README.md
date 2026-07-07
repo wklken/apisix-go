@@ -303,9 +303,9 @@ Loggers:
 - [x] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/) 60%
   - support `brokers`, deprecated `broker_list`, broker `sasl_config` for `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`, `kafka_topic`, `key`, `producer_type`, `required_acks`, `timeout`, producer batch defaults, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture
   - not support APISIX batch processor behavior, `max_pending_entries`, `include_req_body_expr`, `include_resp_body_expr`, or `meta_format = origin`
-- [x] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/) 50%
-  - support `nameserver_list`, `topic`, `key`, `tag`, `timeout`, `access_key`, `secret_key`, and `log_format` with RocketMQ sync producer delivery
-  - not support APISIX batch processor behavior, `max_pending_entries`, request/response body capture, `meta_format = origin`, or `use_tls`
+- [x] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/) 55%
+  - support `nameserver_list`, `topic`, `key`, `tag`, `timeout`, `access_key`, `secret_key`, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture with RocketMQ sync producer delivery
+  - not support APISIX batch processor behavior, `max_pending_entries`, `include_req_body_expr`, `include_resp_body_expr`, `meta_format = origin`, or `use_tls`
 - [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 50%
   - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_resp_body`, and capped body-size capture
   - not support `include_req_body_expr` or `include_resp_body_expr`

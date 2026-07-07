@@ -1153,6 +1153,37 @@ Updated `tencent-cloud-cls` support notes to include `include_req_body`, `includ
 
 Run: `go test ./pkg/plugin/tencent_cloud_cls -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 148: Implement `syslog` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/syslog/plugin.go`
+- Modify: `pkg/plugin/syslog/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `include_req_body`, Go-side `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: syslog JSON payloads with APISIX-style nested `request.body` and `response.body` fields while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/syslog.lua`; official schema includes `include_req_body` and sends `log_util.get_log_entry()` output through the batch processor backed syslog sender. The Go schema already exposed response-body and body-size fields, so this slice makes those existing fields effective.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed at compile time because `Config` lacked `IncludeReqBody` and `IncludeRespBody` fields even though the schema accepted those keys.
+
+- [x] **Step 3: Implement body capture**
+
+Added a body-aware handler path for syslog configs with raw body capture enabled, including request body read/restore, response body recording while streaming to the original writer, capped capture defaults, and nested payload insertion before sending through the logger channel.
+
+- [x] **Step 4: Update README**
+
+Updated `syslog` support notes to include `include_req_body`, Go-side `include_resp_body`, and capped body-size capture, while keeping APISIX batch processor buffering, OpenResty syslog connection behavior, TLS parity, and expression filters unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/syslog -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

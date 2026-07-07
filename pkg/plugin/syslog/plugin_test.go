@@ -1,7 +1,12 @@
 package syslog
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +64,69 @@ func TestSendWritesUDPMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:             host,
+		Port:             mustAtoi(t, port),
+		SockType:         "udp",
+		Timeout:          3000,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("payload request body = %#v, want original request body", request["body"])
+		}
+
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("payload response body = %#v, want upstream response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog UDP message")
+	}
+}
+
 func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -74,6 +142,22 @@ func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body size fields: %v", err)
 	}
+}
+
+func extractJSONPayload(t *testing.T, message string) map[string]any {
+	t.Helper()
+
+	start := strings.Index(message, "{")
+	end := strings.LastIndex(message, "}")
+	if start == -1 || end == -1 || end < start {
+		t.Fatalf("message = %q, want JSON payload", message)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(message[start:end+1]), &payload); err != nil {
+		t.Fatalf("unmarshal syslog payload: %v", err)
+	}
+	return payload
 }
 
 func startUDPServer(t *testing.T) (string, <-chan string) {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -141,6 +142,48 @@ func TestSendSelectsRandomEndpointAddr(t *testing.T) {
 	case <-firstRequests:
 		t.Fatal("first Elasticsearch endpoint received request, want selected second endpoint only")
 	default:
+	}
+}
+
+func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read bulk body: %v", err)
+		}
+		received <- string(body)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-$route_id-{%Y}"},
+		LogFormat:     map[string]string{"path": "$uri"},
+		Timeout:       10,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{"$route_id": "route-1"})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-received:
+		wantIndex := `"apisix-route-1-` + time.Now().Format("2006") + `"`
+		if !strings.Contains(body, `"_index":`+wantIndex) {
+			t.Fatalf("bulk body = %q, want resolved index containing %s", body, wantIndex)
+		}
+		if strings.Contains(body, elasticsearchIndexField) {
+			t.Fatalf("bulk body = %q, want internal index field omitted from document", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
 	}
 }
 

@@ -781,6 +781,37 @@ Updated `elasticsearch-logger` support notes to include random `endpoint_addrs` 
 
 Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 136: Implement `elasticsearch-logger` Index Variable Expansion
+
+**Files:**
+- Modify: `pkg/plugin/elasticsearch_logger/plugin.go`
+- Modify: `pkg/plugin/elasticsearch_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: Elasticsearch `field.index` values containing APISIX/NGINX request variables such as `$route_id` and APISIX time fragments such as `{%Y}`.
+- Produces: resolved `_bulk` action `_index` values while omitting internal index bookkeeping from the log document.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/elasticsearch-logger.lua`; APISIX replaces `{strftime}` fragments with `os.date`, then resolves APISIX variables from request context before building the bulk action.
+
+- [x] **Step 2: Write failing tests**
+
+Test sends a request through the logger handler with `$route_id` set and verifies `_index` contains the resolved route ID plus `{%Y}` year, while the internal index marker is not serialized into the document.
+
+- [x] **Step 3: Implement index expansion**
+
+Added Elasticsearch logger handler-side index resolution, strftime-to-Go format conversion for common APISIX date fragments, APISIX/NGINX/request variable replacement, and document cleanup before NDJSON serialization.
+
+- [x] **Step 4: Update README**
+
+Updated `elasticsearch-logger` support notes to include time/APISIX variable expansion in `field.index` and removed that item from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

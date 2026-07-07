@@ -7,9 +7,13 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -126,6 +130,8 @@ const schema = `
 	]
 }`
 
+const elasticsearchIndexField = "__elasticsearch_logger_index"
+
 // NOTE: not support
 // "encrypt_fields": ["auth.password"],
 // endpoint_addr is deprecated, use endpoint_addrs instead
@@ -210,6 +216,17 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+
+		logFields := apisixlog.GetFields(r, p.LogFormat)
+		logFields[elasticsearchIndexField] = resolveIndexVars(p.config.Field.Index, r)
+		p.Fire(logFields)
+	}
+	return http.HandlerFunc(fn)
+}
+
 func (p *Plugin) Send(log map[string]any) {
 	endpoint := p.endpointAddr()
 	if endpoint == "" {
@@ -285,6 +302,9 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 
 func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
 	index := p.config.Field.Index
+	if resolvedIndex, ok := log[elasticsearchIndexField].(string); ok && resolvedIndex != "" {
+		index = resolvedIndex
+	}
 	action := map[string]any{
 		"index": map[string]any{
 			"_index": index,
@@ -298,7 +318,7 @@ func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	logLine, err := json.Marshal(log)
+	logLine, err := json.Marshal(elasticsearchDocument(log))
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +329,104 @@ func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
 	body = append(body, logLine...)
 	body = append(body, '\n')
 	return body, nil
+}
+
+func elasticsearchDocument(log map[string]any) map[string]any {
+	if _, ok := log[elasticsearchIndexField]; !ok {
+		return log
+	}
+
+	doc := make(map[string]any, len(log)-1)
+	for key, value := range log {
+		if key == elasticsearchIndexField {
+			continue
+		}
+		doc[key] = value
+	}
+	return doc
+}
+
+func resolveIndexVars(index string, r *http.Request) string {
+	index = replaceIndexTimeVars(index)
+	for _, key := range sortedVariableKeys() {
+		value := apisixlog.GetField(r, key)
+		index = strings.ReplaceAll(index, key, stringifyIndexValue(value))
+	}
+	return index
+}
+
+func replaceIndexTimeVars(index string) string {
+	var out strings.Builder
+	for i := 0; i < len(index); i++ {
+		if index[i] != '{' || (i > 0 && index[i-1] == '$') {
+			out.WriteByte(index[i])
+			continue
+		}
+
+		end := strings.IndexByte(index[i+1:], '}')
+		if end < 0 {
+			out.WriteByte(index[i])
+			continue
+		}
+
+		format := index[i+1 : i+1+end]
+		out.WriteString(time.Now().Format(strftimeToGo(format)))
+		i += end + 1
+	}
+	return out.String()
+}
+
+func strftimeToGo(format string) string {
+	replacer := strings.NewReplacer(
+		"%%", "%",
+		"%Y", "2006",
+		"%y", "06",
+		"%m", "01",
+		"%d", "02",
+		"%H", "15",
+		"%M", "04",
+		"%S", "05",
+		"%F", "2006-01-02",
+		"%T", "15:04:05",
+		"%z", "-0700",
+		"%Z", "MST",
+		"%b", "Jan",
+		"%B", "January",
+		"%a", "Mon",
+		"%A", "Monday",
+	)
+	return replacer.Replace(format)
+}
+
+func sortedVariableKeys() []string {
+	keys := make([]string, 0, len(variable.NginxVars)+len(variable.ApisixVars)+len(variable.RequestVars))
+	for key := range variable.NginxVars {
+		keys = append(keys, key)
+	}
+	for key := range variable.ApisixVars {
+		keys = append(keys, key)
+	}
+	for key := range variable.RequestVars {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	return keys
+}
+
+func stringifyIndexValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if str, ok := value.(string); ok {
+		return str
+	}
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(bytes)
 }
 
 func headerFromMap(headers map[string]string) http.Header {

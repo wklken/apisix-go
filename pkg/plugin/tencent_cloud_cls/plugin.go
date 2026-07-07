@@ -1,11 +1,13 @@
 package tencent_cloud_cls
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -185,6 +187,10 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
+	if p.config.IncludeReqBody || p.config.IncludeRespBody {
+		return p.bodyAwareHandler(next)
+	}
+
 	if p.config.SampleRatio >= 1 {
 		return p.BaseLoggerPlugin.Handler(next)
 	}
@@ -196,6 +202,91 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		p.Fire(apisixlog.GetFields(r, p.LogFormat))
 	})
+}
+
+func (p *Plugin) bodyAwareHandler(next http.Handler) http.Handler {
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		sampled := p.config.SampleRatio >= 1 || rand.Float64() < p.config.SampleRatio
+
+		var requestBody string
+		if sampled && p.config.IncludeReqBody {
+			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			if err == nil && body != "" {
+				requestBody = body
+			}
+		}
+
+		writer := w
+		var recorder *clsLogResponseRecorder
+		if sampled && p.config.IncludeRespBody {
+			recorder = &clsLogResponseRecorder{
+				ResponseWriter: w,
+				limit:          p.config.MaxRespBodyBytes,
+			}
+			writer = recorder
+		}
+
+		next.ServeHTTP(writer, r)
+		if !sampled {
+			return
+		}
+
+		logFields := apisixlog.GetFields(r, p.LogFormat)
+		if requestBody != "" {
+			nestedLogMap(logFields, "request")["body"] = requestBody
+		}
+		if recorder != nil && recorder.body.Len() > 0 {
+			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		}
+		p.Fire(logFields)
+	}
+	return http.HandlerFunc(fn)
+}
+
+type clsLogResponseRecorder struct {
+	http.ResponseWriter
+	body  bytes.Buffer
+	limit int
+}
+
+func (w *clsLogResponseRecorder) Write(body []byte) (int, error) {
+	w.capture(body)
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *clsLogResponseRecorder) capture(body []byte) {
+	if w.limit <= 0 || w.body.Len() >= w.limit {
+		return
+	}
+	remaining := w.limit - w.body.Len()
+	if len(body) > remaining {
+		body = body[:remaining]
+	}
+	_, _ = w.body.Write(body)
+}
+
+func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
+	if r.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if limit > 0 && len(body) > limit {
+		body = body[:limit]
+	}
+	return string(body), nil
+}
+
+func nestedLogMap(fields map[string]any, key string) map[string]any {
+	if value, ok := fields[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	fields[key] = value
+	return value
 }
 
 func (p *Plugin) Send(log map[string]any) {

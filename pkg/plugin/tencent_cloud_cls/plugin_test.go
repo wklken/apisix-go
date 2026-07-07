@@ -1,6 +1,8 @@
 package tencent_cloud_cls
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -168,6 +170,79 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	if logs[0]["plugin"] != "tencent-cloud-cls" {
 		t.Fatalf("plugin = %q, want tencent-cloud-cls", logs[0]["plugin"])
 	}
+}
+
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Scheme:           "http",
+		CLSHost:          strings.TrimPrefix(server.URL, "http://"),
+		CLSTopic:         "topic-a",
+		SecretID:         "secret-id",
+		SecretKey:        "secret-key",
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+		Timeout:          1000,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	logs := decodeCLSBody(t, waitBody(t, bodies))
+	if len(logs) != 1 {
+		t.Fatalf("logs = %d, want 1", len(logs))
+	}
+
+	request := decodeJSONStringField(t, logs[0]["request"])
+	if request["body"] != `{"order":1}` {
+		t.Fatalf("request body = %#v, want original request body", request["body"])
+	}
+
+	response := decodeJSONStringField(t, logs[0]["response"])
+	if response["body"] != `{"ok":true}` {
+		t.Fatalf("response body = %#v, want upstream response body", response["body"])
+	}
+}
+
+func decodeJSONStringField(t *testing.T, value string) map[string]any {
+	t.Helper()
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(value), &out); err != nil {
+		t.Fatalf("unmarshal JSON string field %q: %v", value, err)
+	}
+	return out
 }
 
 func waitRequest(t *testing.T, requests <-chan *http.Request) *http.Request {

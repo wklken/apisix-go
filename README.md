@@ -327,9 +327,9 @@ Loggers:
 - [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 50%
   - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, and `log_format`
   - not support APISIX batch processor behavior or request/response body capture
-- [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 50%
-  - support service-account `auth_config`, `auth_file`, JWT bearer token exchange, `entries_uri`, `resource`, `log_id`, `ssl_verify`, and `log_format`
-  - not support APISIX batch processor behavior, `max_pending_entries`, or default `httpRequest` field expansion
+- [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 55%
+  - support service-account `auth_config`, `auth_file`, JWT bearer token exchange, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, and default Cloud Logging `httpRequest` entry expansion
+  - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
 - [x] [splunk-hec-logging](https://apisix.apache.org/zh/docs/apisix/plugins/splunk-hec-logging/) 50%
   - support Splunk HEC `endpoint.uri`, `endpoint.token`, `endpoint.channel`, `endpoint.timeout`, `ssl_verify`, and `log_format`
   - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture

@@ -719,6 +719,37 @@ Updated `lago` support notes to include random `endpoint_addrs` selection and re
 
 Run: `go test ./pkg/plugin/lago -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 134: Implement `google-cloud-logging` Default HTTP Request Entry
+
+**Files:**
+- Modify: `pkg/plugin/google_cloud_logging/plugin.go`
+- Modify: `pkg/plugin/google_cloud_logging/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: requests handled without custom `log_format`, APISIX route/service request variables, response status, request/response sizes, and request timing.
+- Produces: Cloud Logging entries with default `httpRequest` expansion plus route/service IDs in `jsonPayload`; custom `log_format` still writes the configured fields into `jsonPayload`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/google-cloud-logging.lua`; default entries populate `httpRequest` and keep route/service IDs in `jsonPayload`, while custom `log_format` emits the custom fields as `jsonPayload`.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default handler collection for method, URL, request size, status, response size, user agent, remote IP, latency, route ID, and service ID, plus custom `log_format` preserving JSON payload behavior.
+
+- [x] **Step 3: Implement default entry expansion**
+
+Added a default logger handler path for no custom `log_format`, response recording, request field collection, Cloud Logging `httpRequest` mapping, and retained `BaseLoggerPlugin` behavior for custom log formats.
+
+- [x] **Step 4: Update README**
+
+Updated `google-cloud-logging` support notes to include default Cloud Logging `httpRequest` entry expansion and removed that item from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/google_cloud_logging -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

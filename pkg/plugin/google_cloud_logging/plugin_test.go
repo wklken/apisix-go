@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -142,6 +144,97 @@ func TestBuildEntryUsesCloudLoggingShape(t *testing.T) {
 	}
 	if entry.Timestamp == "" {
 		t.Fatal("timestamp is empty")
+	}
+}
+
+func TestHandlerBuildsDefaultHTTPRequestEntry(t *testing.T) {
+	p := &Plugin{config: Config{
+		AuthConfig: &AuthConfig{
+			ProjectID: "project-a",
+		},
+		Resource: MonitoredResource{Type: "global"},
+		LogID:    defaultLogID,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders?debug=true", strings.NewReader("payload"))
+	req.RemoteAddr = "203.0.113.10:12345"
+	req.Header.Set("User-Agent", "apisix-go-test")
+	req = apisixctx.WithApisixVars(req, map[string]string{
+		"$route_id":   "route-1",
+		"$service_id": "service-1",
+	})
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	})).ServeHTTP(rr, req)
+
+	var fields map[string]any
+	select {
+	case fields = <-p.FireChan:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for google log fields")
+	}
+
+	entry := p.buildEntry(fields)
+	if entry.HTTPRequest == nil {
+		t.Fatal("httpRequest is nil")
+	}
+	if entry.HTTPRequest.RequestMethod != http.MethodPost {
+		t.Fatalf("requestMethod = %q, want POST", entry.HTTPRequest.RequestMethod)
+	}
+	if entry.HTTPRequest.RequestURL != "http://example.com/orders?debug=true" {
+		t.Fatalf("requestUrl = %q, want full request URL", entry.HTTPRequest.RequestURL)
+	}
+	if entry.HTTPRequest.RequestSize != 7 {
+		t.Fatalf("requestSize = %d, want 7", entry.HTTPRequest.RequestSize)
+	}
+	if entry.HTTPRequest.Status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", entry.HTTPRequest.Status)
+	}
+	if entry.HTTPRequest.ResponseSize != 7 {
+		t.Fatalf("responseSize = %d, want 7", entry.HTTPRequest.ResponseSize)
+	}
+	if entry.HTTPRequest.UserAgent != "apisix-go-test" {
+		t.Fatalf("userAgent = %q, want apisix-go-test", entry.HTTPRequest.UserAgent)
+	}
+	if entry.HTTPRequest.RemoteIP != "203.0.113.10" {
+		t.Fatalf("remoteIp = %q, want 203.0.113.10", entry.HTTPRequest.RemoteIP)
+	}
+	if entry.HTTPRequest.Latency == "" {
+		t.Fatal("latency is empty")
+	}
+	if entry.JSONPayload["route_id"] != "route-1" {
+		t.Fatalf("route_id = %v, want route-1", entry.JSONPayload["route_id"])
+	}
+	if entry.JSONPayload["service_id"] != "service-1" {
+		t.Fatalf("service_id = %v, want service-1", entry.JSONPayload["service_id"])
+	}
+}
+
+func TestBuildEntryKeepsCustomLogFormatInJSONPayload(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    "http://127.0.0.1/token",
+		},
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	entry := p.buildEntry(map[string]any{"path": "/orders"})
+	if entry.HTTPRequest != nil {
+		t.Fatalf("httpRequest = %#v, want nil for custom log_format", entry.HTTPRequest)
+	}
+	if entry.JSONPayload["path"] != "/orders" {
+		t.Fatalf("jsonPayload path = %v, want /orders", entry.JSONPayload["path"])
 	}
 }
 

@@ -10,13 +10,17 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -40,6 +44,21 @@ const (
 	defaultLogID      = "apisix.apache.org%2Flogs"
 
 	jwtBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+)
+
+const (
+	defaultEntryMarker = "__google_cloud_logging_default_entry"
+
+	defaultRequestMethodField = "request_method"
+	defaultRequestURLField    = "request_url"
+	defaultRequestSizeField   = "request_size"
+	defaultStatusField        = "status"
+	defaultResponseSizeField  = "response_size"
+	defaultUserAgentField     = "user_agent"
+	defaultRemoteIPField      = "remote_ip"
+	defaultServerIPField      = "server_ip"
+	defaultLatencyField       = "latency"
+	defaultInsertIDField      = "insert_id"
 )
 
 var defaultScopes = []string{
@@ -168,13 +187,42 @@ type googleLogEntry struct {
 type googleHTTPRequest struct {
 	RequestMethod string `json:"requestMethod,omitempty"`
 	RequestURL    string `json:"requestUrl,omitempty"`
+	RequestSize   int64  `json:"requestSize,omitempty"`
 	Status        int    `json:"status,omitempty"`
+	ResponseSize  int64  `json:"responseSize,omitempty"`
+	UserAgent     string `json:"userAgent,omitempty"`
+	RemoteIP      string `json:"remoteIp,omitempty"`
+	ServerIP      string `json:"serverIp,omitempty"`
+	Latency       string `json:"latency,omitempty"`
 }
 
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	ExpiresIn   int    `json:"expires_in"`
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	size   int64
+}
+
+func (w *responseRecorder) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseRecorder) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.size += int64(n)
+	return n, err
 }
 
 func (p *Plugin) Config() interface{} {
@@ -191,6 +239,24 @@ func (p *Plugin) Init() error {
 	p.SendFunc = p.Send
 
 	return nil
+}
+
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	if len(p.LogFormat) > 0 {
+		return p.BaseLoggerPlugin.Handler(next)
+	}
+
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		recorder := &responseRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		if recorder.status == 0 {
+			recorder.status = http.StatusOK
+		}
+
+		p.Fire(p.defaultLogFields(r, recorder, time.Since(start)))
+	}
+	return http.HandlerFunc(fn)
 }
 
 func (p *Plugin) PostInit() error {
@@ -256,7 +322,11 @@ func (p *Plugin) Send(log map[string]any) {
 		return
 	}
 	if resp.StatusCode() != http.StatusOK {
-		logger.Errorf("Google Cloud Logging endpoint returned status code [%d], body [%s]", resp.StatusCode(), resp.String())
+		logger.Errorf(
+			"Google Cloud Logging endpoint returned status code [%d], body [%s]",
+			resp.StatusCode(),
+			resp.String(),
+		)
 	}
 }
 
@@ -405,7 +475,7 @@ func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {
 		projectID = auth.ProjectID
 	}
 
-	return googleLogEntry{
+	entry := googleLogEntry{
 		JSONPayload: log,
 		Labels: map[string]string{
 			"source": "apache-apisix-google-cloud-logging",
@@ -414,10 +484,134 @@ func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {
 		Resource:  p.config.Resource,
 		LogName:   "projects/" + projectID + "/logs/" + p.config.LogID,
 	}
+	if isDefaultEntry(log) {
+		entry.JSONPayload = map[string]any{}
+		if routeID := stringFromAny(log["route_id"]); routeID != "" {
+			entry.JSONPayload["route_id"] = routeID
+		}
+		if serviceID := stringFromAny(log["service_id"]); serviceID != "" {
+			entry.JSONPayload["service_id"] = serviceID
+		}
+		entry.InsertID = stringFromAny(log[defaultInsertIDField])
+		entry.HTTPRequest = &googleHTTPRequest{
+			RequestMethod: stringFromAny(log[defaultRequestMethodField]),
+			RequestURL:    stringFromAny(log[defaultRequestURLField]),
+			RequestSize:   int64FromAny(log[defaultRequestSizeField]),
+			Status:        intFromAny(log[defaultStatusField]),
+			ResponseSize:  int64FromAny(log[defaultResponseSizeField]),
+			UserAgent:     stringFromAny(log[defaultUserAgentField]),
+			RemoteIP:      stringFromAny(log[defaultRemoteIPField]),
+			ServerIP:      stringFromAny(log[defaultServerIPField]),
+			Latency:       stringFromAny(log[defaultLatencyField]),
+		}
+	}
+
+	return entry
 }
 
 func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
+}
+
+func (p *Plugin) defaultLogFields(r *http.Request, recorder *responseRecorder, latency time.Duration) map[string]any {
+	fields := map[string]any{
+		defaultEntryMarker:        true,
+		defaultRequestMethodField: r.Method,
+		defaultRequestURLField:    requestURL(r),
+		defaultRequestSizeField:   requestSize(r),
+		defaultStatusField:        recorder.status,
+		defaultResponseSizeField:  recorder.size,
+		defaultUserAgentField:     r.UserAgent(),
+		defaultRemoteIPField:      remoteIP(r.RemoteAddr),
+		defaultServerIPField:      r.Host,
+		defaultLatencyField:       strconv.FormatFloat(latency.Seconds(), 'f', 3, 64) + "s",
+		defaultInsertIDField:      r.Header.Get("X-Request-ID"),
+	}
+	if routeID := stringFromAny(apisixlog.GetField(r, "$route_id")); routeID != "" {
+		fields["route_id"] = routeID
+	}
+	if serviceID := stringFromAny(apisixlog.GetField(r, "$service_id")); serviceID != "" {
+		fields["service_id"] = serviceID
+	}
+	return fields
+}
+
+func requestURL(r *http.Request) string {
+	scheme := "http"
+	host := r.Host
+	if r.URL.Scheme != "" {
+		scheme = r.URL.Scheme
+	}
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if r.URL.Host != "" {
+		host = r.URL.Host
+	}
+	return scheme + "://" + host + r.URL.RequestURI()
+}
+
+func requestSize(r *http.Request) int64 {
+	if r.ContentLength > 0 {
+		return r.ContentLength
+	}
+	return 0
+}
+
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
+func isDefaultEntry(log map[string]any) bool {
+	marker, _ := log[defaultEntryMarker].(bool)
+	return marker
+}
+
+func stringFromAny(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+func intFromAny(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case string:
+		parsed, _ := strconv.Atoi(v)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func int64FromAny(value any) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case string:
+		parsed, _ := strconv.ParseInt(v, 10, 64)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func loadMetadataLogFormat() (format map[string]string) {

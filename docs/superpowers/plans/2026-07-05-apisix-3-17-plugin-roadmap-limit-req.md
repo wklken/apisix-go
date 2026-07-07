@@ -1799,6 +1799,37 @@ Updated `consumer-restriction` support notes to include supported restriction ty
 
 Run: `go test ./pkg/plugin/consumer_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 169: Add Local `request-id` Snowflake Support
+
+**Files:**
+- Modify: `pkg/plugin/request_id/plugin.go`
+- Add: `pkg/plugin/request_id/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `request-id` route config with `algorithm = "snowflake"`.
+- Produces: accepted snowflake configuration and locally generated numeric request IDs.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/request-id.lua`, docs, and tests; the official schema accepts `uuid`, `snowflake`, `nanoid`, and `range_id`, preserves incoming request ID headers, and includes the request ID in the response by default.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover schema acceptance for `snowflake`, numeric snowflake ID generation, upstream context/header propagation, incoming ID preservation, and `include_in_response = false`.
+
+- [x] **Step 3: Implement local snowflake generation**
+
+Added `snowflake` to the schema enum, implemented a local timestamp-plus-sequence numeric generator, and removed the request-id handler debug stdout.
+
+- [x] **Step 4: Update README**
+
+Updated `request-id` support notes to include supported algorithms and the remaining gap around APISIX plugin-attr snowflake configuration and etcd-backed data-machine leasing.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/request_id -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

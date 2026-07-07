@@ -2,9 +2,11 @@ package request_id
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"net/http"
+	"strconv"
+	"sync/atomic"
+	"time"
 
 	"github.com/gofrs/uuid"
 	gonanoid "github.com/matoous/go-nanoid/v2"
@@ -15,8 +17,10 @@ import (
 
 const (
 	// version  = "0.1"
-	priority = 12015
-	name     = "request-id"
+	priority              = 12015
+	name                  = "request-id"
+	snowflakeEpochMillis  = int64(1609459200000)
+	snowflakeSequenceMask = uint64(4095)
 )
 
 const schema = `
@@ -34,7 +38,7 @@ const schema = `
 	  },
 	  "algorithm": {
 		"type": "string",
-		"enum": ["uuid", "nanoid", "range_id"],
+		"enum": ["uuid", "snowflake", "nanoid", "range_id"],
 		"default": "uuid"
 	  },
 	  "range_id": {
@@ -61,7 +65,8 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	bytePool *bpool.BytePool
+	bytePool          *bpool.BytePool
+	snowflakeSequence atomic.Uint64
 }
 
 type Config struct {
@@ -128,12 +133,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				requestID, _ = gonanoid.New()
 			} else if p.config.Algorithm == "range_id" {
 				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
+			} else if p.config.Algorithm == "snowflake" {
+				requestID = p.snowflakeID()
 			}
 		}
 
 		r.Header.Set(p.config.HeaderName, requestID)
 
-		fmt.Printf("the include_in_response: %+v\n", *p.config.IncludeInResponse)
 		if *p.config.IncludeInResponse {
 			w.Header().Set(p.config.HeaderName, requestID)
 		}
@@ -155,4 +161,16 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 	}
 
 	return util.BytesToString(id)
+}
+
+func (p *Plugin) snowflakeID() string {
+	timestamp := time.Now().UnixMilli() - snowflakeEpochMillis
+	if timestamp < 0 {
+		timestamp = 0
+	}
+
+	sequence := p.snowflakeSequence.Add(1) & snowflakeSequenceMask
+	id := (uint64(timestamp) << 22) | sequence
+
+	return strconv.FormatUint(id, 10)
 }

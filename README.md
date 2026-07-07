@@ -254,7 +254,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 55%
   - support first-match rules, `set_headers`, weighted actions, `arg_*`, `http_*`, `uri`, `request_uri`, `method`, `host`, `scheme`, and `remote_addr`
   - not support full `lua-resty-expr` syntax or full APISIX variable resolution
-- [x] [request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 100%
+- [x] [request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 85%
+  - support custom header names, response header opt-out, incoming request ID preservation, `uuid`, `nanoid`, `range_id`, and local numeric `snowflake` generation
+  - not support APISIX plugin-attr `snowflake` configuration or etcd-backed distributed data-machine leasing
 - [x] [proxy-control](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-control/) 60%
   - support route/global `request_buffering` flag by buffering the Go proxy request body before upstream forwarding
   - not support APISIX-Runtime/NGINX dynamic `proxy_request_buffering` control or disk-backed buffering

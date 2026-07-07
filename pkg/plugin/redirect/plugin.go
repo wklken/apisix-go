@@ -3,6 +3,8 @@ package redirect
 import (
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
@@ -73,6 +75,7 @@ type Config struct {
 	AppendQueryString *bool    `json:"append_query_string,omitempty"`
 
 	httpsPort *int
+	regexURI  *regexp.Regexp
 }
 
 func (p *Plugin) Init() error {
@@ -96,6 +99,23 @@ func (p *Plugin) PostInit() error {
 	if p.config.AppendQueryString == nil {
 		defaultValue := false
 		p.config.AppendQueryString = &defaultValue
+	}
+	if p.config.EncodeUri == nil {
+		defaultValue := false
+		p.config.EncodeUri = &defaultValue
+	}
+
+	if len(p.config.RegexUri) > 0 {
+		pattern, err := regexp.Compile(p.config.RegexUri[0])
+		if err != nil {
+			return fmt.Errorf("invalid regex_uri pattern %q: %w", p.config.RegexUri[0], err)
+		}
+		p.config.regexURI = pattern
+	}
+
+	if config.GlobalConfig == nil {
+		p.config.httpsPort = nil
+		return nil
 	}
 
 	pluginAttr, ok := config.GlobalConfig.PluginAttr["redirect"]
@@ -153,11 +173,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Redirect(w, r, url, retCode)
 			return
 		}
-		// FIXME: not support regex_uri
+		if p.config.regexURI != nil {
+			redirectURI, matched := p.redirectRegexURI(r)
+			if !matched {
+				next.ServeHTTP(w, r)
+				return
+			}
+			p.redirect(w, redirectURI)
+			return
+		}
 
 		if p.config.Uri != "" {
-			// FIXME:  not support encode_uri
-
 			// FIXME: add cache here?
 			url := fmt.Sprintf("%s://%s%s", v.GetNginxVar(r, "$scheme"), r.Host, p.config.Uri)
 			if p.config.AppendQueryString != nil && *p.config.AppendQueryString {
@@ -167,11 +193,44 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					url = url + "?" + r.URL.RawQuery
 				}
 			}
-			http.Redirect(w, r, url, p.config.RetCode)
+			p.redirect(w, url)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) redirectRegexURI(r *http.Request) (string, bool) {
+	path := r.URL.Path
+	if !p.config.regexURI.MatchString(path) {
+		return "", false
+	}
+	return p.config.regexURI.ReplaceAllString(path, p.config.RegexUri[1]), true
+}
+
+func (p *Plugin) redirect(w http.ResponseWriter, location string) {
+	if p.config.EncodeUri != nil && *p.config.EncodeUri {
+		location = encodeRedirectURI(location)
+	}
+	w.Header().Set("Location", location)
+	w.WriteHeader(p.config.RetCode)
+}
+
+func encodeRedirectURI(location string) string {
+	path, rawQuery, hasQuery := strings.Cut(location, "?")
+	encoded := encodePathPreservingSlash(path)
+	if hasQuery {
+		return encoded + "?" + rawQuery
+	}
+	return encoded
+}
+
+func encodePathPreservingSlash(path string) string {
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }

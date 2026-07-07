@@ -3995,3 +3995,34 @@ Updated `batch-requests` support notes to include plugin metadata `max_body_size
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/batch_requests -run 'TestHandlerRejectsBodyAboveConfiguredLimit|TestHandlerRejectsPipelineAboveConfiguredLimit' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/batch_requests ./pkg/route -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 114: Implement `redirect` Regex URI And Encoding
+
+**Files:**
+- Modify: `pkg/plugin/redirect/plugin.go`
+- Create: `pkg/plugin/redirect/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `redirect` route config with `regex_uri` and `encode_uri`.
+- Produces: APISIX-style path regex substitution, no-op fallthrough when regex does not match, and bounded URI path encoding before setting `Location`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/redirect.lua`; `regex_uri` substitutes against `ctx.var.uri`, returns without redirect when there is no match, and `encode_uri` safe-encodes the redirect path before preserving any query string.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover regex substitution, regex no-match fallthrough, `encode_uri` for configured `uri`, `encode_uri` for `regex_uri`, and redirect initialization without a global config.
+
+- [x] **Step 3: Implement bounded parity**
+
+Added regex compilation, regex redirect handling, nil-safe global config access, default `encode_uri`, direct `Location` writing, and bounded slash-preserving path encoding that leaves the query string unchanged.
+
+- [x] **Step 4: Update README**
+
+Updated `redirect` support notes to include `regex_uri` and `encode_uri`, leaving random HTTPS port selection from `apisix.ssl.listen` as the remaining gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/redirect -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

@@ -1401,6 +1401,37 @@ Updated `key-auth` support notes with header/query lookup, consumer attachment, 
 
 Run: `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 156: Harden `basic-auth` Authorization Handling
+
+**Files:**
+- Modify: `pkg/plugin/basic_auth/plugin.go`
+- Add: `pkg/plugin/basic_auth/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: route/service `basic-auth` config with `hide_credentials` and consumer `basic-auth` username/password config.
+- Produces: APISIX-style Basic auth extraction, missing-vs-malformed authorization errors, password validation, consumer attachment, and optional credential hiding.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/basic-auth.lua`; missing `Authorization` gets a `WWW-Authenticate` challenge and missing message, while malformed `Authorization` returns the invalid authorization message.
+
+- [x] **Step 2: Write failing tests**
+
+Added focused handler tests for successful Basic auth, missing authorization challenge, malformed authorization rejection, and `hide_credentials`. The malformed authorization test initially failed because the Go plugin returned the missing-auth message.
+
+- [x] **Step 3: Implement error split**
+
+Checked header presence before `r.BasicAuth()` so malformed present headers return `{"message": "Invalid authorization in request"}` without changing the rest of the consumer lookup and password validation flow.
+
+- [x] **Step 4: Update README**
+
+Updated `basic-auth` support notes with credential extraction, consumer attachment, password validation, missing/malformed auth errors, and `hide_credentials`.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/basic_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

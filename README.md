@@ -125,7 +125,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/) 65%
   - support compact JWE parsing, `Bearer` token extraction, `kid` consumer lookup, AES-256-GCM decrypt, base64url consumer secrets, and forwarding plaintext to `forward_header`
   - not support alternate JWE algorithms, AAD/header authentication, encrypted consumer field handling, or anonymous consumer behavior
-- [x] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/)
+- [x] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/) 65%
+  - support Basic credential extraction, consumer attachment, password validation, missing/malformed authorization errors, and `hide_credentials`
+  - not support encrypted consumer fields or APISIX credential extraction whitespace normalization
 - [x] [authz-keycloak](https://apisix.apache.org/zh/docs/apisix/plugins/authz-keycloak/) 60%
   - support explicit `token_endpoint`, discovery, static `permissions`, lazy path resource lookup, UMA decision requests, `http_method_as_scope`, `ENFORCING` access-denied behavior, `access_denied_redirect_uri`, `ssl_verify`, `timeout`, and password-grant token generation URI
   - not support shared-dict caches, refresh-token reuse, proxy options, request decorators, full Keycloak resource metadata handling, or all keepalive tuning semantics

@@ -65,10 +65,16 @@ type basicAuth struct {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
 			w.Header().Add("WWW-Authenticate", `Basic realm='.'`)
 			http.Error(w, `{"message": "Missing authorization in request"}`, http.StatusUnauthorized)
+			return
+		}
+
+		user, pass, ok := r.BasicAuth()
+		if !ok {
+			http.Error(w, `{"message": "Invalid authorization in request"}`, http.StatusUnauthorized)
 			return
 		}
 

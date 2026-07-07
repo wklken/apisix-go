@@ -91,28 +91,28 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			headerToken := r.Header.Get(p.config.Name)
 			if headerToken == "" {
 				// token not found
-				http.Error(w, "no csrf token in headers", http.StatusUnauthorized)
+				writeCSRFError(w, "no csrf token in headers")
 				return
 			}
 			// read token from cookie
 			cookie, err := r.Cookie(p.config.Name)
 			if err != nil {
 				// 如果 Cookie 不存在
-				http.Error(w, "no csrf cookie", http.StatusUnauthorized)
+				writeCSRFError(w, "no csrf cookie")
 				return
 			}
 			cookieToken := cookie.Value
 
 			if headerToken != cookieToken {
 				// token not match
-				http.Error(w, "csrf token mismatch", http.StatusUnauthorized)
+				writeCSRFError(w, "csrf token mismatch")
 				return
 			}
 
 			// check token expires
 			ok := checkCSRFToken(cookieToken, p.config.Key, p.config.Expires)
 			if !ok {
-				http.Error(w, "Failed to verify the csrf token signature", http.StatusUnauthorized)
+				writeCSRFError(w, "Failed to verify the csrf token signature")
 				return
 			}
 		}
@@ -130,6 +130,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func writeCSRFError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error_msg": message})
 }
 
 type csrfToken struct {

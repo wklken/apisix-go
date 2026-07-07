@@ -1675,6 +1675,37 @@ Updated `cors` support notes to include APISIX-style 200 preflight responses.
 
 Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 165: Align `csrf` Error Response Shape
+
+**Files:**
+- Modify: `pkg/plugin/csrf/plugin.go`
+- Add: `pkg/plugin/csrf/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: unsafe HTTP requests rejected by the `csrf` plugin.
+- Produces: APISIX-style `401` JSON error bodies with `error_msg`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/csrf.lua`; CSRF failures return `401` with an `error_msg` object rather than a plain-text body.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused missing-header rejection test. It initially failed because the Go plugin used `http.Error`, returning `text/plain`.
+
+- [x] **Step 3: Implement JSON error helper**
+
+Routed CSRF rejection branches through a JSON helper that writes `{"error_msg": ...}` with status `401`.
+
+- [x] **Step 4: Update README**
+
+Updated `csrf` support notes with token validation, safe method bypass, configurable fields, and JSON error bodies.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/csrf -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

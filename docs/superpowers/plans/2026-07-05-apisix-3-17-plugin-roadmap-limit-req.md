@@ -312,6 +312,39 @@ Updated `mocking` support notes to include `response_schema`, JSON/plain-text/XM
 
 Run: `go test ./pkg/plugin/mocking -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 121: Implement Serverless Bridge TLS And Keepalive Controls
+
+**Files:**
+- Modify: `pkg/plugin/function_upstream/plugin.go`
+- Create: `pkg/plugin/function_upstream/plugin_test.go`
+- Modify: `pkg/plugin/openwhisk/plugin.go`
+- Modify: `pkg/plugin/openwhisk/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official generic serverless upstream and `openwhisk` config fields `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`.
+- Produces: active TLS verification and connection reuse behavior for `aws-lambda`, `azure-functions`, `openfunction`, and `openwhisk`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/serverless/generic-upstream.lua` and `apisix/plugins/openwhisk.lua`; both pass `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool` into outbound `resty.http` requests after applying APISIX defaults.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover successful self-signed HTTPS function/action calls when `ssl_verify=false`, rejection of the same self-signed targets when TLS verification defaults to true, and transport keepalive option application for both the shared function-upstream client and `openwhisk`.
+
+- [x] **Step 3: Implement transport controls**
+
+Added cloned default HTTP transports that set `DisableKeepAlives`, `IdleConnTimeout`, `MaxIdleConnsPerHost`, and `TLSClientConfig.InsecureSkipVerify` from the defaulted plugin config.
+
+- [x] **Step 4: Update README**
+
+Updated `aws-lambda`, `azure-functions`, `openfunction`, and `openwhisk` support notes to include active `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/function_upstream ./pkg/plugin/openwhisk -count=1 -timeout=10s -v`, `go test ./pkg/plugin/aws_lambda ./pkg/plugin/azure_functions ./pkg/plugin/openfunction ./pkg/plugin/openwhisk ./pkg/plugin/function_upstream -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

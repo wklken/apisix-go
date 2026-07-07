@@ -2,6 +2,7 @@ package openwhisk
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -132,10 +133,24 @@ func (p *Plugin) PostInit() error {
 		p.config.Keepalive = &value
 	}
 	if p.client == nil {
-		p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
+		p.client = &http.Client{
+			Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
+			Transport: p.transport(),
+		}
 	}
 
 	return nil
+}
+
+func (p *Plugin) transport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = !*p.config.Keepalive
+	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
+	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
+	if !*p.config.SSLVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return transport
 }
 
 func (p *Plugin) Config() interface{} {

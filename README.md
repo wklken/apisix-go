@@ -66,18 +66,18 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [serverless-post-function](https://apisix.apache.org/zh/docs/apisix/plugins/serverless/) 45%
   - support official plugin name, priority, schema, Lua chunks that return functions, request-phase execution, response capture for `header_filter` / `body_filter` / `log`, response header/status/body mutation, and the documented JSON body-filter rewrite pattern
   - not support the full OpenResty/APISIX Lua runtime, shared-dict/lrucache semantics, custom variable registration effects, streaming body chunks, or exact phase lifecycle fidelity
-- [x] [azure-functions](https://apisix.apache.org/zh/docs/apisix/plugins/azure-functions/) 55%
-  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, Azure `x-functions-key` / `x-functions-clientid` injection without overwriting client headers, and relaying function status/body/headers
-  - not support plugin metadata master-key fallback, wildcard `:ext` path forwarding, HTTP/2 connection-header filtering, APISIX keepalive pool semantics, or active `ssl_verify` transport control
-- [x] [openfunction](https://apisix.apache.org/zh/docs/apisix/plugins/openfunction/) 55%
-  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, Basic authorization from `authorization.service_token`, and relaying function status/body/headers
-  - not support wildcard `:ext` path forwarding, HTTP/2 connection-header filtering, APISIX keepalive pool semantics, or active `ssl_verify` transport control
-- [x] [openwhisk](https://apisix.apache.org/zh/docs/apisix/plugins/openwhisk/) 65%
-  - support official plugin name, priority, schema, OpenWhisk action endpoint construction with optional package, POST body forwarding, Basic authorization from `service_token`, default `blocking` / `result` / `timeout` query parameters, JSON result `statusCode` / `headers` / `body`, and invalid result fallback to 503
-  - not support active `ssl_verify` transport control, APISIX keepalive pool semantics, OpenResty response-header behavior, or every OpenWhisk result body type edge case
-- [x] [aws-lambda](https://apisix.apache.org/zh/docs/apisix/plugins/aws-lambda/) 60%
-  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, API Gateway `x-api-key` injection without overwriting client headers, IAM SigV4 `Authorization` / `X-Amz-Date` signing, and relaying function status/body/headers
-  - not support exact APISIX/OpenResty SigV4 canonicalization parity for every header/query/path edge case, wildcard `:ext` path forwarding, APISIX keepalive pool semantics, or active `ssl_verify` transport control
+- [x] [azure-functions](https://apisix.apache.org/zh/docs/apisix/plugins/azure-functions/) 65%
+  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, Azure `x-functions-key` / `x-functions-clientid` injection without overwriting client headers, relaying function status/body/headers, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
+  - not support plugin metadata master-key fallback, wildcard `:ext` path forwarding, or HTTP/2 connection-header filtering
+- [x] [openfunction](https://apisix.apache.org/zh/docs/apisix/plugins/openfunction/) 65%
+  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, Basic authorization from `authorization.service_token`, relaying function status/body/headers, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
+  - not support wildcard `:ext` path forwarding or HTTP/2 connection-header filtering
+- [x] [openwhisk](https://apisix.apache.org/zh/docs/apisix/plugins/openwhisk/) 75%
+  - support official plugin name, priority, schema, OpenWhisk action endpoint construction with optional package, POST body forwarding, Basic authorization from `service_token`, default `blocking` / `result` / `timeout` query parameters, JSON result `statusCode` / `headers` / `body`, invalid result fallback to 503, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
+  - not support OpenResty response-header behavior or every OpenWhisk result body type edge case
+- [x] [aws-lambda](https://apisix.apache.org/zh/docs/apisix/plugins/aws-lambda/) 70%
+  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, API Gateway `x-api-key` injection without overwriting client headers, IAM SigV4 `Authorization` / `X-Amz-Date` signing, relaying function status/body/headers, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
+  - not support exact APISIX/OpenResty SigV4 canonicalization parity for every header/query/path edge case or wildcard `:ext` path forwarding
 - &#x2612; [ext-plugin-pre-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-pre-req/)      NOT SUPPORTED, No need
 - &#x2612; [ext-plugin-post-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-req/)    NOT SUPPORTED, No need
 - &#x2612; [ext-plugin-post-resp](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-resp/)  NOT SUPPORTED, No need

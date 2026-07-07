@@ -2,10 +2,12 @@ package openwhisk
 
 import (
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -101,6 +103,85 @@ func TestHandlerReturnsServiceUnavailableForInvalidOpenWhiskJSON(t *testing.T) {
 	}
 }
 
+func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
+	api := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"statusCode":201,"body":"tls ok"}`))
+	}))
+	defer api.Close()
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		APIHost:      api.URL,
+		SSLVerify:    &sslVerify,
+		ServiceToken: "user:pass",
+		Namespace:    "guest",
+		Action:       "hello",
+	})
+
+	res := performRequest(p, "")
+
+	if res.Code != http.StatusCreated {
+		t.Fatalf("response code = %d, want %d, body=%q", res.Code, http.StatusCreated, res.Body.String())
+	}
+	if got := res.Body.String(); got != "tls ok" {
+		t.Fatalf("response body = %q, want tls ok", got)
+	}
+}
+
+func TestHandlerRejectsSelfSignedAPIWhenSSLVerifyDefaultsTrue(t *testing.T) {
+	api := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"statusCode":204}`))
+	}))
+	defer api.Close()
+
+	p := newTestPlugin(t, Config{
+		APIHost:      api.URL,
+		ServiceToken: "user:pass",
+		Namespace:    "guest",
+		Action:       "hello",
+	})
+
+	res := performRequest(p, "")
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPostInitAppliesKeepaliveTransportOptions(t *testing.T) {
+	sslVerify := false
+	keepalive := false
+	p := newTestPlugin(t, Config{
+		APIHost:          "https://openwhisk.example",
+		SSLVerify:        &sslVerify,
+		ServiceToken:     "user:pass",
+		Namespace:        "guest",
+		Action:           "hello",
+		Keepalive:        &keepalive,
+		KeepaliveTimeout: 1500,
+		KeepalivePool:    7,
+	})
+
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", p.client.Transport)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("DisableKeepAlives = false, want true")
+	}
+	if transport.IdleConnTimeout != 1500*time.Millisecond {
+		t.Fatalf("IdleConnTimeout = %s, want 1500ms", transport.IdleConnTimeout)
+	}
+	if transport.MaxIdleConnsPerHost != 7 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want 7", transport.MaxIdleConnsPerHost)
+	}
+	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("TLSClientConfig.InsecureSkipVerify should be true when ssl_verify=false")
+	}
+}
+
 func performRequest(p *Plugin, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPatch, "http://example.com/hello?client=ignored", strings.NewReader(body))
 	rr := httptest.NewRecorder()
@@ -109,4 +190,17 @@ func performRequest(p *Plugin, body string) *httptest.ResponseRecorder {
 		http.Error(w, http.StatusText(t), t)
 	})).ServeHTTP(rr, req)
 	return rr
+}
+
+func newQuietTLSServer(handler http.Handler) *httptest.Server {
+	server := httptest.NewUnstartedServer(handler)
+	server.Config.ErrorLog = log.New(testLogWriter{}, "", 0)
+	server.StartTLS()
+	return server
+}
+
+type testLogWriter struct{}
+
+func (testLogWriter) Write(p []byte) (int, error) {
+	return len(p), nil
 }

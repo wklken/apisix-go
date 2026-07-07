@@ -2,6 +2,7 @@ package function_upstream
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,10 +49,24 @@ func (p *Plugin) PostInit() error {
 		p.Config.Keepalive = &value
 	}
 	if p.Client == nil {
-		p.Client = &http.Client{Timeout: time.Duration(p.Config.Timeout) * time.Millisecond}
+		p.Client = &http.Client{
+			Timeout:   time.Duration(p.Config.Timeout) * time.Millisecond,
+			Transport: p.transport(),
+		}
 	}
 
 	return nil
+}
+
+func (p *Plugin) transport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = !*p.Config.Keepalive
+	transport.IdleConnTimeout = time.Duration(p.Config.KeepaliveTimeout) * time.Millisecond
+	transport.MaxIdleConnsPerHost = p.Config.KeepalivePool
+	if !*p.Config.SSLVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return transport
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

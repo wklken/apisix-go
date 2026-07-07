@@ -343,9 +343,9 @@ Loggers:
 - [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 55%
   - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, `include_req_body`, `include_resp_body`, capped body-size capture, Tencent CLS sha1 authorization, and `/structuredlog` protobuf delivery
   - not support APISIX batch processor behavior, `max_pending_entries`, `include_req_body_expr`, `include_resp_body_expr`, or lz4/zstd compression
-- [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 55%
-  - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, and `log_format`
-  - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
+- [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 60%
+  - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture
+  - not support APISIX batch processor behavior or `max_pending_entries`
 - [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 60%
   - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, `ssl_verify`, timeout, and keepalive config defaults
   - not support APISIX batch processor buffering/retry semantics, full APISIX/NGINX variable coverage, request start-time fidelity, or request/response body capture

@@ -1246,6 +1246,37 @@ Updated `elasticsearch-logger` support notes to include `include_req_body`, `inc
 
 Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=20s -v`, `go test ./...`, and `make build`.
 
+### Task 151: Implement `loki-logger` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/loki_logger/plugin.go`
+- Modify: `pkg/plugin/loki_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: existing Go `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: Loki push payload entries with nested `request.body` and `response.body` fields while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official/local behavior**
+
+Checked the local APISIX 3.17 source checkout and did not find a `loki-logger.lua` plugin there. The Go implementation already exposed body-capture schema/config fields, so this slice makes those existing project fields effective.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed because the serialized Loki stream entry did not contain a `request` object when `include_req_body` and `include_resp_body` were enabled.
+
+- [x] **Step 3: Implement body capture**
+
+Defaulted body byte caps and added a body-aware handler path for Loki configs with raw body capture enabled, including request body read/restore, response body recording while streaming to the original writer, and nested payload insertion before sending through the logger channel.
+
+- [x] **Step 4: Update README**
+
+Updated `loki-logger` support notes to include `include_req_body`, `include_resp_body`, and capped body-size capture, while keeping APISIX batch processor behavior and `max_pending_entries` unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/loki_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

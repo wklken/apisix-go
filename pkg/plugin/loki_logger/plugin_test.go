@@ -1,7 +1,9 @@
 package loki_logger
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -164,4 +166,101 @@ func TestSendPostsLokiPayload(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Loki body")
 	}
+}
+
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	bodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:    []string{server.URL},
+		Timeout:          1000,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	select {
+	case body := <-bodies:
+		entry := extractLokiEntry(t, body)
+		request, ok := entry["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("entry request = %#v, want object", entry["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("entry request body = %#v, want original request body", request["body"])
+		}
+
+		response, ok := entry["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("entry response = %#v, want object", entry["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("entry response body = %#v, want upstream response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Loki body")
+	}
+}
+
+func extractLokiEntry(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+
+	streams, ok := body["streams"].([]any)
+	if !ok || len(streams) != 1 {
+		t.Fatalf("streams = %#v, want one stream", body["streams"])
+	}
+	stream, ok := streams[0].(map[string]any)
+	if !ok {
+		t.Fatalf("stream = %#v, want object", streams[0])
+	}
+	values, ok := stream["values"].([]any)
+	if !ok || len(values) != 1 {
+		t.Fatalf("values = %#v, want one value", stream["values"])
+	}
+	value, ok := values[0].([]any)
+	if !ok || len(value) != 2 {
+		t.Fatalf("value = %#v, want timestamp and entry", values[0])
+	}
+	entryText, ok := value[1].(string)
+	if !ok {
+		t.Fatalf("entry text = %#v, want string", value[1])
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(entryText), &entry); err != nil {
+		t.Fatalf("decode Loki entry: %v", err)
+	}
+	return entry
 }

@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 96
+## Official APISIX 3.17 Inventory Audit After Task 97
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -3446,3 +3446,36 @@ Updated OpenTelemetry support notes to say `additional_attributes` can use NGINX
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/otel -run 'TestPostInitSetsSamplerDefaults|TestBuildSamplerUsesOfficialSamplerNames|TestAdditionalSpanAttributesUseRequestVarsAndHeaders|TestAdditionalSpanAttributesUseAPISIXAndRequestVars' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 97: Implement `proxy-cache` Consumer Isolation
+
+**Files:**
+- Modify: `pkg/plugin/proxy_cache/plugin.go`
+- Modify: `pkg/plugin/proxy_cache/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: authenticated APISIX consumer context and `consumer_isolation` config.
+- Produces: per-consumer proxy-cache key namespaces by default, with explicit `consumer_isolation = false` preserved.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover explicit `consumer_isolation = false` surviving defaults and separate cache buckets for different authenticated consumers.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestPostInitPreservesExplicitConsumerIsolationFalse|TestHandlerIsolatesCacheByConsumerByDefault' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because explicit false was overwritten and different consumers shared the same cache key.
+
+- [x] **Step 3: Implement consumer identity cache key prefixing**
+
+Added explicit-false config decoding, official identity-variable detection, authenticated consumer key prefixing, and consumer variable lookup for cache keys.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-cache` support notes to include `consumer_isolation` and remove the stale unsupported note.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestPostInitPreservesExplicitConsumerIsolationFalse|TestHandlerIsolatesCacheByConsumerByDefault' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.

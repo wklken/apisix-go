@@ -5,6 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -47,6 +51,23 @@ func TestPostInitSetsProxyCacheDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitPreservesExplicitConsumerIsolationFalse(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{"consumer_isolation": false}, p.Config()); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	if p.config.ConsumerIsolation {
+		t.Fatal("consumer_isolation = true, want explicit false")
+	}
+}
+
 func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0
@@ -78,6 +99,32 @@ func TestHandlerCachesSuccessfulGETResponses(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestHandlerIsolatesCacheByConsumerByDefault(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	alice := performConsumerRequest(t, handler, http.MethodGet, "/anything", "alice")
+	if alice.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("alice cache status = %q, want MISS", alice.Header().Get(cacheStatusHeader))
+	}
+	bob := performConsumerRequest(t, handler, http.MethodGet, "/anything", "bob")
+	if bob.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("bob cache status = %q, want MISS for separate consumer bucket", bob.Header().Get(cacheStatusHeader))
+	}
+	aliceHit := performConsumerRequest(t, handler, http.MethodGet, "/anything", "alice")
+	if aliceHit.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("alice second cache status = %q, want HIT", aliceHit.Header().Get(cacheStatusHeader))
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
 }
 
@@ -164,6 +211,23 @@ func TestHandlerSkipsUnsupportedMethods(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
+}
+
+func performConsumerRequest(
+	t *testing.T,
+	handler http.Handler,
+	method string,
+	target string,
+	consumerName string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, target, nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	apisixctx.AttachConsumer(req, resource.Consumer{Username: consumerName})
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
 }
 
 func performRequest(

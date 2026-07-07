@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -24,6 +26,13 @@ const (
 	name              = "proxy-cache"
 	cacheStatusHeader = "Apisix-Cache-Status"
 )
+
+var identityVars = map[string]struct{}{
+	"$consumer_name":      {},
+	"$consumer_group_id":  {},
+	"$remote_user":        {},
+	"$http_authorization": {},
+}
 
 const schema = `
 {
@@ -107,18 +116,58 @@ const schema = `
 `
 
 type Config struct {
-	CacheZone         string   `json:"cache_zone,omitempty"`
-	CacheStrategy     string   `json:"cache_strategy,omitempty"`
-	CacheKey          []string `json:"cache_key,omitempty"`
-	CacheBypass       []string `json:"cache_bypass,omitempty"`
-	CacheMethod       []string `json:"cache_method,omitempty"`
-	CacheHTTPStatus   []int    `json:"cache_http_status,omitempty"`
-	HideCacheHeaders  bool     `json:"hide_cache_headers,omitempty"`
-	CacheControl      bool     `json:"cache_control,omitempty"`
-	NoCache           []string `json:"no_cache,omitempty"`
-	CacheTTL          int      `json:"cache_ttl,omitempty"`
-	ConsumerIsolation bool     `json:"consumer_isolation,omitempty"`
-	CacheSetCookie    bool     `json:"cache_set_cookie,omitempty"`
+	CacheZone            string   `json:"cache_zone,omitempty"`
+	CacheStrategy        string   `json:"cache_strategy,omitempty"`
+	CacheKey             []string `json:"cache_key,omitempty"`
+	CacheBypass          []string `json:"cache_bypass,omitempty"`
+	CacheMethod          []string `json:"cache_method,omitempty"`
+	CacheHTTPStatus      []int    `json:"cache_http_status,omitempty"`
+	HideCacheHeaders     bool     `json:"hide_cache_headers,omitempty"`
+	CacheControl         bool     `json:"cache_control,omitempty"`
+	NoCache              []string `json:"no_cache,omitempty"`
+	CacheTTL             int      `json:"cache_ttl,omitempty"`
+	ConsumerIsolation    bool     `json:"consumer_isolation,omitempty"`
+	CacheSetCookie       bool     `json:"cache_set_cookie,omitempty"`
+	consumerIsolationSet bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configJSON struct {
+		CacheZone         string   `json:"cache_zone,omitempty"`
+		CacheStrategy     string   `json:"cache_strategy,omitempty"`
+		CacheKey          []string `json:"cache_key,omitempty"`
+		CacheBypass       []string `json:"cache_bypass,omitempty"`
+		CacheMethod       []string `json:"cache_method,omitempty"`
+		CacheHTTPStatus   []int    `json:"cache_http_status,omitempty"`
+		HideCacheHeaders  bool     `json:"hide_cache_headers,omitempty"`
+		CacheControl      bool     `json:"cache_control,omitempty"`
+		NoCache           []string `json:"no_cache,omitempty"`
+		CacheTTL          int      `json:"cache_ttl,omitempty"`
+		ConsumerIsolation *bool    `json:"consumer_isolation,omitempty"`
+		CacheSetCookie    bool     `json:"cache_set_cookie,omitempty"`
+	}
+
+	var decoded configJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	c.CacheZone = decoded.CacheZone
+	c.CacheStrategy = decoded.CacheStrategy
+	c.CacheKey = decoded.CacheKey
+	c.CacheBypass = decoded.CacheBypass
+	c.CacheMethod = decoded.CacheMethod
+	c.CacheHTTPStatus = decoded.CacheHTTPStatus
+	c.HideCacheHeaders = decoded.HideCacheHeaders
+	c.CacheControl = decoded.CacheControl
+	c.NoCache = decoded.NoCache
+	c.CacheTTL = decoded.CacheTTL
+	if decoded.ConsumerIsolation != nil {
+		c.ConsumerIsolation = *decoded.ConsumerIsolation
+		c.consumerIsolationSet = true
+	}
+	c.CacheSetCookie = decoded.CacheSetCookie
+	return nil
 }
 
 type cacheEntry struct {
@@ -165,7 +214,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.CacheTTL == 0 {
 		p.config.CacheTTL = 300
 	}
-	if !p.config.ConsumerIsolation {
+	if !p.config.consumerIsolationSet {
 		p.config.ConsumerIsolation = true
 	}
 	p.entries = map[string]cacheEntry{}
@@ -264,7 +313,13 @@ func (p *Plugin) cacheKey(r *http.Request) string {
 		}
 		b.WriteString(part)
 	}
-	return b.String()
+	key := b.String()
+	if p.config.ConsumerIsolation && !cacheKeyHasIdentity(p.config.CacheKey) {
+		if identity := consumerIdentity(r); identity != "" {
+			return identity + "\x01" + key
+		}
+	}
+	return key
 }
 
 func (p *Plugin) cacheableMethod(method string) bool {
@@ -353,6 +408,22 @@ func cloneHeader(header http.Header) http.Header {
 	return cloned
 }
 
+func cacheKeyHasIdentity(cacheKey []string) bool {
+	for _, part := range cacheKey {
+		if _, ok := identityVars[part]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func consumerIdentity(r *http.Request) string {
+	if consumerName := requestVar(r, "consumer_name"); consumerName != "" {
+		return consumerName
+	}
+	return requestVar(r, "remote_user")
+}
+
 func requestVar(r *http.Request, name string) string {
 	switch {
 	case name == "uri":
@@ -377,6 +448,22 @@ func requestVar(r *http.Request, name string) string {
 			return host
 		}
 		return r.RemoteAddr
+	case name == "consumer_name":
+		if value, ok := apisixctx.GetApisixVar(r, "$consumer_name").(string); ok {
+			return value
+		}
+		return ""
+	case name == "consumer_group_id":
+		if value, ok := apisixctx.GetApisixVar(r, "$consumer_group_id").(string); ok {
+			return value
+		}
+		return ""
+	case name == "remote_user":
+		user, _, ok := r.BasicAuth()
+		if ok {
+			return user
+		}
+		return ""
 	case strings.HasPrefix(name, "arg_"):
 		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
 	case strings.HasPrefix(name, "http_"):

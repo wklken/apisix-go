@@ -3807,3 +3807,34 @@ Updated `limit-count` support notes to include `rules` and per-rule `header_pref
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_count ./pkg/plugin -run 'TestHandlerAppliesResolvedRules|TestPostInitRejectsDuplicateRuleKeys|TestHandlerUsesHTTPVariableKey|TestHandlerUsesVariableCombinationKey|TestNewLimitCountAcceptsRulesOnlyConfig' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/limit_count ./pkg/plugin -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 108: Implement `forward-auth` Extra Header Variable Resolution
+
+**Files:**
+- Modify: `pkg/plugin/forward_auth/plugin.go`
+- Modify: `pkg/plugin/forward_auth/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `extra_headers` string values containing APISIX-style variables such as `$remote_addr` and `$request_uri`.
+- Produces: resolved extra headers on the authorization service request.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/forward-auth.lua`; `extra_headers` values are resolved through `core.utils.resolve_var(value, ctx.var)` before the auth request is sent.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover `$remote_addr`, `$request_uri`, and embedded variable text in `extra_headers`.
+
+- [x] **Step 3: Implement variable resolution**
+
+Added bounded APISIX-style variable substitution for common request variables used by this Go runtime before setting `extra_headers` on the auth request.
+
+- [x] **Step 4: Update README**
+
+Updated `forward-auth` support notes to include `extra_headers` variable resolution and leave `ssl_verify` / keepalive controls as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/forward_auth -run 'TestHandlerResolvesExtraHeaderVariables' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/forward_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

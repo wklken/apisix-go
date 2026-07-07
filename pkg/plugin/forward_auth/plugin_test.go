@@ -61,6 +61,39 @@ func TestHandlerAllowsRequestAndCopiesUpstreamHeaders(t *testing.T) {
 	}
 }
 
+func TestHandlerResolvesExtraHeaderVariables(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Client-IP"); got != "192.0.2.10" {
+			t.Fatalf("X-Client-IP = %q, want 192.0.2.10", got)
+		}
+		if got := r.Header.Get("X-Original-URI"); got != "/get?x=1" {
+			t.Fatalf("X-Original-URI = %q, want /get?x=1", got)
+		}
+		if got := r.Header.Get("X-Static"); got != "prefix-192.0.2.10" {
+			t.Fatalf("X-Static = %q, want prefix-192.0.2.10", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer auth.Close()
+
+	p := newTestPlugin(t, Config{
+		URI: auth.URL,
+		ExtraHeaders: map[string]string{
+			"X-Client-IP":    "$remote_addr",
+			"X-Original-URI": "$request_uri",
+			"X-Static":       "prefix-$remote_addr",
+		},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
 func TestHandlerRejectsAndCopiesClientHeaders(t *testing.T) {
 	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Forward-Auth", "deny")

@@ -160,9 +160,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [opa](https://apisix.apache.org/zh/docs/apisix/plugins/opa/) 70%
   - support OPA HTTP decision calls, custom deny status/body/headers, and `send_headers_upstream`
   - not support full APISIX `with_route` / `with_service` payloads
-- [x] [forward-auth](https://apisix.apache.org/zh/docs/apisix/plugins/forward-auth/) 70%
-  - support `GET` / `POST`, `request_headers`, `extra_headers`, `upstream_headers`, `client_headers`
-  - not support variable resolution in `extra_headers`
+- [x] [forward-auth](https://apisix.apache.org/zh/docs/apisix/plugins/forward-auth/) 78%
+  - support `GET` / `POST`, `request_headers`, `extra_headers`, APISIX-style variable resolution in `extra_headers`, `upstream_headers`, and `client_headers`
   - not support `ssl_verify`, `keepalive`, `keepalive_timeout`, or `keepalive_pool`
 - [x] [multi-auth](https://apisix.apache.org/zh/docs/apisix/plugins/multi-auth/) 60%
   - support ordered fallback across configured `basic-auth`, `key-auth`, `jwt-auth`, and `hmac-auth`; request passes when any configured auth plugin succeeds

@@ -98,6 +98,27 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 	}
 }
 
+func TestHandlerNormalizesWhitespaceInCredentials(t *testing.T) {
+	addBasicAuthConsumer(t, "normalized-user", "secret")
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Authorization", basicHeader(" normalized-user ", " sec ret "))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "normalized-user" {
+			t.Fatalf("consumer_name = %v, want normalized-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestHandlerRejectsMissingAuthorization(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)

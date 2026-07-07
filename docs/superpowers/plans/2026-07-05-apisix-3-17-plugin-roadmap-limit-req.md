@@ -1432,6 +1432,37 @@ Updated `basic-auth` support notes with credential extraction, consumer attachme
 
 Run: `go test ./pkg/plugin/basic_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 157: Implement `basic-auth` Credential Whitespace Normalization
+
+**Files:**
+- Modify: `pkg/plugin/basic_auth/plugin.go`
+- Modify: `pkg/plugin/basic_auth/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: decoded Basic authorization username/password.
+- Produces: APISIX-style whitespace-normalized credentials before consumer lookup and password comparison.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/basic-auth.lua`; after Base64 decoding and splitting, APISIX removes whitespace from both username and password before authentication.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused test that sends whitespace-padded decoded Basic credentials. It initially failed with `401 Invalid user authorization` because the Go plugin used `r.BasicAuth()` values as-is.
+
+- [x] **Step 3: Implement normalization**
+
+Added credential normalization using Go whitespace fields before consumer lookup and password comparison.
+
+- [x] **Step 4: Update README**
+
+Moved APISIX credential whitespace normalization into the supported `basic-auth` behavior and left encrypted consumer fields unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/basic_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

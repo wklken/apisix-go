@@ -3,6 +3,7 @@ package basic_auth
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -77,6 +78,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, `{"message": "Invalid authorization in request"}`, http.StatusUnauthorized)
 			return
 		}
+		user = normalizeCredential(user)
+		pass = normalizeCredential(pass)
 
 		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 		if errors.Is(err, store.ErrNotFound) {
@@ -111,4 +114,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func normalizeCredential(value string) string {
+	return strings.Join(strings.Fields(value), "")
 }

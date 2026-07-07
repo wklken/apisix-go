@@ -3,6 +3,7 @@ package lago
 import (
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"regexp"
 	"strings"
@@ -138,6 +139,8 @@ func (w *responseRecorder) Write(body []byte) (int, error) {
 
 var templatePattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
+var randomEndpointIndex = rand.Intn
+
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }
@@ -210,20 +213,21 @@ func (p *Plugin) Send(fields map[string]any) {
 		return
 	}
 
+	endpoint := p.endpointURL()
 	resp, err := p.client.R().
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", "Bearer "+p.config.Token).
 		SetBody(lagoPayload{Events: []lagoEvent{p.buildEvent(fields)}}).
-		Post(p.endpointURL())
+		Post(endpoint)
 	if err != nil {
-		logger.Errorf("failed to send Lago event to endpoint %s: %s", p.endpointURL(), err)
+		logger.Errorf("failed to send Lago event to endpoint %s: %s", endpoint, err)
 		return
 	}
 	if resp.StatusCode() >= 300 {
 		logger.Errorf(
 			"Lago endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
-			p.endpointURL(),
+			endpoint,
 			resp.String(),
 		)
 	}
@@ -269,7 +273,8 @@ func (p *Plugin) templates() []string {
 }
 
 func (p *Plugin) endpointURL() string {
-	return strings.TrimRight(p.config.EndpointAddrs[0], "/") + p.config.EndpointURI
+	return strings.TrimRight(p.config.EndpointAddrs[randomEndpointIndex(len(p.config.EndpointAddrs))], "/") +
+		p.config.EndpointURI
 }
 
 func (p *Plugin) keepalive() bool {

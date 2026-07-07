@@ -688,6 +688,37 @@ Updated `loki-logger` support notes to include random `endpoint_addrs` selection
 
 Run: `go test ./pkg/plugin/loki_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 133: Implement `lago` Random Endpoint Selection
+
+**Files:**
+- Modify: `pkg/plugin/lago/plugin.go`
+- Modify: `pkg/plugin/lago/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official Lago `endpoint_addrs` list and `endpoint_uri`.
+- Produces: per-send random Lago endpoint selection with stable request/error reporting for the selected endpoint.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/lago.lua`; APISIX builds `endpoint_addrs[math.random(#endpoint_addrs)] .. endpoint_uri` for delivery.
+
+- [x] **Step 2: Write failing tests**
+
+Tests force the endpoint selector to pick the second configured endpoint and verify `endpointURL()` includes the selected endpoint plus `endpoint_uri`.
+
+- [x] **Step 3: Implement random selection**
+
+Added random endpoint selection for `endpoint_addrs` and captured the chosen endpoint once per send for consistent delivery/error logging.
+
+- [x] **Step 4: Update README**
+
+Updated `lago` support notes to include random `endpoint_addrs` selection and removed that item from the unsupported list.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/lago -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

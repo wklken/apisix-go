@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 102
+## Official APISIX 3.17 Inventory Audit After Task 103
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 102:
+Suggested next valuable batches after Task 103:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3644,3 +3644,37 @@ Updated `proxy-cache` support notes to include in-memory `Vary` support and narr
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCachesVaryVariantsByRequestHeaders|TestHandlerVaryStarSkipsStore|TestHandlerPurgeRemovesVaryVariants' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 103: Implement `gzip` Wildcard Types And Min Length
+
+**Files:**
+- Modify: `pkg/plugin/gzip/plugin.go`
+- Modify: `pkg/plugin/gzip/compress.go`
+- Create: `pkg/plugin/gzip/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `types = "*"`, `types = ["*"]`, `min_length`, `Content-Length`, and optional `vary`.
+- Produces: APISIX-style wildcard content-type matching, `Content-Length` based minimum-size skipping, and safe default `vary = false` behavior.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover JSON-style `types: "*"`, wildcard compression for any content type, and skipping compression when `Content-Length` is below `min_length`.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/gzip -run 'TestPostInitAcceptsWildcardTypesString|TestHandlerSkipsSmallContentLength|TestHandlerWildcardTypesCompressesAnyContentType' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because `types: "*"` could not parse, the handler panicked on nil `vary`, and small `Content-Length` responses were still considered for compression.
+
+- [x] **Step 3: Implement gzip wildcard and min-length behavior**
+
+Added custom config decoding for `types`, wildcard content-type matching, default `vary = false`, and `Content-Length` based `min_length` checks in the gzip response writer.
+
+- [x] **Step 4: Update README**
+
+Updated `gzip` support notes to include `types = "*"`, `min_length`, and the supported gzip config fields, leaving only NGINX-native `buffers` unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/gzip -run 'TestPostInitAcceptsWildcardTypesString|TestHandlerSkipsSmallContentLength|TestHandlerWildcardTypesCompressesAnyContentType' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/gzip -count=1 -timeout=10s`, `go test ./...`, and `make build`.

@@ -42,9 +42,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
   - not support plugin_attr get random https port from apisix.ssl.listen
 - [x] [echo](https://apisix.apache.org/zh/docs/apisix/plugins/echo/) 90%
   - support `before_body`, `body`, `after_body`, and response `headers`
-- [x] [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 90%
-  - not support `types = ["*"]`
-  - not support `min_length`
+- [x] [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 98%
+  - support `types`, `types = "*"`, `min_length`, `comp_level`, `http_version`, and `vary`
   - not support `buffers`(it's nginx native feature)
 - [x] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) 75%
   - support `Accept-Encoding: br` / `*`, `types`, `min_length`, `comp_level`, `http_version`, `vary`, content-encoding skip, content-length removal, and strong ETag weakening

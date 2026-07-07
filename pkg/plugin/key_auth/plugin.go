@@ -107,7 +107,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if fromHeader {
 				r.Header.Del(p.config.Header)
 			} else {
-				r.URL.Query().Del(p.config.Query)
+				query := r.URL.Query()
+				query.Del(p.config.Query)
+				r.URL.RawQuery = query.Encode()
 			}
 		}
 

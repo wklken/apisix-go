@@ -1370,6 +1370,37 @@ Updated `GM` support notes to mention encryption cert/key validation plus the ex
 
 Run: `go test ./pkg/plugin/gm -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 155: Fix `key-auth` Query Credential Hiding
+
+**Files:**
+- Modify: `pkg/plugin/key_auth/plugin.go`
+- Add: `pkg/plugin/key_auth/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: route/service `key-auth` config with `header`, `query`, and `hide_credentials`.
+- Produces: APISIX-style header or query API key lookup, consumer attachment, and query-string credential removal before upstream handling.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/key-auth.lua`; when `hide_credentials` is true, header credentials are removed with `set_header(..., nil)` and query credentials are removed by updating URI args.
+
+- [x] **Step 2: Write failing tests**
+
+Added focused handler tests for header authentication, missing keys, and query-string credential hiding. The query-hiding test initially failed because deleting from `r.URL.Query()` did not update the request URL.
+
+- [x] **Step 3: Implement query rewrite**
+
+Persisted the modified query values back to `r.URL.RawQuery` after deleting the configured query key.
+
+- [x] **Step 4: Update README**
+
+Updated `key-auth` support notes with header/query lookup, consumer attachment, `hide_credentials`, and unsupported encrypted consumer field / anonymous fallback behavior.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

@@ -2,8 +2,11 @@ package elasticsearch_logger
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
-	"fmt"
+	"net"
+	"net/http"
+	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -22,6 +25,10 @@ const schema = `
 {
 	"type": "object",
 	"properties": {
+	  "endpoint_addr": {
+		"type": "string",
+		"pattern": "[^/]$"
+	  },
 	  "endpoint_addrs": {
 		"type": "array",
 		"minItems": 1,
@@ -59,6 +66,17 @@ const schema = `
 		},
 		"required": ["username", "password"]
 	  },
+	  "headers": {
+		"type": "object",
+		"minProperties": 1,
+		"patternProperties": {
+		  "^[^:]+$": {
+			"type": "string",
+			"minLength": 1
+		  }
+		},
+		"additionalProperties": false
+	  },
 	  "timeout": {
 		"type": "integer",
 		"minimum": 1,
@@ -89,9 +107,22 @@ const schema = `
 		"items": {
 		  "type": "array"
 		}
+	  },
+	  "max_req_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
+	  "max_resp_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
 	  }
 	},
-	"required": ["endpoint_addrs", "field"]
+	"oneOf": [
+	  {"required": ["endpoint_addr", "field"]},
+	  {"required": ["endpoint_addrs", "field"]}
+	]
 }`
 
 // NOTE: not support
@@ -110,12 +141,16 @@ type Plugin struct {
 }
 
 type Config struct {
-	EndpointAddrs []string          `json:"endpoint_addrs"`
-	Field         FieldConfig       `json:"field"`
-	LogFormat     map[string]string `json:"log_format,omitempty"`
-	Auth          *AuthConfig       `json:"auth,omitempty"`
-	Timeout       int               `json:"timeout,omitempty"`
-	SslVerify     *bool             `json:"ssl_verify,omitempty"`
+	EndpointAddr     string            `json:"endpoint_addr,omitempty"`
+	EndpointAddrs    []string          `json:"endpoint_addrs"`
+	Field            FieldConfig       `json:"field"`
+	LogFormat        map[string]string `json:"log_format,omitempty"`
+	Auth             *AuthConfig       `json:"auth,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
+	Timeout          int               `json:"timeout,omitempty"`
+	SslVerify        *bool             `json:"ssl_verify,omitempty"`
+	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
 
 	// FIXME: not support
 	// IncludeReqBody        bool                  `json:"include_req_body"`
@@ -159,18 +194,16 @@ func (p *Plugin) PostInit() error {
 		sslVerify := true
 		p.config.SslVerify = &sslVerify
 	}
+	if len(p.config.EndpointAddrs) == 0 && p.config.EndpointAddr != "" {
+		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
+	}
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		var metadata pluginMetadata
-		store.GetPluginMetadata(name, &metadata)
-		p.LogFormat = metadata.LogFormat
+		p.LogFormat = loadMetadataLogFormat()
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
-	fmt.Printf("log format: %v\n", p.LogFormat)
 
-	// share the same client
-	// FIXME: timeout and ssl_verify not support
 	clientUID := shared.NewConfigUID()
 
 	username := ""
@@ -184,21 +217,23 @@ func (p *Plugin) PostInit() error {
 		Addresses: p.config.EndpointAddrs,
 		Username:  username,
 		Password:  password,
+		Header:    headerFromMap(p.config.Headers),
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout: time.Duration(p.config.Timeout) * time.Second,
+			}).DialContext,
+			ResponseHeaderTimeout: time.Duration(p.config.Timeout) * time.Second,
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: !*p.config.SslVerify},
+		},
 	})
 	if err != nil {
 		return err
 	}
-	clientUID.Add(p.config.EndpointAddrs, username, password)
+	clientUID.Add(p.config.EndpointAddrs, username, password, p.config.Headers, p.config.Timeout, *p.config.SslVerify)
 
 	client := shared.LoadOrStoreClient(name, clientUID, c).(*elasticsearch.Client)
 
 	p.client = client
-
-	// create the index
-	_, err = client.Indices.Create(p.config.Field.Index)
-	if err != nil {
-		logger.Warnf("failed to create index in plugin elasticsearch-logger: %s", err)
-	}
 
 	p.Consume()
 
@@ -207,18 +242,76 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Send(log map[string]any) {
 	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
-	// FIXME: use bulk api to send logs to elasticsearch
-	fmt.Printf("send log: %v\n", log)
-
-	logMessage, err := json.Marshal(log)
+	body, err := p.bulkBody(log)
 	if err != nil {
-		logger.Errorf("failed to marshal log message: %s in udp-logger", err)
+		logger.Errorf("failed to marshal log message: %s in elasticsearch-logger", err)
 		return
 	}
 
-	_, err = p.client.Index(p.config.Field.Index, bytes.NewReader(logMessage))
+	resp, err := p.client.Bulk(
+		bytes.NewReader(body),
+		p.client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
+	)
 	if err != nil {
 		logger.Errorf("failed to send log message: %s in elasticsearch-logger", err)
 		return
 	}
+	defer resp.Body.Close()
+	if resp.IsError() {
+		logger.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
+		return
+	}
+}
+
+func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
+	index := p.config.Field.Index
+	action := map[string]any{
+		"index": map[string]any{
+			"_index": index,
+		},
+	}
+	if p.config.Field.Type != nil && *p.config.Field.Type != "" {
+		action["index"].(map[string]any)["_type"] = *p.config.Field.Type
+	}
+
+	actionLine, err := json.Marshal(action)
+	if err != nil {
+		return nil, err
+	}
+	logLine, err := json.Marshal(log)
+	if err != nil {
+		return nil, err
+	}
+
+	body := make([]byte, 0, len(actionLine)+len(logLine)+2)
+	body = append(body, actionLine...)
+	body = append(body, '\n')
+	body = append(body, logLine...)
+	body = append(body, '\n')
+	return body, nil
+}
+
+func headerFromMap(headers map[string]string) http.Header {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(http.Header, len(headers))
+	for key, value := range headers {
+		out.Set(key, value)
+	}
+	return out
+}
+
+func loadMetadataLogFormat() (format map[string]string) {
+	defer func() {
+		if recover() != nil {
+			format = nil
+		}
+	}()
+
+	var metadata pluginMetadata
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return nil
+	}
+	return metadata.LogFormat
 }

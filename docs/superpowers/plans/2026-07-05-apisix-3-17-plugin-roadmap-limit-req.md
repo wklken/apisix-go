@@ -500,6 +500,37 @@ Updated `http-logger` support notes to include tested delivery/config behavior w
 
 Run: `go test ./pkg/plugin/http_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 127: Implement `elasticsearch-logger` Bulk Delivery Parity
+
+**Files:**
+- Modify: `pkg/plugin/elasticsearch_logger/plugin.go`
+- Create: `pkg/plugin/elasticsearch_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `elasticsearch-logger` `endpoint_addr`, `endpoint_addrs`, `field`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, `max_req_body_bytes`, and `max_resp_body_bytes` config.
+- Produces: Elasticsearch `_bulk` NDJSON log delivery with official config defaults, safe metadata fallback, custom headers, and basic auth.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/elasticsearch-logger.lua`; APISIX accepts deprecated `endpoint_addr` or `endpoint_addrs`, posts log entries to `/_bulk` as NDJSON action/document pairs, forwards configured headers, uses basic auth, defaults `timeout` to 10 seconds, defaults `ssl_verify` to true, and accepts request/response body-size fields.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default initialization without an initialized metadata store, `_bulk` NDJSON delivery with auth and custom headers, and schema acceptance for `endpoint_addr`, `headers`, and body-size fields.
+
+- [x] **Step 3: Implement bulk delivery/config parity**
+
+Added deprecated `endpoint_addr` support, `headers`, body-size fields, safe metadata fallback, TLS verification wiring, custom Elastic client headers, basic-auth preservation, and `_bulk` NDJSON send behavior.
+
+- [x] **Step 4: Update README**
+
+Updated `elasticsearch-logger` support notes with the tested bulk delivery/config subset and explicit gaps around batch processor behavior, random endpoint selection, version discovery, index variable expansion, and body capture.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

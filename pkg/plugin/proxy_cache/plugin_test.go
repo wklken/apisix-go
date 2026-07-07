@@ -365,6 +365,61 @@ func TestHandlerCacheControlUsesUpstreamMaxAgeTTL(t *testing.T) {
 	}
 }
 
+func TestHandlerCacheControlRequestFreshnessDirectivesForceStaleRefresh(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestValue string
+		storedAge    time.Duration
+		storedTTL    time.Duration
+	}{
+		{name: "max age", requestValue: "max-age=5", storedAge: 10 * time.Second, storedTTL: 60 * time.Second},
+		{name: "max stale", requestValue: "max-stale=3", storedAge: 10 * time.Second, storedTTL: 5 * time.Second},
+		{name: "min fresh", requestValue: "min-fresh=10", storedAge: 55 * time.Second, storedTTL: 60 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{CacheControl: true, CacheTTL: 60})
+			calls := 0
+
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Cache-Control", "max-age=60")
+				_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+			}))
+
+			first := performRequest(t, handler, http.MethodGet, "/request-freshness", nil)
+			if first.Header().Get(cacheStatusHeader) != "MISS" {
+				t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+			}
+
+			key := p.cacheKey(httptest.NewRequest(http.MethodGet, "/request-freshness", nil))
+			entry := p.entries[key]
+			entry.storedAt = time.Now().Add(-tt.storedAge)
+			entry.ttl = tt.storedTTL
+			entry.expiresAt = time.Now().Add(time.Minute)
+			p.entries[key] = entry
+
+			stale := performRequest(
+				t,
+				handler,
+				http.MethodGet,
+				"/request-freshness",
+				map[string]string{"Cache-Control": tt.requestValue},
+			)
+			if stale.Header().Get(cacheStatusHeader) != "STALE" {
+				t.Fatalf("stale cache status = %q, want STALE", stale.Header().Get(cacheStatusHeader))
+			}
+			if stale.Body.String() != "response-v2" {
+				t.Fatalf("stale body = %q, want response-v2", stale.Body.String())
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want 2", calls)
+			}
+		})
+	}
+}
+
 func TestHandlerSkipsUnsupportedMethods(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0

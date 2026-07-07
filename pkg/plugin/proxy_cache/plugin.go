@@ -175,6 +175,8 @@ type cacheEntry struct {
 	header    http.Header
 	body      []byte
 	status    int
+	storedAt  time.Time
+	ttl       time.Duration
 	expiresAt time.Time
 }
 
@@ -239,10 +241,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if entry, status := p.lookup(key); status == "HIT" {
+		if entry, status := p.lookup(r, key); status == "HIT" {
 			writeCachedResponse(w, entry, status)
 			return
 		} else if status == "EXPIRED" {
+			p.fetchAndMaybeStore(w, r, next, key, status, !p.hasTruthyValue(r, p.config.NoCache))
+			return
+		} else if status == "STALE" {
 			p.fetchAndMaybeStore(w, r, next, key, status, !p.hasTruthyValue(r, p.config.NoCache))
 			return
 		} else if p.onlyIfCachedMiss(r) {
@@ -293,7 +298,7 @@ func (p *Plugin) fetchAndMaybeStore(
 	recorder.writeTo(w)
 }
 
-func (p *Plugin) lookup(key string) (cacheEntry, string) {
+func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 	p.lock.RLock()
 	entry, ok := p.entries[key]
 	p.lock.RUnlock()
@@ -303,15 +308,21 @@ func (p *Plugin) lookup(key string) (cacheEntry, string) {
 	if time.Now().After(entry.expiresAt) {
 		return cacheEntry{}, "EXPIRED"
 	}
+	if p.requestCacheControlStale(r, entry) {
+		return cacheEntry{}, "STALE"
+	}
 	return entry, "HIT"
 }
 
 func (p *Plugin) store(key string, recorder *responseRecorder, ttl time.Duration) {
+	now := time.Now()
 	entry := cacheEntry{
 		header:    cloneHeader(recorder.header),
 		body:      append([]byte(nil), recorder.body.Bytes()...),
 		status:    recorder.statusCode,
-		expiresAt: time.Now().Add(ttl),
+		storedAt:  now,
+		ttl:       ttl,
+		expiresAt: now.Add(ttl),
 	}
 	entry.header.Del(cacheStatusHeader)
 	if p.config.HideCacheHeaders {
@@ -379,6 +390,32 @@ func (p *Plugin) requestCacheControlBypass(r *http.Request) bool {
 
 func (p *Plugin) onlyIfCachedMiss(r *http.Request) bool {
 	return p.config.CacheControl && headerHasCacheControlDirective(r.Header, "only-if-cached")
+}
+
+func (p *Plugin) requestCacheControlStale(r *http.Request, entry cacheEntry) bool {
+	if !p.config.CacheControl {
+		return false
+	}
+	age := time.Since(entry.storedAt)
+	if value, ok := headerCacheControlDirectiveValue(r.Header, "max-age"); ok {
+		seconds, err := strconv.Atoi(value)
+		if err == nil && age > time.Duration(seconds)*time.Second {
+			return true
+		}
+	}
+	if value, ok := headerCacheControlDirectiveValue(r.Header, "max-stale"); ok {
+		seconds, err := strconv.Atoi(value)
+		if err == nil && age-entry.ttl > time.Duration(seconds)*time.Second {
+			return true
+		}
+	}
+	if value, ok := headerCacheControlDirectiveValue(r.Header, "min-fresh"); ok {
+		seconds, err := strconv.Atoi(value)
+		if err == nil && entry.ttl-age < time.Duration(seconds)*time.Second {
+			return true
+		}
+	}
+	return false
 }
 
 func responseCacheControlSkipsStore(header http.Header) bool {

@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 99
+## Official APISIX 3.17 Inventory Audit After Task 100
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 99:
+Suggested next valuable batches after Task 100:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3545,3 +3545,36 @@ Updated `proxy-cache` support notes to include TTL derivation and `only-if-cache
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlOnlyIfCachedMissReturnsGatewayTimeout|TestHandlerCacheControlRequiresPositiveResourceTTL|TestHandlerCacheControlUsesUpstreamMaxAgeTTL' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 100: Implement `proxy-cache` Request Freshness Controls
+
+**Files:**
+- Modify: `pkg/plugin/proxy_cache/plugin.go`
+- Modify: `pkg/plugin/proxy_cache/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: request `Cache-Control: max-age`, `max-stale`, and `min-fresh` directives.
+- Produces: APISIX-style `STALE` refresh behavior for readable cached entries whose age or remaining freshness violates the request directive.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover `max-age`, `max-stale`, and `min-fresh` requests forcing a cached entry refresh with `Apisix-Cache-Status: STALE`.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlRequestFreshnessDirectivesForceStaleRefresh' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because `cacheEntry` did not track `storedAt` or `ttl`, so lookup could not evaluate request freshness directives.
+
+- [x] **Step 3: Implement request freshness handling**
+
+Added cached-entry `storedAt` and `ttl` metadata, then evaluated request `max-age`, `max-stale`, and `min-fresh` for unexpired entries when `cache_control` is enabled.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-cache` support notes to include request stale refresh controls and narrow remaining gaps to disk cache zones, `Vary`, public purge, and stale serving.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_cache -run 'TestHandlerCacheControlRequestFreshnessDirectivesForceStaleRefresh' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_cache -count=1 -timeout=10s`, `go test ./...`, and `make build`.

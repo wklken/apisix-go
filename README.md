@@ -221,9 +221,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [graphql-limit-count](https://apisix.apache.org/docs/apisix/plugins/graphql-limit-count/) 55%
   - support official plugin name, priority, schema, POST `application/json` and `application/graphql` requests, GraphQL selection-depth cost counting, local fixed-window quotas, `X-RateLimit-*` headers, `rejected_code`, `rejected_msg`, `key`, `key_type`, and fragment/inline-fragment depth expansion
   - not support Redis/Redis Cluster quota sharing, full GraphQL spec parsing parity, APISIX `graphql.max_size`, or exact `resty.limit.count` behavior
-- [x] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/) 63%
-  - support in-memory response caching with `cache_key`, `cache_method`, `cache_http_status`, `cache_ttl`, `cache_bypass`, `no_cache`, `hide_cache_headers`, `consumer_isolation`, `cache_control` request bypass for `no-cache` / `no-store`, `only-if-cached` misses, upstream `private` / `no-store` / `no-cache` non-storage, upstream `s-maxage` / `max-age` / `Expires` TTL derivation, and `Apisix-Cache-Status`
-  - not support disk cache zones, `Vary`, request `Cache-Control` stale controls (`max-age`, `max-stale`, `min-fresh`), public purge endpoint, or stale serving
+- [x] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/) 68%
+  - support in-memory response caching with `cache_key`, `cache_method`, `cache_http_status`, `cache_ttl`, `cache_bypass`, `no_cache`, `hide_cache_headers`, `consumer_isolation`, `cache_control` request bypass for `no-cache` / `no-store`, `only-if-cached` misses, request stale refresh controls (`max-age`, `max-stale`, `min-fresh`), upstream `private` / `no-store` / `no-cache` non-storage, upstream `s-maxage` / `max-age` / `Expires` TTL derivation, and `Apisix-Cache-Status`
+  - not support disk cache zones, `Vary`, public purge endpoint, or stale serving
 - [x] [graphql-proxy-cache](https://apisix.apache.org/docs/apisix/plugins/graphql-proxy-cache/) 55%
   - support official plugin name, priority, schema, GET/POST GraphQL request validation, JSON and `application/graphql` bodies, mutation bypass with `Apisix-Cache-Status: BYPASS`, MD5 cache keys, `APISIX-Cache-Key`, in-memory TTL cache, `consumer_isolation`, and `cache_set_cookie`
   - not support NGINX disk cache zones, APISIX public `PURGE` endpoint, configured `graphql.max_size`, route/service ID participation in cache keys, full GraphQL spec parsing parity, or exact APISIX `proxy-cache` handler behavior

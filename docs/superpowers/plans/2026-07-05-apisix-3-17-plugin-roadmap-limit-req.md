@@ -1737,6 +1737,37 @@ Updated `csrf` support notes to include `expires = 0` no-expiry validation behav
 
 Run: `go test ./pkg/plugin/csrf -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 167: Align `fault-injection` Percentage And Empty Body Semantics
+
+**Files:**
+- Modify: `pkg/plugin/fault_injection/plugin.go`
+- Add: `pkg/plugin/fault_injection/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `fault-injection` `abort` / `delay` config with optional `percentage` and optional abort `body`.
+- Produces: APISIX-compatible omitted-vs-explicit percentage behavior and safe empty abort responses.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/fault-injection.lua`; `sample_hit(nil)` always matches, while explicit `percentage = 0` does not match because APISIX uses `random(1, 100) <= percentage`. The official schema also allows `abort.body` to be omitted.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover explicit `percentage = 0` falling through to the next handler, omitted `percentage` always aborting, and omitted abort body returning the configured status without panicking.
+
+- [x] **Step 3: Implement percentage/body parity**
+
+Changed abort and delay `percentage` config fields to pointers so omitted and explicit zero remain distinguishable, updated sampling to treat nil as always-hit, and wrote abort responses directly so omitted bodies remain empty.
+
+- [x] **Step 4: Update README**
+
+Updated `fault-injection` support notes to include `abort`, `delay`, percentage semantics, empty abort bodies, and remaining gaps around `vars`, body variable resolution, and fractional-delay precision.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/fault_injection -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

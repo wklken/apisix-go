@@ -100,7 +100,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 55%
   - support CORS preflight, `POST` validation, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
   - not support route `:ext` URI rewriting, OpenResty `upstream_trailer_*` fidelity, or streaming chunk-level response filters
-- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
+- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 70%
+  - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, and abort response bodies
+  - not support `vars`, body variable resolution, or exact fractional-delay precision
 - [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 97%
   - support `response_example`, `response_schema` object generation, JSON/plain-text/XML schema bodies, response headers, bounded variable resolution, delay, status, content type, and mock marker header
   - not support APISIX random response value distribution exactly for schema fields without examples

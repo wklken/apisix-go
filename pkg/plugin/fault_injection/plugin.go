@@ -95,7 +95,7 @@ const schema = `
 type Abort struct {
 	HTTPStatus int                    `json:"http_status"`
 	Body       *string                `json:"body,omitempty"`
-	Percentage int                    `json:"percentage,omitempty"`
+	Percentage *int                   `json:"percentage,omitempty"`
 	Headers    map[string]interface{} `json:"headers,omitempty"` // Note: interface{} due to oneOf {string, number}
 
 	// FIXME: not support yet
@@ -104,7 +104,7 @@ type Abort struct {
 
 type Delay struct {
 	Duration   float64 `json:"duration"`
-	Percentage int     `json:"percentage,omitempty"`
+	Percentage *int    `json:"percentage,omitempty"`
 
 	// FIXME: not support yet
 	Vars [][]interface{} `json:"vars,omitempty"`
@@ -150,7 +150,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				}
 
 				// FIXME: the body render with ctx.var
-				http.Error(w, *p.config.Abort.Body, p.config.Abort.HTTPStatus)
+				w.WriteHeader(p.config.Abort.HTTPStatus)
+				if p.config.Abort.Body != nil {
+					_, _ = w.Write([]byte(*p.config.Abort.Body))
+				}
 				return
 			}
 		}
@@ -160,10 +163,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func SampleHit(percentage int) bool {
-	if percentage == 0 {
+func SampleHit(percentage *int) bool {
+	if percentage == nil {
 		return true
 	}
 
-	return rand.Intn(100) < percentage
+	return rand.Intn(100) < *percentage
 }

@@ -234,9 +234,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [http-dubbo](https://apisix.apache.org/docs/apisix/plugins/http-dubbo/) 55%
   - support official plugin name, priority, schema, route-upstream TCP dialing, Dubbo 2.x fastjson request frame construction, `service_name`, `service_version`, `method`, `params_type_desc`, `serialized`, `serialization_header_key`, connect/send/read timeouts, JSON-array generic invocation parameter serialization, pre-serialized body passthrough, Dubbo header/status parsing, and HTTP 200 body mapping for application responses
   - not support APISIX `before_proxy` phase fidelity, OpenResty cosocket behavior, hessian2 serialization, full fastjson precision/type features, multiplexing, every Dubbo response status branch, upstream health checks/retries, or route-builder support for non-round-robin upstream algorithms
-- [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 90%
-  - not support `healthy.http_statuse`
-  - not support `break_response_headers` vars
+- [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 95%
+  - support `break_response_code`, `break_response_body`, `break_response_headers` with bounded variable resolution, `max_breaker_sec`, `unhealthy.http_statuses`, `unhealthy.failures`, `healthy.http_statuses`, and `healthy.successes`
+  - not support APISIX shared-dict state keyed by host and URI, exponential breaker windows, or exact OpenResty log-phase timing
 - [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 65%
   - support weighted inline upstream selection and bounded `match.vars` for common request variables
   - not support `upstream_id`

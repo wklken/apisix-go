@@ -3933,3 +3933,34 @@ Updated `proxy-rewrite` support notes to include request header mutation and kee
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_rewrite -run 'TestHandlerMutatesRequestHeaders|TestHeadersUnmarshalLegacySet' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 112: Implement `api-breaker` Healthy Statuses And Header Vars
+
+**Files:**
+- Modify: `pkg/plugin/api_breaker/plugin.go`
+- Create: `pkg/plugin/api_breaker/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `healthy.http_statuses`, `healthy.successes`, and `break_response_headers[].value` variable config for `api-breaker`.
+- Produces: breaker recovery only from configured healthy statuses, and blocked responses with resolved headers written before the response status.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/api-breaker.lua`; unhealthy statuses increment the failure state, healthy statuses clear the unhealthy state only after configured successes, neutral statuses do not recover the breaker, and break response header values resolve APISIX variables before being sent.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover break response headers being visible on the actual response with `$request_method`, `$request_uri`, and `$remote_addr` resolution, plus half-open recovery only from configured healthy statuses.
+
+- [x] **Step 3: Implement bounded parity**
+
+Set break response headers before `WriteHeader`, added bounded request variable resolution, and changed status accounting so only configured unhealthy statuses fail the breaker and only configured healthy statuses recover it.
+
+- [x] **Step 4: Update README**
+
+Updated `api-breaker` support notes to include healthy statuses and break header variable resolution, leaving shared-dict host/URI state, exponential breaker windows, and exact log-phase timing as remaining gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/api_breaker -run 'TestHandlerResolvesBreakResponseHeaders|TestHandlerUsesConfiguredHealthyStatusesForRecovery' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/api_breaker -count=1 -timeout=10s`, `go test ./...`, and `make build`.

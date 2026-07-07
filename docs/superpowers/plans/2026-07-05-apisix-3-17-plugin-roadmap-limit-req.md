@@ -1898,7 +1898,7 @@ Added `gm` import/case and registry test; marked README support with Tongsuo/API
 
 Run: `go test ./pkg/plugin/gm ./pkg/plugin -run 'TestHandler|TestValidateSSLConfig|TestNewGM' -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
-## Official APISIX 3.17 Inventory Audit After Task 103
+## Official APISIX 3.17 Inventory Audit After Task 104
 
 Run against `https://api.github.com/repos/apache/apisix/contents/apisix/plugins?ref=release/3.17`:
 
@@ -1915,7 +1915,7 @@ Official top-level Lua plugin names not represented one-to-one by README plugin 
 
 - `serverless-pre-function` and `serverless-post-function` are documented under the official `serverless` docs page.
 
-Suggested next valuable batches after Task 103:
+Suggested next valuable batches after Task 104:
 
 1. Re-audit nested helper/plugin directories and docs-only plugins against official APISIX 3.17.
 
@@ -3678,3 +3678,36 @@ Updated `gzip` support notes to include `types = "*"`, `min_length`, and the sup
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/gzip -run 'TestPostInitAcceptsWildcardTypesString|TestHandlerSkipsSmallContentLength|TestHandlerWildcardTypesCompressesAnyContentType' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/gzip -count=1 -timeout=10s`, `go test ./...`, and `make build`.
+
+### Task 104: Implement `proxy-rewrite` Regex URI
+
+**Files:**
+- Modify: `pkg/plugin/proxy_rewrite/plugin.go`
+- Create: `pkg/plugin/proxy_rewrite/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `regex_uri` pattern/replacement pairs and request path.
+- Produces: APISIX-style first-match URI replacement with lower priority than explicit `uri`, carried through the existing route-builder `proxy-rewrite` context payload.
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover regex-derived URI rewriting, first matching pair behavior, explicit `uri` priority, and odd-length `regex_uri` rejection.
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./pkg/plugin/proxy_rewrite -run 'TestHandlerDerivesURIFromRegexURI|TestHandlerUsesFirstMatchingRegexURIPair|TestHandlerURIHasPriorityOverRegexURI|TestPostInitRejectsOddRegexURI' -count=1 -timeout=10s -v`
+
+Observed: fail before implementation because `RegexURI` was missing from `Config`.
+
+- [x] **Step 3: Implement regex_uri handling**
+
+Added schema/config support, PostInit validation/compilation, first-match replacement using Go regexp captures, and explicit `uri` priority over `regex_uri`.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-rewrite` support notes to include `regex_uri`, leaving `use_real_request_uri_unsafe` as the remaining documented gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_rewrite -run 'TestHandlerDerivesURIFromRegexURI|TestHandlerUsesFirstMatchingRegexURIPair|TestHandlerURIHasPriorityOverRegexURI|TestPostInitRejectsOddRegexURI' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite -count=1 -timeout=10s`, `go test ./...`, and `make build`.

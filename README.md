@@ -93,8 +93,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
   - support `status_code`, `body`, `body_base64`, and header `add` / `set` / `remove`
   - not support `vars`
   - not support `filters`
-- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 80%
-  - not support `regex_uri`
+- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 90%
+  - support `uri`, `regex_uri`, `method`, `host`, `scheme`, and header config passthrough
   - not support `use_real_request_uri_unsafe`
 - [x] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/) 55%
   - support base64 `.pb` FileDescriptorSet proto resources, string/integer `proto_id`, GET query and POST JSON request mapping, gRPC request framing, `grpc-timeout`, JSON response decoding, and gRPC status to HTTP status mapping

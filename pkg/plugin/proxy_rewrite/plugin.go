@@ -2,7 +2,9 @@ package proxy_rewrite
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -25,6 +27,13 @@ const schema = `
 	"properties": {
 	  "uri": {
 		"type": "string"
+	  },
+	  "regex_uri": {
+		"type": "array",
+		"minItems": 2,
+		"items": {
+			"type": "string"
+		}
 	  },
 	  "method": {
 		"type": "string"
@@ -60,11 +69,19 @@ type Headers struct {
 }
 
 type Config struct {
-	Uri     string  `json:"uri"`
-	Method  string  `json:"method"`
-	Host    string  `json:"host"`
-	Scheme  string  `json:"scheme"`
-	Headers Headers `json:"headers"`
+	Uri      string   `json:"uri"`
+	RegexURI []string `json:"regex_uri"`
+	Method   string   `json:"method"`
+	Host     string   `json:"host"`
+	Scheme   string   `json:"scheme"`
+	Headers  Headers  `json:"headers"`
+
+	regexURIPairs []regexURIPair
+}
+
+type regexURIPair struct {
+	pattern     *regexp.Regexp
+	replacement string
 }
 
 func (p *Plugin) Init() error {
@@ -76,6 +93,20 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if len(p.config.RegexURI)%2 != 0 {
+		return fmt.Errorf("regex_uri length should be even")
+	}
+	p.config.regexURIPairs = p.config.regexURIPairs[:0]
+	for i := 0; i < len(p.config.RegexURI); i += 2 {
+		pattern, err := regexp.Compile(p.config.RegexURI[i])
+		if err != nil {
+			return fmt.Errorf("invalid regex_uri pattern %q: %w", p.config.RegexURI[i], err)
+		}
+		p.config.regexURIPairs = append(p.config.regexURIPairs, regexURIPair{
+			pattern:     pattern,
+			replacement: p.config.RegexURI[i+1],
+		})
+	}
 	return nil
 }
 
@@ -86,9 +117,10 @@ func (p *Plugin) Config() interface{} {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		uri := p.rewriteURI(r.URL.Path)
 
 		data := map[string]interface{}{
-			"uri":     p.config.Uri,
+			"uri":     uri,
 			"method":  p.config.Method,
 			"host":    p.config.Host,
 			"scheme":  p.config.Scheme,
@@ -100,4 +132,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) rewriteURI(path string) string {
+	if p.config.Uri != "" {
+		return p.config.Uri
+	}
+	for _, pair := range p.config.regexURIPairs {
+		if pair.pattern.MatchString(path) {
+			return pair.pattern.ReplaceAllString(path, pair.replacement)
+		}
+	}
+	return ""
 }

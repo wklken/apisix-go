@@ -1,10 +1,15 @@
 package loggly
 
 import (
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -97,6 +102,67 @@ func TestSendWritesUDPMessage(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for UDP log message")
+	}
+}
+
+func TestSendWritesHTTPBulkMessage(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bulk/token/tag/bulk" {
+			t.Fatalf("path = %q, want /bulk/token/tag/bulk", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("content-type = %q, want application/json", r.Header.Get("Content-Type"))
+		}
+		if r.Header.Get("X-LOGGLY-TAG") != "apisix,route-a" {
+			t.Fatalf("X-LOGGLY-TAG = %q, want apisix,route-a", r.Header.Get("X-LOGGLY-TAG"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body["path"].(string)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Host:          server.URL,
+		Protocol:      "http",
+		Tags:          []string{"apisix", "route-a"},
+		Timeout:       1000,
+	})
+
+	p.Send(map[string]any{"status": 200, "path": "/bulk"})
+
+	select {
+	case path := <-received:
+		if path != "/bulk" {
+			t.Fatalf("path = %q, want /bulk", path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP bulk log message")
+	}
+}
+
+func TestSchemaAcceptsOfficialBodySizeAndSSLFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"customer_token":      "token",
+		"ssl_verify":          false,
+		"max_req_body_bytes":  1024,
+		"max_resp_body_bytes": 2048,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official config fields: %v", err)
 	}
 }
 

@@ -1,6 +1,8 @@
 package loggly
 
 import (
+	"bytes"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -38,6 +40,20 @@ const schema = `
     "severity_map": {
       "type": "object"
     },
+    "ssl_verify": {
+      "type": "boolean",
+      "default": true
+    },
+    "max_req_body_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 524288
+    },
+    "max_resp_body_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 524288
+    },
     "tags": {
       "type": "array",
       "minItems": 1,
@@ -61,6 +77,11 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 5000
+    },
+    "protocol": {
+      "type": "string",
+      "default": "syslog",
+      "enum": ["syslog", "http", "https"]
     }
   },
   "required": ["customer_token"]
@@ -68,14 +89,18 @@ const schema = `
 `
 
 type Config struct {
-	CustomerToken string            `json:"customer_token"`
-	Severity      string            `json:"severity,omitempty"`
-	SeverityMap   map[string]string `json:"severity_map,omitempty"`
-	Tags          []string          `json:"tags,omitempty"`
-	LogFormat     map[string]string `json:"log_format,omitempty"`
-	Host          string            `json:"host,omitempty"`
-	Port          int               `json:"port,omitempty"`
-	Timeout       int               `json:"timeout,omitempty"`
+	CustomerToken    string            `json:"customer_token"`
+	Severity         string            `json:"severity,omitempty"`
+	SeverityMap      map[string]string `json:"severity_map,omitempty"`
+	Tags             []string          `json:"tags,omitempty"`
+	SSLVerify        *bool             `json:"ssl_verify,omitempty"`
+	LogFormat        map[string]string `json:"log_format,omitempty"`
+	Host             string            `json:"host,omitempty"`
+	Port             int               `json:"port,omitempty"`
+	Timeout          int               `json:"timeout,omitempty"`
+	Protocol         string            `json:"protocol,omitempty"`
+	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
 }
 
 var severityValues = map[string]int{
@@ -122,6 +147,13 @@ func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 5000
 	}
+	if p.config.Protocol == "" {
+		p.config.Protocol = "syslog"
+	}
+	if p.config.SSLVerify == nil {
+		sslVerify := true
+		p.config.SSLVerify = &sslVerify
+	}
 
 	p.LogFormat = p.config.LogFormat
 
@@ -135,6 +167,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if p.config.Protocol == "http" || p.config.Protocol == "https" {
+		p.sendHTTPBulk(log)
+		return
+	}
+
 	message := p.buildMessage(log)
 	conn, err := net.DialTimeout(
 		"udp",
@@ -150,6 +187,46 @@ func (p *Plugin) Send(log map[string]any) {
 	if _, err := conn.Write([]byte(message)); err != nil {
 		logger.Errorf("failed to send loggly message: %s", err)
 	}
+}
+
+func (p *Plugin) sendHTTPBulk(log map[string]any) {
+	payload, err := json.Marshal(log)
+	if err != nil {
+		logger.Errorf("failed to marshal loggly message: %s", err)
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodPost, p.bulkEndpoint(), bytes.NewReader(payload))
+	if err != nil {
+		logger.Errorf("failed to build Loggly bulk request: %s", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LOGGLY-TAG", strings.Join(p.config.Tags, ","))
+
+	client := &http.Client{
+		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: !*p.config.SSLVerify},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Errorf("failed to send loggly bulk message: %s", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		logger.Errorf("failed to send loggly bulk message: status %d", resp.StatusCode)
+	}
+}
+
+func (p *Plugin) bulkEndpoint() string {
+	host := strings.TrimRight(p.config.Host, "/")
+	if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
+		host = p.config.Protocol + "://" + host
+	}
+	return host + "/bulk/" + p.config.CustomerToken + "/tag/bulk"
 }
 
 func (p *Plugin) buildMessage(log map[string]any) string {

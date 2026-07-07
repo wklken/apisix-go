@@ -562,6 +562,37 @@ Updated `syslog` support notes to include tested delivery/config behavior and ex
 
 Run: `go test ./pkg/plugin/syslog -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 129: Implement `loggly` HTTP Bulk Delivery
+
+**Files:**
+- Modify: `pkg/plugin/loggly/plugin.go`
+- Modify: `pkg/plugin/loggly/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `loggly` `customer_token`, `severity`, `severity_map`, `tags`, `ssl_verify`, `log_format`, `max_req_body_bytes`, `max_resp_body_bytes`, and metadata delivery knobs represented in this Go plugin as `host`, `port`, `protocol`, and `timeout`.
+- Produces: Loggly delivery over RFC5424 UDP syslog or HTTP/S bulk endpoint with tested tags and payload shape.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/loggly.lua`; APISIX defaults to UDP syslog metadata, supports `protocol` values `syslog`, `http`, and `https`, sends HTTP/S logs to `/bulk/{customer_token}/tag/bulk`, sets `Content-Type: application/json`, and forwards tags via `X-LOGGLY-TAG`.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover HTTP bulk delivery path, content type, tag header, JSON payload, and schema acceptance for official `ssl_verify` and body-size fields.
+
+- [x] **Step 3: Implement bulk delivery/config parity**
+
+Added `protocol`, `ssl_verify`, and body-size config/schema fields, defaulted protocol to `syslog`, preserved UDP delivery, and added HTTP/S bulk delivery with timeout and TLS verification control.
+
+- [x] **Step 4: Update README**
+
+Updated `loggly` support notes to include HTTP/S bulk delivery and explicit gaps around APISIX batch processor behavior, `max_pending_entries`, metadata-only config parity, and body capture.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/loggly -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

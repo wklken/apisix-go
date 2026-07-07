@@ -337,10 +337,10 @@ Loggers:
   - support `path`, `log_format`, and bounded `match` expressions for common request variables and `$status`
   - not support `include_req_body` and `include_req_body_expr`
   - not support `include_resp_body` and `include_resp_body_expr`
-- [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 45%
-  - support RFC5424 Loggly syslog messages over UDP
-  - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `timeout`, and `log_format`
-  - not support HTTP/S bulk endpoint, batch processor options, or request/response body capture
+- [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 55%
+  - support RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery
+  - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, and official body-size config validation
+  - not support APISIX batch processor behavior, `max_pending_entries`, metadata-only delivery config parity, or request/response body capture
 - [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 55%
   - support `endpoint_addr`, `endpoint_addrs`, `field.index`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, official body-size config validation, and `_bulk` NDJSON delivery
   - not support APISIX batch processor behavior, `max_pending_entries`, random endpoint selection, Elasticsearch major-version discovery, time/APISIX variable expansion in `field.index`, or request/response body capture

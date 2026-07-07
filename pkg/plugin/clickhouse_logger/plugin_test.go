@@ -1,6 +1,8 @@
 package clickhouse_logger
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +159,83 @@ func TestSendPostsClickHouseInsert(t *testing.T) {
 		}
 		if !strings.Contains(body, `"path":"/orders"`) {
 			t.Fatalf("body = %q, want JSON log entry", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ClickHouse body")
+	}
+}
+
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	bodies := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:    []string{server.URL},
+		User:             "default",
+		Password:         "secret",
+		Database:         "analytics",
+		LogTable:         "apisix_logs",
+		Timeout:          1,
+		SSLVerify:        &sslVerify,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
+	}
+	if body := rr.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream response body", body)
+	}
+
+	select {
+	case body := <-bodies:
+		payload := strings.TrimPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ")
+		var logEntry map[string]any
+		if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
+			t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
+		}
+
+		request, ok := logEntry["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", logEntry["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("payload request body = %#v, want original request body", request["body"])
+		}
+
+		response, ok := logEntry["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", logEntry["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("payload response body = %#v, want upstream response body", response["body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for ClickHouse body")

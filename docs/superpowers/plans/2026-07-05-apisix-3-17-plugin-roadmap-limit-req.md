@@ -1060,6 +1060,37 @@ Updated `rocketmq-logger` support notes to include `include_req_body`, `include_
 
 Run: `go test ./pkg/plugin/rocketmq_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
 
+### Task 145: Implement `clickhouse-logger` Request and Response Body Capture
+
+**Files:**
+- Modify: `pkg/plugin/clickhouse_logger/plugin.go`
+- Modify: `pkg/plugin/clickhouse_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `include_req_body`, `include_resp_body`, `max_req_body_bytes`, and `max_resp_body_bytes` route/service plugin config.
+- Produces: ClickHouse JSONEachRow log entries with APISIX-style nested `request.body` and `response.body` fields while preserving the upstream request body stream and client response body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/clickhouse-logger.lua`; official schema includes request/response body flags and expression filters. This slice implements the raw body flags for the default log-entry shape.
+
+- [x] **Step 2: Write failing tests**
+
+Focused handler test initially failed because ClickHouse delivery happened but the nested `request` object was missing from the JSONEachRow payload.
+
+- [x] **Step 3: Implement body capture**
+
+Added body byte cap defaults and a body-aware handler path for ClickHouse logger configs with raw body capture enabled, including request body read/restore, response body recording while streaming to the original writer, and nested payload insertion before sending through the logger channel.
+
+- [x] **Step 4: Update README**
+
+Updated `clickhouse-logger` support notes to include `include_req_body`, `include_resp_body`, and capped body-size capture, while keeping batch processor, `max_pending_entries`, and expression filters unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/clickhouse_logger -count=1 -timeout=15s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

@@ -2,7 +2,11 @@ package file_logger
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -27,6 +31,55 @@ const schema = `
 	"properties": {
 	  "path": {
 		"type": "string"
+	  },
+	  "log_format": {
+		"type": "object"
+	  },
+	  "include_req_body": {
+		"type": "boolean",
+		"default": false
+	  },
+	  "include_req_body_expr": {
+		"type": "array",
+		"minItems": 1,
+		"items": {
+		  "type": "array"
+		}
+	  },
+	  "include_resp_body": {
+		"type": "boolean",
+		"default": false
+	  },
+	  "include_resp_body_expr": {
+		"type": "array",
+		"minItems": 1,
+		"items": {
+		  "type": "array"
+		}
+	  },
+	  "max_req_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
+	  "max_resp_body_bytes": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 524288
+	  },
+	  "match": {
+		"type": "array",
+		"maxItems": 20,
+		"items": {
+		  "anyOf": [
+			{
+			  "type": "array"
+			},
+			{
+			  "type": "string"
+			}
+		  ]
+		}
 	  }
 	},
 	"required": [
@@ -51,6 +104,7 @@ type Plugin struct {
 type Config struct {
 	Path      string            `json:"path"`
 	LogFormat map[string]string `json:"log_format,omitempty"`
+	Match     []any             `json:"match,omitempty"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -103,7 +157,9 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
-		fmt.Println("status:", ctx.GetRequestVar(r, "$status"))
+		if !p.match(r) {
+			return
+		}
 
 		logFields := log.GetFields(r, p.logFormat)
 		fields := make([]zap.Field, 0, len(logFields))
@@ -114,4 +170,124 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		p.logger.Info("", fields...)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) match(r *http.Request) bool {
+	if len(p.config.Match) == 0 {
+		return true
+	}
+
+	pendingOp := "AND"
+	hasResult := false
+	result := true
+	for _, condition := range p.config.Match {
+		if op, ok := condition.(string); ok {
+			switch strings.ToUpper(op) {
+			case "AND", "OR":
+				pendingOp = strings.ToUpper(op)
+			default:
+				return false
+			}
+			continue
+		}
+
+		matched := matchCondition(r, condition)
+		if !hasResult {
+			result = matched
+			hasResult = true
+			continue
+		}
+
+		if pendingOp == "OR" {
+			result = result || matched
+		} else {
+			result = result && matched
+		}
+		pendingOp = "AND"
+	}
+	return hasResult && result
+}
+
+func matchCondition(r *http.Request, condition any) bool {
+	parts, ok := condition.([]any)
+	if !ok || len(parts) != 3 {
+		return false
+	}
+
+	left := fmt.Sprint(parts[0])
+	op := fmt.Sprint(parts[1])
+	right := fmt.Sprint(parts[2])
+	actual := matchVar(r, left)
+
+	switch op {
+	case "==":
+		return actual == right
+	case "!=":
+		return actual != right
+	case ">":
+		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
+	case ">=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
+	case "<":
+		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
+	case "<=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
+	case "~":
+		matched, _ := regexp.MatchString(right, actual)
+		return matched
+	case "!~":
+		matched, _ := regexp.MatchString(right, actual)
+		return !matched
+	default:
+		return false
+	}
+}
+
+func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
+	l, err := strconv.ParseFloat(left, 64)
+	if err != nil {
+		return false
+	}
+	r, err := strconv.ParseFloat(right, 64)
+	if err != nil {
+		return false
+	}
+	return compare(l, r)
+}
+
+func matchVar(r *http.Request, name string) string {
+	name = strings.TrimPrefix(name, "$")
+	switch {
+	case name == "status", name == "status_code":
+		return fmt.Sprint(ctx.GetRequestVar(r, "$status"))
+	case name == "uri":
+		return r.URL.Path
+	case name == "request_uri":
+		return r.URL.RequestURI()
+	case name == "method", name == "request_method":
+		return r.Method
+	case name == "host":
+		return r.Host
+	case name == "scheme":
+		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
+			return scheme
+		}
+		if r.TLS != nil {
+			return "https"
+		}
+		return "http"
+	case name == "remote_addr":
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	case strings.HasPrefix(name, "arg_"):
+		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "http_"):
+		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
+		return r.Header.Get(header)
+	default:
+		return ""
+	}
 }

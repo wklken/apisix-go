@@ -407,6 +407,37 @@ Updated `tcp-logger` support notes to include `tls` and `tls_options`, leaving A
 
 Run: `go test ./pkg/plugin/tcp_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 124: Implement `file-logger` Match Filtering
+
+**Files:**
+- Modify: `pkg/plugin/file_logger/plugin.go`
+- Create: `pkg/plugin/file_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `file-logger` `match` config shape.
+- Produces: log-phase file logging that skips writes when bounded request/status match expressions do not match.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/file-logger.lua`; APISIX validates `match` through `resty.expr`, builds the normal log entry in the log phase, and skips log delivery when the log utility returns no entry.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover writing a file log line when `uri` and `status` conditions match, and skipping file output when a request-header condition does not match.
+
+- [x] **Step 3: Implement match filtering**
+
+Added `match` config/schema support with bounded expression evaluation for common request variables, request headers, query args, `$status`, equality/inequality, numeric comparisons, regex matches, and AND/OR chaining.
+
+- [x] **Step 4: Update README**
+
+Updated `file-logger` support notes to include bounded `match` support, leaving request/response body capture as the remaining major gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/file_logger -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

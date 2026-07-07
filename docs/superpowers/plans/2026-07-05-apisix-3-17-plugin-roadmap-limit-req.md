@@ -4150,3 +4150,34 @@ Updated `request-validation` support notes to include JSON body normalization be
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/request_validation -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 119: Implement `forward-auth` TLS And Keepalive Controls
+
+**Files:**
+- Modify: `pkg/plugin/forward_auth/plugin.go`
+- Modify: `pkg/plugin/forward_auth/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `forward-auth` config fields `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`.
+- Produces: auth-service HTTP clients with explicit TLS verification and connection reuse behavior.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/forward-auth.lua` and docs; APISIX defaults `ssl_verify` and `keepalive` to true, defaults `keepalive_timeout` to 60000ms, defaults `keepalive_pool` to 5, and passes these options into the auth service request.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover schema acceptance for the official fields, successful self-signed HTTPS auth when `ssl_verify=false`, rejection of the same self-signed auth service when verification defaults to true, and keepalive/default transport option application.
+
+- [x] **Step 3: Implement transport controls**
+
+Added schema/config fields, defaults in `PostInit`, cloned Go default transport setup, `InsecureSkipVerify` only when `ssl_verify=false`, and keepalive pool/idle-timeout/disable-keepalive transport settings.
+
+- [x] **Step 4: Update README**
+
+Updated `forward-auth` support notes to include `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/forward_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

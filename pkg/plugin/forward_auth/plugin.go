@@ -2,6 +2,7 @@ package forward_auth
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -40,6 +41,10 @@ const schema = `
       "minimum": 200,
       "maximum": 599,
       "default": 403
+    },
+    "ssl_verify": {
+      "type": "boolean",
+      "default": true
     },
     "request_method": {
       "type": "string",
@@ -80,6 +85,20 @@ const schema = `
       "minimum": 1,
       "maximum": 60000,
       "default": 3000
+    },
+    "keepalive": {
+      "type": "boolean",
+      "default": true
+    },
+    "keepalive_timeout": {
+      "type": "integer",
+      "minimum": 1000,
+      "default": 60000
+    },
+    "keepalive_pool": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
     }
   },
   "required": ["uri"]
@@ -90,6 +109,7 @@ type Config struct {
 	URI              string            `json:"uri"`
 	AllowDegradation *bool             `json:"allow_degradation,omitempty"`
 	StatusOnError    int               `json:"status_on_error,omitempty"`
+	SSLVerify        *bool             `json:"ssl_verify,omitempty"`
 	RequestMethod    string            `json:"request_method,omitempty"`
 	MaxReqBodySize   int64             `json:"max_req_body_size,omitempty"`
 	RequestHeaders   []string          `json:"request_headers,omitempty"`
@@ -97,6 +117,9 @@ type Config struct {
 	UpstreamHeaders  []string          `json:"upstream_headers,omitempty"`
 	ClientHeaders    []string          `json:"client_headers,omitempty"`
 	Timeout          int               `json:"timeout,omitempty"`
+	Keepalive        *bool             `json:"keepalive,omitempty"`
+	KeepaliveTimeout int               `json:"keepalive_timeout,omitempty"`
+	KeepalivePool    int               `json:"keepalive_pool,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -115,6 +138,10 @@ func (p *Plugin) PostInit() error {
 	if p.config.StatusOnError == 0 {
 		p.config.StatusOnError = http.StatusForbidden
 	}
+	if p.config.SSLVerify == nil {
+		b := true
+		p.config.SSLVerify = &b
+	}
 	if p.config.RequestMethod == "" {
 		p.config.RequestMethod = http.MethodGet
 	}
@@ -124,9 +151,20 @@ func (p *Plugin) PostInit() error {
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3000
 	}
+	if p.config.Keepalive == nil {
+		b := true
+		p.config.Keepalive = &b
+	}
+	if p.config.KeepaliveTimeout == 0 {
+		p.config.KeepaliveTimeout = 60000
+	}
+	if p.config.KeepalivePool == 0 {
+		p.config.KeepalivePool = 5
+	}
 
 	p.client = &http.Client{
-		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
+		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
+		Transport: p.transport(),
 	}
 
 	return nil
@@ -134,6 +172,18 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() interface{} {
 	return &p.config
+}
+
+func (p *Plugin) transport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = !*p.config.Keepalive
+	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
+	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
+	if !*p.config.SSLVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
+	return transport
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

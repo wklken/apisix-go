@@ -2,11 +2,33 @@ package forward_auth
 
 import (
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSchemaAcceptsSSLVerifyAndKeepaliveOptions(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"uri":               "https://auth.example.com/check",
+		"ssl_verify":        false,
+		"keepalive":         false,
+		"keepalive_timeout": 1500,
+		"keepalive_pool":    7,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("forward-auth config should validate: %v", err)
+	}
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -174,6 +196,105 @@ func TestHandlerPostForwardsBodyAndRestoresRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
+	auth := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer auth.Close()
+
+	verify := false
+	p := newTestPlugin(t, Config{
+		URI:       auth.URL,
+		SSLVerify: &verify,
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsSelfSignedAuthWhenSSLVerifyDefaultsTrue(t *testing.T) {
+	auth := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer auth.Close()
+
+	p := newTestPlugin(t, Config{
+		URI:           auth.URL,
+		StatusOnError: http.StatusBadGateway,
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})
+
+	if res.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusBadGateway)
+	}
+}
+
+func TestPostInitAppliesKeepaliveTransportOptions(t *testing.T) {
+	keepalive := false
+	verify := false
+	p := newTestPlugin(t, Config{
+		URI:              "https://auth.example.com/check",
+		SSLVerify:        &verify,
+		Keepalive:        &keepalive,
+		KeepaliveTimeout: 1500,
+		KeepalivePool:    7,
+	})
+
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport = %T, want *http.Transport", p.client.Transport)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("DisableKeepAlives = false, want true")
+	}
+	if transport.MaxIdleConnsPerHost != 7 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want 7", transport.MaxIdleConnsPerHost)
+	}
+	if transport.IdleConnTimeout != 1500*time.Millisecond {
+		t.Fatalf("IdleConnTimeout = %s, want 1.5s", transport.IdleConnTimeout)
+	}
+	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatalf("TLSClientConfig = %#v, want InsecureSkipVerify", transport.TLSClientConfig)
+	}
+}
+
+func TestPostInitDefaultsSSLVerifyAndKeepalive(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		URI: "https://auth.example.com/check",
+	})
+
+	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
+		t.Fatalf("SSLVerify = %v, want true", p.config.SSLVerify)
+	}
+	if p.config.Keepalive == nil || !*p.config.Keepalive {
+		t.Fatalf("Keepalive = %v, want true", p.config.Keepalive)
+	}
+	if p.config.KeepaliveTimeout != 60000 {
+		t.Fatalf("KeepaliveTimeout = %d, want 60000", p.config.KeepaliveTimeout)
+	}
+	if p.config.KeepalivePool != 5 {
+		t.Fatalf("KeepalivePool = %d, want 5", p.config.KeepalivePool)
+	}
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport = %T, want *http.Transport", p.client.Transport)
+	}
+	if transport.DisableKeepAlives {
+		t.Fatal("DisableKeepAlives = true, want false")
+	}
+	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("InsecureSkipVerify = true, want false")
+	}
+}
+
 func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?x=1", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -182,4 +303,11 @@ func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)
 
 	p.Handler(http.HandlerFunc(upstream)).ServeHTTP(rr, req)
 	return rr
+}
+
+func newQuietTLSServer(handler http.Handler) *httptest.Server {
+	server := httptest.NewUnstartedServer(handler)
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	server.StartTLS()
+	return server
 }

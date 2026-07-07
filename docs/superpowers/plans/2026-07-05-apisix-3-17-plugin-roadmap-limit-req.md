@@ -1551,6 +1551,37 @@ Updated `cors` support notes to include regex origins and to keep metadata origi
 
 Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 161: Accept `cors` Method Wildcards
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Modify: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: route/service `cors` config with default `allow_methods = "*"` or explicit `allow_methods = "**"`.
+- Produces: actual CORS responses for standard HTTP methods instead of rejecting them as literal `"*"`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; APISIX sets CORS headers for actual requests when `allow_methods` is wildcarded, and expands `**` to standard HTTP methods.
+
+- [x] **Step 2: Write failing tests**
+
+Added a focused default wildcard-method test. It initially failed because `rs/cors` rejected `GET` when configured with `AllowedMethods: []string{"*"}`.
+
+- [x] **Step 3: Implement method wildcard handling**
+
+Translated `allow_methods = "*"` and `allow_methods = "**"` into the standard HTTP method set before constructing the `rs/cors` handler.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include method wildcards and kept exact wildcard response-header semantics outside the current support scope.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

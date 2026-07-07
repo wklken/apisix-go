@@ -25,6 +25,18 @@ const (
 	name     = "cors"
 )
 
+var allMethods = []string{
+	http.MethodGet,
+	http.MethodPost,
+	http.MethodPut,
+	http.MethodDelete,
+	http.MethodPatch,
+	http.MethodHead,
+	http.MethodOptions,
+	http.MethodConnect,
+	http.MethodTrace,
+}
+
 const schema = `
 {
 	"type": "object",
@@ -109,7 +121,7 @@ type Config struct {
 	MaxAge          int    `json:"max_age"`
 	AllowCredential bool   `json:"allow_credential"`
 
-	AllowOriginsByRegex       []string `json:"allow_origins_by_regex"`
+	AllowOriginsByRegex []string `json:"allow_origins_by_regex"`
 	// FIXME: not supported yet
 	AllowOriginsByMetadata    []string `json:"allow_origins_by_metadata"`
 	TimingAllowOrigins        *string  `json:"timing_allow_origins,omitempty"`
@@ -155,7 +167,7 @@ func (p *Plugin) PostInit() error {
 
 	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
-		AllowedMethods:   strings.Split(p.config.AllowMethods, ","),
+		AllowedMethods:   allowedMethods(p.config.AllowMethods),
 		AllowedHeaders:   strings.Split(p.config.AllowHeaders, ","),
 		ExposedHeaders:   strings.Split(p.config.ExposeHeaders, ","),
 		MaxAge:           p.config.MaxAge,
@@ -201,4 +213,11 @@ func (p *Plugin) allowOrigin(origin string) bool {
 		}
 	}
 	return false
+}
+
+func allowedMethods(methods string) []string {
+	if methods == "*" || methods == "**" {
+		return allMethods
+	}
+	return strings.Split(methods, ",")
 }

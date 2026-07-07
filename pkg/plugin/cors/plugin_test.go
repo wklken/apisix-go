@@ -41,3 +41,21 @@ func TestHandlerAllowsRegexOrigin(t *testing.T) {
 		t.Fatalf("response code = %d, want %d", got, http.StatusNoContent)
 	}
 }
+
+func TestHandlerAllowsDefaultWildcardMethods(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want wildcard", got)
+	}
+	if got := rr.Code; got != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", got, http.StatusNoContent)
+	}
+}

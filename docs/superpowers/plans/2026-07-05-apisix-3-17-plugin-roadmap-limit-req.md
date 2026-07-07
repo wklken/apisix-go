@@ -281,6 +281,37 @@ Added `forward_auth` import/case in `pkg/plugin/init.go`; marked README support 
 
 Run: `go test ./pkg/plugin/forward_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 120: Implement `mocking` Response Schema Bodies
+
+**Files:**
+- Modify: `pkg/plugin/mocking/plugin.go`
+- Create: `pkg/plugin/mocking/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `mocking` `response_schema`, `response_example`, `response_headers`, `content_type`, and variable-resolution behavior.
+- Produces: mocked responses generated from configured JSON schemas without calling the upstream handler.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/mocking.lua`; APISIX prefers `response_example` over `response_schema`, generates object bodies from schema properties, JSON-encodes schema output for `application/json` / `text/plain`, XML-encodes schema output for XML content types, resolves variables in the final response content, and resolves response header values.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover schema validation acceptance, JSON body generation from `response_schema`, default content type and mock marker header, `response_example` precedence over schema output, variable resolution in body content, and numeric/string response headers.
+
+- [x] **Step 3: Implement response schema generation**
+
+Added deterministic schema output generation for object, array, string, number, integer, and boolean properties, including `example` support; added JSON and XML body serialization, body/header variable resolution, numeric header formatting, fixed default content type handling, and moved the mock marker header before `WriteHeader`.
+
+- [x] **Step 4: Update README**
+
+Updated `mocking` support notes to include `response_schema`, JSON/plain-text/XML schema bodies, response headers, variable resolution, and the remaining random-value distribution limitation.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/mocking -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

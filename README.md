@@ -101,8 +101,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
   - support CORS preflight, `POST` validation, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
   - not support route `:ext` URI rewriting, OpenResty `upstream_trailer_*` fidelity, or streaming chunk-level response filters
 - [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/)
-- [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 90%
-  - not support `response_schema`
+- [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 97%
+  - support `response_example`, `response_schema` object generation, JSON/plain-text/XML schema bodies, response headers, bounded variable resolution, delay, status, content type, and mock marker header
+  - not support APISIX random response value distribution exactly for schema fields without examples
 - [x] [degraphql](https://apisix.apache.org/zh/docs/apisix/plugins/degraphql/) 65%
   - support GET/POST rewriting to GraphQL `query`, `variables`, and `operationName`
   - not support GraphQL AST validation or multi-operation validation

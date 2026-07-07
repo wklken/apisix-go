@@ -2,8 +2,10 @@ package http_logger
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +94,72 @@ func TestPostInitSetsTextContentTypeForNewLineConcat(t *testing.T) {
 	case got := <-received:
 		if got != "text/plain" {
 			t.Fatalf("content-type = %q, want text/plain", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for http log request")
+	}
+}
+
+func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:              server.URL,
+		IncludeReqBody:   true,
+		IncludeRespBody:  true,
+		MaxReqBodyBytes:  32,
+		MaxRespBodyBytes: 32,
+	})
+
+	upstreamBody := make(chan string, 1)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"order":1}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("upstream read body: %v", err)
+		}
+		upstreamBody <- string(body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Body.String() != `{"ok":true}` {
+		t.Fatalf("response body = %q, want upstream body preserved", rr.Body.String())
+	}
+	select {
+	case body := <-upstreamBody:
+		if body != `{"order":1}` {
+			t.Fatalf("upstream request body = %q, want original body", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream request body")
+	}
+
+	select {
+	case body := <-received:
+		request, ok := body["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("request = %#v, want object", body["request"])
+		}
+		if request["body"] != `{"order":1}` {
+			t.Fatalf("request body = %#v, want captured request body", request["body"])
+		}
+		response, ok := body["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("response = %#v, want object", body["response"])
+		}
+		if response["body"] != `{"ok":true}` {
+			t.Fatalf("response body = %#v, want captured response body", response["body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for http log request")

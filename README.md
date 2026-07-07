@@ -290,11 +290,10 @@ Loggers:
 
 > 19/19
 
-- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 50%
-  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, and official body-size config validation
+- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 55%
+  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_resp_body`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`
-  - not support `include_req_body` and `include_req_body_expr`
-  - not support `include_resp_body` and `include_resp_body_expr`
+  - not support `include_req_body_expr` or `include_resp_body_expr`
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 55%
   - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, and basic `sw8` trace correlation
   - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture

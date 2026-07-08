@@ -193,6 +193,41 @@ func TestHandlerUsesMetadataQuotaHeaderNames(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesRejectedMessage(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:        1,
+		TimeWindow:   60,
+		RejectedCode: http.StatusTooManyRequests,
+		RejectedMsg:  "quota exceeded",
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first.RemoteAddr = "192.0.2.1:1234"
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, first)
+	if firstRecorder.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second.RemoteAddr = "192.0.2.1:1234"
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, second)
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+	if got := secondRecorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	if got := secondRecorder.Body.String(); got != `{"error_msg":"quota exceeded"}` {
+		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"quota exceeded"}`)
+	}
+}
+
 func TestPostInitRejectsDuplicateRuleKeys(t *testing.T) {
 	p := &Plugin{config: Config{
 		Rules: []Rule{

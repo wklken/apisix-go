@@ -208,6 +208,8 @@ type Config struct {
 	Redis                RedisConfig        `json:"redis_config,omitempty"`
 	RedisCluster         RedisClusterConfig `json:"redis_cluster_config,omitempty"`
 	Rules                []Rule             `json:"rules,omitempty"`
+
+	rejectBody string
 }
 
 type Rule struct {
@@ -306,6 +308,10 @@ func (p *Plugin) PostInit() error {
 	if p.config.ShowLimitQuotaHeader == nil {
 		b := true
 		p.config.ShowLimitQuotaHeader = &b
+	}
+	if p.config.RejectedMsg != "" {
+		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+		p.config.rejectBody = util.BytesToString(body)
 	}
 	if p.metadata == (Metadata{}) {
 		p.metadata = loadMetadata()
@@ -451,11 +457,13 @@ func (p *Plugin) runLimit(
 			w.Header().Add(headers.reset, strconv.FormatInt(context.Reset, 10))
 		}
 
-		rejectedMsg := "Limit exceeded"
 		if p.config.RejectedMsg != "" {
-			rejectedMsg = p.config.RejectedMsg
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(p.config.RejectedCode)
+			_, _ = w.Write([]byte(p.config.rejectBody))
+			return false
 		}
-		http.Error(w, rejectedMsg, p.config.RejectedCode)
+		w.WriteHeader(p.config.RejectedCode)
 		return false
 	}
 

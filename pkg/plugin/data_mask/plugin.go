@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -267,6 +268,19 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 		}
 		return masked
 	}
+	if segment.hasIndex {
+		items, ok := value.([]any)
+		if !ok {
+			return false
+		}
+		if segment.index < 0 || segment.index >= len(items) {
+			return false
+		}
+		if len(segments) == 1 {
+			return maskJSONArrayElement(items, segment.index, rule)
+		}
+		return maskJSONNode(items[segment.index], segments[1:], rule)
+	}
 	return maskJSONNode(value, segments[1:], rule)
 }
 
@@ -295,6 +309,28 @@ func maskJSONField(object map[string]any, field string, rule MaskRule) bool {
 	return false
 }
 
+func maskJSONArrayElement(items []any, index int, rule MaskRule) bool {
+	value := items[index]
+	switch rule.Action {
+	case "remove":
+		items[index] = nil
+		return true
+	case "replace":
+		items[index] = rule.Value
+		return true
+	case "regex":
+		valueString, ok := value.(string)
+		if !ok {
+			return false
+		}
+		if masked, ok := maskString(valueString, rule); ok {
+			items[index] = masked
+			return true
+		}
+	}
+	return false
+}
+
 func maskString(value string, rule MaskRule) (string, bool) {
 	re, err := regexp.Compile(rule.Regex)
 	if err != nil {
@@ -305,8 +341,10 @@ func maskString(value string, rule MaskRule) (string, bool) {
 }
 
 type pathSegment struct {
-	name string
-	each bool
+	name     string
+	each     bool
+	hasIndex bool
+	index    int
 }
 
 func parseJSONPath(path string) []pathSegment {
@@ -319,17 +357,37 @@ func parseJSONPath(path string) []pathSegment {
 		if part == "" {
 			return nil
 		}
-		segment := pathSegment{name: part}
-		if strings.HasSuffix(part, "[*]") {
-			segment.name = strings.TrimSuffix(part, "[*]")
-			segment.each = true
-			if segment.name == "" {
-				return nil
-			}
+		segment, ok := parsePathSegment(part)
+		if !ok {
+			return nil
 		}
 		segments = append(segments, segment)
 	}
 	return segments
+}
+
+func parsePathSegment(part string) (pathSegment, bool) {
+	segment := pathSegment{name: part}
+	if strings.HasSuffix(part, "[*]") {
+		segment.name = strings.TrimSuffix(part, "[*]")
+		segment.each = true
+		return segment, segment.name != ""
+	}
+	if !strings.HasSuffix(part, "]") {
+		return segment, true
+	}
+	open := strings.LastIndex(part, "[")
+	if open <= 0 {
+		return pathSegment{}, false
+	}
+	index, err := strconv.Atoi(part[open+1 : len(part)-1])
+	if err != nil {
+		return pathSegment{}, false
+	}
+	segment.name = part[:open]
+	segment.hasIndex = true
+	segment.index = index
+	return segment, true
 }
 
 func readBody(r *http.Request) ([]byte, error) {

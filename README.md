@@ -211,8 +211,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [chaitin-waf](https://apisix.apache.org/zh/docs/apisix/plugins/chaitin-waf/) 55%
   - support `mode`, `match.vars` for common request variables, `append_waf_resp_header`, `append_waf_debug_header`, metadata/config `nodes`, config timeout/body/keepalive defaults, monitor/block/off behavior, request body restoration, official WAF response headers, and block response body with `event_id`
   - not support native `resty.t1k`, APISIX health checker/round-robin picker fidelity, full `lua-resty-expr`, response header-filter integration, Unix socket nodes, or real SafeLine binary protocol details
-- [x] [data-mask](https://apisix.apache.org/zh/docs/apisix/plugins/data-mask/) 60%
-  - support query/header/urlencoded-body masking, simple JSONPath body masking for dot paths and `[*]`, `remove` / `replace` / `regex`, `max_body_size`, `max_req_post_args`, and official plugin name/schema/priority
+- [x] [data-mask](https://apisix.apache.org/zh/docs/apisix/plugins/data-mask/) 65%
+  - support query/header/urlencoded-body masking, simple JSONPath body masking for dot paths, `[*]`, and numeric array indexes, `remove` / `replace` / `regex`, `max_body_size`, `max_req_post_args`, and official plugin name/schema/priority
   - not support APISIX log-phase-only behavior, full `jsonpath` syntax, temporary-file request bodies, access-log `$request_line` rewriting, or preserving original upstream request data while masking logger output
 - [x] [oas-validator](https://apisix.apache.org/docs/apisix/plugins/oas-validator/) 55%
   - support official plugin name, priority, schema, inline JSON `spec`, `spec_url` fetch with custom headers, timeout and `ssl_verify`, method/path matching, required path/query/header parameters, JSON request body schema validation, skip flags, `reject_if_not_match`, `verbose_errors`, and configurable rejection status

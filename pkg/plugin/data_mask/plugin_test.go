@@ -137,6 +137,59 @@ func TestHandlerMasksJSONBodyWithSimpleJSONPath(t *testing.T) {
 	})).ServeHTTP(rr, req)
 }
 
+func TestHandlerMasksJSONBodyWithArrayIndexJSONPath(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Request: []MaskRule{
+			{Type: "body", BodyFormat: "json", Name: "$.users[0].token", Action: "replace", Value: "*****"},
+			{
+				Type:       "body",
+				BodyFormat: "json",
+				Name:       "$.users[1].credit.card",
+				Action:     "regex",
+				Regex:      `(\d+)-\d+-\d+-(\d+)`,
+				Value:      "$1-****-****-$2",
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{
+		"users": [
+			{"name": "alice", "token": "tok-a", "credit": {"card": "1234-5678-9012-3456"}},
+			{"name": "bob", "token": "tok-b", "credit": {"card": "9876-5432-1098-7654"}}
+		]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var data map[string]any
+		if err := json.Unmarshal(body, &data); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		users := data["users"].([]any)
+		first := users[0].(map[string]any)
+		if first["token"] != "*****" {
+			t.Fatalf("first token = %v, want masked", first["token"])
+		}
+		firstCard := first["credit"].(map[string]any)["card"]
+		if firstCard != "1234-5678-9012-3456" {
+			t.Fatalf("first card = %v, want preserved", firstCard)
+		}
+		second := users[1].(map[string]any)
+		if second["token"] != "tok-b" {
+			t.Fatalf("second token = %v, want preserved", second["token"])
+		}
+		secondCard := second["credit"].(map[string]any)["card"]
+		if secondCard != "9876-****-****-7654" {
+			t.Fatalf("second card = %v, want masked", secondCard)
+		}
+	})).ServeHTTP(rr, req)
+}
+
 func TestPostInitDefaults(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 

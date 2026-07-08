@@ -6049,3 +6049,34 @@ Updated `fault-injection` support notes to include `vars` gating and fractional 
 - [x] **Step 6: Verify**
 
 Run: `go test ./pkg/plugin/fault_injection -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 180: Add `data-mask` JSONPath Array Indexes
+
+**Files:**
+- Modify: `pkg/plugin/data_mask/plugin.go`
+- Modify: `pkg/plugin/data_mask/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `data-mask` use of the `jsonpath` library for JSON body field selection.
+- Produces: simple JSONPath numeric array-index traversal for paths such as `$.users[0].token`.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/data-mask.lua`; JSON body masking uses `jsonpath.nodes`, so array-indexed paths are part of the valuable supported surface even though this Go plugin still intentionally avoids a full `jsonpath` clone.
+
+- [x] **Step 2: Add focused test**
+
+Added a test proving `$.users[0].token` masks only the first array element and `$.users[1].credit.card` can apply regex masking to a second array element.
+
+- [x] **Step 3: Implement array-index traversal**
+
+Extended the simple JSONPath segment parser to recognize non-negative numeric indexes and traverse array elements before continuing to nested object fields.
+
+- [x] **Step 4: Update README**
+
+Updated `data-mask` support notes to include numeric array indexes while keeping full `jsonpath` syntax as a documented gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/data_mask -run TestHandlerMasksJSONBodyWithArrayIndexJSONPath -count=1 -timeout=10s -v`, `go test ./pkg/plugin/data_mask -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

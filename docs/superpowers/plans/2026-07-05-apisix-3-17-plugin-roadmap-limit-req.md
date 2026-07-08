@@ -6514,3 +6514,34 @@ Updated `limit-conn` support notes to include `only_use_default_delay`; Redis an
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_conn -run TestIncreaseUsesDefaultDelayWhenConfigured -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 195: Support `http-logger` Body Expression Gates
+
+**Files:**
+- Modify: `pkg/plugin/http_logger/plugin.go`
+- Modify: `pkg/plugin/http_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `http-logger` `include_req_body_expr` and `include_resp_body_expr` config.
+- Produces: request and response body logging that is gated by bounded request-variable expressions while preserving existing body replay and capped capture behavior.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/http-logger.lua` and `apisix/utils/log-util.lua`; APISIX evaluates `include_req_body_expr` before reading request bodies and `include_resp_body_expr` while collecting response bodies, both only when the corresponding body capture flag is enabled.
+
+- [x] **Step 2: Add focused tests**
+
+Added tests proving matching expressions capture request and response bodies, while non-matching expressions omit both logged bodies without preventing downstream from reading the original request body.
+
+- [x] **Step 3: Implement bounded expression gates**
+
+Added parsed config fields for `include_req_body_expr` / `include_resp_body_expr`, gated request body reads before downstream execution, captured response status in the local recorder, and evaluated response body logging after downstream completion using the existing local `==`, `!=`, numeric comparison, regex, `AND`, and `OR` expression subset.
+
+- [x] **Step 4: Update README**
+
+Updated `http-logger` support notes to include body expression gates; APISIX batch processor behavior and `max_pending_entries` remain documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/http_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/http_logger -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

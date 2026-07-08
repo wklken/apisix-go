@@ -1,12 +1,13 @@
 package uri_blocker
 
 import (
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -57,7 +58,8 @@ type Config struct {
 	RejectedMsg     string   `json:"rejected_msg,omitempty"`
 	CaseInsensitive *bool    `json:"case_insensitive,omitempty"`
 
-	RegexRule *regexp.Regexp
+	RegexRule  *regexp.Regexp
+	rejectBody string
 }
 
 func (p *Plugin) Init() error {
@@ -90,14 +92,15 @@ func (p *Plugin) PostInit() error {
 			blockRulesConcat = strings.Join(blockRules, "|")
 		}
 
-		blockRulesConcat = "(" + blockRulesConcat + ")"
-
 		if *p.config.CaseInsensitive {
 			blockRulesConcat = "(?i)" + blockRulesConcat
 		}
 	}
 
-	fmt.Println("the block rules:", blockRulesConcat)
+	if p.config.RejectedMsg != "" {
+		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+		p.config.rejectBody = util.BytesToString(body)
+	}
 
 	p.config.RegexRule = regexp.MustCompile(blockRulesConcat)
 	return nil
@@ -109,13 +112,13 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("uri-blocker handler", r.RequestURI)
-		fmt.Println("is match: ", p.config.RegexRule.MatchString(r.RequestURI))
 		if p.config.RegexRule.MatchString(r.RequestURI) {
 			if p.config.RejectedMsg != "" {
-				http.Error(w, p.config.RejectedMsg, p.config.RejectedCode)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(p.config.RejectedCode)
+				_, _ = w.Write([]byte(p.config.rejectBody))
 			} else {
-				http.Error(w, http.StatusText(p.config.RejectedCode), p.config.RejectedCode)
+				w.WriteHeader(p.config.RejectedCode)
 			}
 			return
 		}

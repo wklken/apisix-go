@@ -182,7 +182,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [acl](https://apisix.apache.org/zh/docs/apisix/plugins/acl/) 70%
   - only support authenticated consumer `labels`
   - not support `external_user` label fields
-- [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 100%
+- [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 95%
+  - support `block_rules`, `rejected_code`, `rejected_msg`, `case_insensitive`, APISIX-style empty default rejection bodies, and `error_msg` JSON custom rejections
+  - not support APISIX PCRE/JIT regex engine parity exactly
 - [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 95%

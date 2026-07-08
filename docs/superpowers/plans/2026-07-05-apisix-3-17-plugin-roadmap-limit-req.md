@@ -1861,6 +1861,37 @@ Updated `referer-restriction` support notes to include whitelist/blacklist, miss
 
 Run: `go test ./pkg/plugin/referer_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 171: Align `uri-blocker` Rejection Responses
+
+**Files:**
+- Modify: `pkg/plugin/uri_blocker/plugin.go`
+- Add: `pkg/plugin/uri_blocker/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `uri-blocker` rewrite response behavior for blocked request URIs.
+- Produces: APISIX-compatible default empty-body rejections and custom `error_msg` JSON rejections.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/uri-blocker.lua`; blocked requests return only `rejected_code` when `rejected_msg` is omitted, and return `{ error_msg = rejected_msg }` when a custom message is configured.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover default blocked URI empty body, custom `error_msg` JSON body/content type/status, case-insensitive matching, and allowed URI fall-through.
+
+- [x] **Step 3: Implement response parity**
+
+Removed debug stdout, stopped wrapping the joined regex rules in extra parentheses, and replaced `http.Error` response paths with direct APISIX-style status/JSON writes.
+
+- [x] **Step 4: Update README**
+
+Updated `uri-blocker` support notes to include block rules, rejection config, case-insensitive matching, APISIX-style response bodies, and the remaining exact PCRE/JIT regex parity gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/uri_blocker -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

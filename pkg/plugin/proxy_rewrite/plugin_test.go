@@ -145,6 +145,41 @@ func TestHandlerMutatesRequestHeaders(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 }
 
+func TestHandlerResolvesRegexURICapturesInHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RegexURI: []string{`^/users/(\d+)/orders/(\d+)$`, `/orders/$2/users/$1`},
+		Headers: Headers{
+			Set: map[string]string{
+				"X-User-ID":  "$1",
+				"X-Order-ID": "${2}",
+				"X-Mixed":    "$request_method:$1:${2}",
+			},
+			Add: map[string]string{
+				"X-Capture": "$1-${2}",
+			},
+		},
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-User-ID"); got != "42" {
+			t.Fatalf("X-User-ID = %q, want 42", got)
+		}
+		if got := r.Header.Get("X-Order-ID"); got != "99" {
+			t.Fatalf("X-Order-ID = %q, want 99", got)
+		}
+		if got := r.Header.Get("X-Mixed"); got != "GET:42:99" {
+			t.Fatalf("X-Mixed = %q, want GET:42:99", got)
+		}
+		if got := r.Header.Values("X-Capture"); len(got) != 1 || got[0] != "42-99" {
+			t.Fatalf("X-Capture values = %v, want [42-99]", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/users/42/orders/99", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+}
+
 func TestHeadersUnmarshalLegacySet(t *testing.T) {
 	var cfg Config
 	if err := json.Unmarshal([]byte(`{"headers":{"X-Legacy":"$uri","X-Number":7}}`), &cfg); err != nil {

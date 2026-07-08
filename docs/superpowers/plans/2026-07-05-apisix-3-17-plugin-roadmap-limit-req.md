@@ -6142,3 +6142,34 @@ Updated `cors` support notes to include `allow_origins_by_metadata` while keepin
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/cors -run 'TestHandlerAllowsOriginFromMetadata|TestHandlerRestrictsDefaultWildcardWhenMetadataConfigured|TestHandlerFallsBackToConfiguredOriginAfterMetadataMiss' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 183: Resolve `proxy-rewrite` Header Captures
+
+**Files:**
+- Modify: `pkg/plugin/proxy_rewrite/plugin.go`
+- Modify: `pkg/plugin/proxy_rewrite/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `proxy-rewrite` `regex_uri` capture exposure through `proxy_rewrite_regex_uri_captures`.
+- Produces: request header `add`, `set`, and legacy set values that can reference `regex_uri` captures with `$1` and `${1}` before normal request-variable resolution.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/proxy-rewrite.lua`; header values are first passed through `core.utils.resolve_var_with_captures(value, ctx.proxy_rewrite_regex_uri_captures)` and then through normal `core.utils.resolve_var(value, ctx.var)`.
+
+- [x] **Step 2: Add focused test**
+
+Added a test proving `headers.set` and `headers.add` can combine `$1`, `${2}`, and normal variables such as `$request_method` after a `regex_uri` match.
+
+- [x] **Step 3: Implement capture propagation**
+
+Changed URI rewriting to return the first matching regexp submatches, passed those captures into header application, and resolved `$1` / `${1}` placeholders before existing request-variable substitution.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-rewrite` support notes to include `regex_uri` capture resolution in header values and leave exact OpenResty URI safe-encoding parity as the remaining documented gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_rewrite -run TestHandlerResolvesRegexURICapturesInHeaders -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

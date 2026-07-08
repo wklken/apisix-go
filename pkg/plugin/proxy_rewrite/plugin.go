@@ -169,8 +169,8 @@ func (p *Plugin) Config() interface{} {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		uri := p.rewriteURI(p.rewriteSourceURI(r))
-		p.config.Headers.apply(r)
+		uri, captures := p.rewriteURI(p.rewriteSourceURI(r))
+		p.config.Headers.apply(r, captures)
 
 		data := map[string]interface{}{
 			"uri":     uri,
@@ -187,15 +187,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (h Headers) apply(r *http.Request) {
+func (h Headers) apply(r *http.Request, captures []string) {
 	for name, value := range h.LegacySet {
-		r.Header.Set(name, resolveHeaderValue(r, value))
+		r.Header.Set(name, resolveHeaderValue(r, value, captures))
 	}
 	for name, value := range h.Add {
-		r.Header.Add(name, resolveHeaderValue(r, value))
+		r.Header.Add(name, resolveHeaderValue(r, value, captures))
 	}
 	for name, value := range h.Set {
-		r.Header.Set(name, resolveHeaderValue(r, value))
+		r.Header.Set(name, resolveHeaderValue(r, value, captures))
 	}
 	for _, name := range h.Remove {
 		r.Header.Del(name)
@@ -209,26 +209,47 @@ func (p *Plugin) rewriteSourceURI(r *http.Request) string {
 	return r.URL.Path
 }
 
-func (p *Plugin) rewriteURI(path string) string {
+func (p *Plugin) rewriteURI(path string) (string, []string) {
 	if p.config.Uri != "" {
-		return p.config.Uri
+		return p.config.Uri, nil
 	}
 	for _, pair := range p.config.regexURIPairs {
-		if pair.pattern.MatchString(path) {
-			return pair.pattern.ReplaceAllString(path, pair.replacement)
+		if matches := pair.pattern.FindStringSubmatch(path); matches != nil {
+			return pair.pattern.ReplaceAllString(path, pair.replacement), matches
 		}
 	}
 	if p.config.UseRealRequestURIUnsafe {
-		return path
+		return path, nil
 	}
-	return ""
+	return "", nil
 }
 
-var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
+var (
+	variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
+	capturePattern  = regexp.MustCompile(`\$\{?([0-9]+)\}?`)
+)
 
-func resolveHeaderValue(r *http.Request, value string) string {
+func resolveHeaderValue(r *http.Request, value string, captures []string) string {
+	value = resolveCaptureValue(value, captures)
 	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
 		return requestVar(r, strings.TrimPrefix(variable, "$"))
+	})
+}
+
+func resolveCaptureValue(value string, captures []string) string {
+	if len(captures) == 0 {
+		return value
+	}
+	return capturePattern.ReplaceAllStringFunc(value, func(variable string) string {
+		matches := capturePattern.FindStringSubmatch(variable)
+		if len(matches) != 2 {
+			return variable
+		}
+		index, err := strconv.Atoi(matches[1])
+		if err != nil || index <= 0 || index >= len(captures) {
+			return ""
+		}
+		return captures[index]
 	})
 }
 

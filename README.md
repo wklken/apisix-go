@@ -93,9 +93,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 80%
   - support `status_code`, `body`, `body_base64`, header `add` / `set` / `remove`, bounded `vars`, header value variable resolution, and response body `filters`
   - not support full `lua-resty-expr` parity, compressed response-body decoding before filters, or streaming chunk-level body filters
-- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 95%
-  - support `uri`, `regex_uri`, `use_real_request_uri_unsafe`, `method`, `host`, `scheme`, request header `add` / `set` / `remove`, legacy header set config, and bounded header value variable resolution
-  - not support exact OpenResty URI safe-encoding parity or regex-capture variable resolution in header values
+- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 98%
+  - support `uri`, `regex_uri`, `use_real_request_uri_unsafe`, `method`, `host`, `scheme`, request header `add` / `set` / `remove`, legacy header set config, bounded header value variable resolution, and `regex_uri` capture resolution in header values
+  - not support exact OpenResty URI safe-encoding parity
 - [x] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/) 55%
   - support base64 `.pb` FileDescriptorSet proto resources, string/integer `proto_id`, GET query and POST JSON request mapping, gRPC request framing, `grpc-timeout`, JSON response decoding, and gRPC status to HTTP status mapping
   - not support plain `.proto` text compilation, imported source resolution without `.pb`, `pb_option` encoding variants, `grpc-status-details-bin` body decoding, or streaming response chunk filters

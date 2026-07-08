@@ -127,20 +127,123 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	}
 }
 
-func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
+func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:                host,
+		Port:                mustAtoi(t, port),
+		SockType:            "udp",
+		Timeout:             3000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req.Header.Set("X-Log-Body", "yes")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
+		}
+		if request["body"] != `{"order":2}` {
+			t.Fatalf("payload request body = %#v, want captured request body", request["body"])
+		}
+
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if response["body"] != `{"created":true}` {
+			t.Fatalf("payload response body = %#v, want captured response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog UDP message")
+	}
+}
+
+func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:                host,
+		Port:                mustAtoi(t, port),
+		SockType:            "udp",
+		Timeout:             3000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req.Header.Set("X-Log-Body", "no")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":3}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":false}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		if _, ok := payload["request"]; ok {
+			t.Fatalf("payload request = %#v, want no request body", payload["request"])
+		}
+		if _, ok := payload["response"]; ok {
+			t.Fatalf("payload response = %#v, want no response body", payload["response"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog UDP message")
+	}
+}
+
+func TestSchemaAcceptsOfficialBodyFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 
 	config := map[string]any{
-		"host":                "127.0.0.1",
-		"port":                514,
-		"max_req_body_bytes":  1024,
-		"max_resp_body_bytes": 2048,
+		"host":                   "127.0.0.1",
+		"port":                   514,
+		"include_req_body_expr":  []any{[]any{"http_x_log_body", "==", "yes"}},
+		"include_resp_body_expr": []any{[]any{"status", "==", "201"}},
+		"max_req_body_bytes":     1024,
+		"max_resp_body_bytes":    2048,
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected official body size fields: %v", err)
+		t.Fatalf("schema rejected official body fields: %v", err)
 	}
 }
 

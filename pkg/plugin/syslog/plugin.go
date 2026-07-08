@@ -7,7 +7,11 @@ import (
 	"log/syslog"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -108,23 +112,22 @@ type Plugin struct {
 }
 
 type Config struct {
-	Host             string            `json:"host"`
-	Port             int               `json:"port"`
-	FlushLimit       int               `json:"flush_limit,omitempty"`
-	DropLimit        int               `json:"drop_limit,omitempty"`
-	Timeout          int               `json:"timeout,omitempty"`
-	LogFormat        map[string]string `json:"log_format,omitempty"`
-	SockType         string            `json:"sock_type,omitempty"`
-	PoolSize         int               `json:"pool_size,omitempty"`
-	TLS              bool              `json:"tls,omitempty"`
-	IncludeReqBody   bool              `json:"include_req_body,omitempty"`
-	IncludeRespBody  bool              `json:"include_resp_body,omitempty"`
-	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
-	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
+	Host                string            `json:"host"`
+	Port                int               `json:"port"`
+	FlushLimit          int               `json:"flush_limit,omitempty"`
+	DropLimit           int               `json:"drop_limit,omitempty"`
+	Timeout             int               `json:"timeout,omitempty"`
+	LogFormat           map[string]string `json:"log_format,omitempty"`
+	SockType            string            `json:"sock_type,omitempty"`
+	PoolSize            int               `json:"pool_size,omitempty"`
+	TLS                 bool              `json:"tls,omitempty"`
+	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
+	IncludeReqBodyExpr  [][]any           `json:"include_req_body_expr,omitempty"`
+	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
+	IncludeRespBodyExpr [][]any           `json:"include_resp_body_expr,omitempty"`
+	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
 
-	// FIXME: not support
-	// IncludeReqBodyExpr  [][]interface{} `json:"include_req_body_expr,omitempty"`
-	// IncludeRespBodyExpr [][]interface{} `json:"include_resp_body_expr,omitempty"`
 	addr string
 }
 
@@ -189,7 +192,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
-		if p.config.IncludeReqBody {
+		if p.config.IncludeReqBody && exprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
@@ -207,12 +210,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(writer, r)
+		status := 0
+		if recorder != nil {
+			status = recorder.status
+		}
 
 		logFields := apisixlog.GetFields(r, p.LogFormat)
 		if requestBody != "" {
 			nestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.body.Len() > 0 {
+		if recorder != nil && recorder.body.Len() > 0 && exprMatched(r, p.config.IncludeRespBodyExpr, status) {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
@@ -223,11 +230,20 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 type syslogResponseRecorder struct {
 	http.ResponseWriter
-	body  bytes.Buffer
-	limit int
+	body   bytes.Buffer
+	limit  int
+	status int
+}
+
+func (w *syslogResponseRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }
 
 func (w *syslogResponseRecorder) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
 	w.capture(body)
 	return w.ResponseWriter.Write(body)
 }
@@ -265,6 +281,130 @@ func nestedLogMap(fields map[string]any, key string) map[string]any {
 	value := map[string]any{}
 	fields[key] = value
 	return value
+}
+
+func exprMatched(r *http.Request, exprs [][]any, status int) bool {
+	if len(exprs) == 0 {
+		return true
+	}
+
+	pendingOp := "AND"
+	hasResult := false
+	result := true
+	for _, condition := range exprs {
+		if len(condition) == 1 {
+			if op, ok := condition[0].(string); ok {
+				switch strings.ToUpper(op) {
+				case "AND", "OR":
+					pendingOp = strings.ToUpper(op)
+				default:
+					return false
+				}
+				continue
+			}
+		}
+
+		matched := matchCondition(r, condition, status)
+		if !hasResult {
+			result = matched
+			hasResult = true
+			continue
+		}
+
+		if pendingOp == "OR" {
+			result = result || matched
+		} else {
+			result = result && matched
+		}
+		pendingOp = "AND"
+	}
+	return hasResult && result
+}
+
+func matchCondition(r *http.Request, condition []any, status int) bool {
+	if len(condition) != 3 {
+		return false
+	}
+
+	left := fmt.Sprint(condition[0])
+	op := fmt.Sprint(condition[1])
+	right := fmt.Sprint(condition[2])
+	actual := requestVar(r, left, status)
+
+	switch op {
+	case "==":
+		return actual == right
+	case "!=":
+		return actual != right
+	case ">":
+		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
+	case ">=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
+	case "<":
+		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
+	case "<=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
+	case "~":
+		matched, _ := regexp.MatchString(right, actual)
+		return matched
+	case "!~":
+		matched, _ := regexp.MatchString(right, actual)
+		return !matched
+	default:
+		return false
+	}
+}
+
+func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
+	l, err := strconv.ParseFloat(left, 64)
+	if err != nil {
+		return false
+	}
+	r, err := strconv.ParseFloat(right, 64)
+	if err != nil {
+		return false
+	}
+	return compare(l, r)
+}
+
+func requestVar(r *http.Request, name string, status int) string {
+	name = strings.TrimPrefix(name, "$")
+	switch {
+	case name == "status", name == "status_code":
+		if status > 0 {
+			return strconv.Itoa(status)
+		}
+		return fmt.Sprint(apisixctx.GetRequestVar(r, "$status"))
+	case name == "uri":
+		return r.URL.Path
+	case name == "request_uri":
+		return r.URL.RequestURI()
+	case name == "method", name == "request_method":
+		return r.Method
+	case name == "host":
+		return r.Host
+	case name == "scheme":
+		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
+			return scheme
+		}
+		if r.TLS != nil {
+			return "https"
+		}
+		return "http"
+	case name == "remote_addr":
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	case strings.HasPrefix(name, "arg_"):
+		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "http_"):
+		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
+		return r.Header.Get(header)
+	default:
+		return ""
+	}
 }
 
 func (p *Plugin) Send(log map[string]any) {

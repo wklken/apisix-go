@@ -139,3 +139,48 @@ func TestHandlerUsesFirstMatchingRule(t *testing.T) {
 		t.Fatalf("status = %d, want first matching rule status 403", rr.Code)
 	}
 }
+
+func TestHandlerRunsLimitCountAction(t *testing.T) {
+	var cfg Config
+	err := util.Parse(map[string]any{
+		"rules": []any{
+			map[string]any{
+				"actions": []any{
+					[]any{
+						"limit-count",
+						map[string]any{
+							"count":         1,
+							"time_window":   60,
+							"key":           "remote_addr",
+							"rejected_code": http.StatusTooManyRequests,
+						},
+					},
+				},
+			},
+		},
+	}, &cfg)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	p := newTestPlugin(t, cfg)
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first.RemoteAddr = "192.0.2.1:1234"
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, first)
+	if firstRecorder.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second.RemoteAddr = "192.0.2.1:1234"
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, second)
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+}

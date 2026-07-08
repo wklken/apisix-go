@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -69,8 +71,10 @@ type Rule struct {
 }
 
 type Action struct {
-	Name   string
-	Return ReturnAction
+	Name       string
+	Config     map[string]any
+	Return     ReturnAction
+	limitCount *limit_count.Plugin
 }
 
 type ReturnAction struct {
@@ -88,10 +92,13 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(raw[0], &a.Name); err != nil {
 		return err
 	}
-	if a.Name == "return" && len(raw) > 1 {
-		if err := json.Unmarshal(raw[1], &a.Return); err != nil {
+	if len(raw) > 1 {
+		if err := json.Unmarshal(raw[1], &a.Config); err != nil {
 			return err
 		}
+	}
+	if a.Name == "return" && len(raw) > 1 {
+		return util.Parse(a.Config, &a.Return)
 	}
 	return nil
 }
@@ -108,6 +115,25 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	for ruleIndex := range p.config.Rules {
+		for actionIndex := range p.config.Rules[ruleIndex].Actions {
+			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
+			if action.Name != "limit-count" {
+				continue
+			}
+			plugin := &limit_count.Plugin{}
+			if err := plugin.Init(); err != nil {
+				return err
+			}
+			if err := util.Parse(action.Config, plugin.Config()); err != nil {
+				return err
+			}
+			if err := plugin.PostInit(); err != nil {
+				return err
+			}
+			action.limitCount = plugin
+		}
+	}
 	return nil
 }
 
@@ -117,7 +143,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if !matchRule(r, rule.Case) {
 				continue
 			}
-			if p.handleAction(w, rule.Actions) {
+			if p.handleAction(w, r, rule.Actions) {
 				return
 			}
 			break
@@ -128,11 +154,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) handleAction(w http.ResponseWriter, actions []Action) bool {
+func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, actions []Action) bool {
 	if len(actions) == 0 {
 		return false
 	}
 	action := actions[0]
+	if action.Name == "limit-count" && action.limitCount != nil {
+		allowed := false
+		action.limitCount.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			allowed = true
+		})).ServeHTTP(w, r)
+		return !allowed
+	}
+
 	if action.Name != "return" {
 		return false
 	}

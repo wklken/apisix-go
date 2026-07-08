@@ -6421,3 +6421,34 @@ Updated `limit-conn` support notes to include top-level and rule-level string va
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_conn -run TestHandlerResolvesStringRuleConnAndBurst -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 192: Support Workflow `limit-count` Action
+
+**Files:**
+- Modify: `pkg/plugin/workflow/plugin.go`
+- Modify: `pkg/plugin/workflow/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 workflow action arrays using `["limit-count", {...}]`.
+- Produces: workflow rules that compile a delegated `limit-count` plugin action during `PostInit`; allowed requests continue to the next handler, while quota rejections stop the request with the existing `limit-count` response.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/workflow.lua`; workflow supports registered plugin actions through `support_action`, and `limit-count` registers its access handler with workflow.
+
+- [x] **Step 2: Add focused test**
+
+Added a workflow test using the official action-array shape with `["limit-count", {"count": 1, "time_window": 60, "key": "remote_addr"}]`, proving the first request falls through and the second is rejected.
+
+- [x] **Step 3: Implement delegated `limit-count` action**
+
+Stored action config payloads during action unmarshalling, compiled `limit_count.Plugin` instances during workflow `PostInit`, and ran the delegated handler with a sentinel next handler to distinguish allowed requests from rejections.
+
+- [x] **Step 4: Update README**
+
+Updated `workflow` support notes to include delegated `limit-count` actions, leaving `limit-conn`, full expression parity, and delegated log handlers as documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/workflow -run TestHandlerRunsLimitCountAction -count=1 -timeout=10s -v` and `go test ./pkg/plugin/workflow -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -60,25 +60,3 @@ func (p *Plugin) isTrustedProxy(ip net.IP) bool {
 	}
 	return false
 }
-
-// validateHeader will parse X-Forwarded-For header and return the trusted client IP address
-func (p *Plugin) validateHeader(header string) (clientIP string, valid bool) {
-	if header == "" {
-		return "", false
-	}
-	items := strings.Split(header, ",")
-	for i := len(items) - 1; i >= 0; i-- {
-		ipStr := strings.TrimSpace(items[i])
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			break
-		}
-
-		// X-Forwarded-For is appended by proxy
-		// Check IPs in reverse order and stop when find untrusted proxy
-		if (i == 0) || (!p.isTrustedProxy(ip)) {
-			return ipStr, true
-		}
-	}
-	return "", false
-}

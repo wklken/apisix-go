@@ -47,7 +47,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) 75%
   - support `Accept-Encoding: br` / `*`, `types`, `min_length`, `comp_level`, `http_version`, `vary`, content-encoding skip, content-length removal, and strong ETag weakening
   - not support NGINX-native streaming compression, `mode`, `lgwin`, or `lgblock` runtime tuning beyond schema/default acceptance
-- [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 100%
+- [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 85%
+  - support `arg_*`, `http_*`, `http_x_forwarded_for`, bare IP and IP:port sources, `trusted_addresses`, `recursive`, and request-context `remote_addr` / `remote_port` updates
+  - not support APISIX-Base `set_real_ip`, NGINX variable cache flushing, full NGINX variable source coverage, or exact `ip_def` schema validation
 - [x] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/) 40%
   - support `/v1/server_info` response shape when `server-info` is enabled in `conf.plugins`
   - not support periodic etcd server-info reporting or lease keepalive

@@ -1954,6 +1954,38 @@ Updated `ip-restriction` support notes to include whitelist/blacklist, CIDR/IP m
 
 Run: `go test ./pkg/plugin/ip_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 174: Align `real-ip` Source Parsing And Trusted Proxy Behavior
+
+**Files:**
+- Modify: `pkg/plugin/real_ip/plugin.go`
+- Modify: `pkg/plugin/real_ip/util.go`
+- Add: `pkg/plugin/real_ip/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `real-ip` source lookup, `X-Forwarded-For`, and trusted address behavior.
+- Produces: request-context `remote_addr` and `remote_port` values that follow APISIX source parsing for the supported Go data-plane variables.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/real-ip.lua`, docs, and tests; APISIX reads arbitrary `http_*` / `arg_*` variables, uses the last `X-Forwarded-For` address when non-recursive, uses the last non-trusted address when recursive, and only rewrites when the current remote address is trusted if `trusted_addresses` is configured.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover non-recursive `X-Forwarded-For`, query-argument bare IP sources, trusted-address rejection of untrusted remotes, trusted remote rewrite, and recursive `X-Forwarded-For` last-non-trusted selection.
+
+- [x] **Step 3: Implement source parsing**
+
+Removed debug stdout, implemented `arg_*` and `http_*` source lookup, fixed `X-Forwarded-For` header parsing, added bare IP / IP:port parsing, applied trusted proxy gating, and removed the stale helper that parsed a literal header name.
+
+- [x] **Step 4: Update README**
+
+Updated `real-ip` support notes to include supported source types, trusted-address behavior, recursive XFF handling, request-context updates, and remaining APISIX-Base / NGINX-variable parity gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/real_ip -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

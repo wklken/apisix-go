@@ -6328,3 +6328,34 @@ Updated `limit-count` support notes to include top-level string variable values 
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_count -run TestHandlerResolvesStringCountAndTimeWindow -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 189: Support Top-Level `limit-conn` String Limits
+
+**Files:**
+- Modify: `pkg/plugin/limit_conn/plugin.go`
+- Modify: `pkg/plugin/limit_conn/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 top-level `limit-conn` `conn` and `burst` values as either integers or strings resolved from request variables.
+- Produces: top-level `limit-conn` configs that validate and parse string variable expressions such as `$http_x_conn`, then resolve them per request before applying the local concurrent connection limit.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-conn.lua` and `apisix/plugins/limit-conn/init.lua`; top-level `conn` and `burst` accept integers or strings, with `conn` resolving to a positive integer and `burst` resolving to a non-negative integer.
+
+- [x] **Step 2: Add focused test**
+
+Added a config-path test proving string `conn` / `burst` values pass schema validation, parse through `util.Parse`, resolve from request headers, and reject a second concurrent request when resolved to `conn=1` and `burst=0`.
+
+- [x] **Step 3: Implement top-level string values**
+
+Changed top-level config storage to preserve numeric or string values, added request-time variable resolution and integer validation, and kept existing rule handling unchanged.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-conn` support notes to include top-level string variable values for `conn` / `burst`, while keeping rule-level string values, `only_use_default_delay`, Redis, and Redis Cluster as documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_conn -run TestHandlerResolvesStringConnAndBurst -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

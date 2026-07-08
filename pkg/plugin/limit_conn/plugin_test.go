@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -266,6 +268,62 @@ func TestHandlerAllowsDegradationWhenAllRulesAreUnresolved(t *testing.T) {
 	if first.Code != http.StatusNoContent {
 		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusNoContent)
 	}
+}
+
+func TestHandlerResolvesStringConnAndBurst(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"conn":               "$http_x_conn",
+		"burst":              "$http_x_burst",
+		"default_conn_delay": 0.1,
+		"key":                "remote_addr",
+		"rejected_code":      http.StatusTooManyRequests,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("string conn/burst config should validate: %v", err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() {
+			close(started)
+		})
+		<-block
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		performRequestWithHeaders(handler, "192.0.2.70:12345", map[string]string{
+			"X-Conn":  "1",
+			"X-Burst": "0",
+		})
+	}()
+	<-started
+
+	rejected := performRequestWithHeaders(handler, "192.0.2.70:23456", map[string]string{
+		"X-Conn":  "1",
+		"X-Burst": "0",
+	})
+	if rejected.Code != http.StatusTooManyRequests {
+		t.Fatalf("rejected response code = %d, want %d", rejected.Code, http.StatusTooManyRequests)
+	}
+
+	close(block)
+	wg.Wait()
 }
 
 func performRequest(handler http.Handler, remoteAddr string) *httptest.ResponseRecorder {

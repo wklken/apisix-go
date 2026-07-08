@@ -2,9 +2,11 @@ package limit_conn
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,12 +35,28 @@ const schema = `
   "type": "object",
   "properties": {
     "conn": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "oneOf": [
+        {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
     },
     "burst": {
-      "type": "integer",
-      "minimum": 0
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
     },
     "default_conn_delay": {
       "type": "number",
@@ -102,8 +120,8 @@ const schema = `
 `
 
 type Config struct {
-	Conn             int     `json:"conn"`
-	Burst            int     `json:"burst"`
+	Conn             any     `json:"conn"`
+	Burst            any     `json:"burst"`
 	DefaultConnDelay float64 `json:"default_conn_delay"`
 	Key              string  `json:"key"`
 	KeyType          string  `json:"key_type,omitempty"`
@@ -174,12 +192,11 @@ func (p *Plugin) PostInit() error {
 		return validateRules(p.config.Rules)
 	}
 
-	if p.config.Conn <= 0 {
-		return fmt.Errorf("conn must be greater than 0")
+	if _, _, err := staticLimitValue(p.config.Conn, "conn", false); err != nil {
+		return err
 	}
-
-	if p.config.Burst < 0 {
-		return fmt.Errorf("burst must be greater than or equal to 0")
+	if _, _, err := staticLimitValue(p.config.Burst, "burst", true); err != nil {
+		return err
 	}
 
 	return nil
@@ -216,7 +233,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		key := p.resolveKey(r)
-		delay, allowed := p.increase(key, p.config.Conn, p.config.Burst)
+		conn, burst, err := p.resolveLimits(r)
+		if err != nil {
+			if *p.config.AllowDegradation {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
+			return
+		}
+		delay, allowed := p.increase(key, conn, burst)
 		if !allowed {
 			p.reject(w)
 			return
@@ -243,6 +269,116 @@ func validateRules(rules []Rule) error {
 		if rule.Key == "" {
 			return fmt.Errorf("limit-conn rule key is required")
 		}
+	}
+	return nil
+}
+
+func (p *Plugin) resolveLimits(r *http.Request) (int, int, error) {
+	conn, err := resolveLimitValue(r, p.config.Conn, "conn", false)
+	if err != nil {
+		return 0, 0, err
+	}
+	burst, err := resolveLimitValue(r, p.config.Burst, "burst", true)
+	if err != nil {
+		return 0, 0, err
+	}
+	return conn, burst, nil
+}
+
+func staticLimitValue(value any, name string, allowZero bool) (int, bool, error) {
+	if value == nil {
+		return 0, false, fmt.Errorf("%s is required", name)
+	}
+
+	if expr, ok := value.(string); ok {
+		if strings.Contains(expr, "$") {
+			return 0, false, nil
+		}
+		parsed, err := parseLimitInt(expr, name, allowZero)
+		if err != nil {
+			return 0, false, err
+		}
+		return parsed, true, nil
+	}
+
+	parsed, err := numericLimitValue(value, name, allowZero)
+	if err != nil {
+		return 0, false, err
+	}
+	return parsed, true, nil
+}
+
+func resolveLimitValue(r *http.Request, value any, name string, allowZero bool) (int, error) {
+	if expr, ok := value.(string); ok {
+		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
+			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
+			varName = strings.TrimSuffix(varName, "}")
+			return requestVar(r, varName)
+		})
+		return parseLimitInt(resolved, name, allowZero)
+	}
+
+	return numericLimitValue(value, name, allowZero)
+}
+
+func numericLimitValue(value any, name string, allowZero bool) (int, error) {
+	switch v := value.(type) {
+	case int:
+		if err := validateLimitInt(v, name, allowZero); err != nil {
+			return 0, err
+		}
+		return v, nil
+	case int64:
+		maxInt := int64(int(^uint(0) >> 1))
+		minInt := -maxInt - 1
+		if v < minInt || v > maxInt {
+			return 0, fmt.Errorf("%s exceeds int range", name)
+		}
+		parsed := int(v)
+		if err := validateLimitInt(parsed, name, allowZero); err != nil {
+			return 0, err
+		}
+		return parsed, nil
+	case float64:
+		if math.Trunc(v) != v {
+			return 0, fmt.Errorf("%s must resolve to an integer", name)
+		}
+		maxInt := float64(int(^uint(0) >> 1))
+		minInt := -maxInt - 1
+		if v < minInt || v > maxInt {
+			return 0, fmt.Errorf("%s exceeds int range", name)
+		}
+		parsed := int(v)
+		if err := validateLimitInt(parsed, name, allowZero); err != nil {
+			return 0, err
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("%s must be an integer or string expression", name)
+	}
+}
+
+func parseLimitInt(value string, name string, allowZero bool) (int, error) {
+	parsed, err := strconv.ParseInt(value, 10, 0)
+	if err != nil {
+		return 0, fmt.Errorf("%s must resolve to an integer: %w", name, err)
+	}
+	result := int(parsed)
+	if err := validateLimitInt(result, name, allowZero); err != nil {
+		return 0, err
+	}
+	return result, nil
+}
+
+func validateLimitInt(value int, name string, allowZero bool) error {
+	if allowZero {
+		if value < 0 {
+			return fmt.Errorf("%s must be greater than or equal to 0", name)
+		}
+		return nil
+	}
+	if value <= 0 {
+		return fmt.Errorf("%s must be greater than 0", name)
 	}
 	return nil
 }

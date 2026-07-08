@@ -89,7 +89,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 

@@ -99,8 +99,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/) 55%
   - support base64 `.pb` FileDescriptorSet proto resources, string/integer `proto_id`, GET query and POST JSON request mapping, gRPC request framing, `grpc-timeout`, JSON response decoding, and gRPC status to HTTP status mapping
   - not support plain `.proto` text compilation, imported source resolution without `.pb`, `pb_option` encoding variants, `grpc-status-details-bin` body decoding, or streaming response chunk filters
-- [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 55%
-  - support CORS preflight, `POST` validation, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
+- [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 58%
+  - support CORS preflight, APISIX-style `400` rejection for invalid method/content-type/body, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
   - not support route `:ext` URI rewriting, OpenResty `upstream_trailer_*` fidelity, or streaming chunk-level response filters
 - [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 70%
   - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, and abort response bodies

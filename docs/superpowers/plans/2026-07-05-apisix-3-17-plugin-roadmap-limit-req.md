@@ -5921,3 +5921,34 @@ Updated `node-status` and `server-info` support notes to include configured `api
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/apisix/id -count=1 -timeout=10s -v`, `go test ./pkg/route -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 176: Align `grpc-web` Invalid Method Status
+
+**Files:**
+- Modify: `pkg/plugin/grpc_web/plugin.go`
+- Modify: `pkg/plugin/grpc_web/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX `grpc-web` access-phase method validation.
+- Produces: `400 Bad Request` for non-`POST` non-`OPTIONS` gRPC-Web requests.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/grpc-web.lua`; APISIX returns `204` for `OPTIONS`, `400` for methods other than `POST`, and `400` for unsupported content types or invalid base64 bodies.
+
+- [x] **Step 2: Update focused test**
+
+Changed the invalid-method case to expect APISIX-compatible `400 Bad Request`.
+
+- [x] **Step 3: Patch handler**
+
+Updated the non-`POST` branch to write `http.StatusBadRequest` while leaving preflight, content-type validation, and request/response translation unchanged.
+
+- [x] **Step 4: Update README**
+
+Updated `grpc-web` support notes to call out APISIX-style `400` rejection for invalid method/content-type/body while keeping route `:ext` rewriting as unsupported.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/grpc_web -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

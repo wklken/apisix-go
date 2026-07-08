@@ -3,11 +3,13 @@ package limit_count
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -26,6 +28,8 @@ type Plugin struct {
 	config       Config
 	metadata     Metadata
 	limiter      *limiter.Limiter
+	limiterMu    sync.Mutex
+	limiters     map[string]*limiter.Limiter
 	ruleLimiters []*limiter.Limiter
 }
 
@@ -42,12 +46,28 @@ const schema = `
 	"type": "object",
 	"properties": {
 	  "count": {
-		"type": "integer",
-		"exclusiveMinimum": 0
+		"oneOf": [
+		  {
+			"type": "integer",
+			"exclusiveMinimum": 0
+		  },
+		  {
+			"type": "string",
+			"minLength": 1
+		  }
+		]
 	  },
 	  "time_window": {
-		"type": "integer",
-		"exclusiveMinimum": 0
+		"oneOf": [
+		  {
+			"type": "integer",
+			"exclusiveMinimum": 0
+		  },
+		  {
+			"type": "string",
+			"minLength": 1
+		  }
+		]
 	  },
 	  "rules": {
 		"type": "array",
@@ -195,8 +215,8 @@ const schema = `
 `
 
 type Config struct {
-	Count                int64              `json:"count"`
-	TimeWindow           int64              `json:"time_window"`
+	Count                any                `json:"count"`
+	TimeWindow           any                `json:"time_window"`
 	Group                string             `json:"group,omitempty"`
 	Key                  string             `json:"key,omitempty"`
 	KeyType              string             `json:"key_type,omitempty"`
@@ -321,11 +341,23 @@ func (p *Plugin) PostInit() error {
 		return p.initRuleLimiters()
 	}
 
-	lim, err := p.newLimiter(p.config.Count, p.config.TimeWindow)
+	count, countStatic, err := staticLimitValue(p.config.Count, "count")
 	if err != nil {
 		return err
 	}
-	p.limiter = lim
+	timeWindow, timeWindowStatic, err := staticLimitValue(p.config.TimeWindow, "time_window")
+	if err != nil {
+		return err
+	}
+	if countStatic && timeWindowStatic {
+		lim, err := p.newLimiter(count, timeWindow)
+		if err != nil {
+			return err
+		}
+		p.limiter = lim
+	} else {
+		p.limiters = make(map[string]*limiter.Limiter)
+	}
 
 	return nil
 }
@@ -401,6 +433,83 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 	return limiter.New(store, rate, limiter.WithTrustForwardHeader(true)), nil
 }
 
+func staticLimitValue(value any, name string) (int64, bool, error) {
+	if value == nil {
+		return 0, false, fmt.Errorf("%s is required", name)
+	}
+
+	if expr, ok := value.(string); ok {
+		if strings.Contains(expr, "$") {
+			return 0, false, nil
+		}
+		parsed, err := strconv.ParseInt(expr, 10, 64)
+		if err != nil {
+			return 0, false, fmt.Errorf("%s must resolve to an integer: %w", name, err)
+		}
+		if parsed <= 0 {
+			return 0, false, fmt.Errorf("%s must be greater than 0", name)
+		}
+		return parsed, true, nil
+	}
+
+	parsed, err := numericLimitValue(value, name)
+	if err != nil {
+		return 0, false, err
+	}
+	return parsed, true, nil
+}
+
+func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
+	if expr, ok := value.(string); ok {
+		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
+			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
+			varName = strings.TrimSuffix(varName, "}")
+			return requestVar(r, varName)
+		})
+		parsed, err := strconv.ParseInt(resolved, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must resolve to an integer: %w", name, err)
+		}
+		if parsed <= 0 {
+			return 0, fmt.Errorf("%s must be greater than 0", name)
+		}
+		return parsed, nil
+	}
+
+	return numericLimitValue(value, name)
+}
+
+func numericLimitValue(value any, name string) (int64, error) {
+	switch v := value.(type) {
+	case int:
+		if v <= 0 {
+			return 0, fmt.Errorf("%s must be greater than 0", name)
+		}
+		return int64(v), nil
+	case int64:
+		if v <= 0 {
+			return 0, fmt.Errorf("%s must be greater than 0", name)
+		}
+		return v, nil
+	case float64:
+		if v <= 0 || math.Trunc(v) != v {
+			return 0, fmt.Errorf("%s must be a positive integer", name)
+		}
+		return int64(v), nil
+	case json.Number:
+		parsed, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be an integer: %w", name, err)
+		}
+		if parsed <= 0 {
+			return 0, fmt.Errorf("%s must be greater than 0", name)
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("%s must be an integer or string expression", name)
+	}
+}
+
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }
@@ -425,12 +534,67 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		key := p.resolveKey(r)
-		if !p.runLimit(w, r, p.limiter, p.config.Count, key, defaultHeaders(p.metadata)) {
+		count, timeWindow, err := p.resolveLimit(r)
+		if err != nil {
+			if *p.config.AllowDegradation {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
+			return
+		}
+		lim, err := p.limiterFor(count, timeWindow)
+		if err != nil {
+			if *p.config.AllowDegradation {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "failed to limit count", http.StatusInternalServerError)
+			return
+		}
+		if !p.runLimit(w, r, lim, count, key, defaultHeaders(p.metadata)) {
 			return
 		}
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) limiterFor(count int64, timeWindow int64) (*limiter.Limiter, error) {
+	if p.limiter != nil {
+		return p.limiter, nil
+	}
+
+	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
+	p.limiterMu.Lock()
+	defer p.limiterMu.Unlock()
+
+	if p.limiters == nil {
+		p.limiters = make(map[string]*limiter.Limiter)
+	}
+	lim, ok := p.limiters[key]
+	if ok {
+		return lim, nil
+	}
+
+	lim, err := p.newLimiter(count, timeWindow)
+	if err != nil {
+		return nil, err
+	}
+	p.limiters[key] = lim
+	return lim, nil
+}
+
+func (p *Plugin) resolveLimit(r *http.Request) (int64, int64, error) {
+	count, err := resolveLimitValue(r, p.config.Count, "count")
+	if err != nil {
+		return 0, 0, err
+	}
+	timeWindow, err := resolveLimitValue(r, p.config.TimeWindow, "time_window")
+	if err != nil {
+		return 0, 0, err
+	}
+	return count, timeWindow, nil
 }
 
 func (p *Plugin) runLimit(

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -225,6 +227,52 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 	}
 	if got := secondRecorder.Body.String(); got != `{"error_msg":"quota exceeded"}` {
 		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"quota exceeded"}`)
+	}
+}
+
+func TestHandlerResolvesStringCountAndTimeWindow(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"count":         "$http_x_limit",
+		"time_window":   "$http_x_window",
+		"key":           "remote_addr",
+		"rejected_code": http.StatusTooManyRequests,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("string count/time_window config should validate: %v", err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first.Header.Set("X-Limit", "1")
+	first.Header.Set("X-Window", "60")
+	first.RemoteAddr = "192.0.2.1:1234"
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, first)
+	if firstRecorder.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second.Header.Set("X-Limit", "1")
+	second.Header.Set("X-Window", "60")
+	second.RemoteAddr = "192.0.2.1:1234"
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, second)
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
 	}
 }
 

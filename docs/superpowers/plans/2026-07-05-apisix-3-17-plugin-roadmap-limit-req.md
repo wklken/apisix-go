@@ -6014,3 +6014,38 @@ Updated `proxy-mirror` support notes to include APISIX-style `host` / `path` sch
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_mirror -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 179: Implement `fault-injection` Vars Gating
+
+**Files:**
+- Modify: `pkg/plugin/fault_injection/plugin.go`
+- Modify: `pkg/plugin/fault_injection/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX `fault-injection` `abort.vars` and `delay.vars` behavior.
+- Produces: abort and delay actions gated by request variable expressions, plus fractional delay seconds.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/fault-injection.lua`; abort and delay each evaluate their own `vars`, use OR across configured expressions, and only apply the fault when sampling and vars both match. Official `duration` is numeric seconds.
+
+- [x] **Step 2: Check local condition patterns**
+
+Read local `workflow` and `traffic-split` condition evaluators. Kept this slice to the existing common request variable subset with `==` and `!=`, rather than introducing a full `resty.expr` clone.
+
+- [x] **Step 3: Add focused tests**
+
+Added tests for abort vars falling through, OR matching across expressions, and delay vars applying only when a query variable matches.
+
+- [x] **Step 4: Implement gating and fractional delay**
+
+Added local request-variable lookup for `uri`, `request_uri`, method, host, scheme, remote address, `arg_*`, and `http_*`; gated abort/delay with OR-matched expressions; changed delay sleep to preserve fractional seconds.
+
+- [x] **Step 5: Update README**
+
+Updated `fault-injection` support notes to include `vars` gating and fractional delay seconds while keeping full `resty.expr` parity and body variable resolution as gaps.
+
+- [x] **Step 6: Verify**
+
+Run: `go test ./pkg/plugin/fault_injection -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

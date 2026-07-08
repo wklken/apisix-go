@@ -102,9 +102,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 68%
   - support CORS preflight, APISIX-style `400` rejection for invalid method/content-type/body, route wildcard-to-gRPC path rewriting, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
   - not support OpenResty `upstream_trailer_*` fidelity or streaming chunk-level response filters
-- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 70%
-  - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, and abort response bodies
-  - not support `vars`, body variable resolution, or exact fractional-delay precision
+- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 80%
+  - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, abort response bodies, fractional delay seconds, and `vars` gating with common request variables and `==` / `!=`
+  - not support full `resty.expr` operator parity or body variable resolution
 - [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 97%
   - support `response_example`, `response_schema` object generation, JSON/plain-text/XML schema bodies, response headers, bounded variable resolution, delay, status, content type, and mock marker header
   - not support APISIX random response value distribution exactly for schema fields without examples

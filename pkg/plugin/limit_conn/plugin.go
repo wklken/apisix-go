@@ -69,12 +69,28 @@ const schema = `
         "type": "object",
         "properties": {
           "conn": {
-            "type": "integer",
-            "exclusiveMinimum": 0
+            "oneOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "burst": {
-            "type": "integer",
-            "minimum": 0
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
           },
           "key": {
             "type": "string"
@@ -135,8 +151,8 @@ type Config struct {
 }
 
 type Rule struct {
-	Conn  int    `json:"conn"`
-	Burst int    `json:"burst"`
+	Conn  any    `json:"conn"`
+	Burst any    `json:"burst"`
 	Key   string `json:"key"`
 }
 
@@ -260,11 +276,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func validateRules(rules []Rule) error {
 	for _, rule := range rules {
-		if rule.Conn <= 0 {
-			return fmt.Errorf("rule conn must be greater than 0")
+		if _, _, err := staticLimitValue(rule.Conn, "rule conn", false); err != nil {
+			return err
 		}
-		if rule.Burst < 0 {
-			return fmt.Errorf("rule burst must be greater than or equal to 0")
+		if _, _, err := staticLimitValue(rule.Burst, "rule burst", true); err != nil {
+			return err
 		}
 		if rule.Key == "" {
 			return fmt.Errorf("limit-conn rule key is required")
@@ -283,6 +299,18 @@ func (p *Plugin) resolveLimits(r *http.Request) (int, int, error) {
 		return 0, 0, err
 	}
 	return conn, burst, nil
+}
+
+func (p *Plugin) resolveRuleLimits(r *http.Request, rule Rule) (int, int, bool) {
+	conn, err := resolveLimitValue(r, rule.Conn, "rule conn", false)
+	if err != nil {
+		return 0, 0, false
+	}
+	burst, err := resolveLimitValue(r, rule.Burst, "rule burst", true)
+	if err != nil {
+		return 0, 0, false
+	}
+	return conn, burst, true
 }
 
 func staticLimitValue(value any, name string, allowZero bool) (int, bool, error) {
@@ -402,7 +430,12 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 			continue
 		}
 
-		nextDelay, allowed := p.increase(key, rule.Conn, rule.Burst)
+		conn, burst, ok := p.resolveRuleLimits(r, rule)
+		if !ok {
+			continue
+		}
+
+		nextDelay, allowed := p.increase(key, conn, burst)
 		if !allowed {
 			p.decreaseAdmissions(admissions)
 			return nil, 0, false

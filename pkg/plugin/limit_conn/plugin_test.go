@@ -326,6 +326,68 @@ func TestHandlerResolvesStringConnAndBurst(t *testing.T) {
 	wg.Wait()
 }
 
+func TestHandlerResolvesStringRuleConnAndBurst(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"default_conn_delay": 0.1,
+		"rejected_code":      http.StatusTooManyRequests,
+		"rules": []any{
+			map[string]any{
+				"conn":  "$http_x_conn",
+				"burst": "$http_x_burst",
+				"key":   "$http_x_user",
+			},
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("string rule conn/burst config should validate: %v", err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() {
+			close(started)
+		})
+		<-block
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		performRequestWithHeaders(handler, "192.0.2.80:12345", map[string]string{
+			"X-Conn":  "1",
+			"X-Burst": "0",
+			"X-User":  "alice",
+		})
+	}()
+	<-started
+
+	rejected := performRequestWithHeaders(handler, "192.0.2.80:23456", map[string]string{
+		"X-Conn":  "1",
+		"X-Burst": "0",
+		"X-User":  "alice",
+	})
+	if rejected.Code != http.StatusTooManyRequests {
+		t.Fatalf("rejected response code = %d, want %d", rejected.Code, http.StatusTooManyRequests)
+	}
+
+	close(block)
+	wg.Wait()
+}
+
 func performRequest(handler http.Handler, remoteAddr string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req.RemoteAddr = remoteAddr

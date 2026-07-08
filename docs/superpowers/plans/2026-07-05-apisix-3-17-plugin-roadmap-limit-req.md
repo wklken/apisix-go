@@ -6390,3 +6390,34 @@ Updated `limit-count` support notes to include top-level and rule-level string v
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_count -run TestHandlerResolvesStringRuleCountAndTimeWindow -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 191: Support Rule-Level `limit-conn` String Limits
+
+**Files:**
+- Modify: `pkg/plugin/limit_conn/plugin.go`
+- Modify: `pkg/plugin/limit_conn/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-conn` `rules[].conn` and `rules[].burst` values as either integers or strings resolved from request variables.
+- Produces: rule-level `limit-conn` configs that validate and parse string variable expressions such as `$http_x_conn`, resolve them per request, and apply local concurrent request limits.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-conn/init.lua`; rule-level `conn` and `burst` are resolved per request, and rules whose limits or keys cannot resolve are skipped.
+
+- [x] **Step 2: Add focused test**
+
+Added a config-path test proving string rule `conn` / `burst` values pass schema validation, parse through `util.Parse`, resolve from request headers, and reject a second concurrent request when resolved to `conn=1` and `burst=0`.
+
+- [x] **Step 3: Implement rule-level string values**
+
+Changed rule config storage to preserve numeric or string values, added request-time rule limit resolution, and kept unresolved rule behavior aligned with the existing no-usable-rules degradation/error path.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-conn` support notes to include top-level and rule-level string variable values for `conn` / `burst`; `only_use_default_delay`, Redis, and Redis Cluster remain documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_conn -run TestHandlerResolvesStringRuleConnAndBurst -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

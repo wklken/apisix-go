@@ -242,8 +242,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
   - not support NGINX disk cache zones, APISIX public `PURGE` endpoint, configured `graphql.max_size`, route/service ID participation in cache keys, full GraphQL spec parsing parity, or exact APISIX `proxy-cache` handler behavior
 - [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/) 85%
   - support JSON and `application/x-www-form-urlencoded` `body_schema`, JSON body normalization before proxying, `header_schema`, `rejected_code`, and `rejected_msg`
-- [x] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/) 70%
-  - support HTTP mirror `host`, `path`, `path_concat_mode`, `sample_ratio`
+- [x] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/) 73%
+  - support HTTP mirror `host`, `path`, `path_concat_mode`, `sample_ratio`, and APISIX-style `host` / `path` schema validation
   - not support gRPC mirroring
   - not support APISIX DNS resolver behavior
 - [x] [kafka-proxy](https://apisix.apache.org/docs/apisix/plugins/kafka-proxy/) 35%

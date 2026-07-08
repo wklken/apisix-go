@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type mirrorRequest struct {
@@ -127,6 +129,57 @@ func TestHandlerPrefixesMirrorPath(t *testing.T) {
 	mirrored := waitForMirror(t, seen)
 	if mirrored.Path != "/shadow/original" || mirrored.Query != "x=1" {
 		t.Fatalf("mirror target = %s?%s, want /shadow/original?x=1", mirrored.Path, mirrored.Query)
+	}
+}
+
+func TestSchemaRejectsHostWithPath(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{"host": "http://mirror.example.com/base"}, p.GetSchema())
+	if err == nil {
+		t.Fatal("schema accepted host with path, want rejection")
+	}
+}
+
+func TestSchemaRejectsPathWithQueryDelimiter(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{
+		"host": "http://mirror.example.com",
+		"path": "/shadow?debug=true",
+	}, p.GetSchema())
+	if err == nil {
+		t.Fatal("schema accepted path with query delimiter, want rejection")
+	}
+}
+
+func TestSchemaAcceptsOfficialHTTPAndHTTPSHosts(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, host := range []string{
+		"http://mirror.example.com",
+		"https://mirror.example.com:9443",
+		"http://127.0.0.1:9080",
+		"http://[2001:db8::1]:9080",
+	} {
+		t.Run(host, func(t *testing.T) {
+			err := util.Validate(map[string]any{
+				"host": host,
+				"path": "/shadow",
+			}, p.GetSchema())
+			if err != nil {
+				t.Fatalf("schema rejected %s: %v", host, err)
+			}
+		})
 	}
 }
 

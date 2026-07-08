@@ -5983,3 +5983,34 @@ Updated `grpc-web` support notes to include route wildcard-to-gRPC path rewritin
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/grpc_web -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 178: Align `proxy-mirror` Host And Path Schema
+
+**Files:**
+- Modify: `pkg/plugin/proxy_mirror/plugin.go`
+- Modify: `pkg/plugin/proxy_mirror/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX `proxy-mirror` schema patterns for `host` and `path`.
+- Produces: validation rejection for mirror hosts containing paths/query strings and mirror paths containing query delimiters.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/proxy-mirror.lua`; `host` must be an `http` or `https` origin without a path, and `path` must start with `/` without `?` or `&`.
+
+- [x] **Step 2: Add schema tests**
+
+Added tests through `util.Validate` for rejecting `host` with a path, rejecting `path` with a query delimiter, and accepting official HTTP/HTTPS/IPv4/IPv6 origin forms.
+
+- [x] **Step 3: Tighten schema**
+
+Added `host` and `path` JSON schema patterns while preserving existing request mirroring behavior.
+
+- [x] **Step 4: Update README**
+
+Updated `proxy-mirror` support notes to include APISIX-style `host` / `path` schema validation.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/proxy_mirror -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

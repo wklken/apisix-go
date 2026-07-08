@@ -28,10 +28,12 @@ const schema = `
   "type": "object",
   "properties": {
     "host": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^https?://([0-9A-Za-z.-]+|\\[[0-9A-Fa-f:]+\\])(:[0-9]+)?$"
     },
     "path": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^/[^?&]+$"
     },
     "path_concat_mode": {
       "type": "string",

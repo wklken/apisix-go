@@ -6359,3 +6359,34 @@ Updated `limit-conn` support notes to include top-level string variable values f
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_conn -run TestHandlerResolvesStringConnAndBurst -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 190: Support Rule-Level `limit-count` String Limits
+
+**Files:**
+- Modify: `pkg/plugin/limit_count/plugin.go`
+- Modify: `pkg/plugin/limit_count/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-count` `rules[].count` and `rules[].time_window` values as either integers or strings resolved from request variables.
+- Produces: rule-level `limit-count` configs that validate and parse string variable expressions such as `$http_x_limit`, resolve them per request, and keep per-rule quota headers.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-count/init.lua`; rule-level `count` and `time_window` are resolved per request, and rules whose limits or keys cannot resolve are skipped.
+
+- [x] **Step 2: Add focused test**
+
+Added a config-path test proving string rule `count` / `time_window` values pass schema validation, parse through `util.Parse`, resolve from request headers, reject the second request, and emit the configured per-rule remaining quota header.
+
+- [x] **Step 3: Implement rule-level string values**
+
+Changed rule config storage to preserve numeric or string values, prebuilt static rule limiters when possible, resolved dynamic rule limits per request, and reused the existing dynamic limiter cache for resolved rule limits.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-count` support notes to include top-level and rule-level string variable values for `count` / `time_window`; `redis-cluster` remains the documented gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_count -run TestHandlerResolvesStringRuleCountAndTimeWindow -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -276,6 +276,62 @@ func TestHandlerResolvesStringCountAndTimeWindow(t *testing.T) {
 	}
 }
 
+func TestHandlerResolvesStringRuleCountAndTimeWindow(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"rejected_code": http.StatusTooManyRequests,
+		"rules": []any{
+			map[string]any{
+				"count":         "$http_x_limit",
+				"time_window":   "$http_x_window",
+				"key":           "$http_x_user",
+				"header_prefix": "User",
+			},
+		},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("string rule count/time_window config should validate: %v", err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first.Header.Set("X-Limit", "1")
+	first.Header.Set("X-Window", "60")
+	first.Header.Set("X-User", "alice")
+	first.RemoteAddr = "192.0.2.1:1234"
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, first)
+	if firstRecorder.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second.Header.Set("X-Limit", "1")
+	second.Header.Set("X-Window", "60")
+	second.Header.Set("X-User", "alice")
+	second.RemoteAddr = "192.0.2.1:1234"
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, second)
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+	if got := secondRecorder.Header().Get("X-User-RateLimit-Remaining"); got != "0" {
+		t.Fatalf("user remaining header = %q, want 0", got)
+	}
+}
+
 func TestPostInitRejectsDuplicateRuleKeys(t *testing.T) {
 	p := &Plugin{config: Config{
 		Rules: []Rule{

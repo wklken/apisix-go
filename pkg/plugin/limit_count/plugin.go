@@ -76,12 +76,28 @@ const schema = `
 		  "type": "object",
 		  "properties": {
 			"count": {
-			  "type": "integer",
-			  "exclusiveMinimum": 0
+			  "oneOf": [
+				{
+				  "type": "integer",
+				  "exclusiveMinimum": 0
+				},
+				{
+				  "type": "string",
+				  "minLength": 1
+				}
+			  ]
 			},
 			"time_window": {
-			  "type": "integer",
-			  "exclusiveMinimum": 0
+			  "oneOf": [
+				{
+				  "type": "integer",
+				  "exclusiveMinimum": 0
+				},
+				{
+				  "type": "string",
+				  "minLength": 1
+				}
+			  ]
 			},
 			"key": {
 			  "type": "string"
@@ -233,8 +249,8 @@ type Config struct {
 }
 
 type Rule struct {
-	Count        int64  `json:"count"`
-	TimeWindow   int64  `json:"time_window"`
+	Count        any    `json:"count"`
+	TimeWindow   any    `json:"time_window"`
 	Key          string `json:"key"`
 	HeaderPrefix string `json:"header_prefix,omitempty"`
 }
@@ -374,11 +390,23 @@ func (p *Plugin) initRuleLimiters() error {
 		}
 		seenKeys[rule.Key] = struct{}{}
 
-		lim, err := p.newLimiter(rule.Count, rule.TimeWindow)
+		count, countStatic, err := staticLimitValue(rule.Count, "rule count")
 		if err != nil {
 			return err
 		}
-		p.ruleLimiters[i] = lim
+		timeWindow, timeWindowStatic, err := staticLimitValue(rule.TimeWindow, "rule time_window")
+		if err != nil {
+			return err
+		}
+		if countStatic && timeWindowStatic {
+			lim, err := p.newLimiter(count, timeWindow)
+			if err != nil {
+				return err
+			}
+			p.ruleLimiters[i] = lim
+		} else {
+			p.limiters = make(map[string]*limiter.Limiter)
+		}
 	}
 	return nil
 }
@@ -525,7 +553,23 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if !ok {
 					continue
 				}
-				if !p.runLimit(w, r, p.ruleLimiters[i], rule.Count, key, ruleHeaders(rule, i)) {
+				count, timeWindow, ok := p.resolveRuleLimit(r, rule)
+				if !ok {
+					continue
+				}
+				lim := p.ruleLimiters[i]
+				if lim == nil {
+					var err error
+					lim, err = p.limiterFor(count, timeWindow)
+					if err != nil {
+						if *p.config.AllowDegradation {
+							continue
+						}
+						http.Error(w, "failed to limit count", http.StatusInternalServerError)
+						return
+					}
+				}
+				if !p.runLimit(w, r, lim, count, key, ruleHeaders(rule, i)) {
 					return
 				}
 			}
@@ -595,6 +639,18 @@ func (p *Plugin) resolveLimit(r *http.Request) (int64, int64, error) {
 		return 0, 0, err
 	}
 	return count, timeWindow, nil
+}
+
+func (p *Plugin) resolveRuleLimit(r *http.Request, rule Rule) (int64, int64, bool) {
+	count, err := resolveLimitValue(r, rule.Count, "rule count")
+	if err != nil {
+		return 0, 0, false
+	}
+	timeWindow, err := resolveLimitValue(r, rule.TimeWindow, "rule time_window")
+	if err != nil {
+		return 0, 0, false
+	}
+	return count, timeWindow, true
 }
 
 func (p *Plugin) runLimit(

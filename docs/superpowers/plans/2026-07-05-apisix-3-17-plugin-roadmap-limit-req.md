@@ -6483,3 +6483,34 @@ Updated `workflow` support notes to include delegated `limit-count` and `limit-c
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/workflow -run TestHandlerRunsLimitConnAction -count=1 -timeout=10s -v` and `go test ./pkg/plugin/workflow -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 194: Support `limit-conn` `only_use_default_delay`
+
+**Files:**
+- Modify: `pkg/plugin/limit_conn/plugin.go`
+- Modify: `pkg/plugin/limit_conn/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-conn` `only_use_default_delay` boolean config.
+- Produces: local `limit-conn` burst traffic that uses exactly `default_conn_delay` when `only_use_default_delay` is enabled, instead of scaling delay by the excess connection multiplier.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-conn/init.lua`; APISIX stores `only_use_default_delay` with the committed connection entry and uses it during release accounting, so the local Go equivalent applies the fixed configured delay whenever burst traffic is delayed.
+
+- [x] **Step 2: Add focused test**
+
+Added an internal limiter test proving the first request is not delayed, while the second and third allowed burst requests both use the exact configured default delay when `only_use_default_delay` is true.
+
+- [x] **Step 3: Implement config and delay behavior**
+
+Added `only_use_default_delay` to the schema and config struct, then changed local delay calculation to return `default_conn_delay` directly for burst traffic when the flag is enabled.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-conn` support notes to include `only_use_default_delay`; Redis and Redis Cluster remain documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_conn -run TestIncreaseUsesDefaultDelayWhenConfigured -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

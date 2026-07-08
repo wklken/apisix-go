@@ -126,6 +126,10 @@ const schema = `
     "allow_degradation": {
       "type": "boolean",
       "default": false
+    },
+    "only_use_default_delay": {
+      "type": "boolean",
+      "default": false
     }
   },
   "oneOf": [
@@ -136,16 +140,17 @@ const schema = `
 `
 
 type Config struct {
-	Conn             any     `json:"conn"`
-	Burst            any     `json:"burst"`
-	DefaultConnDelay float64 `json:"default_conn_delay"`
-	Key              string  `json:"key"`
-	KeyType          string  `json:"key_type,omitempty"`
-	Policy           string  `json:"policy,omitempty"`
-	RejectedCode     int     `json:"rejected_code,omitempty"`
-	RejectedMsg      string  `json:"rejected_msg,omitempty"`
-	AllowDegradation *bool   `json:"allow_degradation,omitempty"`
-	Rules            []Rule  `json:"rules,omitempty"`
+	Conn                any     `json:"conn"`
+	Burst               any     `json:"burst"`
+	DefaultConnDelay    float64 `json:"default_conn_delay"`
+	Key                 string  `json:"key"`
+	KeyType             string  `json:"key_type,omitempty"`
+	Policy              string  `json:"policy,omitempty"`
+	RejectedCode        int     `json:"rejected_code,omitempty"`
+	RejectedMsg         string  `json:"rejected_msg,omitempty"`
+	AllowDegradation    *bool   `json:"allow_degradation,omitempty"`
+	OnlyUseDefaultDelay bool    `json:"only_use_default_delay,omitempty"`
+	Rules               []Rule  `json:"rules,omitempty"`
 
 	rejectBody string
 }
@@ -465,6 +470,9 @@ func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool)
 
 	p.conns[key] = current
 	if current > conn {
+		if p.config.OnlyUseDefaultDelay {
+			return time.Duration(p.config.DefaultConnDelay * float64(time.Second)), true
+		}
 		multiplier := (current - 1) / conn
 		return time.Duration(float64(multiplier) * p.config.DefaultConnDelay * float64(time.Second)), true
 	}

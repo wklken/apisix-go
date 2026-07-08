@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -168,6 +169,40 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 
 	close(block)
 	wg.Wait()
+}
+
+func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:                1,
+		Burst:               2,
+		DefaultConnDelay:    0.2,
+		Key:                 "remote_addr",
+		OnlyUseDefaultDelay: true,
+	})
+
+	firstDelay, allowed := p.increase("client", 1, 2)
+	if !allowed {
+		t.Fatal("first request rejected, want allowed")
+	}
+	if firstDelay != 0 {
+		t.Fatalf("first delay = %s, want 0", firstDelay)
+	}
+
+	secondDelay, allowed := p.increase("client", 1, 2)
+	if !allowed {
+		t.Fatal("second request rejected, want allowed")
+	}
+	if secondDelay != 200*time.Millisecond {
+		t.Fatalf("second delay = %s, want 200ms", secondDelay)
+	}
+
+	thirdDelay, allowed := p.increase("client", 1, 2)
+	if !allowed {
+		t.Fatal("third request rejected, want allowed")
+	}
+	if thirdDelay != 200*time.Millisecond {
+		t.Fatalf("third delay = %s, want 200ms", thirdDelay)
+	}
 }
 
 func TestHandlerAppliesResolvedRules(t *testing.T) {

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -110,6 +112,8 @@ type Config struct {
 	RejectedMsg      string  `json:"rejected_msg,omitempty"`
 	AllowDegradation *bool   `json:"allow_degradation,omitempty"`
 	Rules            []Rule  `json:"rules,omitempty"`
+
+	rejectBody string
 }
 
 type Rule struct {
@@ -155,6 +159,11 @@ func (p *Plugin) PostInit() error {
 	if p.config.AllowDegradation == nil {
 		b := false
 		p.config.AllowDegradation = &b
+	}
+
+	if p.config.RejectedMsg != "" {
+		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+		p.config.rejectBody = util.BytesToString(body)
 	}
 
 	if p.conns == nil {
@@ -239,11 +248,13 @@ func validateRules(rules []Rule) error {
 }
 
 func (p *Plugin) reject(w http.ResponseWriter) {
-	rejectedMsg := "Limit exceeded"
 	if p.config.RejectedMsg != "" {
-		rejectedMsg = p.config.RejectedMsg
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(p.config.RejectedCode)
+		_, _ = w.Write([]byte(p.config.rejectBody))
+		return
 	}
-	http.Error(w, rejectedMsg, p.config.RejectedCode)
+	w.WriteHeader(p.config.RejectedCode)
 }
 
 func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, bool) {

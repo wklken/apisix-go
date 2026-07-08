@@ -185,7 +185,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 95%
   - support `block_rules`, `rejected_code`, `rejected_msg`, `case_insensitive`, APISIX-style empty default rejection bodies, and `error_msg` JSON custom rejections
   - not support APISIX PCRE/JIT regex engine parity exactly
-- [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
+- [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 90%
+  - support `whitelist`, `blacklist`, CIDR/IP matching, custom messages, `remote_addr` context overrides, and APISIX-style JSON rejection bodies
+  - not support APISIX `ip_def` schema validation exactly or shared LRU matcher caching
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 95%
   - support `allowlist`, `denylist`, using both lists together, allow-before-deny matching, `bypass_missing`, trimmed User-Agent matching, and APISIX-style JSON rejection bodies
   - not support OpenResty multi-value User-Agent header fidelity exactly

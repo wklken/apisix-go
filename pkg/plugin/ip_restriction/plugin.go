@@ -1,13 +1,14 @@
 package ip_restriction
 
 import (
-	"fmt"
 	"net"
 	"net/http"
 
 	"github.com/jpillora/ipfilter"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -15,6 +16,7 @@ type Plugin struct {
 	config Config
 
 	filter *ipfilter.IPFilter
+	body   string
 }
 
 const (
@@ -88,6 +90,8 @@ func (p *Plugin) PostInit() error {
 	if p.config.Message == "" {
 		p.config.Message = "Your IP address is not allowed"
 	}
+	body, _ := json.Marshal(map[string]string{"message": p.config.Message})
+	p.body = util.BytesToString(body)
 
 	if len(p.config.Whitelist) > 0 {
 		p.filter = ipfilter.New(ipfilter.Options{
@@ -116,10 +120,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if clientIP == "" {
 			clientIP, _, _ = net.SplitHostPort(r.RemoteAddr)
 		}
-		fmt.Println("the client ip:", clientIP)
 
 		if p.filter != nil && !p.filter.Allowed(clientIP) {
-			http.Error(w, p.config.Message, http.StatusForbidden)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(p.body))
 			return
 		}
 

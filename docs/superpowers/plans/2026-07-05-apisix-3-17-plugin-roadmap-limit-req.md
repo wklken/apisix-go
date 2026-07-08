@@ -1923,6 +1923,37 @@ Updated `ua-restriction` support notes to include both-list config, allow-before
 
 Run: `go test ./pkg/plugin/ua_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 173: Align `ip-restriction` Rejection Responses
+
+**Files:**
+- Modify: `pkg/plugin/ip_restriction/plugin.go`
+- Add: `pkg/plugin/ip_restriction/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `ip-restriction` whitelist/blacklist response behavior.
+- Produces: APISIX-compatible JSON rejection bodies for blocked client IPs.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/ip-restriction.lua`, `apisix/plugins/ip-restriction/init.lua`, docs, and tests; blocked IPs return `403 {"message": conf.message}` and matching uses `ctx.var.remote_addr`.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover whitelist JSON rejection, blacklist custom messages, `remote_addr` context override precedence, and allowed IP fall-through.
+
+- [x] **Step 3: Implement response parity**
+
+Prebuilt the APISIX-style JSON message body, replaced `http.Error` with a direct JSON response writer, and removed per-request client-IP stdout logging.
+
+- [x] **Step 4: Update README**
+
+Updated `ip-restriction` support notes to include whitelist/blacklist, CIDR/IP matching, custom messages, `remote_addr` context overrides, JSON rejection bodies, and remaining schema/cache fidelity gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ip_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

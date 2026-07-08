@@ -98,8 +98,11 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 	if rejected.Code != http.StatusServiceUnavailable {
 		t.Fatalf("response code = %d, want %d", rejected.Code, http.StatusServiceUnavailable)
 	}
-	if got := rejected.Body.String(); got != "slow down\n" {
-		t.Fatalf("response body = %q, want %q", got, "slow down\n")
+	if got := rejected.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	if got := rejected.Body.String(); got != `{"error_msg":"slow down"}` {
+		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"slow down"}`)
 	}
 }
 

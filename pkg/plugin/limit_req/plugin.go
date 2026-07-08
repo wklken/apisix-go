@@ -11,7 +11,9 @@ import (
 	"time"
 
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -87,6 +89,8 @@ type Config struct {
 	RejectedMsg      string  `json:"rejected_msg,omitempty"`
 	Nodelay          *bool   `json:"nodelay,omitempty"`
 	AllowDegradation *bool   `json:"allow_degradation,omitempty"`
+
+	rejectBody string
 }
 
 type bucket struct {
@@ -138,6 +142,11 @@ func (p *Plugin) PostInit() error {
 		p.config.AllowDegradation = &b
 	}
 
+	if p.config.RejectedMsg != "" {
+		body, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})
+		p.config.rejectBody = util.BytesToString(body)
+	}
+
 	if p.buckets == nil {
 		p.buckets = make(map[string]*bucket)
 	}
@@ -157,11 +166,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		key := p.resolveKey(r)
 		delay, allowed := p.incoming(key)
 		if !allowed {
-			rejectedMsg := "Limit exceeded"
 			if p.config.RejectedMsg != "" {
-				rejectedMsg = p.config.RejectedMsg
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(p.config.RejectedCode)
+				_, _ = w.Write([]byte(p.config.rejectBody))
+				return
 			}
-			http.Error(w, rejectedMsg, p.config.RejectedCode)
+			w.WriteHeader(p.config.RejectedCode)
 			return
 		}
 

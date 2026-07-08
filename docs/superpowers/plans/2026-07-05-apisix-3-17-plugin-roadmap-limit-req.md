@@ -6204,3 +6204,34 @@ Updated `limit-count` support notes to include plugin metadata custom quota head
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_count -run TestHandlerUsesMetadataQuotaHeaderNames -count=1 -timeout=10s -v`, `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 185: Align `limit-req` Custom Rejection Body
+
+**Files:**
+- Modify: `pkg/plugin/limit_req/plugin.go`
+- Modify: `pkg/plugin/limit_req/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-req` custom `rejected_msg` behavior.
+- Produces: rejected requests with `rejected_msg` returning JSON `{"error_msg": "<message>"}` and `Content-Type: application/json`, while default rejections keep an empty body.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-req.lua`; when `conf.rejected_msg` is set and a request is rejected, APISIX returns `conf.rejected_code` with an `error_msg` JSON body.
+
+- [x] **Step 2: Add focused test**
+
+Updated the existing rejected-message test to require `application/json` and body `{"error_msg":"slow down"}`. Verified the test failed first against the old `http.Error` text response.
+
+- [x] **Step 3: Implement JSON rejection body**
+
+Precomputed the APISIX-style `error_msg` JSON body during `PostInit` and wrote it directly on rejection; default rejections now write only the configured status code.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-req` support notes to include APISIX-style empty/custom rejection bodies while keeping Redis and Redis Cluster as documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_req -run TestHandlerUsesRejectedMessage -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_req -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

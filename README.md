@@ -222,8 +222,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 19/19
 
-- [x] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/) 70%
-  - only support `policy = "local"`
+- [x] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/) 75%
+  - support local request-rate limiting, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `nodelay`, and `allow_degradation`
   - not support `redis` or `redis-cluster`
 - [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 68%
   - support local concurrent request limiting, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, `rejected_msg`, and `allow_degradation`

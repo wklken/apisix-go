@@ -6080,3 +6080,34 @@ Updated `data-mask` support notes to include numeric array indexes while keeping
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/data_mask -run TestHandlerMasksJSONBodyWithArrayIndexJSONPath -count=1 -timeout=10s -v`, `go test ./pkg/plugin/data_mask -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 181: Implement `cors` Timing-Allow-Origin
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Modify: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `cors` `timing_allow_origins` and `timing_allow_origins_by_regex` behavior.
+- Produces: `Timing-Allow-Origin` response headers for configured literal, wildcard, and regex origin matches.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; `timing_allow_origins_by_regex` takes precedence when configured, otherwise `timing_allow_origins` uses the same `*`, `**`, exact, and comma-list origin matching style as CORS allow origins.
+
+- [x] **Step 2: Add focused tests**
+
+Added tests proving `Timing-Allow-Origin` is emitted for comma-list matches, emitted for regex matches, and omitted when the request origin does not match.
+
+- [x] **Step 3: Implement timing-origin matching**
+
+Compiled `timing_allow_origins_by_regex` rules during `PostInit`, wrapped the existing `rs/cors` handler to set `Timing-Allow-Origin`, and added a small configured-origin matcher for `*`, `**`, exact origins, and comma lists.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include `timing_allow_origins` and `timing_allow_origins_by_regex`, while keeping metadata origins and exact wildcard response-header parity as gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -run 'TestHandlerSetsTimingAllowOrigin|TestHandlerSkipsTimingAllowOrigin' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

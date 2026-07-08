@@ -99,3 +99,59 @@ func TestHandlerDoubleStarOriginEchoesRequestOrigin(t *testing.T) {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want request origin", got)
 	}
 }
+
+func TestHandlerSetsTimingAllowOriginFromConfiguredOrigins(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		TimingAllowOrigins: stringPtr("https://client.example,https://other.example"),
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Timing-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("Timing-Allow-Origin = %q, want matched request origin", got)
+	}
+}
+
+func TestHandlerSetsTimingAllowOriginFromRegex(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		TimingAllowOrigins:        stringPtr("https://client.example"),
+		TimingAllowOriginsByRegex: []string{`^https://.+\.timing\.example$`},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://api.timing.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Timing-Allow-Origin"); got != "https://api.timing.example" {
+		t.Fatalf("Timing-Allow-Origin = %q, want regex-matched request origin", got)
+	}
+}
+
+func TestHandlerSkipsTimingAllowOriginWhenNotMatched(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		TimingAllowOrigins: stringPtr("https://client.example"),
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://blocked.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Timing-Allow-Origin"); got != "" {
+		t.Fatalf("Timing-Allow-Origin = %q, want empty", got)
+	}
+}
+
+func stringPtr(v string) *string {
+	return &v
+}

@@ -15,8 +15,9 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	cors        *cors.Cors
-	originRegex []*regexp.Regexp
+	cors              *cors.Cors
+	originRegex       []*regexp.Regexp
+	timingOriginRegex []*regexp.Regexp
 }
 
 const (
@@ -164,6 +165,13 @@ func (p *Plugin) PostInit() error {
 		}
 		p.originRegex = append(p.originRegex, compiled)
 	}
+	for _, rule := range p.config.TimingAllowOriginsByRegex {
+		compiled, err := regexp.Compile(rule)
+		if err != nil {
+			return fmt.Errorf("compile timing_allow_origins_by_regex %q: %w", rule, err)
+		}
+		p.timingOriginRegex = append(p.timingOriginRegex, compiled)
+	}
 
 	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
@@ -191,13 +199,13 @@ func (p *Plugin) Config() interface{} {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	// fn := func(w http.ResponseWriter, r *http.Request) {
-	// 	fmt.Println("cors handler, do nothing")
-	// 	next.ServeHTTP(w, r)
-	// }
-	// return http.HandlerFunc(fn)
-
-	return p.cors.Handler(next)
+	handler := p.cors.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin, ok := p.timingAllowOrigin(r.Header.Get("Origin")); ok {
+			w.Header().Set("Timing-Allow-Origin", origin)
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 func (p *Plugin) allowOrigin(origin string) bool {
@@ -215,6 +223,43 @@ func (p *Plugin) allowOrigin(origin string) bool {
 		}
 	}
 	return false
+}
+
+func (p *Plugin) timingAllowOrigin(origin string) (string, bool) {
+	if len(p.timingOriginRegex) > 0 {
+		if origin == "" {
+			return "", false
+		}
+		for _, rule := range p.timingOriginRegex {
+			if rule.MatchString(origin) {
+				return origin, true
+			}
+		}
+		return "", false
+	}
+	if p.config.TimingAllowOrigins == nil {
+		return "", false
+	}
+	return matchConfiguredOrigin(origin, *p.config.TimingAllowOrigins)
+}
+
+func matchConfiguredOrigin(origin string, configured string) (string, bool) {
+	for _, allowedOrigin := range strings.Split(configured, ",") {
+		switch allowedOrigin {
+		case "*":
+			return "*", true
+		case "**":
+			if origin == "" {
+				return "*", true
+			}
+			return origin, true
+		case origin:
+			if origin != "" {
+				return origin, true
+			}
+		}
+	}
+	return "", false
 }
 
 func allowedMethods(methods string) []string {

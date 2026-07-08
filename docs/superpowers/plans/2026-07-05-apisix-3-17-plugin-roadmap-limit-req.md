@@ -1892,6 +1892,37 @@ Updated `uri-blocker` support notes to include block rules, rejection config, ca
 
 Run: `go test ./pkg/plugin/uri_blocker -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
 
+### Task 172: Align `ua-restriction` Matching And Rejection Semantics
+
+**Files:**
+- Modify: `pkg/plugin/ua_restriction/plugin.go`
+- Add: `pkg/plugin/ua_restriction/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official `ua-restriction` schema and access-phase User-Agent matching behavior.
+- Produces: APISIX-compatible allowlist/denylist coexistence, allow-before-deny matching, trimmed User-Agent matching, and JSON rejection bodies.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/ua-restriction.lua`, docs, and tests; APISIX allows `allowlist` and `denylist` together, lets allowlist matches pass before denylist, does not block allowlist misses by itself, strips User-Agent whitespace, and returns `403 {"message": conf.message}` for blocked requests.
+
+- [x] **Step 2: Write failing tests**
+
+Tests cover schema acceptance for both lists together, JSON denial responses, allowlist-miss fall-through, allow-before-deny behavior, and trimmed User-Agent matching.
+
+- [x] **Step 3: Implement matching parity**
+
+Removed the `oneOf` schema restriction, removed debug stdout, added trimmed User-Agent matching, implemented allow-before-deny result handling, and replaced `http.Error` rejection paths with a JSON response writer.
+
+- [x] **Step 4: Update README**
+
+Updated `ua-restriction` support notes to include both-list config, allow-before-deny matching, missing-header bypass, trimmed matching, JSON rejections, and the remaining exact OpenResty multi-value header fidelity gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ua_restriction -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
 ### Task 7: Implement `proxy-mirror` HTTP Mirroring
 
 **Files:**

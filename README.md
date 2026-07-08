@@ -186,7 +186,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
   - support `block_rules`, `rejected_code`, `rejected_msg`, `case_insensitive`, APISIX-style empty default rejection bodies, and `error_msg` JSON custom rejections
   - not support APISIX PCRE/JIT regex engine parity exactly
 - [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 100%
-- [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 100%
+- [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 95%
+  - support `allowlist`, `denylist`, using both lists together, allow-before-deny matching, `bypass_missing`, trimmed User-Agent matching, and APISIX-style JSON rejection bodies
+  - not support OpenResty multi-value User-Agent header fidelity exactly
 - [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 95%
   - support `whitelist`, `blacklist`, `bypass_missing`, custom rejection messages, APISIX-style JSON rejection bodies, and leading-`*` suffix host matching
   - not support APISIX `host_def` schema validation exactly

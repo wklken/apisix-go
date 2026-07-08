@@ -5952,3 +5952,34 @@ Updated `grpc-web` support notes to call out APISIX-style `400` rejection for in
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/grpc_web -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 177: Implement `grpc-web` Wildcard Path Rewrite
+
+**Files:**
+- Modify: `pkg/plugin/grpc_web/plugin.go`
+- Modify: `pkg/plugin/grpc_web/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: APISIX `grpc-web` prefix-route `:ext` behavior and the current chi wildcard route conversion.
+- Produces: upstream gRPC requests whose path is rewritten from the matched wildcard extension.
+
+- [x] **Step 1: Read official behavior and local routing**
+
+Read official APISIX 3.17 `apisix/plugins/grpc-web.lua`; APISIX requires a prefix route capture, prepends `/` when needed, and rewrites the request URI to that gRPC method path. Read local `convertURI` and chi routing behavior; APISIX suffix wildcards are exposed as chi `*` URL params.
+
+- [x] **Step 2: Add route-backed tests**
+
+Added tests proving `/grpc/*` rewrites `/grpc/helloworld.Greeter/SayHello` to upstream path `/helloworld.Greeter/SayHello`, and routed requests without a wildcard return `400`.
+
+- [x] **Step 3: Implement wildcard rewrite**
+
+Added a `grpc-web` path rewrite helper that uses chi wildcard captures when present, preserves standalone middleware behavior when no chi route context exists, and rejects routed non-wildcard usage.
+
+- [x] **Step 4: Update README**
+
+Updated `grpc-web` support notes to include route wildcard-to-gRPC path rewriting and removed the old unsupported `:ext` rewrite gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/grpc_web -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

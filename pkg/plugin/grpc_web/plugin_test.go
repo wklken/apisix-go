@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -174,6 +176,48 @@ func TestHandlerTransformsBinaryRequestAndResponse(t *testing.T) {
 	wantBody := append([]byte("reply"), buildTrailerForTest("7", "denied")...)
 	if got := res.Body.Bytes(); string(got) != string(wantBody) {
 		t.Fatalf("response body = %q, want %q", got, wantBody)
+	}
+}
+
+func TestHandlerRewritesWildcardRouteToGRPCPath(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	router := chi.NewRouter()
+	router.Method(http.MethodPost, "/grpc/*", p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/helloworld.Greeter/SayHello" {
+			t.Fatalf("upstream path = %q, want gRPC wildcard path", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/grpc" {
+			t.Fatalf("upstream Content-Type = %q, want application/grpc", got)
+		}
+		w.Header().Set("Grpc-Status", "0")
+	})))
+
+	req := httptest.NewRequest(http.MethodPost, "/grpc/helloworld.Greeter/SayHello", strings.NewReader("hello"))
+	req.Header.Set("Content-Type", "application/grpc-web")
+	res := httptest.NewRecorder()
+
+	router.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRejectsRoutedRequestWithoutWildcard(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	router := chi.NewRouter()
+	router.Method(http.MethodPost, "/grpc", p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})))
+
+	req := httptest.NewRequest(http.MethodPost, "/grpc", strings.NewReader("hello"))
+	req.Header.Set("Content-Type", "application/grpc-web")
+	res := httptest.NewRecorder()
+
+	router.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.Code)
 	}
 }
 

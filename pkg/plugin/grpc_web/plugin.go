@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -100,6 +101,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		if err := rewriteGRPCPath(r); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		if err := transformRequest(r, encoding); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -111,6 +117,37 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		recorder.writeTo(w)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func rewriteGRPCPath(r *http.Request) error {
+	path, ok := wildcardParam(r)
+	if !ok {
+		if chi.RouteContext(r.Context()) == nil {
+			return nil
+		}
+		return fmt.Errorf("grpc-web plugin requires prefix wildcard route")
+	}
+
+	if path == "" {
+		path = "/"
+	} else if path[0] != '/' {
+		path = "/" + path
+	}
+	r.URL.Path = path
+	return nil
+}
+
+func wildcardParam(r *http.Request) (string, bool) {
+	rctx := chi.RouteContext(r.Context())
+	if rctx == nil {
+		return "", false
+	}
+	for i := len(rctx.URLParams.Keys) - 1; i >= 0; i-- {
+		if rctx.URLParams.Keys[i] == "*" && len(rctx.URLParams.Values) > i {
+			return rctx.URLParams.Values[i], true
+		}
+	}
+	return "", false
 }
 
 func transformRequest(r *http.Request, encoding string) error {

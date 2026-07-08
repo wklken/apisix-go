@@ -22,6 +22,7 @@ type Config struct {
 // section: apisix
 
 type Apisix struct {
+	ID                                 string       `mapstructure:"id"`
 	NodeListen                         []NodeListen `mapstructure:"node_listen"`
 	EnableAdmin                        bool         `mapstructure:"enable_admin"`
 	EnableDevMode                      bool         `mapstructure:"enable_dev_mode"`

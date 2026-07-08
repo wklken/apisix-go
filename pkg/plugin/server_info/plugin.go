@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -61,7 +62,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	resp := Response{
 		EtcdVersion: "unknown",
 		Hostname:    hostname,
-		ID:          hostname,
+		ID:          apisixid.Get(),
 		Version:     version,
 		BootTime:    bootTime,
 	}

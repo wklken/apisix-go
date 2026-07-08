@@ -50,9 +50,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 85%
   - support `arg_*`, `http_*`, `http_x_forwarded_for`, bare IP and IP:port sources, `trusted_addresses`, `recursive`, and request-context `remote_addr` / `remote_port` updates
   - not support APISIX-Base `set_real_ip`, NGINX variable cache flushing, full NGINX variable source coverage, or exact `ip_def` schema validation
-- [x] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/) 40%
-  - support `/v1/server_info` response shape when `server-info` is enabled in `conf.plugins`
-  - not support periodic etcd server-info reporting or lease keepalive
+- [x] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/) 45%
+  - support `/v1/server_info` response shape when `server-info` is enabled in `conf.plugins`, including configured `apisix.id` node IDs and generated process fallback IDs
+  - not support APISIX `conf/apisix.uid` persistence, periodic etcd server-info reporting, or lease keepalive
 - [x] [error-page](https://apisix.apache.org/zh/docs/apisix/plugins/error-page/) 55%
   - support official plugin name, priority, empty route schema, metadata-shaped `enable` and `error_404` / `error_500` / `error_502` / `error_503`, custom body/content-type/content-length, and default APISIX-style HTML bodies
   - not support APISIX response-source detection, header/body filter phases, plugin metadata schema exposure through the plugin interface, or limiting rewrites only to APISIX-generated errors instead of upstream error responses
@@ -303,9 +303,9 @@ Metrics:
   - support official plugin name, priority, `prefer_name` schema validation, route/service metric labels using IDs by default and names when `prefer_name` is true, pass-through route/global plugin config, and public API metrics endpoint registration at `/apisix/prometheus/metrics`
   - reuse existing Go Prometheus metrics collection and support `plugin_attr.prometheus.metric_prefix`, `default_buckets`, `export_uri`, `enable_export_server`, and `export_addr` for the dedicated metrics export server
   - not support APISIX exporter parity for all labels, stream metrics, extra-label variable expansion, metric expiration, privileged-agent offload, or exact `nginx-lua-prometheus` lifecycle behavior
-- [x] [node-status](https://apisix.apache.org/zh/docs/apisix/plugins/node-status/) 50%
-  - support `/apisix/status` response shape when `node-status` is enabled in `conf.plugins`
-  - not support exact NGINX connection state counters
+- [x] [node-status](https://apisix.apache.org/zh/docs/apisix/plugins/node-status/) 55%
+  - support `/apisix/status` response shape when `node-status` is enabled in `conf.plugins`, including configured `apisix.id` node IDs and generated process fallback IDs
+  - not support APISIX `conf/apisix.uid` persistence or exact NGINX connection state counters
 - [x] [datadog](https://apisix.apache.org/zh/docs/apisix/plugins/datadog/) 68%
   - support DogStatsD UDP metrics, metadata `host`, `port`, `namespace`, `constant_tags`, route `constant_tags`, `prefer_name`, route/service ID-vs-name tags, consumer tags, balancer IP tags, `include_path` with matched route pattern, `include_method`, upstream latency, and APISIX-side latency derived from upstream latency
   - not support APISIX batch processor behavior or exact APISIX log-entry timing/source parity yet

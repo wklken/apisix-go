@@ -5886,3 +5886,38 @@ Updated `forward-auth` support notes to include `ssl_verify`, `keepalive`, `keep
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/forward_auth -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 175: Align Control Endpoint APISIX Node IDs
+
+**Files:**
+- Modify: `pkg/config/types.go`
+- Create: `pkg/apisix/id/id.go`
+- Create: `pkg/apisix/id/id_test.go`
+- Modify: `pkg/plugin/node_status/plugin.go`
+- Modify: `pkg/plugin/server_info/plugin.go`
+- Modify: `pkg/route/node_status_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX `apisix.id` local config behavior used by `core.id.get()`.
+- Produces: shared APISIX node ID lookup for `node-status` and `server-info`, using configured `apisix.id` or a generated process UUID.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/core/id.lua`, `apisix/plugins/node-status.lua`, and `apisix/plugins/server-info.lua`; both plugins use `core.id.get()`, which prefers configured `apisix.id` before generating an instance UUID.
+
+- [x] **Step 2: Add shared ID helper**
+
+Added `pkg/apisix/id.Get()` and `config.Apisix.ID` so compatible local config can drive the node ID without duplicating hostname fallback logic per plugin.
+
+- [x] **Step 3: Wire control endpoints**
+
+Updated `node-status` and `server-info` responses to use the shared APISIX ID, and added route-level tests for configured IDs in both response bodies.
+
+- [x] **Step 4: Update README**
+
+Updated `node-status` and `server-info` support notes to include configured `apisix.id` and generated process fallback IDs, while keeping APISIX `conf/apisix.uid` persistence and server-info etcd reporting as gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/apisix/id -count=1 -timeout=10s -v`, `go test ./pkg/route -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

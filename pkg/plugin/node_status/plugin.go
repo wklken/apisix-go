@@ -2,9 +2,9 @@ package node_status
 
 import (
 	"net/http"
-	"os"
 	"sync/atomic"
 
+	apisixid "github.com/wklken/apisix-go/pkg/apisix/id"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -55,7 +55,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	total := totalRequests.Add(1)
 	resp := Response{
-		ID: nodeID(),
+		ID: apisixid.Get(),
 		Status: map[string]string{
 			"active":   "0",
 			"accepted": formatUint(total),
@@ -70,14 +70,6 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
-}
-
-func nodeID() string {
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		return "apisix-go"
-	}
-	return hostname
 }
 
 func formatUint(v uint64) string {

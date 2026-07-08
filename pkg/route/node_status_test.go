@@ -15,7 +15,10 @@ func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
 	t.Cleanup(func() {
 		config.GlobalConfig = oldConfig
 	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"node-status"}}
+	config.GlobalConfig = &config.Config{
+		Apisix:  config.Apisix{ID: "node-status-id"},
+		Plugins: []string{"node-status"},
+	}
 
 	mux := chi.NewRouter()
 	registerExtraRoutes(mux)
@@ -32,8 +35,8 @@ func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body["id"] == "" {
-		t.Fatalf("id = %v, want non-empty", body["id"])
+	if body["id"] != "node-status-id" {
+		t.Fatalf("id = %v, want configured APISIX id", body["id"])
 	}
 	status, ok := body["status"].(map[string]any)
 	if !ok {
@@ -70,7 +73,10 @@ func TestRegisterExtraRoutesAddsServerInfoWhenEnabled(t *testing.T) {
 	t.Cleanup(func() {
 		config.GlobalConfig = oldConfig
 	})
-	config.GlobalConfig = &config.Config{Plugins: []string{"server-info"}}
+	config.GlobalConfig = &config.Config{
+		Apisix:  config.Apisix{ID: "server-info-id"},
+		Plugins: []string{"server-info"},
+	}
 
 	mux := chi.NewRouter()
 	registerExtraRoutes(mux)
@@ -91,6 +97,9 @@ func TestRegisterExtraRoutesAddsServerInfoWhenEnabled(t *testing.T) {
 		if _, ok := body[key]; !ok {
 			t.Fatalf("body[%q] missing in %#v", key, body)
 		}
+	}
+	if body["id"] != "server-info-id" {
+		t.Fatalf("id = %v, want configured APISIX id", body["id"])
 	}
 	if body["etcd_version"] != "unknown" {
 		t.Fatalf("etcd_version = %v, want unknown", body["etcd_version"])

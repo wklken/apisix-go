@@ -6669,3 +6669,34 @@ Updated `kafka-logger` support notes to include body expression gates; APISIX ba
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/kafka_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/kafka_logger -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 200: Support `rocketmq-logger` Body Expression Gates
+
+**Files:**
+- Modify: `pkg/plugin/rocketmq_logger/plugin.go`
+- Modify: `pkg/plugin/rocketmq_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `rocketmq-logger` `include_req_body_expr` and `include_resp_body_expr` config.
+- Produces: RocketMQ log entries whose request and response body fields are gated by bounded request-variable expressions while preserving request body replay, capped capture, and existing sync producer delivery behavior.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/rocketmq-logger.lua`; `rocketmq-logger` delegates request/response body capture to the shared log utility and validates body expression configs through `log_util.check_log_schema`.
+
+- [x] **Step 2: Add focused tests**
+
+Added tests proving matching expressions capture request and response bodies in the RocketMQ message payload, while non-matching expressions omit both logged bodies without preventing downstream from reading the original request body.
+
+- [x] **Step 3: Implement bounded expression gates**
+
+Gated request body reads before downstream execution, captured response status in the RocketMQ logger recorder, and evaluated response body logging after downstream completion using the existing local `==`, `!=`, numeric comparison, regex, `AND`, and `OR` expression subset.
+
+- [x] **Step 4: Update README**
+
+Updated `rocketmq-logger` support notes to include body expression gates; APISIX batch processor behavior, `max_pending_entries`, `meta_format = origin`, and `use_tls` remain documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/rocketmq_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/rocketmq_logger -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

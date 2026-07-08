@@ -332,9 +332,9 @@ Loggers:
 - [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 58%
   - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`
-- [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 60%
-  - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture
-  - not support APISIX batch processor behavior, `max_pending_entries`, `include_req_body_expr`, or `include_resp_body_expr`
+- [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 68%
+  - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
+  - not support APISIX batch processor behavior or `max_pending_entries`
 - [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 50%
   - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, `include_req_body`, Go-side `include_resp_body`, capped body-size capture, and UDP/TCP syslog delivery through the Go syslog writer
   - not support APISIX batch processor buffering semantics, OpenResty syslog connection pooling/TLS behavior parity, `include_req_body_expr`, or `include_resp_body_expr`

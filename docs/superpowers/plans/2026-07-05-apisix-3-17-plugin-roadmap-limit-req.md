@@ -6452,3 +6452,34 @@ Updated `workflow` support notes to include delegated `limit-count` actions, lea
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/workflow -run TestHandlerRunsLimitCountAction -count=1 -timeout=10s -v` and `go test ./pkg/plugin/workflow -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 193: Support Workflow `limit-conn` Action
+
+**Files:**
+- Modify: `pkg/plugin/workflow/plugin.go`
+- Modify: `pkg/plugin/workflow/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 workflow action arrays using `["limit-conn", {...}]`.
+- Produces: workflow rules that compile a delegated `limit-conn` plugin action during `PostInit`; active requests hold the local connection counter until downstream returns, and over-limit requests stop with the existing `limit-conn` rejection response.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-conn.lua` and `apisix/plugins/workflow.lua`; `limit-conn` registers a workflow access handler for increment and log handler for decrement, while workflow executes only the first action for the first matching rule.
+
+- [x] **Step 2: Add focused test**
+
+Added a workflow test using the official action-array shape with `["limit-conn", {"conn": 1, "burst": 0, "default_conn_delay": 0.1, "key": "remote_addr"}]`, proving a second concurrent request for the same key is rejected while the first request is still inside downstream.
+
+- [x] **Step 3: Implement delegated `limit-conn` action**
+
+Compiled `limit_conn.Plugin` instances during workflow `PostInit` and refactored delegated plugin actions to wrap the real downstream handler. This preserves `limit-conn` release semantics through its existing `defer` after downstream completion and keeps `limit-count` delegation on the same middleware path.
+
+- [x] **Step 4: Update README**
+
+Updated `workflow` support notes to include delegated `limit-count` and `limit-conn` actions, leaving full expression parity and other delegated plugin actions/log handlers as documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/workflow -run TestHandlerRunsLimitConnAction -count=1 -timeout=10s -v` and `go test ./pkg/plugin/workflow -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

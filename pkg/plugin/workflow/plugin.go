@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -74,6 +75,7 @@ type Action struct {
 	Name       string
 	Config     map[string]any
 	Return     ReturnAction
+	limitConn  *limit_conn.Plugin
 	limitCount *limit_count.Plugin
 }
 
@@ -118,20 +120,32 @@ func (p *Plugin) PostInit() error {
 	for ruleIndex := range p.config.Rules {
 		for actionIndex := range p.config.Rules[ruleIndex].Actions {
 			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
-			if action.Name != "limit-count" {
-				continue
+			switch action.Name {
+			case "limit-conn":
+				plugin := &limit_conn.Plugin{}
+				if err := plugin.Init(); err != nil {
+					return err
+				}
+				if err := util.Parse(action.Config, plugin.Config()); err != nil {
+					return err
+				}
+				if err := plugin.PostInit(); err != nil {
+					return err
+				}
+				action.limitConn = plugin
+			case "limit-count":
+				plugin := &limit_count.Plugin{}
+				if err := plugin.Init(); err != nil {
+					return err
+				}
+				if err := util.Parse(action.Config, plugin.Config()); err != nil {
+					return err
+				}
+				if err := plugin.PostInit(); err != nil {
+					return err
+				}
+				action.limitCount = plugin
 			}
-			plugin := &limit_count.Plugin{}
-			if err := plugin.Init(); err != nil {
-				return err
-			}
-			if err := util.Parse(action.Config, plugin.Config()); err != nil {
-				return err
-			}
-			if err := plugin.PostInit(); err != nil {
-				return err
-			}
-			action.limitCount = plugin
 		}
 	}
 	return nil
@@ -143,7 +157,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if !matchRule(r, rule.Case) {
 				continue
 			}
-			if p.handleAction(w, r, rule.Actions) {
+			if p.handleAction(w, r, next, rule.Actions) {
 				return
 			}
 			break
@@ -154,17 +168,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, actions []Action) bool {
+func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, next http.Handler, actions []Action) bool {
 	if len(actions) == 0 {
 		return false
 	}
 	action := actions[0]
+	if action.Name == "limit-conn" && action.limitConn != nil {
+		action.limitConn.Handler(next).ServeHTTP(w, r)
+		return true
+	}
 	if action.Name == "limit-count" && action.limitCount != nil {
-		allowed := false
-		action.limitCount.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			allowed = true
-		})).ServeHTTP(w, r)
-		return !allowed
+		action.limitCount.Handler(next).ServeHTTP(w, r)
+		return true
 	}
 
 	if action.Name != "return" {

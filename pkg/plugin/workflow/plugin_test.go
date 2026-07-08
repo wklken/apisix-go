@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -182,5 +184,82 @@ func TestHandlerRunsLimitCountAction(t *testing.T) {
 	handler.ServeHTTP(secondRecorder, second)
 	if secondRecorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestHandlerRunsLimitConnAction(t *testing.T) {
+	var cfg Config
+	err := util.Parse(map[string]any{
+		"rules": []any{
+			map[string]any{
+				"actions": []any{
+					[]any{
+						"limit-conn",
+						map[string]any{
+							"conn":               1,
+							"burst":              0,
+							"default_conn_delay": 0.1,
+							"key":                "remote_addr",
+							"rejected_code":      http.StatusTooManyRequests,
+						},
+					},
+				},
+			},
+		},
+	}, &cfg)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	p := newTestPlugin(t, cfg)
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() {
+			close(started)
+		})
+		<-block
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first.RemoteAddr = "192.0.2.1:1234"
+	firstRecorder := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(firstRecorder, first)
+	}()
+	<-started
+
+	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second.RemoteAddr = "192.0.2.1:5678"
+	secondRecorder := httptest.NewRecorder()
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		handler.ServeHTTP(secondRecorder, second)
+	}()
+	select {
+	case <-secondDone:
+	case <-time.After(200 * time.Millisecond):
+		close(block)
+		<-firstDone
+		<-secondDone
+		t.Fatal(
+			"second request reached downstream, want workflow limit-conn action to reject while first request is active",
+		)
+	}
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		close(block)
+		<-firstDone
+		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+
+	close(block)
+	<-firstDone
+	if firstRecorder.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
 	}
 }

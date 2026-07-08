@@ -228,9 +228,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 68%
   - support local concurrent request limiting, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, `rejected_msg`, and `allow_degradation`
   - not support string expression values for `conn` / `burst`, `only_use_default_delay`, `redis`, or `redis-cluster`
-- [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 70%
-  - support local/Redis fixed-window quotas, `rules`, per-rule `header_prefix`, `key_type = var`, `constant`, and `var_combination`, HTTP header variables, quota headers, `rejected_code`, `rejected_msg`, and `allow_degradation`
-  - not support string expression values for `count` / `time_window`, plugin metadata custom quota header names, or `redis-cluster`
+- [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 75%
+  - support local/Redis fixed-window quotas, `rules`, per-rule `header_prefix`, `key_type = var`, `constant`, and `var_combination`, HTTP header variables, quota headers, plugin metadata custom quota header names, `rejected_code`, `rejected_msg`, and `allow_degradation`
+  - not support string expression values for `count` / `time_window` or `redis-cluster`
 - [x] [graphql-limit-count](https://apisix.apache.org/docs/apisix/plugins/graphql-limit-count/) 55%
   - support official plugin name, priority, schema, POST `application/json` and `application/graphql` requests, GraphQL selection-depth cost counting, local fixed-window quotas, `X-RateLimit-*` headers, `rejected_code`, `rejected_msg`, `key`, `key_type`, and fragment/inline-fragment depth expansion
   - not support Redis/Redis Cluster quota sharing, full GraphQL spec parsing parity, APISIX `graphql.max_size`, or exact `resty.limit.count` behavior

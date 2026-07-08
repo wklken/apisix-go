@@ -17,12 +17,14 @@ import (
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config       Config
+	metadata     Metadata
 	limiter      *limiter.Limiter
 	ruleLimiters []*limiter.Limiter
 }
@@ -215,6 +217,12 @@ type Rule struct {
 	HeaderPrefix string `json:"header_prefix,omitempty"`
 }
 
+type Metadata struct {
+	LimitHeader     string `json:"limit_header"`
+	RemainingHeader string `json:"remaining_header"`
+	ResetHeader     string `json:"reset_header"`
+}
+
 type RedisConfig struct {
 	RedisHost      string `json:"redis_host,omitempty"`
 	RedisPort      int    `json:"redis_port,omitempty"`
@@ -298,6 +306,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.ShowLimitQuotaHeader == nil {
 		b := true
 		p.config.ShowLimitQuotaHeader = &b
+	}
+	if p.metadata == (Metadata{}) {
+		p.metadata = loadMetadata()
 	}
 
 	if len(p.config.Rules) > 0 {
@@ -408,7 +419,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		key := p.resolveKey(r)
-		if !p.runLimit(w, r, p.limiter, p.config.Count, key, defaultHeaders()) {
+		if !p.runLimit(w, r, p.limiter, p.config.Count, key, defaultHeaders(p.metadata)) {
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -509,12 +520,38 @@ type quotaHeaders struct {
 	reset     string
 }
 
-func defaultHeaders() quotaHeaders {
+func defaultHeaders(metadata Metadata) quotaHeaders {
+	metadata = applyMetadataDefaults(metadata)
 	return quotaHeaders{
-		limit:     "X-RateLimit-Limit",
-		remaining: "X-RateLimit-Remaining",
-		reset:     "X-RateLimit-Reset",
+		limit:     metadata.LimitHeader,
+		remaining: metadata.RemainingHeader,
+		reset:     metadata.ResetHeader,
 	}
+}
+
+func applyMetadataDefaults(metadata Metadata) Metadata {
+	if metadata.LimitHeader == "" {
+		metadata.LimitHeader = "X-RateLimit-Limit"
+	}
+	if metadata.RemainingHeader == "" {
+		metadata.RemainingHeader = "X-RateLimit-Remaining"
+	}
+	if metadata.ResetHeader == "" {
+		metadata.ResetHeader = "X-RateLimit-Reset"
+	}
+	return metadata
+}
+
+func loadMetadata() (metadata Metadata) {
+	defer func() {
+		if recover() != nil {
+			metadata = Metadata{}
+		}
+	}()
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return Metadata{}
+	}
+	return metadata
 }
 
 func ruleHeaders(rule Rule, index int) quotaHeaders {

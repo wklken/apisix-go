@@ -6173,3 +6173,34 @@ Updated `proxy-rewrite` support notes to include `regex_uri` capture resolution 
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/proxy_rewrite -run TestHandlerResolvesRegexURICapturesInHeaders -count=1 -timeout=10s -v`, `go test ./pkg/plugin/proxy_rewrite -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 184: Support `limit-count` Metadata Header Names
+
+**Files:**
+- Modify: `pkg/plugin/limit_count/plugin.go`
+- Modify: `pkg/plugin/limit_count/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-count` plugin metadata fields `limit_header`, `remaining_header`, and `reset_header`.
+- Produces: default quota headers that can be renamed through plugin metadata while preserving per-rule `header_prefix` generated names.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/limit-count/init.lua`; default quota headers come from plugin metadata defaults, while rules with `header_prefix` generate `X-{prefix}-RateLimit-*` names.
+
+- [x] **Step 2: Add focused test**
+
+Added a test proving custom metadata header names are used for allowed and rejected requests, and the default `X-RateLimit-Limit` name is not emitted when metadata overrides it.
+
+- [x] **Step 3: Implement metadata headers**
+
+Added a small metadata model loaded through `store.GetPluginMetadata` with panic-safe fallback, applied official default names when metadata is absent or partial, and routed non-rule-prefix quota headers through that metadata.
+
+- [x] **Step 4: Update README**
+
+Updated `limit-count` support notes to include plugin metadata custom quota header names, leaving string expression limits and Redis Cluster as documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_count -run TestHandlerUsesMetadataQuotaHeaderNames -count=1 -timeout=10s -v`, `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

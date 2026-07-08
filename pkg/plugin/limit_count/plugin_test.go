@@ -148,6 +148,51 @@ func TestHandlerAppliesResolvedRules(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesMetadataQuotaHeaderNames(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:        1,
+		TimeWindow:   60,
+		RejectedCode: http.StatusTooManyRequests,
+	})
+	p.metadata = Metadata{
+		LimitHeader:     "X-Custom-Limit",
+		RemainingHeader: "X-Custom-Remaining",
+		ResetHeader:     "X-Custom-Reset",
+	}
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	first := httptest.NewRequest(http.MethodGet, "/", nil)
+	first.RemoteAddr = "192.0.2.1:1234"
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, first)
+	if firstRecorder.Code != http.StatusNoContent {
+		t.Fatalf("first status = %d, want %d", firstRecorder.Code, http.StatusNoContent)
+	}
+	if got := firstRecorder.Header().Get("X-Custom-Limit"); got != "1" {
+		t.Fatalf("custom limit header = %q, want 1", got)
+	}
+	if got := firstRecorder.Header().Get("X-RateLimit-Limit"); got != "" {
+		t.Fatalf("default limit header = %q, want empty", got)
+	}
+
+	second := httptest.NewRequest(http.MethodGet, "/", nil)
+	second.RemoteAddr = "192.0.2.1:1234"
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, second)
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want rejection", secondRecorder.Code)
+	}
+	if got := secondRecorder.Header().Get("X-Custom-Remaining"); got != "0" {
+		t.Fatalf("custom remaining header = %q, want 0", got)
+	}
+	if got := secondRecorder.Header().Get("X-Custom-Reset"); got == "" {
+		t.Fatal("custom reset header is empty, want reset timestamp")
+	}
+}
+
 func TestPostInitRejectsDuplicateRuleKeys(t *testing.T) {
 	p := &Plugin{config: Config{
 		Rules: []Rule{

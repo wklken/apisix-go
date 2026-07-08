@@ -9,11 +9,13 @@ import (
 	"github.com/rs/cors"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config   Config
+	metadata Metadata
 
 	cors              *cors.Cors
 	originRegex       []*regexp.Regexp
@@ -129,6 +131,10 @@ type Config struct {
 	TimingAllowOriginsByRegex []string `json:"timing_allow_origins_by_regex"`
 }
 
+type Metadata struct {
+	AllowOrigins map[string]string `json:"allow_origins"`
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -156,6 +162,9 @@ func (p *Plugin) PostInit() error {
 
 	if p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
+	}
+	if len(p.config.AllowOriginsByMetadata) > 0 && len(p.metadata.AllowOrigins) == 0 {
+		p.metadata = loadMetadata()
 	}
 
 	for _, rule := range p.config.AllowOriginsByRegex {
@@ -185,7 +194,7 @@ func (p *Plugin) PostInit() error {
 		// Enable Debugging for testing, consider disabling in production
 		// Debug: true,
 	}
-	if p.config.AllowOrigins == "**" || len(p.originRegex) > 0 {
+	if p.config.AllowOrigins == "**" || len(p.originRegex) > 0 || len(p.config.AllowOriginsByMetadata) > 0 {
 		options.AllowOriginFunc = p.allowOrigin
 	}
 	p.cors = cors.New(options)
@@ -209,6 +218,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) allowOrigin(origin string) bool {
+	if len(p.config.AllowOriginsByMetadata) > 0 {
+		if p.allowOriginFromMetadata(origin) {
+			return true
+		}
+		if p.config.AllowOrigins == "" || p.config.AllowOrigins == "*" {
+			return false
+		}
+	}
 	for _, allowedOrigin := range strings.Split(p.config.AllowOrigins, ",") {
 		if allowedOrigin == "*" || allowedOrigin == origin {
 			return true
@@ -219,6 +236,19 @@ func (p *Plugin) allowOrigin(origin string) bool {
 	}
 	for _, rule := range p.originRegex {
 		if rule.MatchString(origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Plugin) allowOriginFromMetadata(origin string) bool {
+	for _, key := range p.config.AllowOriginsByMetadata {
+		configured, ok := p.metadata.AllowOrigins[key]
+		if !ok {
+			continue
+		}
+		if _, ok := matchConfiguredOrigin(origin, configured); ok {
 			return true
 		}
 	}
@@ -260,6 +290,18 @@ func matchConfiguredOrigin(origin string, configured string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func loadMetadata() (metadata Metadata) {
+	defer func() {
+		if recover() != nil {
+			metadata = Metadata{}
+		}
+	}()
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return Metadata{}
+	}
+	return metadata
 }
 
 func allowedMethods(methods string) []string {

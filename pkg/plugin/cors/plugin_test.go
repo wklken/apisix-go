@@ -100,6 +100,67 @@ func TestHandlerDoubleStarOriginEchoesRequestOrigin(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsOriginFromMetadata(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOriginsByMetadata: []string{"tenant_a"},
+	})
+	p.metadata.AllowOrigins = map[string]string{
+		"tenant_a": "https://app.example,https://admin.example",
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://admin.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://admin.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want metadata origin", got)
+	}
+}
+
+func TestHandlerRestrictsDefaultWildcardWhenMetadataConfigured(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOriginsByMetadata: []string{"tenant_a"},
+	})
+	p.metadata.AllowOrigins = map[string]string{
+		"tenant_a": "https://app.example",
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://blocked.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
+func TestHandlerFallsBackToConfiguredOriginAfterMetadataMiss(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOrigins:           "https://fallback.example",
+		AllowOriginsByMetadata: []string{"tenant_a"},
+	})
+	p.metadata.AllowOrigins = map[string]string{
+		"tenant_a": "https://app.example",
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://fallback.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://fallback.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want configured fallback origin", got)
+	}
+}
+
 func TestHandlerSetsTimingAllowOriginFromConfiguredOrigins(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		TimingAllowOrigins: stringPtr("https://client.example,https://other.example"),

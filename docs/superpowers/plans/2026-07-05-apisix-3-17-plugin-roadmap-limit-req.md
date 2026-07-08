@@ -6111,3 +6111,34 @@ Updated `cors` support notes to include `timing_allow_origins` and `timing_allow
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/cors -run 'TestHandlerSetsTimingAllowOrigin|TestHandlerSkipsTimingAllowOrigin' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.
+
+### Task 182: Implement `cors` Metadata Origins
+
+**Files:**
+- Modify: `pkg/plugin/cors/plugin.go`
+- Modify: `pkg/plugin/cors/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `cors` plugin metadata shape `allow_origins` and route config `allow_origins_by_metadata`.
+- Produces: metadata-backed access-control origin matching with APISIX-style metadata-first restriction and configured-origin fallback.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/cors.lua`; when `allow_origins_by_metadata` is configured, matching uses plugin metadata keys first, restricts the default `*` fallback, and only falls back to local origins when `allow_origins` is configured to something other than `*`.
+
+- [x] **Step 2: Add focused tests**
+
+Added tests proving metadata origin matches are allowed, metadata configuration restricts the default wildcard, and an explicit local origin can act as fallback after a metadata miss.
+
+- [x] **Step 3: Implement safe metadata matching**
+
+Added a `Metadata` cache loaded through `store.GetPluginMetadata` with the same panic-safe pattern used by existing metadata-aware plugins, and routed `allow_origins_by_metadata` through the existing custom origin matcher.
+
+- [x] **Step 4: Update README**
+
+Updated `cors` support notes to include `allow_origins_by_metadata` while keeping exact wildcard response-header parity as a documented gap.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/cors -run 'TestHandlerAllowsOriginFromMetadata|TestHandlerRestrictsDefaultWildcardWhenMetadataConfigured|TestHandlerFallsBackToConfiguredOriginAfterMetadataMiss' -count=1 -timeout=10s -v`, `go test ./pkg/plugin/cors -count=1 -timeout=10s -v`, `go test ./...`, and `make build`.

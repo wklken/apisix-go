@@ -141,6 +141,96 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	}
 }
 
+func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path:                path,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: []any{[]any{"status", "==", "201"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":2}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("X-Log-Body", "yes")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	})).ServeHTTP(rr, req)
+	_ = p.logger.Sync()
+
+	var logged map[string]any
+	line := strings.TrimSpace(readLogFile(t, path))
+	if err := json.Unmarshal([]byte(line), &logged); err != nil {
+		t.Fatalf("decode log line %q: %v", line, err)
+	}
+
+	request, ok := logged["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("logged request = %#v, want object", logged["request"])
+	}
+	if request["body"] != `{"order":2}` {
+		t.Fatalf("logged request body = %#v, want captured request body", request["body"])
+	}
+
+	response, ok := logged["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("logged response = %#v, want object", logged["response"])
+	}
+	if response["body"] != `{"created":true}` {
+		t.Fatalf("logged response body = %#v, want captured response body", response["body"])
+	}
+}
+
+func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path:                path,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: []any{[]any{"status", "==", "500"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":3}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("X-Log-Body", "no")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":3}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":false}`))
+	})).ServeHTTP(rr, req)
+	_ = p.logger.Sync()
+
+	var logged map[string]any
+	line := strings.TrimSpace(readLogFile(t, path))
+	if err := json.Unmarshal([]byte(line), &logged); err != nil {
+		t.Fatalf("decode log line %q: %v", line, err)
+	}
+	if _, ok := logged["request"]; ok {
+		t.Fatalf("logged request = %#v, want no request body", logged["request"])
+	}
+	if _, ok := logged["response"]; ok {
+		t.Fatalf("logged response = %#v, want no response body", logged["response"])
+	}
+}
+
 func TestSchemaAcceptsMatchConditionsAndLogicalOperators(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

@@ -353,9 +353,9 @@ Loggers:
 - [x] [splunk-hec-logging](https://apisix.apache.org/zh/docs/apisix/plugins/splunk-hec-logging/) 50%
   - support Splunk HEC `endpoint.uri`, `endpoint.token`, `endpoint.channel`, `endpoint.timeout`, `ssl_verify`, and `log_format`
   - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
-- [x] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) 68%
-  - support `path`, `log_format`, bounded `match` expressions for common request variables and `$status`, `include_req_body`, `include_resp_body`, and capped body-size capture
-  - not support `include_req_body_expr` or `include_resp_body_expr`
+- [x] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) 75%
+  - support `path`, `log_format`, bounded `match` expressions for common request variables and `$status`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
+  - not support APISIX/OpenResty file-cache and reopen semantics exactly
 - [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 60%
   - support RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery
   - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture

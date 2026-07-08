@@ -104,13 +104,15 @@ type Plugin struct {
 }
 
 type Config struct {
-	Path             string            `json:"path"`
-	LogFormat        map[string]string `json:"log_format,omitempty"`
-	IncludeReqBody   bool              `json:"include_req_body,omitempty"`
-	IncludeRespBody  bool              `json:"include_resp_body,omitempty"`
-	MaxReqBodyBytes  int               `json:"max_req_body_bytes,omitempty"`
-	MaxRespBodyBytes int               `json:"max_resp_body_bytes,omitempty"`
-	Match            []any             `json:"match,omitempty"`
+	Path                string            `json:"path"`
+	LogFormat           map[string]string `json:"log_format,omitempty"`
+	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
+	IncludeReqBodyExpr  []any             `json:"include_req_body_expr,omitempty"`
+	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
+	IncludeRespBodyExpr []any             `json:"include_resp_body_expr,omitempty"`
+	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
+	Match               []any             `json:"match,omitempty"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -168,7 +170,7 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
-		if p.config.IncludeReqBody {
+		if p.config.IncludeReqBody && exprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
@@ -189,12 +191,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if !p.match(r) {
 			return
 		}
+		status := 0
+		if recorder != nil {
+			status = recorder.status
+		}
 
 		logFields := log.GetFields(r, p.logFormat)
 		if requestBody != "" {
 			nestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.body.Len() > 0 {
+		if recorder != nil && recorder.body.Len() > 0 && exprMatched(r, p.config.IncludeRespBodyExpr, status) {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
@@ -210,11 +216,20 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 type fileLogResponseRecorder struct {
 	http.ResponseWriter
-	body  bytes.Buffer
-	limit int
+	body   bytes.Buffer
+	limit  int
+	status int
+}
+
+func (w *fileLogResponseRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }
 
 func (w *fileLogResponseRecorder) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
 	w.capture(body)
 	return w.ResponseWriter.Write(body)
 }
@@ -269,14 +284,18 @@ func loadMetadataLogFormat() (format map[string]string) {
 }
 
 func (p *Plugin) match(r *http.Request) bool {
-	if len(p.config.Match) == 0 {
+	return exprMatched(r, p.config.Match, 0)
+}
+
+func exprMatched(r *http.Request, exprs []any, status int) bool {
+	if len(exprs) == 0 {
 		return true
 	}
 
 	pendingOp := "AND"
 	hasResult := false
 	result := true
-	for _, condition := range p.config.Match {
+	for _, condition := range exprs {
 		if op, ok := condition.(string); ok {
 			switch strings.ToUpper(op) {
 			case "AND", "OR":
@@ -287,7 +306,7 @@ func (p *Plugin) match(r *http.Request) bool {
 			continue
 		}
 
-		matched := matchCondition(r, condition)
+		matched := matchCondition(r, condition, status)
 		if !hasResult {
 			result = matched
 			hasResult = true
@@ -304,7 +323,7 @@ func (p *Plugin) match(r *http.Request) bool {
 	return hasResult && result
 }
 
-func matchCondition(r *http.Request, condition any) bool {
+func matchCondition(r *http.Request, condition any, status int) bool {
 	parts, ok := condition.([]any)
 	if !ok || len(parts) != 3 {
 		return false
@@ -313,7 +332,7 @@ func matchCondition(r *http.Request, condition any) bool {
 	left := fmt.Sprint(parts[0])
 	op := fmt.Sprint(parts[1])
 	right := fmt.Sprint(parts[2])
-	actual := matchVar(r, left)
+	actual := matchVar(r, left, status)
 
 	switch op {
 	case "==":
@@ -351,10 +370,13 @@ func compareNumber(left string, right string, compare func(float64, float64) boo
 	return compare(l, r)
 }
 
-func matchVar(r *http.Request, name string) string {
+func matchVar(r *http.Request, name string, status int) string {
 	name = strings.TrimPrefix(name, "$")
 	switch {
 	case name == "status", name == "status_code":
+		if status > 0 {
+			return strconv.Itoa(status)
+		}
 		return fmt.Sprint(ctx.GetRequestVar(r, "$status"))
 	case name == "uri":
 		return r.URL.Path

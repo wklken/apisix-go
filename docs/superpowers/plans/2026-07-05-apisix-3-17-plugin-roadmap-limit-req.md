@@ -6545,3 +6545,34 @@ Updated `http-logger` support notes to include body expression gates; APISIX bat
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/http_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/http_logger -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 196: Support `file-logger` Body Expression Gates
+
+**Files:**
+- Modify: `pkg/plugin/file_logger/plugin.go`
+- Modify: `pkg/plugin/file_logger/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `file-logger` `include_req_body_expr` and `include_resp_body_expr` config.
+- Produces: file log entries whose request and response body fields are gated by bounded request-variable expressions while preserving request body replay, capped capture, and existing `match` behavior.
+
+- [x] **Step 1: Read official behavior**
+
+Read official APISIX 3.17 `apisix/plugins/file-logger.lua` and `apisix/utils/log-util.lua`; `file-logger` uses the shared log utility to evaluate body expression gates only when the corresponding body capture flag is enabled, while retaining separate `match` expression filtering for whole log entries.
+
+- [x] **Step 2: Add focused tests**
+
+Added tests proving matching expressions capture request and response bodies into the file log, while non-matching expressions omit both logged bodies without preventing downstream from reading the original request body.
+
+- [x] **Step 3: Implement bounded expression gates**
+
+Added config fields for `include_req_body_expr` / `include_resp_body_expr`, reused the existing local expression subset for request and response body gates, captured response status in the file logger recorder, and kept existing `match` filtering as the whole-entry gate.
+
+- [x] **Step 4: Update README**
+
+Updated `file-logger` support notes to include body expression gates; exact APISIX/OpenResty file-cache and reopen semantics remain documented gaps.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/file_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/file_logger -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -1,6 +1,6 @@
-# APISIX 3.17 Remaining Plugin TODO Plan
+# APISIX 3.17 Remaining Plugin TODO Plan (5 Parts)
 
-This plan lists only remaining implementation work and groups it into five buckets: Logger, Auth, AI, Observability, and Others. OpenResty-native, NGINX-native, Lua-runtime-native, and missing/deferred official defaults are not normal TODOs.
+This is the active TODO list for remaining APISIX 3.17 plugin parity work. It lists only remaining implementation work and groups it into five parts: Logger, Auth, AI, Observability, and Others. OpenResty-native, NGINX-native, Lua-runtime-native, serverless function plugins, and missing/deferred official defaults are not normal TODOs.
 
 Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, `serverless-post-function`, OCSP stapling internals, exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, and shared-dict/lrucache exactness. Do not create normal plugin implementation tasks for these native/runtime-only items.
 
@@ -25,7 +25,7 @@ Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post
 | `tencent-cloud-cls` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness, encrypted `secret_key`, and optional lz4/zstd compression. |
 | `lago` | Remaining gaps are fuller APISIX/NGINX variable template coverage, encrypted `token`, and request start-time fidelity. |
 | `log-rotate` | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical. Keep NGINX master `USR1`, OpenResty timers, and runtime log-path discovery out of scope. |
-| `error-log-logger` | Improve sink-specific auth/options. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch Prometheus gauge/stale-object cleanup exactness, Kafka SASL, and encrypted metadata fields out of normal scope unless a separate design requests them. |
+| `error-log-logger` | Improve sink-specific auth/options beyond Kafka `PLAIN` SASL. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch Prometheus gauge/stale-object cleanup exactness, and encrypted metadata fields out of normal scope unless a separate design requests them. |
 | `file-logger` | Remaining gap is Go-native file reopen/cache approximation if useful. Keep OpenResty file-cache exactness out of scope. |
 
 ## Auth

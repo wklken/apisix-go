@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
+	"github.com/segmentio/kafka-go/sasl/plain"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -146,7 +148,11 @@ func (p *Plugin) PostInit() error {
 	p.applyDefaults()
 	p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Second}
 	if p.config.Kafka != nil && p.kafkaSender == nil {
-		p.kafkaSender = &kafkaGoSender{writer: p.newKafkaWriter()}
+		writer, err := p.newKafkaWriter()
+		if err != nil {
+			return err
+		}
+		p.kafkaSender = &kafkaGoSender{writer: writer}
 	}
 	p.BatchProcessor = logger_batch.New(logger_batch.Config{
 		Name:            p.config.Name,
@@ -415,8 +421,13 @@ func (p *Plugin) do(req *http.Request) error {
 	return nil
 }
 
-func (p *Plugin) newKafkaWriter() *kafka.Writer {
-	return &kafka.Writer{
+func (p *Plugin) newKafkaWriter() (*kafka.Writer, error) {
+	mechanism, err := p.saslMechanism()
+	if err != nil {
+		return nil, err
+	}
+
+	writer := &kafka.Writer{
 		Addr:         kafka.TCP(p.kafkaBrokerAddresses()...),
 		Topic:        p.config.Kafka.KafkaTopic,
 		RequiredAcks: kafka.RequiredAcks(p.config.Kafka.RequiredAcks),
@@ -424,6 +435,39 @@ func (p *Plugin) newKafkaWriter() *kafka.Writer {
 		WriteTimeout: time.Duration(p.config.Timeout) * time.Second,
 		ReadTimeout:  time.Duration(p.config.Timeout) * time.Second,
 	}
+	if mechanism != nil {
+		writer.Transport = &kafka.Transport{
+			DialTimeout: time.Duration(p.config.Timeout) * time.Second,
+			SASL:        mechanism,
+		}
+	}
+
+	return writer, nil
+}
+
+func (p *Plugin) saslMechanism() (sasl.Mechanism, error) {
+	for _, broker := range p.config.Kafka.Brokers {
+		if broker.SASLConfig == nil {
+			continue
+		}
+
+		mechanism := strings.ToUpper(broker.SASLConfig.Mechanism)
+		if mechanism == "" {
+			mechanism = "PLAIN"
+		}
+
+		switch mechanism {
+		case "PLAIN":
+			return plain.Mechanism{
+				Username: broker.SASLConfig.User,
+				Password: broker.SASLConfig.Password,
+			}, nil
+		default:
+			return nil, fmt.Errorf("unsupported Kafka SASL mechanism %q", broker.SASLConfig.Mechanism)
+		}
+	}
+
+	return nil, nil
 }
 
 func (p *Plugin) kafkaBrokerAddresses() []string {

@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/segmentio/kafka-go"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -227,6 +229,63 @@ func TestSendLogsToKafka(t *testing.T) {
 	}
 	if string(sender.messages[0].Value) != `"2026/07/06 [error] boom"` {
 		t.Fatalf("kafka value = %s", sender.messages[0].Value)
+	}
+}
+
+func TestKafkaSASLMechanismDefaultsToPlain(t *testing.T) {
+	p := &Plugin{config: Config{
+		Kafka: &KafkaConfig{
+			Brokers: []KafkaBroker{{
+				Host: "127.0.0.1",
+				Port: 9092,
+				SASLConfig: &SASLConfig{
+					User:     "user",
+					Password: "pass",
+				},
+			}},
+			KafkaTopic: "apisix-error-logs",
+		},
+	}}
+
+	mechanism, err := p.saslMechanism()
+	if err != nil {
+		t.Fatalf("saslMechanism() error = %v", err)
+	}
+	if mechanism == nil {
+		t.Fatal("saslMechanism() returned nil")
+	}
+	if got := mechanism.Name(); got != "PLAIN" {
+		t.Fatalf("SASL mechanism = %q, want PLAIN", got)
+	}
+}
+
+func TestNewKafkaWriterUsesBrokerSASLConfig(t *testing.T) {
+	p := &Plugin{config: Config{
+		Kafka: &KafkaConfig{
+			Brokers: []KafkaBroker{{
+				Host: "127.0.0.1",
+				Port: 9092,
+				SASLConfig: &SASLConfig{
+					Mechanism: "PLAIN",
+					User:      "user",
+					Password:  "pass",
+				},
+			}},
+			KafkaTopic: "apisix-error-logs",
+		},
+	}}
+	p.applyDefaults()
+
+	writer, err := p.newKafkaWriter()
+	if err != nil {
+		t.Fatalf("newKafkaWriter() error = %v", err)
+	}
+	transport, ok := writer.Transport.(*kafka.Transport)
+	if !ok || transport.SASL == nil {
+		t.Fatal("writer does not have a SASL transport")
+	}
+	if got := transport.SASL.Name(); got != "PLAIN" {
+		t.Fatalf("writer SASL mechanism = %q, want PLAIN", got)
 	}
 }
 

@@ -7555,3 +7555,36 @@ Updated `ai-request-rewrite` README support notes and the live APISIX 3.17 parit
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/ai_request_rewrite -run TestHandlerOmitsModelForAzureOpenAI -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_request_rewrite -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 229: Register ai-request-rewrite LLM Request Markers
+
+**Files:**
+- Modify: `pkg/plugin/ai_request_rewrite/plugin.go`
+- Modify: `pkg/plugin/ai_request_rewrite/plugin_test.go`
+- Modify: `pkg/apisix/variable/request.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX `ai-request-rewrite` access behavior that records the LLM request body, LLM request start time, and request-body-changed marker on the request context.
+- Produces: local request variables `$llm_request_body`, `$llm_request_start_time`, and `$ai_request_body_changed`, with the LLM request body visible through logger field resolution.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `ai-request-rewrite` source; it sets `ctx.llm_request_start_time`, `ctx.var.llm_request_body`, and `ctx.ai_request_body_changed` before calling the configured AI provider.
+
+- [x] **Step 2: Add focused failing test**
+
+Added a focused test that runs `ai-request-rewrite` with a request-var context and asserts the LLM request body, start time, body-changed marker, and logger-visible request body. The first focused run failed because `$llm_request_body` was unset.
+
+- [x] **Step 3: Implement request marker registration**
+
+Registered the bounded Go equivalents after constructing the LLM sidecar request body and before sending it to the provider. Added the marker names to the request-variable allowlist so logging plugins can resolve them.
+
+- [x] **Step 4: Update docs**
+
+Updated `ai-request-rewrite` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ai_request_rewrite -run TestHandlerRegistersLLMRewriteRequestVars -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_request_rewrite -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

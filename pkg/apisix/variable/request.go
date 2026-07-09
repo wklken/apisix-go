@@ -7,7 +7,10 @@ import (
 )
 
 var RequestVars = map[string]struct{}{
-	"$status": {},
+	"$ai_request_body_changed": {},
+	"$llm_request_body":        {},
+	"$llm_request_start_time":  {},
+	"$status":                  {},
 }
 
 func GetRequestVar(r *http.Request, key string) any {

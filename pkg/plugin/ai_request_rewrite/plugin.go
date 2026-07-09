@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -215,6 +216,7 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 
 	llmRequest := buildOpenAIChatRequest(p.config.Prompt, originalBody, p.config.Options)
 	p.applyProviderBodyRules(llmRequest)
+	registerLLMRewriteRequestVars(r, llmRequest)
 
 	llmBody, err := json.Marshal(llmRequest)
 	if err != nil {
@@ -254,6 +256,16 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 		return nil, err
 	}
 	return []byte(rewritten), nil
+}
+
+func registerLLMRewriteRequestVars(r *http.Request, body map[string]any) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+
+	apisixctx.RegisterRequestVar(r, "$llm_request_body", body)
+	apisixctx.RegisterRequestVar(r, "$llm_request_start_time", float64(time.Now().UnixNano())/float64(time.Second))
+	apisixctx.RegisterRequestVar(r, "$ai_request_body_changed", true)
 }
 
 func (p *Plugin) applyProviderBodyRules(body map[string]any) {

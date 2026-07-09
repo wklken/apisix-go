@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -142,6 +144,62 @@ func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
 	}
 	if got := llmRequest["temperature"]; got != float64(0) {
 		t.Fatalf("LLM request temperature = %v, want 0", got)
+	}
+}
+
+func TestHandlerRegistersLLMRewriteRequestVars(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"content\":\"redacted\"}"}}]}`))
+	}))
+	defer llm.Close()
+
+	p := newTestPlugin(t, Config{
+		Prompt:   "redact sensitive fields",
+		Provider: "openai-compatible",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+		Options: map[string]any{
+			"model":       "gpt-4",
+			"temperature": float64(0),
+		},
+		Override: Override{Endpoint: llm.URL + "/v1/chat/completions"},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"content":"4111"}`))
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+
+	body, ok := apisixctx.GetRequestVar(req, "$llm_request_body").(map[string]any)
+	if !ok {
+		t.Fatalf("$llm_request_body = %#v, want request body object", apisixctx.GetRequestVar(req, "$llm_request_body"))
+	}
+	if got := body["model"]; got != "gpt-4" {
+		t.Fatalf("$llm_request_body.model = %v, want gpt-4", got)
+	}
+	logBody, ok := apisixlog.GetField(req, "$llm_request_body").(map[string]any)
+	if !ok {
+		t.Fatalf("log $llm_request_body = %#v, want request body object", apisixlog.GetField(req, "$llm_request_body"))
+	}
+	if got := logBody["model"]; got != "gpt-4" {
+		t.Fatalf("log $llm_request_body.model = %v, want gpt-4", got)
+	}
+	start, ok := apisixctx.GetRequestVar(req, "$llm_request_start_time").(float64)
+	if !ok || start <= 0 {
+		t.Fatalf(
+			"$llm_request_start_time = %#v, want positive unix seconds",
+			apisixctx.GetRequestVar(req, "$llm_request_start_time"),
+		)
+	}
+	if got := apisixctx.GetRequestVar(req, "$ai_request_body_changed"); got != true {
+		t.Fatalf("$ai_request_body_changed = %#v, want true", got)
 	}
 }
 

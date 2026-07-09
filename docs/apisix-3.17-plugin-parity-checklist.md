@@ -109,7 +109,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `rocketmq-logger` | yes | 70% | monitor |
 | `syslog` | yes | 70% | implement |
 | `udp-logger` | yes | 70% | implement |
-| `file-logger` | yes | 75% | monitor |
+| `file-logger` | yes | 78% | monitor |
 | `clickhouse-logger` | yes | 76% | implement |
 | `tencent-cloud-cls` | yes | 76% | implement |
 | `inspect` | no | unsupported: lua feature | not-required-native |

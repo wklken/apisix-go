@@ -83,14 +83,12 @@ const schema = `
 		  ]
 		}
 	  }
-	},
-	"required": [
-	  "path"
-	]
+	}
   }
 `
 
 type pluginMetadata struct {
+	Path      string            `json:"path"`
 	LogFormat map[string]string `json:"log_format"`
 }
 
@@ -128,6 +126,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	metadata := loadMetadata()
+	if p.config.Path == "" {
+		p.config.Path = metadata.Path
+	}
+	if p.config.Path == "" {
+		return fmt.Errorf("file-logger path is not set in plugin config or metadata")
+	}
 	if p.config.MaxReqBodyBytes == 0 {
 		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
 	}
@@ -159,7 +164,7 @@ func (p *Plugin) PostInit() error {
 	)
 
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		p.logFormat = loadMetadataLogFormat()
+		p.logFormat = metadata.LogFormat
 	} else {
 		p.logFormat = p.config.LogFormat
 	}
@@ -269,18 +274,17 @@ func nestedLogMap(fields map[string]any, key string) map[string]any {
 	return value
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }
 
 func (p *Plugin) match(r *http.Request) bool {

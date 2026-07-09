@@ -1,8 +1,8 @@
 # APISIX 3.17 Remaining Plugin TODO Plan
 
-This plan lists only remaining implementation work. OpenResty-native, NGINX-native, Lua-runtime-native, and missing/deferred official defaults are not normal TODOs.
+This plan lists only remaining implementation work and groups it into five buckets: Logger, Auth, AI, Observability, and Others. OpenResty-native, NGINX-native, Lua-runtime-native, and missing/deferred official defaults are not normal TODOs.
 
-Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, `serverless-post-function`, OCSP stapling internals, exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, and shared-dict/lrucache exactness.
+Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, `serverless-post-function`, OCSP stapling internals, exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, and shared-dict/lrucache exactness. Do not create normal plugin implementation tasks for these native/runtime-only items.
 
 ## Logger
 
@@ -26,7 +26,7 @@ Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post
 | `lago` | Remaining gaps are fuller APISIX/NGINX variable template coverage, encrypted `token`, and request start-time fidelity. |
 | `log-rotate` | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical. Keep NGINX master `USR1`, OpenResty timers, and runtime log-path discovery out of scope. |
 | `error-log-logger` | Reuse shared batch/retry semantics for supported sinks and improve sink-specific auth/options. Keep direct `ngx.errlog` capture and OpenResty timer lifecycle out of scope. |
-| `file-logger` | Improve file reopen/cache approximation if useful in Go. Keep OpenResty file-cache exactness out of scope. |
+| `file-logger` | Remaining gap is Go-native file reopen/cache approximation if useful. Keep OpenResty file-cache exactness out of scope. |
 
 ## Auth
 

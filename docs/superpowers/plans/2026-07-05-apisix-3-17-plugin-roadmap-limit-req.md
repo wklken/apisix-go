@@ -7619,3 +7619,35 @@ Tightened the `ai-proxy` and `ai-proxy-multi` README notes to say those non-stre
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/ai_proxy -run TestHandlerRegistersNonStreamingLLMRequestVars -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_proxy -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 231: Support openid-connect Audience Claim Validation
+
+**Files:**
+- Modify: `pkg/plugin/openid_connect/plugin.go`
+- Modify: `pkg/plugin/openid_connect/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX 3.17 `openid-connect` bearer-path `claim_validator.audience` config with `claim`, `required`, and `match_with_client_id`.
+- Produces: bearer token introspection/JWT claim validation for required audience claims and client-id audience matching before forwarding trusted OIDC headers.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `openid-connect.lua`; bearer-path claims are checked for required audience presence and optional client-id matching before access token/userinfo headers are added.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added focused handler tests for missing required audience, matching audience list, and mismatched string audience. The first focused run failed for the two denial cases because the request reached the next handler.
+
+- [x] **Step 3: Implement bounded audience validation**
+
+Added `claim_validator.audience` handling for the configured claim name, required audience presence, and client-id matching against string or array audience values.
+
+- [x] **Step 4: Update docs**
+
+Updated `openid-connect` README support notes and the live APISIX 3.17 parity checklist while keeping `claim_schema` and session-flow validation out of scope.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/openid_connect -run 'TestHandler(RejectsMissingRequiredAudienceClaim|ValidatesAudienceClaimAgainstClientID|RejectsMismatchedAudienceClaim)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/openid_connect -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

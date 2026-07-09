@@ -292,6 +292,117 @@ func TestHandlerRejectsMissingRequiredScope(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsMissingRequiredAudienceClaim(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:              "apisix",
+		ClientSecret:          "secret-a",
+		IntrospectionEndpoint: idp.URL,
+		BearerOnly:            true,
+		ClaimValidator: map[string]any{
+			"audience": map[string]any{
+				"required": true,
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"error":"required audience claim not present"}` {
+		t.Fatalf("body = %q, want missing audience error", rr.Body.String())
+	}
+}
+
+func TestHandlerValidatesAudienceClaimAgainstClientID(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"aud":    []string{"other-client", "apisix"},
+			"sub":    "alice",
+		})
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:              "apisix",
+		ClientSecret:          "secret-a",
+		IntrospectionEndpoint: idp.URL,
+		BearerOnly:            true,
+		ClaimValidator: map[string]any{
+			"audience": map[string]any{
+				"match_with_client_id": true,
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userinfo, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Userinfo"))
+		if err != nil {
+			t.Fatalf("X-Userinfo is not base64: %v", err)
+		}
+		if !strings.Contains(string(userinfo), `"sub":"alice"`) {
+			t.Fatalf("X-Userinfo = %s, want introspection response", userinfo)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsMismatchedAudienceClaim(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"aud":    "other-client",
+			"sub":    "alice",
+		})
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:              "apisix",
+		ClientSecret:          "secret-a",
+		IntrospectionEndpoint: idp.URL,
+		BearerOnly:            true,
+		ClaimValidator: map[string]any{
+			"audience": map[string]any{
+				"match_with_client_id": true,
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"error":"mismatched audience"}` {
+		t.Fatalf("body = %q, want mismatched audience error", rr.Body.String())
+	}
+}
+
 func TestHandlerBearerOnlyRequiresToken(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		ClientID:              "apisix",

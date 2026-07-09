@@ -317,6 +317,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			)
 			return
 		}
+		if statusCode, responseBody := p.validateConfiguredClaims(claims); statusCode != 0 {
+			w.WriteHeader(statusCode)
+			w.Write(util.StringToBytes(responseBody))
+			return
+		}
 
 		p.setAccessTokenHeader(r, token)
 		if *p.config.SetUserinfoHeader {
@@ -331,6 +336,63 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) validateConfiguredClaims(claims map[string]any) (int, string) {
+	audience, ok := p.audienceClaimValidator()
+	if !ok {
+		return 0, ""
+	}
+
+	value := claims[audience.claim]
+	if audience.required && value == nil {
+		return http.StatusForbidden, `{"error":"required audience claim not present"}`
+	}
+	if audience.matchWithClientID && value != nil && !audienceMatchesClientID(value, p.config.ClientID) {
+		return http.StatusForbidden, `{"error":"mismatched audience"}`
+	}
+	return 0, ""
+}
+
+type audienceClaimValidator struct {
+	claim             string
+	required          bool
+	matchWithClientID bool
+}
+
+func (p *Plugin) audienceClaimValidator() (audienceClaimValidator, bool) {
+	raw, ok := p.config.ClaimValidator["audience"].(map[string]any)
+	if !ok {
+		return audienceClaimValidator{}, false
+	}
+
+	validator := audienceClaimValidator{claim: "aud"}
+	if claim, ok := raw["claim"].(string); ok && claim != "" {
+		validator.claim = claim
+	}
+	validator.required, _ = raw["required"].(bool)
+	validator.matchWithClientID, _ = raw["match_with_client_id"].(bool)
+	return validator, true
+}
+
+func audienceMatchesClientID(value any, clientID string) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == clientID
+	case []any:
+		for _, item := range typed {
+			if item == clientID {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range typed {
+			if item == clientID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Plugin) bearerToken(r *http.Request, clientXAccessToken string) (bool, string, int, string) {

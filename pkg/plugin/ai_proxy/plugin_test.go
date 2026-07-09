@@ -98,6 +98,127 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+		Override: Override{
+			Endpoint: upstream.URL + "/v1/chat/completions",
+			RequestBody: map[string]any{
+				"openai-chat": map[string]any{
+					"temperature": float64(0),
+					"stream":      false,
+					"metadata": map[string]any{
+						"client":  "override",
+						"gateway": "apisix-go",
+					},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
+	  "messages": [{"role": "user", "content": "ping"}],
+	  "temperature": 1,
+	  "metadata": {"client": "caller"}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called by ai-proxy")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	if got := upstreamBody["temperature"]; got != float64(1) {
+		t.Fatalf("temperature = %v, want client value to win without force", got)
+	}
+	if got := upstreamBody["stream"]; got != false {
+		t.Fatalf("stream = %v, want override to fill missing field", got)
+	}
+	metadata, ok := upstreamBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v, want object", upstreamBody["metadata"])
+	}
+	if got := metadata["client"]; got != "caller" {
+		t.Fatalf("metadata.client = %v, want caller", got)
+	}
+	if got := metadata["gateway"]; got != "apisix-go" {
+		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
+func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+		Override: Override{
+			Endpoint:                 upstream.URL + "/v1/chat/completions",
+			RequestBodyForceOverride: boolPtr(true),
+			RequestBody: map[string]any{
+				"openai-chat": map[string]any{
+					"temperature": float64(0),
+					"metadata": map[string]any{
+						"client":  "override",
+						"gateway": "apisix-go",
+					},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
+	  "messages": [{"role": "user", "content": "ping"}],
+	  "temperature": 1,
+	  "metadata": {"client": "caller"}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called by ai-proxy")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	if got := upstreamBody["temperature"]; got != float64(0) {
+		t.Fatalf("temperature = %v, want override value with force", got)
+	}
+	metadata, ok := upstreamBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v, want object", upstreamBody["metadata"])
+	}
+	if got := metadata["client"]; got != "override" {
+		t.Fatalf("metadata.client = %v, want override", got)
+	}
+	if got := metadata["gateway"]; got != "apisix-go" {
+		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Provider:       "openai-compatible",
@@ -156,4 +277,8 @@ func TestPostInitRejectsOpenAICompatibleWithoutEndpoint(t *testing.T) {
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "override.endpoint is required") {
 		t.Fatalf("PostInit() error = %v, want override endpoint error", err)
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

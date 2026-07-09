@@ -7391,3 +7391,35 @@ Updated `response-rewrite` README support notes and the live APISIX 3.17 parity 
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/response_rewrite -run TestHandlerDecodesGzipBodyBeforeFilters -count=1 -timeout=10s -v` and `go test ./pkg/plugin/response_rewrite -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 224: Support OpenAI Chat `ai-proxy` Request Body Overrides
+
+**Files:**
+- Modify: `pkg/plugin/ai_proxy/plugin.go`
+- Modify: `pkg/plugin/ai_proxy/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX `ai-proxy` `override.request_body.openai-chat` and `override.request_body_force_override`.
+- Produces: recursive request-body merge for the local OpenAI Chat-compatible proxy path, filling missing fields by default and overwriting client fields when force mode is enabled.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `ai-proxy` source/docs; `override.request_body` is target-protocol keyed and deep-merged into the outgoing request body, while `request_body_force_override` controls whether configured values overwrite client values.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added default-merge and force-merge tests. The first focused run failed because missing fields were not filled and force mode did not overwrite client fields.
+
+- [x] **Step 3: Implement OpenAI Chat override merge**
+
+Added local merge support for `openai-chat` request-body overrides plus a direct-map fallback for existing simplified configs. Nested maps are recursively merged; arrays and scalars are replaced only for missing fields or force mode.
+
+- [x] **Step 4: Update docs**
+
+Updated `ai-proxy` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ai_proxy -run 'TestHandler(MergesRequestBodyOverrideWithoutForce|ForceMergesRequestBodyOverride)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_proxy -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

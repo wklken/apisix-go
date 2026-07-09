@@ -207,6 +207,8 @@ func (p *Plugin) PostInit() error {
 		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
 		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
 		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
+		RouteID:         p.RouteID,
+		ServerAddr:      p.ServerAddr,
 	}, p.SendBatch)
 
 	return nil

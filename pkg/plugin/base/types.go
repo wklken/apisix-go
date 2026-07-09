@@ -47,9 +47,16 @@ type BaseLoggerPlugin struct {
 
 	SendFunc       func(log map[string]any)
 	BatchProcessor *logger_batch.Processor
+	RouteID        string
+	ServerAddr     string
 
 	IncludeRequestBody  bool
 	IncludeResponseBody bool
+}
+
+func (p *BaseLoggerPlugin) SetRouteContext(routeID string, serverAddr string) {
+	p.RouteID = routeID
+	p.ServerAddr = serverAddr
 }
 
 // func getRequest(r *http.Request, includeRequestBody bool) map[string]any {

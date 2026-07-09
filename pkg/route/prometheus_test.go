@@ -3,6 +3,10 @@ package route
 import (
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -52,4 +56,58 @@ func TestBuildRequestContextConfigDefaultsPrometheusPreferNameFalse(t *testing.T
 	if cfg["$prometheus_prefer_name"] != false {
 		t.Fatalf("$prometheus_prefer_name = %v, want false", cfg["$prometheus_prefer_name"])
 	}
+}
+
+func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
+	oldBatchProcessEntries := metrics.BatchProcessEntries
+	gauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_route_batch_process_entries"},
+		[]string{"name", "route_id", "server_addr"},
+	)
+	metrics.BatchProcessEntries = gauge
+	t.Cleanup(func() {
+		metrics.BatchProcessEntries = oldBatchProcessEntries
+	})
+
+	plugins := NewBuilder(nil).initPlugins(
+		map[string]resource.PluginConfig{
+			"http-logger": map[string]any{
+				"uri":              "http://127.0.0.1/logs",
+				"batch_max_size":   10,
+				"buffer_duration":  60,
+				"inactive_timeout": 60,
+			},
+		},
+		pluginRouteContext{routeID: "route-a"},
+	)
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	}
+
+	httpLogger, ok := plugins[0].(*http_logger.Plugin)
+	if !ok {
+		t.Fatalf("plugin type = %T, want *http_logger.Plugin", plugins[0])
+	}
+	t.Cleanup(httpLogger.BatchProcessor.Stop)
+
+	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
+		t.Fatalf("Fire() error = %v", err)
+	}
+
+	if got := routeGaugeValue(t, gauge, "http logger", "route-a", ""); got != 1 {
+		t.Fatalf("batch_process_entries route label value = %v, want 1", got)
+	}
+	if got := routeGaugeValue(t, gauge, "http logger", "", ""); got != 0 {
+		t.Fatalf("batch_process_entries empty-route value = %v, want 0", got)
+	}
+}
+
+func routeGaugeValue(t *testing.T, gauge *prometheus.GaugeVec, labels ...string) float64 {
+	t.Helper()
+
+	metric := &dto.Metric{}
+	if err := gauge.WithLabelValues(labels...).Write(metric); err != nil {
+		t.Fatalf("read gauge metric: %v", err)
+	}
+	return metric.GetGauge().GetValue()
 }

@@ -225,9 +225,10 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 	var chain alice.Chain
 
+	routeContext := pluginRouteContext{routeID: r.ID}
 	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
-	localPlugins = append(localPlugins, b.initPlugins(resourcePlugins)...)
-	localPlugins = append(localPlugins, b.initPlugins(systemPlugins)...)
+	localPlugins = append(localPlugins, b.initPlugins(resourcePlugins, routeContext)...)
+	localPlugins = append(localPlugins, b.initPlugins(systemPlugins, routeContext)...)
 	localChain := plugin.BuildPluginChain(localPlugins...)
 
 	globalRules, err := store.ListGlobalRules()
@@ -237,7 +238,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	}
 	globalPlugins := make([]plugin.Plugin, 0, len(globalRules))
 	for _, rule := range globalRules {
-		globalPlugins = append(globalPlugins, b.initPlugins(rule.Plugins)...)
+		globalPlugins = append(globalPlugins, b.initPlugins(rule.Plugins, pluginRouteContext{})...)
 	}
 	if len(globalPlugins) > 0 {
 		globalChain := plugin.BuildPluginChain(globalPlugins...)
@@ -296,7 +297,19 @@ func prometheusPreferName(pluginConfigs map[string]resource.PluginConfig) bool {
 	return preferName
 }
 
-func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []plugin.Plugin {
+type pluginRouteContext struct {
+	routeID    string
+	serverAddr string
+}
+
+type pluginRouteContextSetter interface {
+	SetRouteContext(routeID string, serverAddr string)
+}
+
+func (b *Builder) initPlugins(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) []plugin.Plugin {
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
@@ -316,6 +329,10 @@ func (b *Builder) initPlugins(pluginConfigs map[string]resource.PluginConfig) []
 		if err != nil {
 			logger.Errorf("parse plugin config fail: %s", err)
 			continue
+		}
+
+		if setter, ok := p.(pluginRouteContextSetter); ok {
+			setter.SetRouteContext(routeContext.routeID, routeContext.serverAddr)
 		}
 
 		p.PostInit()

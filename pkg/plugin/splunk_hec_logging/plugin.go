@@ -212,6 +212,8 @@ func (p *Plugin) PostInit() error {
 		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
 		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
 		MaxPendingEntries: p.config.MaxPendingEntries,
+		RouteID:           p.RouteID,
+		ServerAddr:        p.ServerAddr,
 	}, p.SendBatch)
 	return nil
 }

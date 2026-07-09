@@ -7651,3 +7651,35 @@ Updated `openid-connect` README support notes and the live APISIX 3.17 parity ch
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/openid_connect -run 'TestHandler(RejectsMissingRequiredAudienceClaim|ValidatesAudienceClaimAgainstClientID|RejectsMismatchedAudienceClaim)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/openid_connect -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 232: Support openid-connect Bearer Claim Schema Validation
+
+**Files:**
+- Modify: `pkg/plugin/openid_connect/plugin.go`
+- Modify: `pkg/plugin/openid_connect/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX 3.17 `openid-connect` bearer-path `claim_schema` config.
+- Produces: JSON Schema validation of the flat bearer JWT/introspection claims before forwarding trusted OIDC headers.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `openid-connect.lua`; bearer-path `claim_schema` is applied directly to the JWT payload or introspection response, distinct from session-flow validation.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added focused handler tests for claims that miss a required schema property and claims that satisfy the schema. The first focused run failed for the invalid case because the request reached the next handler.
+
+- [x] **Step 3: Implement bearer claim schema validation**
+
+Encoded the configured `claim_schema` and validated the flat bearer claims using the existing project JSON Schema validator. Invalid claims now return the existing invalid-token response path.
+
+- [x] **Step 4: Update docs**
+
+Updated `openid-connect` README support notes and the live APISIX 3.17 parity checklist while keeping authorization-code/session-flow schema behavior out of scope.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/openid_connect -run 'TestHandler(RejectsClaimsThatDoNotMatchClaimSchema|AllowsClaimsThatMatchClaimSchema)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/openid_connect -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -322,6 +322,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			w.Write(util.StringToBytes(responseBody))
 			return
 		}
+		if err := p.validateClaimSchema(claims); err != nil {
+			p.writeInvalidToken(w, err.Error())
+			return
+		}
 
 		p.setAccessTokenHeader(r, token)
 		if *p.config.SetUserinfoHeader {
@@ -393,6 +397,21 @@ func audienceMatchesClientID(value any, clientID string) bool {
 		}
 	}
 	return false
+}
+
+func (p *Plugin) validateClaimSchema(claims map[string]any) error {
+	if len(p.config.ClaimSchema) == 0 {
+		return nil
+	}
+
+	encoded, err := json.Marshal(p.config.ClaimSchema)
+	if err != nil {
+		return fmt.Errorf("failed to encode claim schema")
+	}
+	if err := util.Validate(claims, string(encoded)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *Plugin) bearerToken(r *http.Request, clientXAccessToken string) (bool, string, int, string) {

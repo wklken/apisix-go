@@ -339,9 +339,9 @@ Loggers:
 - [x] [log-rotate](https://apisix.apache.org/zh/docs/apisix/plugins/log-rotate/) 60%
   - support `plugin_attr.log-rotate` defaults for `interval`, `max_kept`, `max_size`, `timeout`, and `enable_compression`, APISIX timestamped `__access.log` / `__error.log` naming, max-size rotation, interval checks on request, current-file recreation, history pruning, and `.tar.gz` compression
   - not support OpenResty timer lifecycle, NGINX master `USR1` log reopening, NGINX config path discovery, or shelling out to system `tar`
-- [x] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/) 55%
-  - support official metadata-shaped config for `tcp`, `skywalking`, `clickhouse`, and `kafka`, level filtering, TCP/TLS delivery, SkyWalking `/v3/logs` entries, ClickHouse JSONEachRow inserts, Kafka topic/key publishing, legacy `host` / `port` TCP config, and official batch/default knobs
-  - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch processor retry semantics, Kafka SASL, or encrypted metadata fields
+- [x] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/) 65%
+  - support official metadata-shaped config for `tcp`, `skywalking`, `clickhouse`, and `kafka`, level filtering, TCP/TLS delivery, SkyWalking `/v3/logs` entries, ClickHouse JSONEachRow inserts, Kafka topic/key publishing, legacy `host` / `port` TCP config, official batch/default knobs, and shared batch processor buffering/retry semantics
+  - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch Prometheus gauge/stale-object cleanup exactness, Kafka SASL, or encrypted metadata fields
 - [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 72%
   - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), and concatenated RFC5424 batch writes
   - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `access_key_secret`

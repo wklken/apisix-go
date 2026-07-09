@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -22,6 +24,11 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if p.BatchProcessor != nil {
+			p.BatchProcessor.Stop()
+		}
+	})
 
 	return p
 }
@@ -184,6 +191,94 @@ func TestSendLogsToKafka(t *testing.T) {
 	}
 	if string(sender.messages[0].Value) != `"2026/07/06 [error] boom"` {
 		t.Fatalf("kafka value = %s", sender.messages[0].Value)
+	}
+}
+
+func TestSendUsesBatchProcessor(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	received := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		n, _ := conn.Read(buf)
+		received <- string(buf[:n])
+	}()
+
+	host, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestPlugin(t, Config{
+		TCP:             &TCPConfig{Host: host, Port: mustAtoi(t, port)},
+		Level:           "INFO",
+		BatchMaxSize:    2,
+		BufferDuration:  60,
+		InactiveTimeout: 60,
+	})
+
+	p.Send(map[string]any{"message": "one"})
+	select {
+	case got := <-received:
+		t.Fatalf("received payload before batch was full: %q", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	p.Send(map[string]any{"message": "two"})
+
+	select {
+	case got := <-received:
+		if !strings.Contains(got, `"message":"one"`) || !strings.Contains(got, `"message":"two"`) {
+			t.Fatalf("tcp payload = %q, want both batched log entries", got)
+		}
+		if lines := strings.Count(strings.TrimSpace(got), "\n") + 1; lines != 2 {
+			t.Fatalf("tcp payload = %q, want two newline-delimited entries", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched tcp payload")
+	}
+}
+
+func TestSendRetriesFailedBatch(t *testing.T) {
+	var attempts atomic.Int32
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, "temporary", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		close(done)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Skywalking:      &SkywalkingConfig{EndpointAddr: server.URL},
+		Level:           "INFO",
+		BatchMaxSize:    1,
+		MaxRetryCount:   1,
+		RetryDelay:      1,
+		BufferDuration:  60,
+		InactiveTimeout: 60,
+	})
+
+	p.Send(map[string]any{"message": "retry me"})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for retry, attempts = %d", attempts.Load())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want first failure plus one retry", attempts.Load())
 	}
 }
 

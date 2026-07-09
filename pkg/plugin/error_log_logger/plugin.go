@@ -16,14 +16,16 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client      *http.Client
-	kafkaSender kafkaSender
+	client         *http.Client
+	kafkaSender    kafkaSender
+	BatchProcessor *logger_batch.Processor
 }
 
 const (
@@ -145,6 +147,14 @@ func (p *Plugin) PostInit() error {
 	if p.config.Kafka != nil && p.kafkaSender == nil {
 		p.kafkaSender = &kafkaGoSender{writer: p.newKafkaWriter()}
 	}
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:            p.config.Name,
+		BatchMaxSize:    p.config.BatchMaxSize,
+		MaxRetryCount:   p.config.MaxRetryCount,
+		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
+	}, p.SendBatch)
 
 	return nil
 }
@@ -173,6 +183,18 @@ func (p *Plugin) SendLogs(ctx context.Context, lines []string) error {
 	default:
 		return p.sendToTCP(filtered)
 	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		line, err := logLine(entry)
+		if err != nil {
+			return 0, err
+		}
+		lines = append(lines, line)
+	}
+	return 0, p.SendLogs(context.Background(), lines)
 }
 
 func (p *Plugin) applyDefaults() {
@@ -429,7 +451,24 @@ func (p *Plugin) Send(log map[string]any) {
 		logger.Errorf("failed to marshal error log entry: %s", err)
 		return
 	}
-	if err := p.SendLogs(context.Background(), []string{string(body)}); err != nil {
-		logger.Errorf("failed to send error log entry: %s", err)
+	if p.BatchProcessor == nil {
+		if err := p.SendLogs(context.Background(), []string{string(body)}); err != nil {
+			logger.Errorf("failed to send error log entry: %s", err)
+		}
+		return
 	}
+	if !p.BatchProcessor.Push(map[string]any{"message": string(body)}) {
+		logger.Errorf("failed to enqueue error log entry")
+	}
+}
+
+func logLine(entry map[string]any) (string, error) {
+	if line, ok := entry["message"].(string); ok {
+		return line, nil
+	}
+	body, err := json.Marshal(entry)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal error log batch entry: %w", err)
+	}
+	return string(body), nil
 }

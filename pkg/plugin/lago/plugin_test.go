@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,6 +353,59 @@ func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
 		}
 		if event.Properties["response_body"] != `{"ok":true}` {
 			t.Fatalf("response_body property = %q, want upstream response body", event.Properties["response_body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago event")
+	}
+}
+
+func TestHandlerUsesRequestStartTimeAsEventTimestamp(t *testing.T) {
+	requests := make(chan lagoPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lagoPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Token:               "token",
+		EventTransactionID:  "req-1",
+		EventSubscriptionID: "sub-1",
+		EventCode:           "api-call",
+		Timeout:             1000,
+		BatchMaxSize:        1,
+	})
+	requestStart := time.Unix(1710000000, 250000000)
+	later := requestStart.Add(5 * time.Second)
+	calls := 0
+	p.now = func() time.Time {
+		calls++
+		if calls == 1 {
+			return requestStart
+		}
+		return later
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-requests:
+		if len(body.Events) != 1 {
+			t.Fatalf("events = %d, want 1", len(body.Events))
+		}
+		want := float64(requestStart.UnixNano()) / float64(time.Second)
+		if math.Abs(body.Events[0].Timestamp-want) > 0.001 {
+			t.Fatalf("timestamp = %f, want request start %f", body.Events[0].Timestamp, want)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Lago event")

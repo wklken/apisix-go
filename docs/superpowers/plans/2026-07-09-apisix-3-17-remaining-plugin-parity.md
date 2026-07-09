@@ -42,7 +42,7 @@
 | `elasticsearch-logger` | 84% | Shared batch processor, `max_pending_entries`, and `_bulk` NDJSON batch delivery are implemented while preserving index expansion, auth, headers, and body-expression behavior. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness and encrypted `auth.password`. |
 | `loki-logger` | 76% | Shared batch processor, `max_pending_entries`, and one-stream multi-value Loki batches are implemented. Remaining gap is APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `tencent-cloud-cls` | 76% | Shared batch processor, `max_pending_entries`, and multi-log protobuf batch payloads are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
-| `lago` | 72% | Shared batch processor, retry semantics, and APISIX `batch_max_size` default of 100 are implemented. Remaining gaps are fuller APISIX/NGINX variable template coverage, encrypted `token`, and request start-time fidelity. |
+| `lago` | 74% | Shared batch processor, retry semantics, APISIX `batch_max_size` default of 100, and request-start event timestamps are implemented. Remaining gaps are fuller APISIX/NGINX variable template coverage and encrypted `token`. |
 
 ### Logger Execution Tasks
 

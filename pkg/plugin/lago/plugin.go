@@ -24,6 +24,7 @@ type Plugin struct {
 	config Config
 
 	client *resty.Client
+	now    func() time.Time
 }
 
 const (
@@ -31,6 +32,8 @@ const (
 	name     = "lago"
 
 	defaultBatchMaxSize = 100
+
+	requestStartTimeField = "__lago_request_start_time"
 )
 
 const schema = `
@@ -268,6 +271,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.InactiveTimeout == 0 {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
+	if p.now == nil {
+		p.now = time.Now
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddrs)
@@ -294,6 +300,8 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		requestStart := p.now()
+
 		var requestBody string
 		if p.config.IncludeReqBody {
 			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
@@ -320,7 +328,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			responseBody = recorder.body.String()
 		}
 
-		p.Fire(p.logFields(r, recorder.status, requestBody, responseBody))
+		p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -380,7 +388,7 @@ func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {
 		TransactionID:          resolveTemplate(p.config.EventTransactionID, fields),
 		ExternalSubscriptionID: resolveTemplate(p.config.EventSubscriptionID, fields),
 		Code:                   p.config.EventCode,
-		Timestamp:              float64(time.Now().UnixNano()) / float64(time.Second),
+		Timestamp:              p.eventTimestamp(fields),
 	}
 
 	if len(p.config.EventProperties) > 0 {
@@ -393,8 +401,28 @@ func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {
 	return entry
 }
 
-func (p *Plugin) logFields(r *http.Request, status int, requestBody, responseBody string) map[string]any {
-	fields := map[string]any{"status": status}
+func (p *Plugin) eventTimestamp(fields map[string]any) float64 {
+	if start, ok := fields[requestStartTimeField].(time.Time); ok {
+		return unixSeconds(start)
+	}
+	return unixSeconds(p.now())
+}
+
+func unixSeconds(value time.Time) float64 {
+	return float64(value.UnixNano()) / float64(time.Second)
+}
+
+func (p *Plugin) logFields(
+	r *http.Request,
+	status int,
+	requestBody string,
+	responseBody string,
+	requestStart time.Time,
+) map[string]any {
+	fields := map[string]any{
+		"status":              status,
+		requestStartTimeField: requestStart,
+	}
 	if p.config.IncludeReqBody {
 		fields["request_body"] = requestBody
 	}

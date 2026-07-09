@@ -49,6 +49,65 @@ func TestPostInitDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+
+	if p.config.Policy != "redis" {
+		t.Fatalf("Policy = %q, want redis", p.config.Policy)
+	}
+	if p.config.RedisPort != 6379 {
+		t.Fatalf("RedisPort = %d, want 6379", p.config.RedisPort)
+	}
+	if p.config.RedisTimeout != 1000 {
+		t.Fatalf("RedisTimeout = %d, want 1000", p.config.RedisTimeout)
+	}
+	if p.config.RedisKeyTTL != 3600 {
+		t.Fatalf("RedisKeyTTL = %d, want 3600", p.config.RedisKeyTTL)
+	}
+	if p.config.RedisSSL == nil || *p.config.RedisSSL {
+		t.Fatalf("RedisSSL = %v, want false", p.config.RedisSSL)
+	}
+	if p.config.RedisSSLVerify == nil || *p.config.RedisSSLVerify {
+		t.Fatalf("RedisSSLVerify = %v, want false", p.config.RedisSSLVerify)
+	}
+}
+
+func TestSchemaAcceptsRedisPolicyFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"conn":                    1,
+		"burst":                   0,
+		"default_conn_delay":      0.1,
+		"key":                     "remote_addr",
+		"policy":                  "redis",
+		"redis_host":              "127.0.0.1",
+		"redis_port":              6379,
+		"redis_username":          "default",
+		"redis_password":          "",
+		"redis_database":          0,
+		"redis_timeout":           1000,
+		"redis_ssl":               false,
+		"redis_ssl_verify":        false,
+		"redis_keepalive_timeout": 10000,
+		"redis_keepalive_pool":    100,
+		"key_ttl":                 3600,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected redis policy fields: %v", err)
+	}
+}
+
 func TestHandlerRejectsConcurrentRequestsAboveConnAndBurst(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Conn:             1,
@@ -133,6 +192,57 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 	wg.Wait()
 }
 
+func TestHandlerUsesRedisLimiter(t *testing.T) {
+	redisLimiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+	})
+	p.redisLimiter = redisLimiter
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})), "192.0.2.70:12345")
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+	if redisLimiter.key != "192.0.2.70" {
+		t.Fatalf("redis key = %q, want 192.0.2.70", redisLimiter.key)
+	}
+	if redisLimiter.left != 1 {
+		t.Fatalf("redis leaving calls = %d, want 1", redisLimiter.left)
+	}
+}
+
+func TestHandlerRejectsWhenRedisLimiterRejects(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            0,
+		DefaultConnDelay: 0.1,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+		RejectedMsg:      "too many connections",
+	})
+	p.redisLimiter = &fakeRedisConnLimiter{allowed: false}
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})), "192.0.2.80:12345")
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+	if got := res.Body.String(); got != `{"error_msg":"too many connections"}` {
+		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"too many connections"}`)
+	}
+}
+
 func TestHandlerTracksSeparateKeys(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Conn:             1,
@@ -180,7 +290,10 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		OnlyUseDefaultDelay: true,
 	})
 
-	firstDelay, allowed := p.increase("client", 1, 2)
+	firstDelay, allowed, err := p.increase("client", 1, 2)
+	if err != nil {
+		t.Fatalf("increase() error = %v", err)
+	}
 	if !allowed {
 		t.Fatal("first request rejected, want allowed")
 	}
@@ -188,7 +301,10 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		t.Fatalf("first delay = %s, want 0", firstDelay)
 	}
 
-	secondDelay, allowed := p.increase("client", 1, 2)
+	secondDelay, allowed, err := p.increase("client", 1, 2)
+	if err != nil {
+		t.Fatalf("increase() error = %v", err)
+	}
 	if !allowed {
 		t.Fatal("second request rejected, want allowed")
 	}
@@ -196,7 +312,10 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 		t.Fatalf("second delay = %s, want 200ms", secondDelay)
 	}
 
-	thirdDelay, allowed := p.increase("client", 1, 2)
+	thirdDelay, allowed, err := p.increase("client", 1, 2)
+	if err != nil {
+		t.Fatalf("increase() error = %v", err)
+	}
 	if !allowed {
 		t.Fatal("third request rejected, want allowed")
 	}
@@ -446,4 +565,22 @@ func performRequestWithHeaders(
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
+}
+
+type fakeRedisConnLimiter struct {
+	key     string
+	delay   time.Duration
+	allowed bool
+	err     error
+	left    int
+}
+
+func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {
+	f.key = key
+	return f.delay, f.allowed, f.err
+}
+
+func (f *fakeRedisConnLimiter) leaving(key string) error {
+	f.left++
+	return f.err
 }

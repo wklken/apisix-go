@@ -7111,3 +7111,35 @@ Updated `limit-req` README support notes and the live APISIX 3.17 parity checkli
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_req -run 'Test(PostInitAcceptsRedisPolicyDefaults|SchemaAcceptsRedisPolicyFields|HandlerUsesRedisLimiter|HandlerRejectsWhenRedisLimiterRejects)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_req -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 215: Support `limit-conn` Standalone Redis Policy
+
+**Files:**
+- Modify: `pkg/plugin/limit_conn/plugin.go`
+- Modify: `pkg/plugin/limit_conn/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-conn` `policy = redis` fields: `redis_host`, `redis_port`, `redis_username`, `redis_password`, `redis_database`, `redis_timeout`, `redis_ssl`, `redis_ssl_verify`, `redis_keepalive_timeout`, `redis_keepalive_pool`, and `key_ttl`.
+- Produces: Redis-backed concurrent request limiting with shared go-redis clients, atomic increment/reject/decrement Redis Lua scripts, existing rule handling, delay behavior, rejection bodies/codes, and `allow_degradation`.
+
+- [x] **Step 1: Confirm official behavior**
+
+Fetched Apache APISIX `release/3.17` and confirmed `limit-conn.lua` supports `local`, `redis`, and `redis-cluster` policies, uses root-level shared Redis fields plus `key_ttl`, increments in access phase, and decrements in log phase.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added tests for Redis schema acceptance, Redis defaulting in `PostInit`, handler delegation to a Redis limiter, and Redis limiter rejection behavior. The first focused run failed because `Config` did not expose Redis fields.
+
+- [x] **Step 3: Implement standalone Redis policy**
+
+Added official Redis config fields, standalone Redis defaulting, shared go-redis client construction, error-aware admission handling, and Redis Lua scripts for atomic connection enter/leave behavior. Kept `redis-cluster` unsupported for a later slice.
+
+- [x] **Step 4: Update docs**
+
+Updated `limit-conn` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_conn -run 'Test(PostInitAcceptsRedisPolicyDefaults|SchemaAcceptsRedisPolicyFields|HandlerUsesRedisLimiter|HandlerRejectsWhenRedisLimiterRejects)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -223,9 +223,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/) 84%
   - support local and standalone Redis request-rate limiting, official Redis config fields, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `nodelay`, and `allow_degradation`
   - not support `redis-cluster`
-- [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 80%
-  - support local concurrent request limiting, top-level and rule-level string variable values for `conn` / `burst`, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `only_use_default_delay`, and `allow_degradation`
-  - not support `redis` or `redis-cluster`
+- [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 87%
+  - support local and standalone Redis concurrent request limiting, official Redis config fields plus `key_ttl`, top-level and rule-level string variable values for `conn` / `burst`, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `only_use_default_delay`, and `allow_degradation`
+  - not support `redis-cluster`
 - [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 83%
   - support local/Redis fixed-window quotas, top-level and rule-level string variable values for `count` / `time_window`, `rules`, per-rule `header_prefix`, `key_type = var`, `constant`, and `var_combination`, HTTP header variables, quota headers, plugin metadata custom quota header names, `rejected_code`, APISIX-style empty/custom rejection bodies, and `allow_degradation`
   - not support `redis-cluster`

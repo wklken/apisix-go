@@ -1,6 +1,8 @@
 package limit_conn
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
 	"math"
 	"net"
@@ -11,9 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -23,6 +27,8 @@ type Plugin struct {
 
 	mu    sync.Mutex
 	conns map[string]int
+
+	redisLimiter connLimiter
 }
 
 const (
@@ -110,8 +116,57 @@ const schema = `
     },
     "policy": {
       "type": "string",
-      "enum": ["local"],
+      "enum": ["local", "redis", "redis-cluster"],
       "default": "local"
+    },
+    "redis_host": {
+      "type": "string",
+      "minLength": 2
+    },
+    "redis_port": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 6379
+    },
+    "redis_username": {
+      "type": "string",
+      "minLength": 1
+    },
+    "redis_password": {
+      "type": "string",
+      "minLength": 0
+    },
+    "redis_database": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "redis_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "redis_ssl": {
+      "type": "boolean",
+      "default": false
+    },
+    "redis_ssl_verify": {
+      "type": "boolean",
+      "default": false
+    },
+    "redis_keepalive_timeout": {
+      "type": "integer",
+      "minimum": 1000,
+      "default": 10000
+    },
+    "redis_keepalive_pool": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 100
+    },
+    "key_ttl": {
+      "type": "integer",
+      "default": 3600
     },
     "rejected_code": {
       "type": "integer",
@@ -140,17 +195,28 @@ const schema = `
 `
 
 type Config struct {
-	Conn                any     `json:"conn"`
-	Burst               any     `json:"burst"`
-	DefaultConnDelay    float64 `json:"default_conn_delay"`
-	Key                 string  `json:"key"`
-	KeyType             string  `json:"key_type,omitempty"`
-	Policy              string  `json:"policy,omitempty"`
-	RejectedCode        int     `json:"rejected_code,omitempty"`
-	RejectedMsg         string  `json:"rejected_msg,omitempty"`
-	AllowDegradation    *bool   `json:"allow_degradation,omitempty"`
-	OnlyUseDefaultDelay bool    `json:"only_use_default_delay,omitempty"`
-	Rules               []Rule  `json:"rules,omitempty"`
+	Conn                  any     `json:"conn"`
+	Burst                 any     `json:"burst"`
+	DefaultConnDelay      float64 `json:"default_conn_delay"`
+	Key                   string  `json:"key"`
+	KeyType               string  `json:"key_type,omitempty"`
+	Policy                string  `json:"policy,omitempty"`
+	RedisHost             string  `json:"redis_host,omitempty"`
+	RedisPort             int     `json:"redis_port,omitempty"`
+	RedisUsername         string  `json:"redis_username,omitempty"`
+	RedisPassword         string  `json:"redis_password,omitempty"`
+	RedisDatabase         int     `json:"redis_database,omitempty"`
+	RedisTimeout          int     `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool   `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool   `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int     `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int     `json:"redis_keepalive_pool,omitempty"`
+	RedisKeyTTL           int     `json:"key_ttl,omitempty"`
+	RejectedCode          int     `json:"rejected_code,omitempty"`
+	RejectedMsg           string  `json:"rejected_msg,omitempty"`
+	AllowDegradation      *bool   `json:"allow_degradation,omitempty"`
+	OnlyUseDefaultDelay   bool    `json:"only_use_default_delay,omitempty"`
+	Rules                 []Rule  `json:"rules,omitempty"`
 
 	rejectBody string
 }
@@ -165,7 +231,46 @@ type admission struct {
 	key string
 }
 
+type connLimiter interface {
+	incoming(key string, conn int, burst int) (time.Duration, bool, error)
+	leaving(key string) error
+}
+
 var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
+
+const redisLimitConnIncomingScript = `
+local current = redis.call("INCR", KEYS[1])
+redis.call("PEXPIRE", KEYS[1], ARGV[4])
+
+local conn = tonumber(ARGV[1])
+local burst = tonumber(ARGV[2])
+local default_delay = tonumber(ARGV[3])
+local limit = conn + burst
+
+if current > limit then
+  local after_decr = redis.call("DECR", KEYS[1])
+  if after_decr <= 0 then
+    redis.call("DEL", KEYS[1])
+  end
+  return {0, 0}
+end
+
+local delay = 0
+if current > conn then
+  local multiplier = math.floor((current - 1) / conn)
+  delay = multiplier * default_delay
+end
+
+return {1, math.floor(delay * 1000)}
+`
+
+const redisLimitConnLeavingScript = `
+local current = redis.call("DECR", KEYS[1])
+if current <= 0 then
+  redis.call("DEL", KEYS[1])
+end
+return current
+`
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -187,8 +292,39 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
 	}
-	if p.config.Policy != "local" {
+	if p.config.Policy != "local" && p.config.Policy != "redis" {
 		return fmt.Errorf("not supported policy: %s", p.config.Policy)
+	}
+	if p.config.Policy == "redis" {
+		if p.config.RedisHost == "" {
+			return fmt.Errorf("redis_host is required")
+		}
+		if p.config.RedisPort == 0 {
+			p.config.RedisPort = 6379
+		}
+		if p.config.RedisTimeout == 0 {
+			p.config.RedisTimeout = 1000
+		}
+		if p.config.RedisSSL == nil {
+			b := false
+			p.config.RedisSSL = &b
+		}
+		if p.config.RedisSSLVerify == nil {
+			b := false
+			p.config.RedisSSLVerify = &b
+		}
+		if p.config.RedisKeepaliveTimeout == 0 {
+			p.config.RedisKeepaliveTimeout = 10000
+		}
+		if p.config.RedisKeepalivePool == 0 {
+			p.config.RedisKeepalivePool = 100
+		}
+		if p.config.RedisKeyTTL == 0 {
+			p.config.RedisKeyTTL = 3600
+		}
+		if p.redisLimiter == nil {
+			p.redisLimiter = p.newRedisLimiter()
+		}
 	}
 
 	if p.config.RejectedCode == 0 {
@@ -230,7 +366,15 @@ func (p *Plugin) Config() interface{} {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if len(p.config.Rules) > 0 {
-			admissions, delay, allowed := p.increaseRules(r)
+			admissions, delay, allowed, err := p.increaseRules(r)
+			if err != nil {
+				if *p.config.AllowDegradation {
+					next.ServeHTTP(w, r)
+					return
+				}
+				http.Error(w, "failed to limit conn", http.StatusInternalServerError)
+				return
+			}
 			if !allowed {
 				p.reject(w)
 				return
@@ -263,7 +407,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, "failed to resolve limit conn config", http.StatusInternalServerError)
 			return
 		}
-		delay, allowed := p.increase(key, conn, burst)
+		delay, allowed, err := p.increase(key, conn, burst)
+		if err != nil {
+			if *p.config.AllowDegradation {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "failed to limit conn", http.StatusInternalServerError)
+			return
+		}
 		if !allowed {
 			p.reject(w)
 			return
@@ -426,7 +578,7 @@ func (p *Plugin) reject(w http.ResponseWriter) {
 	w.WriteHeader(p.config.RejectedCode)
 }
 
-func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, bool) {
+func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, bool, error) {
 	var admissions []admission
 	var delay time.Duration
 	for i, rule := range p.config.Rules {
@@ -440,16 +592,20 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 			continue
 		}
 
-		nextDelay, allowed := p.increase(key, conn, burst)
+		nextDelay, allowed, err := p.increase(key, conn, burst)
+		if err != nil {
+			p.decreaseAdmissions(admissions)
+			return nil, 0, false, err
+		}
 		if !allowed {
 			p.decreaseAdmissions(admissions)
-			return nil, 0, false
+			return nil, 0, false, nil
 		}
 		admissions = append(admissions, admission{key: key})
 		delay += nextDelay
 	}
 
-	return admissions, delay, true
+	return admissions, delay, true, nil
 }
 
 func (p *Plugin) decreaseAdmissions(admissions []admission) {
@@ -458,29 +614,38 @@ func (p *Plugin) decreaseAdmissions(admissions []admission) {
 	}
 }
 
-func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool) {
+func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool, error) {
+	if p.config.Policy == "redis" {
+		return p.redisLimiter.incoming(key, conn, burst)
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	current := p.conns[key] + 1
 	limit := conn + burst
 	if current > limit {
-		return 0, false
+		return 0, false, nil
 	}
 
 	p.conns[key] = current
 	if current > conn {
 		if p.config.OnlyUseDefaultDelay {
-			return time.Duration(p.config.DefaultConnDelay * float64(time.Second)), true
+			return time.Duration(p.config.DefaultConnDelay * float64(time.Second)), true, nil
 		}
 		multiplier := (current - 1) / conn
-		return time.Duration(float64(multiplier) * p.config.DefaultConnDelay * float64(time.Second)), true
+		return time.Duration(float64(multiplier) * p.config.DefaultConnDelay * float64(time.Second)), true, nil
 	}
 
-	return 0, true
+	return 0, true, nil
 }
 
 func (p *Plugin) decrease(key string) {
+	if p.config.Policy == "redis" {
+		_ = p.redisLimiter.leaving(key)
+		return
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -490,6 +655,101 @@ func (p *Plugin) decrease(key string) {
 		return
 	}
 	p.conns[key] = current - 1
+}
+
+type redisConnLimiter struct {
+	client           *redis.Client
+	defaultConnDelay float64
+	keyTTL           time.Duration
+}
+
+func (p *Plugin) newRedisLimiter() connLimiter {
+	configUID := shared.NewConfigUID()
+	configUID.Add(
+		p.config.RedisHost,
+		p.config.RedisPort,
+		p.config.RedisUsername,
+		p.config.RedisPassword,
+		p.config.RedisDatabase,
+		p.config.RedisTimeout,
+		*p.config.RedisSSL,
+		*p.config.RedisSSLVerify,
+	)
+
+	options := &redis.Options{
+		Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+		Username:     p.config.RedisUsername,
+		Password:     p.config.RedisPassword,
+		DB:           p.config.RedisDatabase,
+		DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		PoolSize:     p.config.RedisKeepalivePool,
+	}
+	if p.config.RedisSSL != nil && *p.config.RedisSSL {
+		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
+	}
+
+	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(*redis.Client)
+	return &redisConnLimiter{
+		client:           client,
+		defaultConnDelay: p.config.DefaultConnDelay,
+		keyTTL:           time.Duration(p.config.RedisKeyTTL) * time.Second,
+	}
+}
+
+func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {
+	result, err := l.client.Eval(
+		context.Background(),
+		redisLimitConnIncomingScript,
+		[]string{"plugin-limit-conn:" + key},
+		conn,
+		burst,
+		l.defaultConnDelay,
+		l.keyTTL.Milliseconds(),
+	).Result()
+	if err != nil {
+		return 0, false, err
+	}
+
+	values, ok := result.([]any)
+	if !ok || len(values) != 2 {
+		return 0, false, fmt.Errorf("unexpected redis limit-conn result: %v", result)
+	}
+	allowed, ok := redisInt(values[0])
+	if !ok {
+		return 0, false, fmt.Errorf("unexpected redis limit-conn allowed value: %v", values[0])
+	}
+	delayMs, ok := redisInt(values[1])
+	if !ok {
+		return 0, false, fmt.Errorf("unexpected redis limit-conn delay value: %v", values[1])
+	}
+
+	return time.Duration(delayMs) * time.Millisecond, allowed == 1, nil
+}
+
+func (l *redisConnLimiter) leaving(key string) error {
+	return l.client.Eval(
+		context.Background(),
+		redisLimitConnLeavingScript,
+		[]string{"plugin-limit-conn:" + key},
+	).Err()
+}
+
+func redisInt(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint64:
+		return int64(v), true
+	case string:
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {

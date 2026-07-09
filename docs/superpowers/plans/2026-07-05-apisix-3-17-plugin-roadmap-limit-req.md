@@ -7327,3 +7327,35 @@ Updated `traffic-split` README support notes and the live APISIX 3.17 parity che
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/traffic_split -run TestMatchSupportsPrefixedVarsNumericAndRegexOperators -count=1 -timeout=10s -v` and `go test ./pkg/plugin/traffic_split -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 222: Expand `fault-injection` Vars and Variable Rendering
+
+**Files:**
+- Modify: `pkg/plugin/fault_injection/plugin.go`
+- Modify: `pkg/plugin/fault_injection/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX `fault-injection` `abort.vars` / `delay.vars` expressions and abort body/header values with request variables.
+- Produces: bounded `resty.expr`-style matching for common request variables and bounded variable resolution in abort response bodies and string headers.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `fault-injection.lua`; official code validates vars with `resty.expr.v1` and resolves variables in string abort headers plus abort body.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added tests for abort header/body variable rendering and bounded operators. The first handler test failed because headers were written literally as `$request_method-$arg_score`.
+
+- [x] **Step 3: Implement bounded parity**
+
+Added numeric comparisons, regex match/negation, `$` variable trimming, and bounded variable rendering for abort body and string header values.
+
+- [x] **Step 4: Update docs**
+
+Updated `fault-injection` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/fault_injection -run 'Test(AbortSupportsBoundedVarsAndVariableRendering|MatchExprSupportsBoundedOperators)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/fault_injection -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

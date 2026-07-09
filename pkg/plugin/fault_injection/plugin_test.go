@@ -127,6 +127,67 @@ func TestAbortVarsUseAnyMatchingExpression(t *testing.T) {
 	}
 }
 
+func TestAbortSupportsBoundedVarsAndVariableRendering(t *testing.T) {
+	body := "blocked $arg_score $http_x_region"
+	p := newTestPlugin(t, Config{
+		Abort: &Abort{
+			HTTPStatus: http.StatusServiceUnavailable,
+			Body:       &body,
+			Headers: map[string]interface{}{
+				"X-Fault": "$request_method-$arg_score",
+			},
+			Vars: [][]interface{}{
+				{"$request_method", "==", http.MethodGet},
+				{"arg_score", ">=", "10"},
+				{"http_x_region", "~", "^west-[0-9]+$"},
+				{"uri", "!~", "/internal"},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/fault?score=12", nil)
+	req.Header.Set("X-Region", "west-1")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("fault-injection should not call the next handler")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+	if got := rr.Header().Get("X-Fault"); got != "GET-12" {
+		t.Fatalf("X-Fault = %q, want GET-12", got)
+	}
+	if got := rr.Body.String(); got != "blocked 12 west-1" {
+		t.Fatalf("body = %q, want rendered body", got)
+	}
+}
+
+func TestMatchExprSupportsBoundedOperators(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/fault?score=12", nil)
+	req.Header.Set("X-Region", "west-1")
+
+	tests := []struct {
+		name string
+		expr []interface{}
+	}{
+		{name: "prefixed var", expr: []interface{}{"$request_method", "==", http.MethodGet}},
+		{name: "greater equal", expr: []interface{}{"arg_score", ">=", "10"}},
+		{name: "less than", expr: []interface{}{"arg_score", "<", "20"}},
+		{name: "regex", expr: []interface{}{"http_x_region", "~", "^west-[0-9]+$"}},
+		{name: "negative regex", expr: []interface{}{"uri", "!~", "/internal"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !matchExpr(req, tt.expr) {
+				t.Fatalf("matchExpr(%v) = false, want true", tt.expr)
+			}
+		})
+	}
+}
+
 func TestDelayVarsMustMatch(t *testing.T) {
 	oldSleep := sleep
 	var sleeps []time.Duration

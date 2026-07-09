@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,15 +151,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if SampleHit(p.config.Abort.Percentage) && varsMatch(r, p.config.Abort.Vars) {
 				if p.config.Abort.Headers != nil {
 					for k, v := range p.config.Abort.Headers {
-						// FIXME: render the value with ctx.var
-						w.Header().Set(k, fmt.Sprintf("%s", v))
+						value := fmt.Sprintf("%s", v)
+						if stringValue, ok := v.(string); ok {
+							value = resolveValue(r, stringValue)
+						}
+						w.Header().Set(k, value)
 					}
 				}
 
-				// FIXME: the body render with ctx.var
 				w.WriteHeader(p.config.Abort.HTTPStatus)
 				if p.config.Abort.Body != nil {
-					_, _ = w.Write([]byte(*p.config.Abort.Body))
+					_, _ = w.Write([]byte(resolveValue(r, *p.config.Abort.Body)))
 				}
 				return
 			}
@@ -203,9 +207,43 @@ func matchExpr(r *http.Request, expr []interface{}) bool {
 		return actual == right
 	case "!=":
 		return actual != right
+	case ">":
+		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
+	case ">=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
+	case "<":
+		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
+	case "<=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
+	case "~":
+		matched, _ := regexp.MatchString(right, actual)
+		return matched
+	case "!~":
+		matched, _ := regexp.MatchString(right, actual)
+		return !matched
 	default:
 		return false
 	}
+}
+
+func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
+	l, err := strconv.ParseFloat(left, 64)
+	if err != nil {
+		return false
+	}
+	r, err := strconv.ParseFloat(right, 64)
+	if err != nil {
+		return false
+	}
+	return compare(l, r)
+}
+
+var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
+
+func resolveValue(r *http.Request, value string) string {
+	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
+		return requestVar(r, strings.TrimPrefix(variable, "$"))
+	})
 }
 
 func requestVar(r *http.Request, name string) string {

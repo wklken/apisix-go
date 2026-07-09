@@ -136,6 +136,51 @@ const schema = `
 		"enum": ["local", "redis", "redis-cluster"],
 		"default": "local"
 	  },
+	  "redis_host": {
+		"type": "string",
+		"minLength": 2
+	  },
+	  "redis_port": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 6379
+	  },
+	  "redis_username": {
+		"type": "string",
+		"minLength": 1
+	  },
+	  "redis_password": {
+		"type": "string",
+		"minLength": 0
+	  },
+	  "redis_database": {
+		"type": "integer",
+		"minimum": 0,
+		"default": 0
+	  },
+	  "redis_timeout": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 1000
+	  },
+	  "redis_ssl": {
+		"type": "boolean",
+		"default": false
+	  },
+	  "redis_ssl_verify": {
+		"type": "boolean",
+		"default": false
+	  },
+	  "redis_keepalive_timeout": {
+		"type": "integer",
+		"minimum": 1000,
+		"default": 10000
+	  },
+	  "redis_keepalive_pool": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 100
+	  },
 	  "allow_degradation": {
 		"type": "boolean",
 		"default": false
@@ -231,19 +276,29 @@ const schema = `
 `
 
 type Config struct {
-	Count                any                `json:"count"`
-	TimeWindow           any                `json:"time_window"`
-	Group                string             `json:"group,omitempty"`
-	Key                  string             `json:"key,omitempty"`
-	KeyType              string             `json:"key_type,omitempty"`
-	RejectedCode         int                `json:"rejected_code,omitempty"`
-	RejectedMsg          string             `json:"rejected_msg,omitempty"`
-	Policy               string             `json:"policy,omitempty"`
-	AllowDegradation     *bool              `json:"allow_degradation,omitempty"`
-	ShowLimitQuotaHeader *bool              `json:"show_limit_quota_header,omitempty"`
-	Redis                RedisConfig        `json:"redis_config,omitempty"`
-	RedisCluster         RedisClusterConfig `json:"redis_cluster_config,omitempty"`
-	Rules                []Rule             `json:"rules,omitempty"`
+	Count                 any                `json:"count"`
+	TimeWindow            any                `json:"time_window"`
+	Group                 string             `json:"group,omitempty"`
+	Key                   string             `json:"key,omitempty"`
+	KeyType               string             `json:"key_type,omitempty"`
+	RejectedCode          int                `json:"rejected_code,omitempty"`
+	RejectedMsg           string             `json:"rejected_msg,omitempty"`
+	Policy                string             `json:"policy,omitempty"`
+	AllowDegradation      *bool              `json:"allow_degradation,omitempty"`
+	ShowLimitQuotaHeader  *bool              `json:"show_limit_quota_header,omitempty"`
+	RedisHost             string             `json:"redis_host,omitempty"`
+	RedisPort             int                `json:"redis_port,omitempty"`
+	RedisUsername         string             `json:"redis_username,omitempty"`
+	RedisPassword         string             `json:"redis_password,omitempty"`
+	RedisDatabase         int                `json:"redis_database,omitempty"`
+	RedisTimeout          int                `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool              `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool              `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int                `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int                `json:"redis_keepalive_pool,omitempty"`
+	Redis                 RedisConfig        `json:"redis_config,omitempty"`
+	RedisCluster          RedisClusterConfig `json:"redis_cluster_config,omitempty"`
+	Rules                 []Rule             `json:"rules,omitempty"`
 
 	rejectBody string
 }
@@ -311,6 +366,7 @@ func (p *Plugin) PostInit() error {
 		p.config.Policy = "local"
 	}
 
+	p.applyRootRedisConfig()
 	if p.config.Policy == "redis" {
 		if p.config.Redis.RedisPort == 0 {
 			p.config.Redis.RedisPort = 6379
@@ -376,6 +432,21 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) applyRootRedisConfig() {
+	if p.config.Redis.RedisHost != "" {
+		return
+	}
+
+	p.config.Redis.RedisHost = p.config.RedisHost
+	p.config.Redis.RedisPort = p.config.RedisPort
+	p.config.Redis.RedisUsername = p.config.RedisUsername
+	p.config.Redis.RedisPassword = p.config.RedisPassword
+	p.config.Redis.RedisDatabase = p.config.RedisDatabase
+	p.config.Redis.RedisTimeout = p.config.RedisTimeout
+	p.config.Redis.RedisSSL = p.config.RedisSSL
+	p.config.Redis.RedisSSLVerify = p.config.RedisSSLVerify
 }
 
 func (p *Plugin) initRuleLimiters() error {

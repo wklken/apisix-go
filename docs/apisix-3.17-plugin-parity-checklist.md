@@ -76,7 +76,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `api-breaker` | yes | 95% | monitor |
 | `graphql-limit-count` | yes | 55% | implement |
 | `limit-conn` | yes | 87% | monitor |
-| `limit-count` | yes | 83% | monitor |
+| `limit-count` | yes | 86% | monitor |
 | `limit-req` | yes | 84% | monitor |
 | `gzip` | yes | 98% | monitor |
 | `traffic-label` | yes | 55% | implement |

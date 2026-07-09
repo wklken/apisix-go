@@ -7143,3 +7143,35 @@ Updated `limit-conn` README support notes and the live APISIX 3.17 parity checkl
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_conn -run 'Test(PostInitAcceptsRedisPolicyDefaults|SchemaAcceptsRedisPolicyFields|HandlerUsesRedisLimiter|HandlerRejectsWhenRedisLimiterRejects)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_conn -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 216: Support `limit-count` APISIX Root Redis Fields
+
+**Files:**
+- Modify: `pkg/plugin/limit_count/plugin.go`
+- Modify: `pkg/plugin/limit_count/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-count` root Redis fields: `redis_host`, `redis_port`, `redis_username`, `redis_password`, `redis_database`, `redis_timeout`, `redis_ssl`, `redis_ssl_verify`, `redis_keepalive_timeout`, and `redis_keepalive_pool`.
+- Produces: APISIX-compatible root Redis config normalization into the existing local `RedisConfig` path, while preserving legacy nested `redis_config` compatibility.
+
+- [x] **Step 1: Confirm official behavior**
+
+Fetched Apache APISIX `release/3.17` and confirmed `limit-count` uses the shared Redis schema as root-level fields, not a nested `redis_config` object.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added tests for root Redis schema acceptance and `PostInit` root-field normalization. The first focused run failed because `Config` did not expose root Redis fields.
+
+- [x] **Step 3: Implement compatibility normalization**
+
+Added root Redis config fields, accepted the official schema fields, and mapped root fields into the existing nested `RedisConfig` only when nested config is not already provided.
+
+- [x] **Step 4: Update docs**
+
+Updated `limit-count` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_count -run 'Test(PostInitAcceptsRootRedisPolicyFields|SchemaAcceptsRootRedisPolicyFields)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

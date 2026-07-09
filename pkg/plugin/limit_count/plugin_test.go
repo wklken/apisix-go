@@ -22,6 +22,65 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestPostInitAcceptsRootRedisPolicyFields(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:         "$http_x_limit",
+		TimeWindow:    60,
+		Policy:        "redis",
+		RedisHost:     "127.0.0.1",
+		RedisPort:     6380,
+		RedisUsername: "default",
+		RedisPassword: "secret",
+		RedisDatabase: 2,
+		RedisTimeout:  1500,
+	})
+
+	if p.config.Redis.RedisHost != "127.0.0.1" {
+		t.Fatalf("Redis.RedisHost = %q, want 127.0.0.1", p.config.Redis.RedisHost)
+	}
+	if p.config.Redis.RedisPort != 6380 {
+		t.Fatalf("Redis.RedisPort = %d, want 6380", p.config.Redis.RedisPort)
+	}
+	if p.config.Redis.RedisUsername != "default" {
+		t.Fatalf("Redis.RedisUsername = %q, want default", p.config.Redis.RedisUsername)
+	}
+	if p.config.Redis.RedisPassword != "secret" {
+		t.Fatalf("Redis.RedisPassword = %q, want secret", p.config.Redis.RedisPassword)
+	}
+	if p.config.Redis.RedisDatabase != 2 {
+		t.Fatalf("Redis.RedisDatabase = %d, want 2", p.config.Redis.RedisDatabase)
+	}
+	if p.config.Redis.RedisTimeout != 1500 {
+		t.Fatalf("Redis.RedisTimeout = %d, want 1500", p.config.Redis.RedisTimeout)
+	}
+}
+
+func TestSchemaAcceptsRootRedisPolicyFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"count":                   1,
+		"time_window":             60,
+		"policy":                  "redis",
+		"redis_host":              "127.0.0.1",
+		"redis_port":              6379,
+		"redis_username":          "default",
+		"redis_password":          "",
+		"redis_database":          0,
+		"redis_timeout":           1000,
+		"redis_ssl":               false,
+		"redis_ssl_verify":        false,
+		"redis_keepalive_timeout": 10000,
+		"redis_keepalive_pool":    100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected root redis policy fields: %v", err)
+	}
+}
+
 func TestHandlerUsesHTTPVariableKey(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:        1,

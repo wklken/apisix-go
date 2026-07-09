@@ -28,7 +28,6 @@ Use this file as the planning backlog. Use `README.md` and `docs/apisix-3.17-plu
 | `lago` | Remaining gaps are encrypted `token` and exotic OpenResty/NGINX-only variable fidelity. APISIX `batch_max_size` default of 100, request-start event timestamps, and common dynamic request/response variables are implemented. |
 | `log-rotate` | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical. Keep NGINX master `USR1`, OpenResty timers, and runtime log-path discovery out of scope. |
 | `error-log-logger` | Improve sink-specific auth/options beyond Kafka `PLAIN` SASL. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch route/server label population, stale-object cleanup exactness, and encrypted metadata fields out of normal scope unless a separate design requests them. |
-| `file-logger` | Remaining gap is Go-native file reopen/cache approximation if useful. Keep OpenResty file-cache exactness out of scope. |
 
 ## Auth
 
@@ -143,7 +142,7 @@ Use this file as the planning backlog. Use `README.md` and `docs/apisix-3.17-plu
 
 ## Suggested Implementation Order
 
-1. Finish lower-risk logger lifecycle gaps: `log-rotate`, `error-log-logger`, and `file-logger`.
+1. Finish lower-risk logger lifecycle gaps: `log-rotate` and `error-log-logger`.
 2. Continue high-value auth: `openid-connect`, `multi-auth`, then SSO-style plugins.
 3. Build the AI protocol abstraction and apply it to `ai-proxy`, `ai-proxy-multi`, and prompt plugins.
 4. Improve observability starting with `zipkin`, then `prometheus`, then `datadog`.

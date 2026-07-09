@@ -68,6 +68,42 @@ func TestHandlerWritesLogWhenMatchPasses(t *testing.T) {
 	}
 }
 
+func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/access.log"
+	rotated := dir + "/2026-07-09_12-00-00__access.log"
+	p := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	serveFileLoggerRequest(t, p, "/before")
+	_ = p.logger.Sync()
+
+	if err := os.Rename(path, rotated); err != nil {
+		t.Fatalf("rename log file: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("recreate current log file: %v", err)
+	}
+
+	serveFileLoggerRequest(t, p, "/after")
+	_ = p.logger.Sync()
+
+	currentContent := readLogFile(t, path)
+	if !strings.Contains(currentContent, `"path":"/after"`) {
+		t.Fatalf("current log content = %q, want post-rotation log line", currentContent)
+	}
+
+	rotatedContent := readLogFile(t, rotated)
+	if !strings.Contains(rotatedContent, `"path":"/before"`) {
+		t.Fatalf("rotated log content = %q, want pre-rotation log line", rotatedContent)
+	}
+	if strings.Contains(rotatedContent, `"path":"/after"`) {
+		t.Fatalf("rotated log content = %q, want post-rotation write to current file", rotatedContent)
+	}
+}
+
 func TestHandlerSkipsLogWhenMatchFails(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
@@ -323,6 +359,18 @@ func readLogFile(t *testing.T, path string) string {
 		t.Fatalf("read log file: %v", err)
 	}
 	return string(content)
+}
+
+func serveFileLoggerRequest(t *testing.T, p *Plugin, path string) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
 }
 
 func putPluginMetadata(t *testing.T, value map[string]any) {

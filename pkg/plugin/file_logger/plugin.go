@@ -6,9 +6,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -17,7 +20,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/store"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 const (
@@ -147,14 +149,7 @@ func (p *Plugin) PostInit() error {
 	enc := zapcore.NewJSONEncoder(cfg.EncoderConfig)
 
 	syncWriter := &zapcore.BufferedWriteSyncer{
-		WS: zapcore.AddSync(&lumberjack.Logger{
-			Filename: p.config.Path,
-			// FIXME: use log-rotate params, the log-rotate plugin only set the params into context
-			MaxSize:   512,
-			MaxAge:    7,
-			LocalTime: true,
-			Compress:  false,
-		}),
+		WS:            &appendFileWriteSyncer{path: p.config.Path},
 		Size:          4096,
 		FlushInterval: 5 * time.Second,
 	}
@@ -224,6 +219,31 @@ type fileLogResponseRecorder struct {
 	body   bytes.Buffer
 	limit  int
 	status int
+}
+
+type appendFileWriteSyncer struct {
+	path string
+	mu   sync.Mutex
+}
+
+func (w *appendFileWriteSyncer) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(w.path), 0o755); err != nil {
+		return 0, err
+	}
+	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	return file.Write(data)
+}
+
+func (w *appendFileWriteSyncer) Sync() error {
+	return nil
 }
 
 func (w *fileLogResponseRecorder) WriteHeader(status int) {

@@ -37,7 +37,7 @@
 | `sls-logger` | 72% | Shared batch processor, concatenated RFC5424 batch writes, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch route/server label population, stale-object cleanup exactness, and encrypted `access_key_secret`. |
 | `google-cloud-logging` | 67% | Shared batch processor, `max_pending_entries`, access-token caching/refresh, and multi-entry Cloud Logging writes are implemented. Remaining gaps are encrypted `auth_config.private_key` and body capture, which APISIX 3.17 does not define for this plugin. |
 | `splunk-hec-logging` | 62% | Shared batch processor, `max_pending_entries`, concatenated JSON event-object batches, and HEC error-text extraction are implemented. Remaining gaps are encrypted `endpoint.token` and body capture, which APISIX 3.17 does not define for this plugin. |
-| `file-logger` | 78% | Plugin config/metadata `path` and `log_format` are implemented. Remaining gap is file reopen/cache approximation if useful for Go runtime; keep OpenResty file-cache exactness out of scope. |
+| `file-logger` | 82% | Plugin config/metadata `path`, `log_format`, and Go-native current-path writes after external rotation are implemented. Remaining exact OpenResty file-cache semantics are out of scope. |
 | `loggly` | 76% | Shared batch processor, HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, `max_pending_entries`, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch route/server label population, stale-object cleanup exactness, and encrypted `customer_token`. |
 | `elasticsearch-logger` | 84% | Shared batch processor, `max_pending_entries`, `_bulk` NDJSON batch delivery, and basic `batch_process_entries` gauge hook are implemented while preserving index expansion, auth, headers, and body-expression behavior. Remaining gaps are APISIX batch route/server label population, stale-object cleanup exactness, and encrypted `auth.password`. |
 | `loki-logger` | 76% | Shared batch processor, `max_pending_entries`, one-stream multi-value Loki batches, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch route/server label population and stale-object cleanup exactness. |
@@ -248,7 +248,7 @@ These are intentionally not implementation TODOs for normal parity work:
 
 ## Suggested Next Five Slices
 
-1. Shared logger batch processor and `http-logger` migration.
+1. `log-rotate` lifecycle or `error-log-logger` sink option parity.
 2. `ai-rate-limiting` Redis/shared policy.
 3. `workflow` delegated actions for already implemented plugins.
 4. `zipkin` span reporting transport.

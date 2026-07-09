@@ -109,7 +109,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `rocketmq-logger` | yes | 72% | monitor |
 | `syslog` | yes | 70% | implement |
 | `udp-logger` | yes | 70% | implement |
-| `file-logger` | yes | 78% | monitor |
+| `file-logger` | yes | 82% | monitor |
 | `clickhouse-logger` | yes | 76% | implement |
 | `tencent-cloud-cls` | yes | 76% | implement |
 | `inspect` | no | unsupported: lua feature | not-required-native |
@@ -125,7 +125,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 
 ## Next Priority Lanes
 
-1. Finish lower-risk logger lifecycle gaps: `log-rotate`, `error-log-logger`, and `file-logger`.
+1. Finish lower-risk logger lifecycle gaps: `log-rotate` and `error-log-logger`.
 2. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
 3. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
 4. Keep OpenResty/NGINX/Lua-runtime-native plugins out of normal parity work: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`.

@@ -35,6 +35,8 @@ type Plugin struct {
 const (
 	priority = 403
 	name     = "kafka-logger"
+
+	originLogKey = "__origin"
 )
 
 const schema = `
@@ -334,7 +336,7 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
+	if p.config.MetaFormat != "origin" && !p.config.IncludeReqBody && !p.config.IncludeRespBody {
 		return p.BaseLoggerPlugin.Handler(next)
 	}
 
@@ -358,6 +360,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(writer, r)
+		if p.config.MetaFormat == "origin" {
+			p.Fire(map[string]any{
+				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
+			})
+			return
+		}
+
 		status := 0
 		if recorder != nil {
 			status = recorder.status
@@ -582,10 +591,57 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 }
 
 func encodeKafkaBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
+	if rawEntries, ok := originLogEntries(entries); ok {
+		if batchMaxSize == 1 && len(rawEntries) == 1 {
+			return []byte(rawEntries[0]), nil
+		}
+		return json.Marshal(rawEntries)
+	}
 	if batchMaxSize == 1 && len(entries) == 1 {
 		return json.Marshal(entries[0])
 	}
 	return json.Marshal(entries)
+}
+
+func originLogEntries(entries []map[string]any) ([]string, bool) {
+	if len(entries) == 0 {
+		return nil, false
+	}
+	rawEntries := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		raw, ok := entry[originLogKey].(string)
+		if !ok {
+			return nil, false
+		}
+		rawEntries = append(rawEntries, raw)
+	}
+	return rawEntries, true
+}
+
+func buildOriginRequestLog(r *http.Request, requestBody string, includeReqBody bool) string {
+	var b strings.Builder
+	requestURI := r.URL.RequestURI()
+	if requestURI == "" {
+		requestURI = "/"
+	}
+	_, _ = fmt.Fprintf(&b, "%s %s %s\r\n", r.Method, requestURI, r.Proto)
+
+	headerNames := make([]string, 0, len(r.Header))
+	for name := range r.Header {
+		headerNames = append(headerNames, name)
+	}
+	sort.Strings(headerNames)
+	for _, name := range headerNames {
+		for _, value := range r.Header.Values(name) {
+			_, _ = fmt.Fprintf(&b, "%s: %s\r\n", name, value)
+		}
+	}
+
+	b.WriteString("\r\n")
+	if includeReqBody {
+		b.WriteString(requestBody)
+	}
+	return b.String()
 }
 
 func (p *Plugin) applyDefaults() {

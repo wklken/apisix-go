@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,6 +213,48 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 	if payload["plugin"] != "rocketmq-logger" {
 		t.Fatalf("plugin = %v, want rocketmq-logger", payload["plugin"])
+	}
+}
+
+func TestHandlerSendsOriginRequestLog(t *testing.T) {
+	sender := &captureSender{}
+	p := newTestPlugin(t, Config{
+		MetaFormat:      "origin",
+		NameServerList:  []string{"127.0.0.1:9876"},
+		Topic:           "apisix-logs",
+		IncludeReqBody:  true,
+		MaxReqBodyBytes: 32,
+		BatchMaxSize:    1,
+	}, sender)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders?debug=true",
+		bytes.NewBufferString(`{"order":1}`),
+	)
+	req.Header.Set("X-Tenant", "gold")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":1}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	message := sender.waitForMessage(t)
+	payload := string(message.Body)
+	if !strings.HasPrefix(payload, "POST /orders?debug=true HTTP/1.1\r\n") {
+		t.Fatalf("origin payload = %q, want request line prefix", payload)
+	}
+	if !strings.Contains(payload, "X-Tenant: gold\r\n") {
+		t.Fatalf("origin payload = %q, want request header", payload)
+	}
+	if !strings.HasSuffix(payload, "\r\n\r\n"+`{"order":1}`) {
+		t.Fatalf("origin payload = %q, want request body after header block", payload)
 	}
 }
 

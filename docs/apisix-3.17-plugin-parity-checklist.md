@@ -105,8 +105,8 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `google-cloud-logging` | yes | 64% | monitor |
 | `sls-logger` | yes | 72% | implement |
 | `tcp-logger` | yes | 70% | implement |
-| `kafka-logger` | yes | 74% | monitor |
-| `rocketmq-logger` | yes | 70% | monitor |
+| `kafka-logger` | yes | 76% | monitor |
+| `rocketmq-logger` | yes | 72% | monitor |
 | `syslog` | yes | 70% | implement |
 | `udp-logger` | yes | 70% | implement |
 | `file-logger` | yes | 78% | monitor |

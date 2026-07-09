@@ -11,8 +11,8 @@ Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post
 | `http-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `auth_header` after a project-level secret design exists. |
 | `skywalking-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
 | `tcp-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and OpenResty cosocket pooling, which is not required. |
-| `kafka-logger` | Remaining gaps are `meta_format = origin` and encrypted broker password storage after a project-level secret design exists. |
-| `rocketmq-logger` | Remaining gaps are `meta_format = origin`, encrypted `secret_key`, and `use_tls`; the current RocketMQ Go client exposes no TLS option. |
+| `kafka-logger` | Only remaining gap is encrypted broker password storage after a project-level secret design exists. |
+| `rocketmq-logger` | Remaining gaps are encrypted `secret_key` and `use_tls`; the current RocketMQ Go client exposes no TLS option. |
 | `syslog` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and native connection pooling/TLS exactness, which is not required. |
 | `udp-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
 | `clickhouse-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `password` after a project-level secret design exists. |

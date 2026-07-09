@@ -44,7 +44,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `authz-casdoor` | yes | 60% | implement |
 | `wolf-rbac` | yes | 65% | implement |
 | `ldap-auth` | yes | 65% | implement |
-| `hmac-auth` | yes | 75% | monitor |
+| `hmac-auth` | yes | 82% | monitor |
 | `basic-auth` | yes | 70% | monitor |
 | `jwt-auth` | yes | 68% | implement |
 | `jwe-decrypt` | yes | 65% | implement |

@@ -7015,3 +7015,35 @@ Updated `jwt-auth` README support notes and the live APISIX 3.17 parity checklis
 - [x] **Step 4: Verify**
 
 Run: `go test ./pkg/plugin/jwt_auth -run 'TestHandlerUsesAnonymousConsumer|TestSchemaAcceptsAnonymousConsumer' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/jwt_auth -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 212: Support `hmac-auth` Anonymous Consumer Fallback
+
+**Files:**
+- Modify: `pkg/plugin/hmac_auth/plugin.go`
+- Modify: `pkg/plugin/hmac_auth/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `hmac-auth` `anonymous_consumer` config.
+- Produces: normal HMAC authentication failures can attach the configured anonymous consumer and continue; `Authorization` is removed after fallback when `hide_credentials` is enabled, while non-auth hard failures such as oversized request bodies remain failures.
+
+- [x] **Step 1: Confirm official behavior**
+
+Fetched Apache APISIX `release/3.17` and confirmed `hmac-auth.lua` falls back to `anonymous_consumer` on unauthorized authentication failures, strips `Authorization` after fallback when `hide_credentials` is enabled, and returns `Invalid user authorization` when the configured anonymous consumer cannot be loaded.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added tests for missing-authorization fallback and invalid-signature fallback with credential stripping. The first focused run failed with the existing 401 responses because the handler did not consult `AnonymousConsumer`.
+
+- [x] **Step 3: Implement fallback**
+
+Added a small anonymous-consumer helper that looks up the configured consumer through `store.GetConsumer`, attaches it with the existing APISIX context helper, and preserves current direct error handling for non-401 authentication failures.
+
+- [x] **Step 4: Update docs**
+
+Updated `hmac-auth` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/hmac_auth -run 'TestHandlerUsesAnonymousConsumer' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/hmac_auth -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

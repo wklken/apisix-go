@@ -68,6 +68,35 @@ func addHMACConsumer(t *testing.T, username, keyID, secretKey string) {
 	t.Fatalf("consumer %q was not indexed for hmac-auth key %q", username, keyID)
 }
 
+func addConsumer(t *testing.T, username string) {
+	t.Helper()
+	setupStore(t)
+
+	consumer := map[string]any{
+		"username": username,
+		"plugins":  map[string]any{},
+	}
+	body, err := json.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/" + username)
+	event.Value = body
+	testEvents <- event
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.GetConsumer(username); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("consumer %q was not stored", username)
+}
+
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -122,6 +151,60 @@ func TestHandlerRejectsStaleDate(t *testing.T) {
 	}
 	if got := res.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
 		t.Fatalf("WWW-Authenticate = %q, want hmac realm", got)
+	}
+}
+
+func TestHandlerUsesAnonymousConsumerWhenAuthorizationIsMissing(t *testing.T) {
+	addConsumer(t, "anonymous-hmac-user")
+	p := newTestPlugin(t, Config{AnonymousConsumer: "anonymous-hmac-user"})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-hmac-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-hmac-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerUsesAnonymousConsumerForInvalidSignatureAndHidesCredentials(t *testing.T) {
+	addHMACConsumer(t, "bad-signature-hmac-user", "bad-hmac-key", "hmac-secret")
+	addConsumer(t, "anonymous-bad-hmac-user")
+	hideCredentials := true
+	p := newTestPlugin(t, Config{
+		HideCredentials:   &hideCredentials,
+		AnonymousConsumer: "anonymous-bad-hmac-user",
+	})
+	date := time.Now().UTC().Format(http.TimeFormat)
+	auth := signatureHeader(t, "bad-hmac-key", "wrong-secret", "hmac-sha256", []string{"date"}, map[string]string{
+		"date": date,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Date", date)
+	req.Header.Set("Authorization", auth)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-bad-hmac-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-bad-hmac-user", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want removed", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
 }
 

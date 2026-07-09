@@ -149,6 +149,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		consumer, statusCode, err := p.authenticate(r)
 		if err != nil {
+			if statusCode == http.StatusUnauthorized && p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`hmac realm="%s"`, p.config.Realm))
 			http.Error(w, util.BuildMessageResponse(err.Error()), statusCode)
 			return
@@ -162,6 +165,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	if p.config.AnonymousConsumer == "" {
+		return false
+	}
+
+	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`hmac realm="%s"`, p.config.Realm))
+		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
+		return true
+	}
+
+	if *p.config.HideCredentials {
+		r.Header.Del("Authorization")
+	}
+	ctx.AttachConsumer(r, consumer)
+	next.ServeHTTP(w, r)
+	return true
 }
 
 func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {

@@ -155,9 +155,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [cas-auth](https://apisix.apache.org/zh/docs/apisix/plugins/cas-auth/) 60%
   - support CAS login redirect, absolute/relative `cas_callback_uri`, ticket `serviceValidate`, HMAC-signed initiation cookie, per-config session cookie, local session refresh, and logout redirect
   - not support OpenResty shared-dict clustering, IdP single logout XML session deletion, or attaching authenticated CAS user metadata upstream
-- [x] [hmac-auth](https://apisix.apache.org/zh/docs/apisix/plugins/hmac-auth/) 75%
-  - support `hmac-sha1`, `hmac-sha256`, `hmac-sha512`, `signed_headers`, `clock_skew`, request body digest validation, and `hide_credentials`
-  - not support `anonymous_consumer`
+- [x] [hmac-auth](https://apisix.apache.org/zh/docs/apisix/plugins/hmac-auth/) 82%
+  - support `hmac-sha1`, `hmac-sha256`, `hmac-sha512`, `signed_headers`, `clock_skew`, request body digest validation, `hide_credentials`, and `anonymous_consumer` fallback
 - [x] [authz-casbin](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casbin/) 70%
   - support Casbin `model` / `policy` text config, `model_path` / `policy_path` file config, configured username header, and anonymous fallback
   - not support plugin metadata fallback

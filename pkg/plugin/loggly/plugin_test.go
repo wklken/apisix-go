@@ -43,6 +43,18 @@ func TestPostInitSetsDefaults(t *testing.T) {
 	if p.config.Port != 514 {
 		t.Fatalf("port = %d, want 514", p.config.Port)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
 }
 
 func TestBuildMessageUsesRFC5424ShapeAndTags(t *testing.T) {
@@ -151,6 +163,86 @@ func TestSendWritesHTTPBulkMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerBatchesHTTPBulkMessages(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		received <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Host:          server.URL,
+		Protocol:      "http",
+		Timeout:       1000,
+		BatchMaxSize:  2,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+
+	select {
+	case body := <-received:
+		lines := strings.Split(body, "\n")
+		if len(lines) != 2 {
+			t.Fatalf("bulk body = %q, want two newline-delimited entries", body)
+		}
+		for _, line := range lines {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("unmarshal bulk line %q: %v", line, err)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Loggly HTTP bulk body")
+	}
+}
+
+func TestSendBatchWritesUDPMessagesIndividually(t *testing.T) {
+	addr, received := startUDPServerN(t, 2)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Host:          host,
+		Port:          mustAtoi(t, port),
+		Timeout:       1000,
+	})
+
+	firstFail, err := p.SendBatch([]map[string]any{
+		{"status": 200, "path": "/first"},
+		{"status": 201, "path": "/second"},
+	}, 2)
+	if err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+	if firstFail != 0 {
+		t.Fatalf("firstFail = %d, want 0", firstFail)
+	}
+
+	for _, want := range []string{"/first", "/second"} {
+		select {
+		case message := <-received:
+			if !strings.Contains(message, want) {
+				t.Fatalf("message = %q, want path %s", message, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for UDP log message %s", want)
+		}
+	}
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +264,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -241,6 +334,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -296,6 +390,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
@@ -362,7 +457,31 @@ func TestSchemaAcceptsOfficialBodySizeAndSSLFields(t *testing.T) {
 	}
 }
 
+func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"customer_token":      "token",
+		"batch_max_size":      2,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     60,
+		"inactive_timeout":    5,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected batch and max pending fields: %v", err)
+	}
+}
+
 func startUDPServer(t *testing.T) (string, <-chan string) {
+	return startUDPServerN(t, 1)
+}
+
+func startUDPServerN(t *testing.T, count int) (string, <-chan string) {
 	t.Helper()
 
 	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
@@ -377,11 +496,14 @@ func startUDPServer(t *testing.T) (string, <-chan string) {
 		conn.Close()
 	})
 
-	received := make(chan string, 1)
+	received := make(chan string, count)
 	go func() {
 		buf := make([]byte, 4096)
-		n, _, err := conn.ReadFromUDP(buf)
-		if err == nil {
+		for i := 0; i < count; i++ {
+			n, _, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
 			received <- string(buf[:n])
 		}
 	}()

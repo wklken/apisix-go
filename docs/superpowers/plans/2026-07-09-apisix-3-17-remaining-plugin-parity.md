@@ -31,16 +31,16 @@
 | `rocketmq-logger` | 63% | Add shared batch processor, `max_pending_entries`, `meta_format = origin`, and `use_tls` if supported by current RocketMQ client without large dependency churn. |
 | `syslog` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are OpenResty syslog connection pooling/TLS behavior parity and APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `udp-logger` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness. |
-| `clickhouse-logger` | 68% | Add shared batch processor and `max_pending_entries`; improve payload batching around JSONEachRow inserts. |
+| `clickhouse-logger` | 76% | Shared batch processor, `max_pending_entries`, and JSONEachRow batch payloads are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness and encrypted `password`. |
 | `log-rotate` | 60% | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical; keep NGINX master `USR1`, OpenResty timer, and runtime log-path discovery out of scope. |
 | `error-log-logger` | 55% | Reuse shared batch/retry semantics for supported sinks; improve sink-specific auth/options; keep direct `ngx.errlog` capture and OpenResty timer lifecycle out of scope. |
 | `sls-logger` | 63% | Add shared batch processor; verify official SLS auth/signature edge fields; keep body-expression support already completed. |
 | `google-cloud-logging` | 55% | Add shared batch processor and `max_pending_entries`; improve token caching/refresh if current code refetches too often; do not add body capture unless APISIX 3.17 supports it. |
 | `splunk-hec-logging` | 50% | Add shared batch processor and `max_pending_entries`; support additional HEC response/error handling; do not add body capture unless APISIX 3.17 supports it. |
 | `file-logger` | 75% | Improve file reopen/cache approximation if useful for Go runtime; keep OpenResty file-cache exactness out of scope. |
-| `loggly` | 68% | Add shared batch processor, `max_pending_entries`, and metadata-only delivery config parity if official source supports it. |
+| `loggly` | 76% | Shared batch processor, HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, and `max_pending_entries` are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness and encrypted `customer_token`. |
 | `elasticsearch-logger` | 80% | Add shared batch processor and `max_pending_entries`; preserve current bulk delivery, index expansion, auth, header, and body-expression behavior. |
-| `loki-logger` | 68% | Add shared batch processor and `max_pending_entries`; improve labels/tenant/header parity from APISIX 3.17 source. |
+| `loki-logger` | 76% | Shared batch processor, `max_pending_entries`, and one-stream multi-value Loki batches are implemented. Remaining gap is APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `tencent-cloud-cls` | 63% | Add shared batch processor, `max_pending_entries`, and compression if a small maintained dependency or standard support is acceptable. |
 | `lago` | 64% | Add shared batch processor and retry semantics; expand variable/template coverage only for stable APISIX variables already available in Go. |
 
@@ -58,7 +58,7 @@
 
 - [ ] **Task L3: Apply batch processor to remaining network loggers in small groups**
   - Group 1: `tcp-logger` done, `udp-logger` done, `syslog` done.
-  - Group 2: `clickhouse-logger`, `loki-logger`, `loggly`.
+  - Group 2: `clickhouse-logger` done, `loki-logger` done, `loggly` done.
   - Group 3: `skywalking-logger`, `sls-logger`, `tencent-cloud-cls`.
   - Group 4: `google-cloud-logging`, `splunk-hec-logging`, `rocketmq-logger`, `kafka-logger`, `lago`.
 

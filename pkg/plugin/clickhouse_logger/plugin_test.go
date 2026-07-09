@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -40,6 +42,18 @@ func TestPostInitSetsClickHouseDefaults(t *testing.T) {
 	if !p.sslVerify() {
 		t.Fatal("sslVerify() = false, want true by default")
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
 }
 
 func TestBuildInsertBodyUsesJSONEachRow(t *testing.T) {
@@ -51,10 +65,10 @@ func TestBuildInsertBodyUsesJSONEachRow(t *testing.T) {
 		LogTable:      "apisix_logs",
 	})
 
-	body := p.buildInsertBody(map[string]any{
+	body := p.buildInsertBody([]map[string]any{{
 		"path":   "/orders",
 		"status": 201,
-	})
+	}}, 1)
 
 	if !strings.HasPrefix(body, "INSERT INTO apisix_logs FORMAT JSONEachRow ") {
 		t.Fatalf("body = %q, want ClickHouse INSERT JSONEachRow prefix", body)
@@ -165,6 +179,57 @@ func TestSendPostsClickHouseInsert(t *testing.T) {
 	}
 }
 
+func TestHandlerBatchesClickHouseRows(t *testing.T) {
+	bodies := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		User:          "default",
+		Password:      "secret",
+		Database:      "analytics",
+		LogTable:      "apisix_logs",
+		Timeout:       1,
+		SSLVerify:     &sslVerify,
+		BatchMaxSize:  2,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+
+	select {
+	case body := <-bodies:
+		prefix := "INSERT INTO apisix_logs FORMAT JSONEachRow "
+		if !strings.HasPrefix(body, prefix) {
+			t.Fatalf("body = %q, want ClickHouse INSERT JSONEachRow prefix", body)
+		}
+		rows := strings.Split(strings.TrimPrefix(body, prefix), " ")
+		if len(rows) != 2 {
+			t.Fatalf("rows = %v, want two JSONEachRow entries", rows)
+		}
+		for _, row := range rows {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(row), &entry); err != nil {
+				t.Fatalf("unmarshal row %q: %v", row, err)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched ClickHouse body")
+	}
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	bodies := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +255,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -269,6 +335,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -334,6 +401,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
@@ -367,5 +435,29 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for ClickHouse body")
+	}
+}
+
+func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"endpoint_addrs":      []any{"http://127.0.0.1:8123"},
+		"user":                "default",
+		"password":            "secret",
+		"database":            "analytics",
+		"logtable":            "apisix_logs",
+		"batch_max_size":      2,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     60,
+		"inactive_timeout":    5,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected batch and max pending fields: %v", err)
 	}
 }

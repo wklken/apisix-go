@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -125,6 +126,35 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 524288
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "required": ["endpoint_addrs"]
@@ -132,7 +162,8 @@ const schema = `
 `
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type Config struct {
@@ -156,6 +187,11 @@ type Config struct {
 	MaxReqBodyBytes     int     `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int     `json:"max_resp_body_bytes,omitempty"`
 
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
@@ -209,6 +245,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddrs)
@@ -224,13 +272,26 @@ func (p *Plugin) PostInit() error {
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.config.SSLVerify})
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
+	metadata := loadMetadata()
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
+	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              "loki logger",
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
+
 	return nil
 }
 
@@ -457,44 +518,77 @@ func requestVar(r *http.Request, name string, status int) string {
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+	_ = batchMaxSize
+
 	if len(p.config.EndpointAddrs) == 0 {
-		logger.Errorf("loki-logger endpoint_addrs is empty")
-		return
+		return 0, fmt.Errorf("loki-logger endpoint_addrs is empty")
 	}
 
 	endpoint := p.endpointURL()
 	resp, err := p.client.R().
 		SetHeaders(p.headers()).
-		SetBody(p.buildPayload(log)).
+		SetBody(p.buildBatchPayload(entries)).
 		Post(endpoint)
 	if err != nil {
-		logger.Errorf("failed to send log to Loki endpoint %s: %s", endpoint, err)
-		return
+		return 0, fmt.Errorf("failed to send log to Loki endpoint %s: %w", endpoint, err)
 	}
 
 	if resp.StatusCode() >= 300 {
-		logger.Errorf(
+		return 0, fmt.Errorf(
 			"Loki endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			endpoint,
 			resp.String(),
 		)
 	}
+
+	return 0, nil
 }
 
 func (p *Plugin) buildPayload(log map[string]any) lokiPayload {
-	entry, err := json.Marshal(log)
-	if err != nil {
-		entry = []byte(`{}`)
+	return p.buildBatchPayload([]map[string]any{log})
+}
+
+func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
+	values := make([][2]string, 0, len(entries))
+	for _, logEntry := range entries {
+		logTime := fmt.Sprintf("%d", time.Now().UnixNano())
+		if value, ok := logEntry["loki_log_time"]; ok {
+			logTime = fmt.Sprint(value)
+		}
+
+		entry := logEntry
+		if _, ok := logEntry["loki_log_time"]; ok {
+			entry = make(map[string]any, len(logEntry)-1)
+			for key, value := range logEntry {
+				if key != "loki_log_time" {
+					entry[key] = value
+				}
+			}
+		}
+
+		body, err := json.Marshal(entry)
+		if err != nil {
+			body = []byte(`{}`)
+		}
+		values = append(values, [2]string{logTime, string(body)})
 	}
 
+	labels := map[string]string{}
+	if len(entries) > 0 {
+		labels = p.resolveLabels(entries[0])
+	}
 	return lokiPayload{
 		Streams: []lokiStream{
 			{
-				Stream: p.resolveLabels(log),
-				Values: [][2]string{
-					{fmt.Sprintf("%d", time.Now().UnixNano()), string(entry)},
-				},
+				Stream: labels,
+				Values: values,
 			},
 		},
 	}
@@ -539,16 +633,15 @@ func (p *Plugin) keepalive() bool {
 	return p.config.Keepalive == nil || *p.config.Keepalive
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

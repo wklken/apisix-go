@@ -95,10 +95,10 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `prometheus` | yes | 45% | implement |
 | `datadog` | yes | 68% | implement |
 | `lago` | yes | 64% | implement |
-| `loki-logger` | yes | 68% | implement |
+| `loki-logger` | yes | 76% | implement |
 | `elasticsearch-logger` | yes | 80% | monitor |
 | `echo` | yes | 90% | monitor |
-| `loggly` | yes | 68% | implement |
+| `loggly` | yes | 76% | implement |
 | `http-logger` | yes | 76% | implement |
 | `splunk-hec-logging` | yes | 50% | implement |
 | `skywalking-logger` | yes | 68% | implement |
@@ -110,7 +110,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `syslog` | yes | 70% | implement |
 | `udp-logger` | yes | 70% | implement |
 | `file-logger` | yes | 75% | monitor |
-| `clickhouse-logger` | yes | 68% | implement |
+| `clickhouse-logger` | yes | 76% | implement |
 | `tencent-cloud-cls` | yes | 63% | implement |
 | `inspect` | no | unsupported: lua feature | not-required-native |
 | `example-plugin` | yes | 60% | implement |

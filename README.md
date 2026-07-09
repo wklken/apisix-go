@@ -330,9 +330,9 @@ Loggers:
 - [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 70%
   - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, and `max_pending_entries`
   - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
-- [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 68%
-  - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior or `max_pending_entries`
+- [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 76%
+  - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), ClickHouse JSONEachRow batch payloads, and `max_pending_entries`
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `password`
 - [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 70%
   - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, `include_req_body`, `include_req_body_expr`, Go-side `include_resp_body`, `include_resp_body_expr`, capped body-size capture, UDP/TCP syslog delivery through the Go syslog writer, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), batched JSON payloads, and `max_pending_entries`
   - not support OpenResty syslog connection pooling/TLS behavior parity or APISIX batch Prometheus gauge/stale-object cleanup exactness
@@ -354,19 +354,19 @@ Loggers:
 - [x] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) 75%
   - support `path`, `log_format`, bounded `match` expressions for common request variables and `$status`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX/OpenResty file-cache and reopen semantics exactly
-- [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 68%
+- [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 76%
   - support RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery
-  - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior, `max_pending_entries`, or metadata-only delivery config parity
+  - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, and `max_pending_entries`
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `customer_token`
 - [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 80%
   - support `endpoint_addr`, random `endpoint_addrs` selection, `field.index`, time/APISIX variable expansion in `field.index`, Elasticsearch major-version discovery for legacy `_type`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, and `_bulk` NDJSON delivery
   - not support APISIX batch processor behavior or `max_pending_entries`
 - [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 63%
   - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, Tencent CLS sha1 authorization, and `/structuredlog` protobuf delivery
   - not support APISIX batch processor behavior, `max_pending_entries`, or lz4/zstd compression
-- [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 68%
-  - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior or `max_pending_entries`
+- [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 76%
+  - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), one-stream multi-value Loki batches, and `max_pending_entries`
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
 - [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 64%
   - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, `include_req_body`, `include_resp_body`, capped body-size capture through `${request_body}` / `${response_body}` templates, `ssl_verify`, timeout, and keepalive config defaults
   - not support APISIX batch processor buffering/retry semantics, full APISIX/NGINX variable coverage, or request start-time fidelity

@@ -46,6 +46,18 @@ func TestPostInitSetsLokiDefaults(t *testing.T) {
 	if got := p.config.LogLabels["job"]; got != "apisix" {
 		t.Fatalf("log_labels.job = %q, want apisix", got)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
 }
 
 func TestBuildPayloadUsesLokiStreamShape(t *testing.T) {
@@ -170,6 +182,52 @@ func TestSendPostsLokiPayload(t *testing.T) {
 	}
 }
 
+func TestHandlerBatchesLokiValues(t *testing.T) {
+	bodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Timeout:       1000,
+		BatchMaxSize:  2,
+		LogLabels: map[string]string{
+			"job": "apisix",
+		},
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+
+	select {
+	case body := <-bodies:
+		streams, ok := body["streams"].([]any)
+		if !ok || len(streams) != 1 {
+			t.Fatalf("streams = %#v, want one stream", body["streams"])
+		}
+		stream, ok := streams[0].(map[string]any)
+		if !ok {
+			t.Fatalf("stream = %#v, want object", streams[0])
+		}
+		values, ok := stream["values"].([]any)
+		if !ok || len(values) != 2 {
+			t.Fatalf("values = %#v, want two batched values", stream["values"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched Loki body")
+	}
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	bodies := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +247,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -257,6 +316,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -311,6 +371,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
@@ -356,6 +417,26 @@ func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body expression fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"endpoint_addrs":      []any{"http://127.0.0.1:3100"},
+		"batch_max_size":      2,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     60,
+		"inactive_timeout":    5,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected batch and max pending fields: %v", err)
 	}
 }
 

@@ -18,6 +18,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -109,11 +111,48 @@ const schema = `
       "type": "string",
       "default": "syslog",
       "enum": ["syslog", "http", "https"]
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "required": ["customer_token"]
 }
 `
+
+type pluginMetadata struct {
+	Host      string            `json:"host,omitempty"`
+	Port      int               `json:"port,omitempty"`
+	Protocol  string            `json:"protocol,omitempty"`
+	Timeout   int               `json:"timeout,omitempty"`
+	LogFormat map[string]string `json:"log_format,omitempty"`
+}
 
 type Config struct {
 	CustomerToken string            `json:"customer_token"`
@@ -133,6 +172,13 @@ type Config struct {
 	IncludeRespBodyExpr [][]any `json:"include_resp_body_expr,omitempty"`
 	MaxReqBodyBytes     int     `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int     `json:"max_resp_body_bytes,omitempty"`
+
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
 var severityValues = map[string]int{
@@ -170,14 +216,27 @@ func (p *Plugin) PostInit() error {
 	if len(p.config.Tags) == 0 {
 		p.config.Tags = []string{"apisix"}
 	}
+	metadata := loadMetadata()
+	if p.config.Host == "" {
+		p.config.Host = metadata.Host
+	}
 	if p.config.Host == "" {
 		p.config.Host = "logs-01.loggly.com"
+	}
+	if p.config.Port == 0 {
+		p.config.Port = metadata.Port
 	}
 	if p.config.Port == 0 {
 		p.config.Port = 514
 	}
 	if p.config.Timeout == 0 {
+		p.config.Timeout = metadata.Timeout
+	}
+	if p.config.Timeout == 0 {
 		p.config.Timeout = 5000
+	}
+	if p.config.Protocol == "" {
+		p.config.Protocol = metadata.Protocol
 	}
 	if p.config.Protocol == "" {
 		p.config.Protocol = "syslog"
@@ -192,10 +251,34 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 
-	p.LogFormat = p.config.LogFormat
+	if len(p.config.LogFormat) > 0 {
+		p.LogFormat = p.config.LogFormat
+	} else {
+		p.LogFormat = metadata.LogFormat
+	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              "loggly",
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
 
 	return nil
 }
@@ -423,39 +506,52 @@ func requestVar(r *http.Request, name string, status int) string {
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
 	if p.config.Protocol == "http" || p.config.Protocol == "https" {
-		p.sendHTTPBulk(log)
-		return
+		return 0, p.sendHTTPBulk(entries, batchMaxSize)
 	}
 
-	message := p.buildMessage(log)
+	for i, entry := range entries {
+		message := p.buildMessage(entry)
+		if err := p.sendUDPMessage(message); err != nil {
+			return i + 1, err
+		}
+	}
+
+	return 0, nil
+}
+
+func (p *Plugin) sendUDPMessage(message string) error {
 	conn, err := net.DialTimeout(
 		"udp",
 		fmt.Sprintf("%s:%d", p.config.Host, p.config.Port),
 		time.Duration(p.config.Timeout)*time.Millisecond,
 	)
 	if err != nil {
-		logger.Errorf("failed to connect to Loggly UDP endpoint %s:%d: %s", p.config.Host, p.config.Port, err)
-		return
+		return fmt.Errorf("failed to connect to Loggly UDP endpoint %s:%d: %w", p.config.Host, p.config.Port, err)
 	}
 	defer conn.Close()
 
 	if _, err := conn.Write([]byte(message)); err != nil {
-		logger.Errorf("failed to send loggly message: %s", err)
+		return fmt.Errorf("failed to send loggly message: %w", err)
 	}
+	return nil
 }
 
-func (p *Plugin) sendHTTPBulk(log map[string]any) {
-	payload, err := json.Marshal(log)
+func (p *Plugin) sendHTTPBulk(entries []map[string]any, batchMaxSize int) error {
+	payload, err := p.encodeHTTPBulk(entries, batchMaxSize)
 	if err != nil {
-		logger.Errorf("failed to marshal loggly message: %s", err)
-		return
+		return err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, p.bulkEndpoint(), bytes.NewReader(payload))
 	if err != nil {
-		logger.Errorf("failed to build Loggly bulk request: %s", err)
-		return
+		return fmt.Errorf("failed to build Loggly bulk request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-LOGGLY-TAG", strings.Join(p.config.Tags, ","))
@@ -468,13 +564,33 @@ func (p *Plugin) sendHTTPBulk(log map[string]any) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Errorf("failed to send loggly bulk message: %s", err)
-		return
+		return fmt.Errorf("failed to send loggly bulk message: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		logger.Errorf("failed to send loggly bulk message: status %d", resp.StatusCode)
+		return fmt.Errorf("failed to send loggly bulk message: status %d", resp.StatusCode)
 	}
+	return nil
+}
+
+func (p *Plugin) encodeHTTPBulk(entries []map[string]any, batchMaxSize int) ([]byte, error) {
+	if batchMaxSize == 1 && len(entries) == 1 {
+		payload, err := json.Marshal(entries[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal loggly message: %w", err)
+		}
+		return payload, nil
+	}
+
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		payload, err := json.Marshal(entry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal loggly message: %w", err)
+		}
+		lines = append(lines, string(payload))
+	}
+	return []byte(strings.Join(lines, "\n")), nil
 }
 
 func (p *Plugin) bulkEndpoint() string {
@@ -534,4 +650,17 @@ func (p *Plugin) structuredData() string {
 		return fmt.Sprintf("[%s@41058]", p.config.CustomerToken)
 	}
 	return fmt.Sprintf("[%s@41058 %s]", p.config.CustomerToken, strings.Join(tags, " "))
+}
+
+func loadMetadata() (metadata pluginMetadata) {
+	defer func() {
+		if recover() != nil {
+			metadata = pluginMetadata{}
+		}
+	}()
+
+	if err := store.GetPluginMetadata(name, &metadata); err != nil {
+		return pluginMetadata{}
+	}
+	return metadata
 }

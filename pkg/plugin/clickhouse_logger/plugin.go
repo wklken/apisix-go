@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -116,6 +117,35 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 524288
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "oneOf": [
@@ -126,7 +156,8 @@ const schema = `
 `
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type Config struct {
@@ -147,6 +178,13 @@ type Config struct {
 	IncludeRespBodyExpr [][]any `json:"include_resp_body_expr,omitempty"`
 	MaxReqBodyBytes     int     `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int     `json:"max_resp_body_bytes,omitempty"`
+
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -175,6 +213,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.endpointUID())
@@ -189,13 +239,26 @@ func (p *Plugin) PostInit() error {
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.sslVerify()})
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
+	metadata := loadMetadata()
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
+	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              "clickhouse logger",
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
+
 	return nil
 }
 
@@ -422,10 +485,15 @@ func requestVar(r *http.Request, name string, status int) string {
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
 	endpoint := p.endpointURL()
 	if endpoint == "" {
-		logger.Errorf("clickhouse-logger endpoint is empty")
-		return
+		return 0, fmt.Errorf("clickhouse-logger endpoint is empty")
 	}
 
 	resp, err := p.client.R().
@@ -435,29 +503,42 @@ func (p *Plugin) Send(log map[string]any) {
 			"X-ClickHouse-Key":      p.config.Password,
 			"X-ClickHouse-Database": p.config.Database,
 		}).
-		SetBody(p.buildInsertBody(log)).
+		SetBody(p.buildInsertBody(entries, batchMaxSize)).
 		Post(endpoint)
 	if err != nil {
-		logger.Errorf("failed to send log to ClickHouse endpoint %s: %s", endpoint, err)
-		return
+		return 0, fmt.Errorf("failed to send log to ClickHouse endpoint %s: %w", endpoint, err)
 	}
 
 	if resp.StatusCode() >= 400 {
-		logger.Errorf(
+		return 0, fmt.Errorf(
 			"ClickHouse endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			endpoint,
 			resp.String(),
 		)
 	}
+
+	return 0, nil
 }
 
-func (p *Plugin) buildInsertBody(log map[string]any) string {
-	payload, err := json.Marshal(log)
-	if err != nil {
-		payload = []byte(`{}`)
+func (p *Plugin) buildInsertBody(entries []map[string]any, batchMaxSize int) string {
+	if batchMaxSize == 1 && len(entries) == 1 {
+		payload, err := json.Marshal(entries[0])
+		if err != nil {
+			payload = []byte(`{}`)
+		}
+		return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + string(payload)
 	}
-	return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + string(payload)
+
+	rows := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		payload, err := json.Marshal(entry)
+		if err != nil {
+			payload = []byte(`{}`)
+		}
+		rows = append(rows, string(payload))
+	}
+	return "INSERT INTO " + p.config.LogTable + " FORMAT JSONEachRow " + strings.Join(rows, " ")
 }
 
 func (p *Plugin) endpointURL() string {
@@ -481,16 +562,15 @@ func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

@@ -32,8 +32,8 @@
 | `syslog` | 70% | Shared batch processor, `max_pending_entries`, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are OpenResty syslog connection pooling/TLS behavior parity, APISIX batch route/server label population, and stale-object cleanup exactness. |
 | `udp-logger` | 70% | Shared batch processor, `max_pending_entries`, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch route/server label population and stale-object cleanup exactness. |
 | `clickhouse-logger` | 76% | Shared batch processor, `max_pending_entries`, JSONEachRow batch payloads, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch route/server label population, stale-object cleanup exactness, and encrypted `password`. |
-| `log-rotate` | 60% | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical; keep NGINX master `USR1`, OpenResty timer, and runtime log-path discovery out of scope. |
-| `error-log-logger` | 69% | Shared batch processor buffering/retry semantics, basic `batch_process_entries` gauge hook, SkyWalking `$hostname` service-instance resolution, and Kafka broker `PLAIN` SASL are implemented for explicit error-log delivery. Remaining gaps are sink-specific auth/options beyond Kafka `PLAIN` SASL, APISIX batch route/server label population, stale-object cleanup exactness, encrypted metadata fields, direct `ngx.errlog` capture, and OpenResty timer lifecycle. |
+| `log-rotate` | 72% | Go-native rotation lifecycle, file recreation, `file-logger` current-path writes after rotation, history pruning, and compression are implemented. Remaining NGINX master `USR1`, OpenResty timer, and runtime log-path discovery behavior is out of scope. |
+| `error-log-logger` | 69% | Shared batch processor buffering/retry semantics, basic `batch_process_entries` gauge hook, SkyWalking `$hostname` service-instance resolution, and Kafka broker `PLAIN` SASL are implemented for explicit error-log delivery. Remaining gaps are APISIX batch route/server label population, stale-object cleanup exactness, Lua-resty-kafka producer cache exactness, encrypted metadata fields, direct `ngx.errlog` capture, and OpenResty timer lifecycle. |
 | `sls-logger` | 72% | Shared batch processor, concatenated RFC5424 batch writes, and basic `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch route/server label population, stale-object cleanup exactness, and encrypted `access_key_secret`. |
 | `google-cloud-logging` | 67% | Shared batch processor, `max_pending_entries`, access-token caching/refresh, and multi-entry Cloud Logging writes are implemented. Remaining gaps are encrypted `auth_config.private_key` and body capture, which APISIX 3.17 does not define for this plugin. |
 | `splunk-hec-logging` | 62% | Shared batch processor, `max_pending_entries`, concatenated JSON event-object batches, and HEC error-text extraction are implemented. Remaining gaps are encrypted `endpoint.token` and body capture, which APISIX 3.17 does not define for this plugin. |
@@ -248,7 +248,7 @@ These are intentionally not implementation TODOs for normal parity work:
 
 ## Suggested Next Five Slices
 
-1. `log-rotate` lifecycle or `error-log-logger` sink option parity.
+1. Bound `error-log-logger` batch-label/cache parity, or defer it if it requires OpenResty runtime behavior.
 2. `ai-rate-limiting` Redis/shared policy.
 3. `workflow` delegated actions for already implemented plugins.
 4. `zipkin` span reporting transport.

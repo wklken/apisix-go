@@ -125,7 +125,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 
 ## Next Priority Lanes
 
-1. Finish lower-risk logger lifecycle gaps: `log-rotate` and `error-log-logger`.
+1. Finish the remaining `error-log-logger` batch-label/cache gaps if they can be bounded without OpenResty runtime behavior.
 2. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
 3. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
 4. Keep OpenResty/NGINX/Lua-runtime-native plugins out of normal parity work: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`.

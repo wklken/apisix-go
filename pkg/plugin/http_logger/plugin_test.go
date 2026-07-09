@@ -34,6 +34,21 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	if p.config.ConcatMethod != "json" {
 		t.Fatalf("concat_method = %q, want json", p.config.ConcatMethod)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.MaxRetryCount != 0 {
+		t.Fatalf("max_retry_count = %d, want 0", p.config.MaxRetryCount)
+	}
 }
 
 func TestSendPostsJSONLogWithAuthorizationHeader(t *testing.T) {
@@ -100,6 +115,117 @@ func TestPostInitSetsTextContentTypeForNewLineConcat(t *testing.T) {
 	}
 }
 
+func TestHandlerBatchesJSONLogs(t *testing.T) {
+	received := make(chan []map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:             server.URL,
+		BatchMaxSize:    2,
+		InactiveTimeout: 60,
+		BufferDuration:  60,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+
+	select {
+	case body := <-received:
+		if len(body) != 2 {
+			t.Fatalf("batch length = %d, want 2", len(body))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched http log request")
+	}
+}
+
+func TestHandlerBatchesNewLineLogs(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		received <- string(body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:             server.URL,
+		ConcatMethod:    "new_line",
+		BatchMaxSize:    2,
+		InactiveTimeout: 60,
+		BufferDuration:  60,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+
+	select {
+	case body := <-received:
+		lines := strings.Split(body, "\n")
+		if len(lines) != 2 {
+			t.Fatalf("body = %q, want two newline-delimited JSON entries", body)
+		}
+		for _, line := range lines {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("line %q is not JSON: %v", line, err)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched http log request")
+	}
+}
+
+func TestHandlerDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:               server.URL,
+		BatchMaxSize:      1,
+		MaxPendingEntries: 1,
+		InactiveTimeout:   60,
+		BufferDuration:    60,
+	})
+	t.Cleanup(func() {
+		close(release)
+		p.BatchProcessor.Stop()
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/three", nil))
+
+	stats := p.BatchProcessor.Stats()
+	if stats.Dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", stats.Dropped)
+	}
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +240,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		URI:              server.URL,
+		BatchMaxSize:     1,
 		IncludeReqBody:   true,
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
@@ -180,6 +307,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		URI:                 server.URL,
+		BatchMaxSize:        1,
 		IncludeReqBody:      true,
 		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
 		IncludeRespBody:     true,
@@ -231,6 +359,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		URI:                 server.URL,
+		BatchMaxSize:        1,
 		IncludeReqBody:      true,
 		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
 		IncludeRespBody:     true,
@@ -287,5 +416,25 @@ func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body size fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"uri":                 "http://127.0.0.1/logs",
+		"batch_max_size":      10,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     2,
+		"inactive_timeout":    1,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official batch fields: %v", err)
 	}
 }

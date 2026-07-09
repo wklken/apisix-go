@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -87,13 +88,43 @@ const schema = `
 	  "ssl_verify": {
 		"type": "boolean",
 		"default": false
+	  },
+	  "batch_max_size": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 1000
+	  },
+	  "max_retry_count": {
+		"type": "integer",
+		"minimum": 0,
+		"default": 0
+	  },
+	  "retry_delay": {
+		"type": "integer",
+		"minimum": 0,
+		"default": 1
+	  },
+	  "buffer_duration": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 60
+	  },
+	  "inactive_timeout": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 5
+	  },
+	  "max_pending_entries": {
+		"type": "integer",
+		"minimum": 1
 	  }
 	},
 	"required": ["uri"]
 }`
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type Plugin struct {
@@ -118,6 +149,13 @@ type Config struct {
 
 	// NOTE: not needed
 	ConcatMethod string `json:"concat_method"`
+
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 
 	contentType string
 }
@@ -152,6 +190,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 
 	// client
 	configUID := shared.NewConfigUID()
@@ -178,14 +228,25 @@ func (p *Plugin) PostInit() error {
 
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
+	metadata := loadMetadata()
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
+	}
 
-	// start the consumer
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              "http logger",
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
 
 	return nil
 }
@@ -243,21 +304,62 @@ func (p *Plugin) Send(log map[string]any) {
 		return
 	}
 
+	if err := p.sendBody(body); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+	body, err := p.encodeBatch(entries, batchMaxSize)
+	if err != nil {
+		return 0, err
+	}
+	return 0, p.sendBody(body)
+}
+
+func (p *Plugin) encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
+	if p.config.ConcatMethod == "new_line" && batchMaxSize > 1 {
+		lines := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			body, err := json.Marshal(entry)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal http log entry: %w", err)
+			}
+			lines = append(lines, string(body))
+		}
+		return []byte(strings.Join(lines, "\n")), nil
+	}
+
+	if batchMaxSize == 1 && len(entries) == 1 {
+		body, err := json.Marshal(entries[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal http log entry: %w", err)
+		}
+		return body, nil
+	}
+
+	body, err := json.Marshal(entries)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal http log entries: %w", err)
+	}
+	return body, nil
+}
+
+func (p *Plugin) sendBody(body []byte) error {
 	resp, err := p.client.R().SetBody(body).Post(p.config.URI)
 	if err != nil {
-		logger.Errorf("error while sending data to [%s] %s", p.config.URI, err)
-		return
+		return fmt.Errorf("error while sending data to [%s] %s", p.config.URI, err)
 	}
 
 	if resp.StatusCode() >= 400 {
-		logger.Errorf(
+		return fmt.Errorf(
 			"server returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			p.config.URI,
 			resp.String(),
 		)
-		return
 	}
+	return nil
 }
 
 type httpLogResponseRecorder struct {
@@ -438,16 +540,15 @@ func requestVar(r *http.Request, name string, status int) string {
 	}
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

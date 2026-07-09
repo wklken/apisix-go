@@ -99,7 +99,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `elasticsearch-logger` | yes | 80% | monitor |
 | `echo` | yes | 90% | monitor |
 | `loggly` | yes | 68% | implement |
-| `http-logger` | yes | 62% | implement |
+| `http-logger` | yes | 76% | implement |
 | `splunk-hec-logging` | yes | 50% | implement |
 | `skywalking-logger` | yes | 68% | implement |
 | `google-cloud-logging` | yes | 55% | implement |

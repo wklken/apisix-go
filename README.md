@@ -312,9 +312,9 @@ Loggers:
 
 > 19/19
 
-- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 62%
-  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior or `max_pending_entries`
+- [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 76%
+  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON/newline batch payloads, and `max_pending_entries`
+  - not support APISIX batch processor Prometheus gauge/stale-object cleanup exactness or encrypted `auth_header`
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 68%
   - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`

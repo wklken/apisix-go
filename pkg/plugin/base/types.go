@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
 type BasePlugin struct {
@@ -44,7 +45,8 @@ type BaseLoggerPlugin struct {
 
 	LogFormat map[string]string
 
-	SendFunc func(log map[string]any)
+	SendFunc       func(log map[string]any)
+	BatchProcessor *logger_batch.Processor
 
 	IncludeRequestBody  bool
 	IncludeResponseBody bool
@@ -74,6 +76,11 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
+	if p.BatchProcessor != nil {
+		p.BatchProcessor.Push(entry)
+		return nil
+	}
+
 	select {
 	case p.FireChan <- entry: // try and put into chan, if fail will to default
 	default:
@@ -90,6 +97,10 @@ func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
 
 // add a http log consumer here, to consume the log via a channel
 func (p *BaseLoggerPlugin) Consume() {
+	if p.BatchProcessor != nil {
+		return
+	}
+
 	go func() {
 		for {
 			select {

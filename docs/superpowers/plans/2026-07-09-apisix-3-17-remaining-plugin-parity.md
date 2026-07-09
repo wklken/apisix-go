@@ -24,7 +24,7 @@
 
 | Plugin | Current | What remains |
 |---|---:|---|
-| `http-logger` | 62% | Add shared batch-processor behavior: queue size, retry/backoff, flush interval, `max_pending_entries`, and failure accounting. Preserve current direct POST delivery tests. |
+| `http-logger` | 76% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness and encrypted `auth_header`. |
 | `skywalking-logger` | 68% | Reuse shared batch processor; improve SkyWalking log-entry shape and trace correlation where APISIX source has stable fields. |
 | `tcp-logger` | 58% | Add shared batch processor; improve TLS/socket pooling only where practical in Go, not OpenResty cosocket parity. |
 | `kafka-logger` | 68% | Add shared batch processor and `max_pending_entries`; evaluate `meta_format = origin`; keep encrypted field storage out of scope. |
@@ -46,12 +46,12 @@
 
 ### Logger Execution Tasks
 
-- [ ] **Task L1: Create shared logger batch processor**
+- [x] **Task L1: Create shared logger batch processor**
   - Files: create `pkg/plugin/logger_batch/` or reuse an existing local shared package if present.
   - Tests: queue flush by size/time, drop at `max_pending_entries`, retry/backoff, graceful shutdown-free request lifecycle.
   - Verify: `go test ./pkg/plugin/logger_batch -count=1 -timeout=10s -v`.
 
-- [ ] **Task L2: Migrate one HTTP-style logger first**
+- [x] **Task L2: Migrate one HTTP-style logger first**
   - Start with `http-logger` because it is easiest to verify with `httptest.Server`.
   - Tests: enqueue multiple entries, flush batch to server, reject overflow, preserve direct log_format/body behavior.
   - Commit before touching other loggers.

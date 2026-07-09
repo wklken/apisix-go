@@ -1,31 +1,33 @@
-# APISIX 3.17 Remaining Plugin TODO Plan (5 Parts)
+# APISIX 3.17 Remaining Plugin TODO Plan
 
-This is the active TODO list for remaining APISIX 3.17 plugin parity work. It lists only remaining implementation work and groups it into five parts: Logger, Auth, AI, Observability, and Others. OpenResty-native, NGINX-native, Lua-runtime-native, serverless function plugins, and missing/deferred official defaults are not normal TODOs.
+This is the active TODO list for remaining APISIX 3.17 plugin parity work. It lists only work that is not done yet and groups it into five parts: Logger, Auth, AI, Observability, and Others.
 
-Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, `serverless-post-function`, OCSP stapling internals, exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, and shared-dict/lrucache exactness. Do not create normal plugin implementation tasks for these native/runtime-only items.
+OpenResty-native, NGINX-native, Lua-runtime-native, serverless function plugins, and missing/deferred official defaults are not normal TODOs. Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, `serverless-post-function`, OCSP stapling internals, exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, and shared-dict/lrucache exactness. Do not create normal plugin implementation tasks for these native/runtime-only items.
+
+Use this file as the planning backlog. Use `README.md` and `docs/apisix-3.17-plugin-parity-checklist.md` as the status surfaces after each implemented slice.
 
 ## Logger
 
 | Plugin | What needs to be done |
 |---|---|
-| `http-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `auth_header` after a project-level secret design exists. |
-| `skywalking-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
-| `tcp-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and OpenResty cosocket pooling, which is not required. |
+| `http-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and encrypted `auth_header` after a project-level secret design exists. |
+| `skywalking-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population and stale-object cleanup exactness. |
+| `tcp-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and OpenResty cosocket pooling, which is not required. |
 | `kafka-logger` | Only remaining gap is encrypted broker password storage after a project-level secret design exists. |
 | `rocketmq-logger` | Remaining gaps are encrypted `secret_key` and `use_tls`; the current RocketMQ Go client exposes no TLS option. |
-| `syslog` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and native connection pooling/TLS exactness, which is not required. |
-| `udp-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
-| `clickhouse-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `password` after a project-level secret design exists. |
-| `sls-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `access_key_secret` after a project-level secret design exists. |
+| `syslog` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and native connection pooling/TLS exactness, which is not required. |
+| `udp-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population and stale-object cleanup exactness. |
+| `clickhouse-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and encrypted `password` after a project-level secret design exists. |
+| `sls-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and encrypted `access_key_secret` after a project-level secret design exists. |
 | `google-cloud-logging` | Remaining gaps are encrypted `auth_config.private_key` and request/response body capture only if a future APISIX version defines it. |
 | `splunk-hec-logging` | Remaining gaps are encrypted `endpoint.token` and request/response body capture only if a future APISIX version defines it. |
-| `elasticsearch-logger` | Remaining gaps are APISIX batch metric/stale-object cleanup exactness and encrypted `auth.password` after a project-level secret design exists. |
-| `loggly` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `customer_token` after a project-level secret design exists. |
-| `loki-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
-| `tencent-cloud-cls` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
+| `elasticsearch-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and encrypted `auth.password` after a project-level secret design exists. |
+| `loggly` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and encrypted `customer_token` after a project-level secret design exists. |
+| `loki-logger` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population and stale-object cleanup exactness. |
+| `tencent-cloud-cls` | Basic shared `batch_process_entries` gauge hook is implemented. Remaining gaps are route/server label population, stale-object cleanup exactness, and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
 | `lago` | Remaining gaps are encrypted `token` and exotic OpenResty/NGINX-only variable fidelity. APISIX `batch_max_size` default of 100, request-start event timestamps, and common dynamic request/response variables are implemented. |
 | `log-rotate` | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical. Keep NGINX master `USR1`, OpenResty timers, and runtime log-path discovery out of scope. |
-| `error-log-logger` | Improve sink-specific auth/options beyond Kafka `PLAIN` SASL. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch Prometheus gauge/stale-object cleanup exactness, and encrypted metadata fields out of normal scope unless a separate design requests them. |
+| `error-log-logger` | Improve sink-specific auth/options beyond Kafka `PLAIN` SASL. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch route/server label population, stale-object cleanup exactness, and encrypted metadata fields out of normal scope unless a separate design requests them. |
 | `file-logger` | Remaining gap is Go-native file reopen/cache approximation if useful. Keep OpenResty file-cache exactness out of scope. |
 
 ## Auth

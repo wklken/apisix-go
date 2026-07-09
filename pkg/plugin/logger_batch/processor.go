@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 )
 
 const (
@@ -25,6 +26,8 @@ type Config struct {
 	BufferDuration    time.Duration
 	InactiveTimeout   time.Duration
 	MaxPendingEntries int
+	RouteID           string
+	ServerAddr        string
 }
 
 type Processor struct {
@@ -79,6 +82,7 @@ func (p *Processor) Push(entry map[string]any) bool {
 	p.lastEntry = now
 	p.buffer = append(p.buffer, entry)
 	p.pending++
+	p.setBufferedMetricLocked()
 
 	if len(p.buffer) >= p.config.BatchMaxSize {
 		p.flushLocked()
@@ -152,11 +156,16 @@ func (p *Processor) flushLocked() {
 	p.buffer = p.buffer[:0]
 	p.firstEntry = time.Time{}
 	p.lastEntry = time.Time{}
+	p.setBufferedMetricLocked()
 	p.stopTimerLocked()
 	p.processing += len(batch)
 
 	p.wg.Add(1)
 	go p.process(batch)
+}
+
+func (p *Processor) setBufferedMetricLocked() {
+	metrics.SetBatchProcessEntries(p.config.Name, p.config.RouteID, p.config.ServerAddr, len(p.buffer))
 }
 
 func (p *Processor) stopTimerLocked() {

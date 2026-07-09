@@ -313,14 +313,14 @@ Loggers:
 > 19/19
 
 - [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 76%
-  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON/newline batch payloads, and `max_pending_entries`
-  - not support APISIX batch processor Prometheus gauge/stale-object cleanup exactness or encrypted `auth_header`
+  - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON/newline batch payloads, `max_pending_entries`, and the shared `batch_process_entries` gauge hook
+  - not support APISIX batch processor route/server label population, stale-object cleanup exactness, or encrypted `auth_header`
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 76%
   - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), SkyWalking JSON-array batch payloads, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
+  - not support APISIX batch route/server label population or stale-object cleanup exactness
 - [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 70%
   - support `host`, `port`, `timeout`, `log_format`, `tls`, `tls_options` as TLS server name / SNI, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, and `max_pending_entries`
-  - not support OpenResty cosocket connection pooling or APISIX batch Prometheus gauge/stale-object cleanup exactness
+  - not support OpenResty cosocket connection pooling, APISIX batch route/server label population, or stale-object cleanup exactness
 - [x] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/) 76%
   - support `brokers`, deprecated `broker_list`, broker `sasl_config` for `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`, `kafka_topic`, `key`, `producer_type`, `required_acks`, `timeout`, producer batch defaults, `meta_format = origin`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), single-object / JSON-array Kafka batch payloads, and `max_pending_entries`
   - not support encrypted broker password storage
@@ -329,22 +329,22 @@ Loggers:
   - not support encrypted `secret_key` or `use_tls` because the current RocketMQ Go client exposes no TLS option
 - [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 70%
   - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
+  - not support APISIX batch route/server label population or stale-object cleanup exactness
 - [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 76%
   - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), ClickHouse JSONEachRow batch payloads, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `password`
+  - not support APISIX batch route/server label population, stale-object cleanup exactness, or encrypted `password`
 - [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 70%
   - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, `include_req_body`, `include_req_body_expr`, Go-side `include_resp_body`, `include_resp_body_expr`, capped body-size capture, UDP/TCP syslog delivery through the Go syslog writer, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), batched JSON payloads, and `max_pending_entries`
-  - not support OpenResty syslog connection pooling/TLS behavior parity or APISIX batch Prometheus gauge/stale-object cleanup exactness
+  - not support OpenResty syslog connection pooling/TLS behavior parity, APISIX batch route/server label population, or stale-object cleanup exactness
 - [x] [log-rotate](https://apisix.apache.org/zh/docs/apisix/plugins/log-rotate/) 60%
   - support `plugin_attr.log-rotate` defaults for `interval`, `max_kept`, `max_size`, `timeout`, and `enable_compression`, APISIX timestamped `__access.log` / `__error.log` naming, max-size rotation, interval checks on request, current-file recreation, history pruning, and `.tar.gz` compression
   - not support OpenResty timer lifecycle, NGINX master `USR1` log reopening, NGINX config path discovery, or shelling out to system `tar`
 - [x] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/) 69%
   - support official metadata-shaped config for `tcp`, `skywalking`, `clickhouse`, and `kafka`, level filtering, TCP/TLS delivery, SkyWalking `/v3/logs` entries with `$hostname` service-instance resolution, ClickHouse JSONEachRow inserts, Kafka topic/key publishing, Kafka broker `sasl_config` with `PLAIN`, legacy `host` / `port` TCP config, official batch/default knobs, and shared batch processor buffering/retry semantics
-  - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch Prometheus gauge/stale-object cleanup exactness, or encrypted metadata fields
+  - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch route/server label population, stale-object cleanup exactness, or encrypted metadata fields
 - [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 72%
   - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), and concatenated RFC5424 batch writes
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `access_key_secret`
+  - not support APISIX batch route/server label population, stale-object cleanup exactness, or encrypted `access_key_secret`
 - [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 67%
   - support service-account `auth_config`, `auth_file`, JWT bearer token exchange with access-token caching/refresh, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, default Cloud Logging `httpRequest` entry expansion, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-entry Cloud Logging writes, and `max_pending_entries`
   - not support encrypted `auth_config.private_key` or request/response body capture
@@ -357,16 +357,16 @@ Loggers:
 - [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 76%
   - support RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery
   - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `customer_token`
+  - not support APISIX batch route/server label population, stale-object cleanup exactness, or encrypted `customer_token`
 - [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 84%
   - support `endpoint_addr`, random `endpoint_addrs` selection, `field.index`, time/APISIX variable expansion in `field.index`, Elasticsearch major-version discovery for legacy `_type`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), `_bulk` NDJSON batch delivery, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `auth.password`
+  - not support APISIX batch route/server label population, stale-object cleanup exactness, or encrypted `auth.password`
 - [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 76%
   - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, Tencent CLS sha1 authorization, `/structuredlog` protobuf delivery, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-log protobuf batch payloads, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `secret_key`
+  - not support APISIX batch route/server label population, stale-object cleanup exactness, or encrypted `secret_key`
 - [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 76%
   - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), one-stream multi-value Loki batches, and `max_pending_entries`
-  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
+  - not support APISIX batch route/server label population or stale-object cleanup exactness
 - [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 76%
   - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, request-start event timestamps, dynamic `${arg_*}`, `${cookie_*}`, `${http_*}`, `${sent_http_*}`, and `${upstream_http_*}` template variables, `include_req_body`, `include_resp_body`, capped body-size capture through `${request_body}` / `${response_body}` templates, `ssl_verify`, timeout, keepalive config defaults, APISIX `batch_max_size` default of 100, and APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`)
   - not support encrypted `token` or exotic OpenResty/NGINX-only variable fidelity

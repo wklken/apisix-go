@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 )
 
 func TestProcessorFlushesWhenBatchMaxSizeIsReached(t *testing.T) {
@@ -84,6 +88,62 @@ func TestProcessorDropsEntriesPastMaxPendingEntries(t *testing.T) {
 	if p.Push(map[string]any{"id": 3}) {
 		t.Fatal("third push was accepted after max_pending_entries was exceeded")
 	}
+}
+
+func TestProcessorUpdatesBatchProcessEntriesMetric(t *testing.T) {
+	oldBatchProcessEntries := metrics.BatchProcessEntries
+	gauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_batch_process_entries"},
+		[]string{"name", "route_id", "server_addr"},
+	)
+	metrics.BatchProcessEntries = gauge
+	t.Cleanup(func() {
+		metrics.BatchProcessEntries = oldBatchProcessEntries
+	})
+
+	delivered := make(chan []map[string]any, 1)
+	p := New(Config{
+		Name:            "http logger",
+		RouteID:         "route-a",
+		ServerAddr:      "127.0.0.1:9080",
+		BatchMaxSize:    10,
+		InactiveTimeout: time.Hour,
+		BufferDuration:  time.Hour,
+	}, func(entries []map[string]any, _ int) (int, error) {
+		delivered <- entries
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+
+	if !p.Push(map[string]any{"id": 1}) {
+		t.Fatal("first push was rejected")
+	}
+	if got := gaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {
+		t.Fatalf("batch_process_entries = %v, want 1 after first push", got)
+	}
+
+	if !p.Push(map[string]any{"id": 2}) {
+		t.Fatal("second push was rejected")
+	}
+	if got := gaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 2 {
+		t.Fatalf("batch_process_entries = %v, want 2 after second push", got)
+	}
+
+	p.Flush()
+	_ = waitBatch(t, delivered)
+	if got := gaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 0 {
+		t.Fatalf("batch_process_entries = %v, want 0 after flush", got)
+	}
+}
+
+func gaugeValue(t *testing.T, gauge *prometheus.GaugeVec, labels ...string) float64 {
+	t.Helper()
+
+	metric := &dto.Metric{}
+	if err := gauge.WithLabelValues(labels...).Write(metric); err != nil {
+		t.Fatalf("read gauge metric: %v", err)
+	}
+	return metric.GetGauge().GetValue()
 }
 
 func TestProcessorRetriesFailedBatches(t *testing.T) {

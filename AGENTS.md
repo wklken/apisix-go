@@ -57,7 +57,7 @@ Key runtime pieces:
 ## APISIX Plugin Parity Scope
 
 - OpenResty-native, NGINX-native, and Lua-runtime-native parity is not required unless the user explicitly asks for a Go-native approximation.
-- Treat missing/deferred official defaults and serverless function plugins as native/runtime features that are not required for normal parity work. Current out-of-scope defaults/features: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`; do not add them to normal implementation plans.
+- Treat missing/deferred official defaults and serverless function plugins as native/runtime features that are not required for normal parity work. Current out-of-scope defaults/features: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`; do not add them to normal implementation plans or TODO lists.
 - `serverless-pre-function` and `serverless-post-function` execute Lua/OpenResty code and should stay documented as OpenResty-native and not required; do not add placeholder Go implementations for them.
 - For native-only features, document the unsupported status in README/checklist/plan files instead of adding placeholder Go implementations.
 - Examples of out-of-scope native behavior include OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, OCSP/TLS stapling internals, and external plugin runner protocol compatibility unless separately requested.

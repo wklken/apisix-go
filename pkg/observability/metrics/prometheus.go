@@ -17,15 +17,16 @@ var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 
 // FIXME: how to set etcd reachable?
 
 var (
-	Connections       *prometheus.GaugeVec
-	Requests          prometheus.Gauge
-	EtcdReachable     prometheus.Gauge
-	HostInfo          *prometheus.GaugeVec
-	EtcdModifyIndexed *prometheus.GaugeVec
-	UpstreamStatus    *prometheus.GaugeVec
-	HttpStatus        *prometheus.CounterVec
-	HttpLatency       *prometheus.HistogramVec
-	Bandwidth         *prometheus.CounterVec
+	Connections         *prometheus.GaugeVec
+	Requests            prometheus.Gauge
+	EtcdReachable       prometheus.Gauge
+	HostInfo            *prometheus.GaugeVec
+	EtcdModifyIndexed   *prometheus.GaugeVec
+	UpstreamStatus      *prometheus.GaugeVec
+	HttpStatus          *prometheus.CounterVec
+	HttpLatency         *prometheus.HistogramVec
+	Bandwidth           *prometheus.CounterVec
+	BatchProcessEntries *prometheus.GaugeVec
 )
 
 func Init() {
@@ -132,6 +133,17 @@ func Init() {
 		},
 	)
 
+	BatchProcessEntries = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricConfig.MetricPrefix + "batch_process_entries",
+			Help: "batch process remaining entries",
+		}, []string{
+			"name",
+			"route_id",
+			"server_addr",
+		},
+	)
+
 	hostName := "unknown"
 	hostName, _ = os.Hostname()
 	HostInfo.WithLabelValues(hostName).Set(1)
@@ -146,7 +158,15 @@ func Init() {
 		HttpStatus,
 		HttpLatency,
 		Bandwidth,
+		BatchProcessEntries,
 	)
+}
+
+func SetBatchProcessEntries(name string, routeID string, serverAddr string, count int) {
+	if BatchProcessEntries == nil {
+		return
+	}
+	BatchProcessEntries.WithLabelValues(name, routeID, serverAddr).Set(float64(count))
 }
 
 type prometheusMetricConfig struct {

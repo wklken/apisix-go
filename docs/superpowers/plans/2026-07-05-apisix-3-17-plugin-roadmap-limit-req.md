@@ -6903,3 +6903,31 @@ Updated `loggly` README support notes and the live APISIX 3.17 parity checklist.
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/loggly -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)|TestSchemaAcceptsOfficialBodyExpressionFields' -count=1 -timeout=15s -v` and `go test ./pkg/plugin/loggly -count=1 -timeout=15s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 208: Support `elasticsearch-logger` Body Expression Gates
+
+**Files:**
+- Modify: `pkg/plugin/elasticsearch_logger/plugin.go`
+- Modify: `pkg/plugin/elasticsearch_logger/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `elasticsearch-logger` `include_req_body_expr` and `include_resp_body_expr` config.
+- Produces: Elasticsearch bulk documents whose request and response body fields are gated by bounded request-variable expressions while preserving request body replay, capped capture, index variable expansion, and `_bulk` NDJSON delivery behavior.
+
+- [x] **Step 1: Add focused failing tests**
+
+Added tests for matching expressions, non-matching expressions, and schema acceptance. The first focused run failed because `Config` did not yet expose `IncludeReqBodyExpr` or `IncludeRespBodyExpr`.
+
+- [x] **Step 2: Implement bounded expression gates**
+
+Added config fields for `include_req_body_expr` / `include_resp_body_expr`, gated request body reads before downstream execution, captured response status in the Elasticsearch logger recorder, and evaluated response body logging after downstream completion using the existing local `==`, `!=`, numeric comparison, regex, `AND`, and `OR` expression subset.
+
+- [x] **Step 3: Update docs**
+
+Updated `elasticsearch-logger` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/elasticsearch_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)|TestSchemaAcceptsOfficialBodyExpressionFields' -count=1 -timeout=15s -v` and `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

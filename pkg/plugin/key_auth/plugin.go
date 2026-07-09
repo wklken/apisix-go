@@ -36,14 +36,19 @@ const schema = `
 	  "hide_credentials": {
 		"type": "boolean",
 		"default": false
+	  },
+	  "anonymous_consumer": {
+		"type": "string",
+		"minLength": 1
 	  }
 	}
 }`
 
 type Config struct {
-	Header          string `json:"header"`
-	Query           string `json:"query"`
-	HideCredentials *bool  `json:"hide_credentials"`
+	Header            string `json:"header"`
+	Query             string `json:"query"`
+	HideCredentials   *bool  `json:"hide_credentials"`
+	AnonymousConsumer string `json:"anonymous_consumer,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -90,6 +95,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if key == "" {
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
 			http.Error(w, `{"message": "Missing API key found in request"}`, http.StatusUnauthorized)
 			return
 		}
@@ -97,6 +105,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// note: here it's  unique key => consumer, it's different from basic-auth
 		consumer, err := store.GetConsumerByPluginKey(name, key)
 		if errors.Is(err, store.ErrNotFound) {
+			if p.config.AnonymousConsumer != "" {
+				p.hideAllCredentials(r)
+				if p.attachAnonymousConsumer(w, r, next) {
+					return
+				}
+			}
 			http.Error(w, `{"message": "Invalid API key in request"}`, http.StatusUnauthorized)
 			return
 		}
@@ -118,4 +132,31 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	if p.config.AnonymousConsumer == "" {
+		return false
+	}
+
+	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
+	if err != nil {
+		http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+		return true
+	}
+
+	ctx.AttachConsumer(r, consumer)
+	next.ServeHTTP(w, r)
+	return true
+}
+
+func (p *Plugin) hideAllCredentials(r *http.Request) {
+	if !*p.config.HideCredentials {
+		return
+	}
+
+	r.Header.Del(p.config.Header)
+	query := r.URL.Query()
+	query.Del(p.config.Query)
+	r.URL.RawQuery = query.Encode()
 }

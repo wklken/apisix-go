@@ -48,7 +48,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `basic-auth` | yes | 70% | monitor |
 | `jwt-auth` | yes | 60% | implement |
 | `jwe-decrypt` | yes | 65% | implement |
-| `key-auth` | yes | 65% | implement |
+| `key-auth` | yes | 75% | monitor |
 | `dingtalk-auth` | yes | 60% | implement |
 | `feishu-auth` | yes | 60% | implement |
 | `acl` | yes | 70% | monitor |

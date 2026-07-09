@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 var (
@@ -59,6 +60,35 @@ func addKeyAuthConsumer(t *testing.T, username, key string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("consumer %q was not indexed for key-auth key %q", username, key)
+}
+
+func addConsumer(t *testing.T, username string) {
+	t.Helper()
+	setupStore(t)
+
+	consumer := map[string]any{
+		"username": username,
+		"plugins":  map[string]any{},
+	}
+	body, err := json.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/" + username)
+	event.Value = body
+	testEvents <- event
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.GetConsumer(username); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("consumer %q was not stored", username)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -114,6 +144,26 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesAnonymousConsumerWhenKeyIsMissing(t *testing.T) {
+	addConsumer(t, "anonymous-user")
+	p := newTestPlugin(t, Config{AnonymousConsumer: "anonymous-user"})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestHandlerRejectsInvalidKey(t *testing.T) {
 	addKeyAuthConsumer(t, "valid-key-user", "valid-key")
 	p := newTestPlugin(t, Config{})
@@ -132,6 +182,41 @@ func TestHandlerRejectsInvalidKey(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid API key in request") {
 		t.Fatalf("body = %q, want invalid key message", rr.Body.String())
+	}
+}
+
+func TestHandlerUsesAnonymousConsumerForInvalidKeyAndHidesCredentials(t *testing.T) {
+	addKeyAuthConsumer(t, "valid-key-user", "valid-key")
+	addConsumer(t, "anonymous-invalid-key-user")
+	hideCredentials := true
+	p := newTestPlugin(t, Config{
+		HideCredentials:   &hideCredentials,
+		AnonymousConsumer: "anonymous-invalid-key-user",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?apikey=wrong-query&keep=1", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("apikey", "wrong-header")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-invalid-key-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-invalid-key-user", got)
+		}
+		if got := r.Header.Get("apikey"); got != "" {
+			t.Fatalf("apikey header = %q, want removed", got)
+		}
+		if got := r.URL.Query().Get("apikey"); got != "" {
+			t.Fatalf("apikey query = %q, want removed", got)
+		}
+		if got := r.URL.Query().Get("keep"); got != "1" {
+			t.Fatalf("keep query = %q, want preserved", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
 }
 
@@ -156,5 +241,19 @@ func TestHandlerHideCredentialsRemovesQueryKey(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestSchemaAcceptsAnonymousConsumer(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"anonymous_consumer": "anonymous-user",
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected anonymous_consumer: %v", err)
 	}
 }

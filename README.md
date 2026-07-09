@@ -119,9 +119,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 18/18
 
-- [x] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) 65%
-  - support header/query API key lookup, APISIX-style missing/invalid key errors, consumer attachment, and `hide_credentials` removal from headers or query strings
-  - not support encrypted consumer fields or anonymous consumer fallback
+- [x] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) 75%
+  - support header/query API key lookup, APISIX-style missing/invalid key errors, consumer attachment, `hide_credentials` removal from headers or query strings, and `anonymous_consumer` fallback
+  - not support encrypted consumer fields
 - [x] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/) 60%
   - only support `HS256`, `HS384`, `HS512`
   - not support `RS*`, `ES*`, `PS*`, or `EdDSA`

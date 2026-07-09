@@ -7175,3 +7175,35 @@ Updated `limit-count` README support notes and the live APISIX 3.17 parity check
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/limit_count -run 'Test(PostInitAcceptsRootRedisPolicyFields|SchemaAcceptsRootRedisPolicyFields)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 217: Support `openid-connect` Public-Key and JWKS JWT Verification
+
+**Files:**
+- Modify: `pkg/plugin/openid_connect/plugin.go`
+- Modify: `pkg/plugin/openid_connect/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `openid-connect` bearer-mode configs `public_key`, `use_jwks`, and `token_signing_alg_values_expected`.
+- Produces: local bearer JWT verification for PEM RSA public keys and discovery-backed RSA JWKS keys, skipping token introspection when configured, while preserving required-scope checks and output header behavior.
+
+- [x] **Step 1: Confirm official behavior**
+
+Fetched Apache APISIX `release/3.17` and confirmed `openid-connect.lua` validates bearer JWTs locally when `public_key` or `use_jwks` is configured, otherwise falls back to token introspection.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added tests for `public_key` JWT verification and discovery/JWKS JWT verification. The first focused run failed because both paths still called the introspection endpoint.
+
+- [x] **Step 3: Implement local JWT verification**
+
+Added compact JWT parsing, expected-alg checks, PEM public-key parsing, RSA JWKS key selection by `kid`/`alg`, RSA RS/PS signature verification, `exp`/`nbf` checks, issuer validation from discovery when available, and reused the existing downstream header/scope flow.
+
+- [x] **Step 4: Update docs**
+
+Updated `openid-connect` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/openid_connect -run 'TestHandlerVerifiesBearerJWTWith(PublicKey|JWKS)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/openid_connect -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

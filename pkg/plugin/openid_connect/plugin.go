@@ -1,15 +1,23 @@
 package openid_connect
 
 import (
+	"crypto"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	_ "crypto/sha256"
+	_ "crypto/sha512"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -185,6 +193,14 @@ type Config struct {
 type discoveryData struct {
 	Issuer                string `json:"issuer"`
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
+	JWKSURI               string `json:"jwks_uri"`
+}
+
+type jwtToken struct {
+	header    map[string]any
+	payload   map[string]any
+	signing   string
+	signature []byte
 }
 
 func (p *Plugin) Init() error {
@@ -273,10 +289,20 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		claims, err := p.introspect(r, token)
-		if err != nil {
-			p.writeInvalidToken(w, err.Error())
-			return
+		var claims map[string]any
+		var err error
+		if p.usesLocalJWTVerification() {
+			claims, err = p.verifyBearerJWT(r, token)
+			if err != nil {
+				p.writeInvalidToken(w, err.Error())
+				return
+			}
+		} else {
+			claims, err = p.introspect(r, token)
+			if err != nil {
+				p.writeInvalidToken(w, err.Error())
+				return
+			}
 		}
 		if !tokenActive(claims) {
 			p.writeInvalidToken(w, "inactive token")
@@ -324,6 +350,251 @@ func (p *Plugin) bearerToken(r *http.Request, clientXAccessToken string) (bool, 
 		return true, parts[1], 0, ""
 	}
 	return false, "", 0, ""
+}
+
+func (p *Plugin) usesLocalJWTVerification() bool {
+	return p.config.PublicKey != "" || p.config.UseJWKS
+}
+
+func (p *Plugin) verifyBearerJWT(r *http.Request, rawToken string) (map[string]any, error) {
+	token, err := parseJWT(rawToken)
+	if err != nil {
+		return nil, fmt.Errorf("JWT token invalid")
+	}
+
+	algorithm, _ := token.header["alg"].(string)
+	if algorithm == "" {
+		return nil, fmt.Errorf("JWT token missing alg")
+	}
+	if p.config.TokenSigningAlgValuesExpected != "" && algorithm != p.config.TokenSigningAlgValuesExpected {
+		return nil, fmt.Errorf("JWT token alg mismatch")
+	}
+
+	var publicKey any
+	if p.config.PublicKey != "" {
+		publicKey, err = parsePublicKey([]byte(p.config.PublicKey))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse public key")
+		}
+	} else {
+		publicKey, err = p.jwksPublicKey(r, token)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !verifyJWTSignature(token, algorithm, publicKey) {
+		return nil, fmt.Errorf("failed to verify jwt")
+	}
+	if err := verifyJWTTimeClaims(token.payload, time.Now()); err != nil {
+		return nil, err
+	}
+	p.validateIssuer(token.payload)
+
+	return token.payload, nil
+}
+
+func parseJWT(raw string) (jwtToken, error) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return jwtToken{}, fmt.Errorf("token must have three parts")
+	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return jwtToken{}, err
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return jwtToken{}, err
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return jwtToken{}, err
+	}
+
+	var header map[string]any
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return jwtToken{}, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return jwtToken{}, err
+	}
+
+	return jwtToken{
+		header:    header,
+		payload:   payload,
+		signing:   parts[0] + "." + parts[1],
+		signature: signature,
+	}, nil
+}
+
+func parsePublicKey(publicKeyBytes []byte) (any, error) {
+	if block, _ := pem.Decode(publicKeyBytes); block != nil {
+		publicKeyBytes = block.Bytes
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(publicKeyBytes)
+			if err != nil {
+				return nil, err
+			}
+			return cert.PublicKey, nil
+		}
+	}
+
+	if publicKey, err := x509.ParsePKIXPublicKey(publicKeyBytes); err == nil {
+		return publicKey, nil
+	}
+	if publicKey, err := x509.ParsePKCS1PublicKey(publicKeyBytes); err == nil {
+		return publicKey, nil
+	}
+	return nil, fmt.Errorf("unsupported public key")
+}
+
+func verifyJWTSignature(token jwtToken, algorithm string, publicKey any) bool {
+	rsaKey, ok := publicKey.(*rsa.PublicKey)
+	if !ok {
+		return false
+	}
+
+	hashAlg, digest, ok := jwtSigningDigest(algorithm, token.signing)
+	if !ok {
+		return false
+	}
+
+	switch algorithm {
+	case "RS256", "RS384", "RS512":
+		return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.signature) == nil
+	case "PS256", "PS384", "PS512":
+		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.signature, nil) == nil
+	default:
+		return false
+	}
+}
+
+func jwtSigningDigest(algorithm, signing string) (crypto.Hash, []byte, bool) {
+	var hashAlg crypto.Hash
+	switch algorithm {
+	case "RS256", "PS256":
+		hashAlg = crypto.SHA256
+	case "RS384", "PS384":
+		hashAlg = crypto.SHA384
+	case "RS512", "PS512":
+		hashAlg = crypto.SHA512
+	default:
+		return 0, nil, false
+	}
+
+	hashFunc := hashAlg.New()
+	hashFunc.Write([]byte(signing))
+	return hashAlg, hashFunc.Sum(nil), true
+}
+
+func verifyJWTTimeClaims(payload map[string]any, now time.Time) error {
+	if exp, ok := numberClaim(payload["exp"]); ok && exp <= now.Unix() {
+		return fmt.Errorf("JWT token expired")
+	}
+	if nbf, ok := numberClaim(payload["nbf"]); ok && nbf > now.Unix() {
+		return fmt.Errorf("JWT token not valid yet")
+	}
+	return nil
+}
+
+func numberClaim(value any) (int64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int64(v), true
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	default:
+		return 0, false
+	}
+}
+
+func (p *Plugin) validateIssuer(payload map[string]any) {
+	issuer, _ := payload["iss"].(string)
+	if issuer == "" {
+		return
+	}
+	discovery, err := p.discoveryDoc()
+	if err != nil || discovery.Issuer == "" {
+		return
+	}
+	if issuer != discovery.Issuer {
+		payload["active"] = false
+	}
+}
+
+func (p *Plugin) jwksPublicKey(r *http.Request, token jwtToken) (any, error) {
+	discovery, err := p.discoveryDoc()
+	if err != nil {
+		return nil, err
+	}
+	if discovery.JWKSURI == "" {
+		return nil, errors.New("openid discovery document has no jwks_uri")
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, discovery.JWKSURI, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
+	}
+
+	var jwks struct {
+		Keys []jwkKey `json:"keys"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return nil, err
+	}
+
+	kid, _ := token.header["kid"].(string)
+	algorithm, _ := token.header["alg"].(string)
+	for _, key := range jwks.Keys {
+		if key.Kty != "RSA" {
+			continue
+		}
+		if kid != "" && key.Kid != "" && key.Kid != kid {
+			continue
+		}
+		if key.Alg != "" && key.Alg != algorithm {
+			continue
+		}
+		return key.rsaPublicKey()
+	}
+	return nil, errors.New("no matching jwks key")
+}
+
+type jwkKey struct {
+	Kty string `json:"kty"`
+	Kid string `json:"kid"`
+	Alg string `json:"alg"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+func (k jwkKey) rsaPublicKey() (*rsa.PublicKey, error) {
+	modulus, err := base64.RawURLEncoding.DecodeString(k.N)
+	if err != nil {
+		return nil, err
+	}
+	exponentBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+	if err != nil {
+		return nil, err
+	}
+	exponent := new(big.Int).SetBytes(exponentBytes).Int64()
+	if exponent <= 0 {
+		return nil, fmt.Errorf("invalid RSA exponent")
+	}
+
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: int(exponent)}, nil
 }
 
 func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, error) {

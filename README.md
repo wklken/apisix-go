@@ -149,9 +149,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [wolf-rbac](https://apisix.apache.org/zh/docs/apisix/plugins/wolf-rbac/) 65%
   - support `V1#appid#wolf_token` parsing, token extraction from query/header/cookie, consumer lookup by `appid`, Wolf `/wolf/rbac/access_check`, user info header injection, and consumer attachment
   - not support built-in `/apisix/plugin/wolf-rbac/*` public APIs for login/change password/user info, retry backoff, or full APISIX consumer plugin metadata behavior
-- [x] [openid-connect](https://apisix.apache.org/zh/docs/apisix/plugins/openid-connect/) 50%
-  - support Bearer token extraction from `Authorization` and `X-Access-Token`, discovery fallback for `introspection_endpoint`, token introspection, `client_secret_basic` / `client_secret_post`, `required_scopes`, `realm`, `unauth_action = pass`, output header clearing, `X-Access-Token`, `X-Userinfo`, `ssl_verify`, `timeout`, and `introspection_addon_headers`
-  - not support authorization-code/session flow, logout/revocation, JWKS/public-key JWT verification, PKCE, Redis sessions, token renewal, claim schema validation, proxy options, or all client assertion auth methods
+- [x] [openid-connect](https://apisix.apache.org/zh/docs/apisix/plugins/openid-connect/) 62%
+  - support Bearer token extraction from `Authorization` and `X-Access-Token`, discovery fallback for `introspection_endpoint`, token introspection, `client_secret_basic` / `client_secret_post`, `public_key` and `use_jwks` RSA JWT verification, `token_signing_alg_values_expected`, `required_scopes`, `realm`, `unauth_action = pass`, output header clearing, `X-Access-Token`, `X-Userinfo`, `ssl_verify`, `timeout`, and `introspection_addon_headers`
+  - not support authorization-code/session flow, logout/revocation, PKCE, Redis sessions, token renewal, claim schema validation, proxy options, non-RSA JWKS keys, or all client assertion auth methods
 - [x] [cas-auth](https://apisix.apache.org/zh/docs/apisix/plugins/cas-auth/) 60%
   - support CAS login redirect, absolute/relative `cas_callback_uri`, ticket `serviceValidate`, HMAC-signed initiation cookie, per-config session cookie, local session refresh, and logout redirect
   - not support OpenResty shared-dict clustering, IdP single logout XML session deletion, or attaching authenticated CAS user metadata upstream

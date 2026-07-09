@@ -6762,3 +6762,28 @@ Updated `syslog` support notes to include body expression gates; APISIX batch pr
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/syslog -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)|TestSchemaAcceptsOfficialBodyFields' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/syslog -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 203: Add Live APISIX 3.17 Plugin Parity Checklist
+
+**Files:**
+- Add: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: upstream APISIX 3.17 `apisix/cli/config.lua`, local `pkg/plugin/init.go`, and the README plugin matrix.
+- Produces: durable default-plugin parity matrix with local registration, README support status, and next-work classification.
+
+- [x] **Step 1: Read official default plugin list**
+
+Read upstream APISIX 3.17 `apisix/cli/config.lua`; the default plugin list has 104 entries and is the source of truth for this parity pass.
+
+- [x] **Step 2: Compare local registration**
+
+Compared upstream defaults against local `pkg/plugin/init.go`; 100 default plugins are registered locally, while `ext-plugin-pre-req`, `inspect`, `ext-plugin-post-req`, and `ext-plugin-post-resp` remain unregistered.
+
+- [x] **Step 3: Classify next-work lanes**
+
+Added a checklist that marks normal Go feature/config parity as `implement`, OpenResty/NGINX/Lua-native behavior as `defer-native`, and external plugin runner work as `defer-large`.
+
+- [x] **Step 4: Verify**
+
+Docs-only change; verify with `git diff --check`.

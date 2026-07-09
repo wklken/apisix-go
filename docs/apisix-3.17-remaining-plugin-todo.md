@@ -17,7 +17,7 @@ Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post
 | `udp-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
 | `clickhouse-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `password` after a project-level secret design exists. |
 | `sls-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `access_key_secret` after a project-level secret design exists. |
-| `google-cloud-logging` | Remaining gaps are access-token caching beyond per-batch exchange, encrypted `auth_config.private_key`, and request/response body capture only if a future APISIX version defines it. |
+| `google-cloud-logging` | Remaining gaps are encrypted `auth_config.private_key` and request/response body capture only if a future APISIX version defines it. |
 | `splunk-hec-logging` | Remaining gaps are encrypted `endpoint.token` and request/response body capture only if a future APISIX version defines it. |
 | `elasticsearch-logger` | Remaining gaps are APISIX batch metric/stale-object cleanup exactness and encrypted `auth.password` after a project-level secret design exists. |
 | `loggly` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `customer_token` after a project-level secret design exists. |

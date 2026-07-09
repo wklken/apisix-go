@@ -345,9 +345,9 @@ Loggers:
 - [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 72%
   - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), and concatenated RFC5424 batch writes
   - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `access_key_secret`
-- [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 64%
-  - support service-account `auth_config`, `auth_file`, JWT bearer token exchange, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, default Cloud Logging `httpRequest` entry expansion, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-entry Cloud Logging writes, and `max_pending_entries`
-  - not support access-token caching beyond per-batch exchange, encrypted `auth_config.private_key`, or request/response body capture
+- [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 67%
+  - support service-account `auth_config`, `auth_file`, JWT bearer token exchange with access-token caching/refresh, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, default Cloud Logging `httpRequest` entry expansion, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-entry Cloud Logging writes, and `max_pending_entries`
+  - not support encrypted `auth_config.private_key` or request/response body capture
 - [x] [splunk-hec-logging](https://apisix.apache.org/zh/docs/apisix/plugins/splunk-hec-logging/) 62%
   - support Splunk HEC `endpoint.uri`, `endpoint.token`, `endpoint.channel`, `endpoint.timeout`, `endpoint.keepalive_timeout`, `ssl_verify`, `log_format`, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), concatenated JSON event-object batch payloads, `max_pending_entries`, and HEC error-text extraction
   - not support encrypted `endpoint.token` or request/response body capture

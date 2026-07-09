@@ -102,7 +102,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `http-logger` | yes | 76% | implement |
 | `splunk-hec-logging` | yes | 62% | monitor |
 | `skywalking-logger` | yes | 76% | implement |
-| `google-cloud-logging` | yes | 64% | monitor |
+| `google-cloud-logging` | yes | 67% | monitor |
 | `sls-logger` | yes | 72% | implement |
 | `tcp-logger` | yes | 70% | implement |
 | `kafka-logger` | yes | 76% | monitor |

@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -34,6 +35,11 @@ type Plugin struct {
 	config Config
 
 	client *resty.Client
+
+	tokenMu      sync.Mutex
+	accessToken  string
+	tokenType    string
+	tokenExpires time.Time
 }
 
 const (
@@ -61,6 +67,8 @@ const (
 	defaultLatencyField       = "latency"
 	defaultInsertIDField      = "insert_id"
 )
+
+const tokenRefreshSkew = time.Minute
 
 var defaultScopes = []string{
 	"https://www.googleapis.com/auth/logging.read",
@@ -366,7 +374,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 		return 0, fmt.Errorf("failed to load google-cloud-logging auth config: %w", err)
 	}
 
-	accessToken, tokenType, err := p.generateAccessToken(auth)
+	accessToken, tokenType, err := p.accessTokenFor(auth)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get google-cloud-logging oauth token: %w", err)
 	}
@@ -509,9 +517,35 @@ func parsePrivateKey(privateKey string) (*rsa.PrivateKey, error) {
 }
 
 func (p *Plugin) generateAccessToken(auth *AuthConfig) (string, string, error) {
-	assertion, err := p.buildJWTAssertion(time.Now())
+	token, err := p.fetchAccessToken(auth)
 	if err != nil {
 		return "", "", err
+	}
+	return token.AccessToken, token.TokenType, nil
+}
+
+func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {
+	p.tokenMu.Lock()
+	defer p.tokenMu.Unlock()
+
+	if p.accessToken != "" && time.Now().Before(p.tokenExpires.Add(-tokenRefreshSkew)) {
+		return p.accessToken, p.tokenType, nil
+	}
+
+	token, err := p.fetchAccessToken(auth)
+	if err != nil {
+		return "", "", err
+	}
+	p.accessToken = token.AccessToken
+	p.tokenType = token.TokenType
+	p.tokenExpires = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	return p.accessToken, p.tokenType, nil
+}
+
+func (p *Plugin) fetchAccessToken(auth *AuthConfig) (tokenResponse, error) {
+	assertion, err := p.buildJWTAssertion(time.Now())
+	if err != nil {
+		return tokenResponse{}, err
 	}
 
 	resp, err := p.client.R().
@@ -522,20 +556,20 @@ func (p *Plugin) generateAccessToken(auth *AuthConfig) (string, string, error) {
 		}.Encode()).
 		Post(auth.TokenURI)
 	if err != nil {
-		return "", "", err
+		return tokenResponse{}, err
 	}
 	if resp.StatusCode() != http.StatusOK {
-		return "", "", errors.New(resp.String())
+		return tokenResponse{}, errors.New(resp.String())
 	}
 
 	var token tokenResponse
 	if err := json.Unmarshal(resp.Body(), &token); err != nil {
-		return "", "", err
+		return tokenResponse{}, err
 	}
 	if token.AccessToken == "" {
-		return "", "", errors.New("access_token is empty")
+		return tokenResponse{}, errors.New("access_token is empty")
 	}
-	return token.AccessToken, token.TokenType, nil
+	return token, nil
 }
 
 func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {

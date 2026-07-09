@@ -379,6 +379,112 @@ func TestSendBatchWritesGoogleEntries(t *testing.T) {
 	}
 }
 
+func TestSendBatchReusesCachedAccessToken(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	tokenRequests := make(chan url.Values, 2)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse token form: %v", err)
+		}
+		tokenRequests <- r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	entryRequests := make(chan string, 2)
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entryRequests <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entryServer.Close)
+
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    tokenServer.URL,
+			EntriesURI:  entryServer.URL,
+		},
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
+		t.Fatalf("first SendBatch() error = %v", err)
+	}
+	if _, err := p.SendBatch([]map[string]any{{"path": "/b"}}, 1); err != nil {
+		t.Fatalf("second SendBatch() error = %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case auth := <-entryRequests:
+			if auth != "Bearer token-a" {
+				t.Fatalf("Authorization = %q, want cached Bearer token-a", auth)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for entries request")
+		}
+	}
+
+	select {
+	case <-tokenRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first token request")
+	}
+	select {
+	case extra := <-tokenRequests:
+		t.Fatalf("unexpected second token request: %#v", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestSendBatchRefreshesExpiredAccessToken(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	tokenRequests := make(chan url.Values, 2)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse token form: %v", err)
+		}
+		tokenRequests <- r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":30}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entryServer.Close)
+
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    tokenServer.URL,
+			EntriesURI:  entryServer.URL,
+		},
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}}, 1); err != nil {
+		t.Fatalf("first SendBatch() error = %v", err)
+	}
+	if _, err := p.SendBatch([]map[string]any{{"path": "/b"}}, 1); err != nil {
+		t.Fatalf("second SendBatch() error = %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-tokenRequests:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for token request %d", i+1)
+		}
+	}
+}
+
 func testPrivateKey(t *testing.T) (string, *rsa.PrivateKey) {
 	t.Helper()
 

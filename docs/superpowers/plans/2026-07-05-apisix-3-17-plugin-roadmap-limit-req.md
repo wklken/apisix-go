@@ -7047,3 +7047,35 @@ Updated `hmac-auth` README support notes and the live APISIX 3.17 parity checkli
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/hmac_auth -run 'TestHandlerUsesAnonymousConsumer' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/hmac_auth -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 213: Support `jwt-auth` Asymmetric Algorithms
+
+**Files:**
+- Modify: `pkg/plugin/jwt_auth/plugin.go`
+- Modify: `pkg/plugin/jwt_auth/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 JWT consumer `algorithm` values `RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`, `PS256`, `PS384`, `PS512`, and `EdDSA`, plus `public_key` for non-HS algorithms.
+- Produces: JWT signature verification for HMAC, RSA PKCS#1 v1.5, RSA-PSS, ECDSA raw JOSE signatures, and Ed25519 public keys, while preserving algorithm pinning and existing claim verification.
+
+- [x] **Step 1: Confirm official behavior**
+
+Fetched Apache APISIX `release/3.17` and confirmed `jwt-auth.lua` uses `secret` for HS algorithms, `public_key` for RS/ES/PS/EdDSA algorithms, enforces token `alg` matching the consumer config, and verifies signatures before registered claims.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added acceptance tests for `RS256`, `PS256`, `ES256`, and `EdDSA` tokens. The first focused run failed with `401 {"message":"failed to verify jwt"}` because the local verifier only handled HMAC algorithms.
+
+- [x] **Step 3: Implement asymmetric verification**
+
+Added `public_key` parsing for PEM PKIX, PKCS#1 RSA, and certificate public keys; added stdlib verification for RS, PS, ES, and EdDSA families; and kept the existing HMAC secret/base64-secret path for HS algorithms.
+
+- [x] **Step 4: Update docs**
+
+Updated `jwt-auth` README support notes and moved the live APISIX 3.17 parity checklist row from `implement` to `monitor`.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/jwt_auth -run 'TestHandlerAccepts(RS256|PS256|ES256|EdDSA)TokenAndAttachesConsumer' -count=1 -timeout=20s -v` and `go test ./pkg/plugin/jwt_auth -count=1 -timeout=20s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

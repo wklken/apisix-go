@@ -1,9 +1,17 @@
 package jwt_auth
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -35,16 +43,22 @@ func setupStore(t *testing.T) {
 
 func addJWTConsumer(t *testing.T, username, key, secret string) {
 	t.Helper()
+
+	addJWTConsumerConfig(t, username, map[string]any{
+		"key":       key,
+		"secret":    secret,
+		"algorithm": "HS256",
+	})
+}
+
+func addJWTConsumerConfig(t *testing.T, username string, jwtConfig map[string]any) {
+	t.Helper()
 	setupStore(t)
 
 	consumer := map[string]any{
 		"username": username,
 		"plugins": map[string]any{
-			"jwt-auth": map[string]any{
-				"key":       key,
-				"secret":    secret,
-				"algorithm": "HS256",
-			},
+			"jwt-auth": jwtConfig,
 		},
 	}
 	body, err := json.Marshal(consumer)
@@ -60,12 +74,12 @@ func addJWTConsumer(t *testing.T, username, key, secret string) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := store.GetConsumerByPluginKey("jwt-auth", key); err == nil {
+		if _, err := store.GetConsumerByPluginKey("jwt-auth", fmt.Sprint(jwtConfig["key"])); err == nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("consumer %q was not indexed for jwt-auth key %q", username, key)
+	t.Fatalf("consumer %q was not indexed for jwt-auth key %q", username, jwtConfig["key"])
 }
 
 func addConsumer(t *testing.T, username string) {
@@ -240,6 +254,94 @@ func TestHandlerRejectsExpiredTokenByDefault(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsRS256TokenAndAttachesConsumer(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	addJWTConsumerConfig(t, "rsa-jwt-user", map[string]any{
+		"key":        "rsa-jwt-key",
+		"algorithm":  "RS256",
+		"public_key": publicKeyPEM(t, &privateKey.PublicKey),
+	})
+	p := newTestPlugin(t, Config{})
+	token := signRS256(t, privateKey, map[string]any{
+		"key": "rsa-jwt-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	res := performRequest(p.Handler(assertConsumer(t, "rsa-jwt-user")), token)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
+func TestHandlerAcceptsPS256TokenAndAttachesConsumer(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	addJWTConsumerConfig(t, "pss-jwt-user", map[string]any{
+		"key":        "pss-jwt-key",
+		"algorithm":  "PS256",
+		"public_key": publicKeyPEM(t, &privateKey.PublicKey),
+	})
+	p := newTestPlugin(t, Config{})
+	token := signPS256(t, privateKey, map[string]any{
+		"key": "pss-jwt-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	res := performRequest(p.Handler(assertConsumer(t, "pss-jwt-user")), token)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
+func TestHandlerAcceptsES256TokenAndAttachesConsumer(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ecdsa key: %v", err)
+	}
+	addJWTConsumerConfig(t, "ecdsa-jwt-user", map[string]any{
+		"key":        "ecdsa-jwt-key",
+		"algorithm":  "ES256",
+		"public_key": publicKeyPEM(t, &privateKey.PublicKey),
+	})
+	p := newTestPlugin(t, Config{})
+	token := signES256(t, privateKey, map[string]any{
+		"key": "ecdsa-jwt-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	res := performRequest(p.Handler(assertConsumer(t, "ecdsa-jwt-user")), token)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
+func TestHandlerAcceptsEdDSATokenAndAttachesConsumer(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	addJWTConsumerConfig(t, "eddsa-jwt-user", map[string]any{
+		"key":        "eddsa-jwt-key",
+		"algorithm":  "EdDSA",
+		"public_key": publicKeyPEM(t, publicKey),
+	})
+	p := newTestPlugin(t, Config{})
+	token := signEdDSA(t, privateKey, map[string]any{
+		"key": "eddsa-jwt-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	res := performRequest(p.Handler(assertConsumer(t, "eddsa-jwt-user")), token)
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
 func TestSchemaAcceptsAnonymousConsumer(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -286,12 +388,81 @@ func performRequest(handler http.Handler, token string) *httptest.ResponseRecord
 	return rr
 }
 
+func assertConsumer(t *testing.T, username string) http.Handler {
+	t.Helper()
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != username {
+			t.Fatalf("consumer_name = %v, want %s", got, username)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
 func signHS256(t *testing.T, secret string, payload map[string]any) string {
+	t.Helper()
+
+	unsigned := unsignedJWT(t, "HS256", payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(unsigned))
+
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func signRS256(t *testing.T, privateKey *rsa.PrivateKey, payload map[string]any) string {
+	t.Helper()
+
+	unsigned := unsignedJWT(t, "RS256", payload)
+	digest := sha256.Sum256([]byte(unsigned))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign RS256 token: %v", err)
+	}
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func signPS256(t *testing.T, privateKey *rsa.PrivateKey, payload map[string]any) string {
+	t.Helper()
+
+	unsigned := unsignedJWT(t, "PS256", payload)
+	digest := sha256.Sum256([]byte(unsigned))
+	signature, err := rsa.SignPSS(rand.Reader, privateKey, crypto.SHA256, digest[:], nil)
+	if err != nil {
+		t.Fatalf("sign PS256 token: %v", err)
+	}
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func signES256(t *testing.T, privateKey *ecdsa.PrivateKey, payload map[string]any) string {
+	t.Helper()
+
+	unsigned := unsignedJWT(t, "ES256", payload)
+	digest := sha256.Sum256([]byte(unsigned))
+	r, s, err := ecdsa.Sign(rand.Reader, privateKey, digest[:])
+	if err != nil {
+		t.Fatalf("sign ES256 token: %v", err)
+	}
+
+	signature := make([]byte, 64)
+	r.FillBytes(signature[:32])
+	s.FillBytes(signature[32:])
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func signEdDSA(t *testing.T, privateKey ed25519.PrivateKey, payload map[string]any) string {
+	t.Helper()
+
+	unsigned := unsignedJWT(t, "EdDSA", payload)
+	signature := ed25519.Sign(privateKey, []byte(unsigned))
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func unsignedJWT(t *testing.T, algorithm string, payload map[string]any) string {
 	t.Helper()
 
 	header := map[string]any{
 		"typ": "JWT",
-		"alg": "HS256",
+		"alg": algorithm,
 	}
 
 	headerJSON, err := json.Marshal(header)
@@ -303,13 +474,19 @@ func signHS256(t *testing.T, secret string, payload map[string]any) string {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	unsigned := fmt.Sprintf(
+	return fmt.Sprintf(
 		"%s.%s",
 		base64.RawURLEncoding.EncodeToString(headerJSON),
 		base64.RawURLEncoding.EncodeToString(payloadJSON),
 	)
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(unsigned))
+}
 
-	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+func publicKeyPEM(t *testing.T, publicKey any) string {
+	t.Helper()
+
+	der, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 }

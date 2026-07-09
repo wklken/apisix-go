@@ -1,13 +1,20 @@
 package jwt_auth
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"hash"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -95,6 +102,7 @@ type Config struct {
 type consumerConfig struct {
 	Key                 string `json:"key"`
 	Secret              string `json:"secret"`
+	PublicKey           string `json:"public_key,omitempty"`
 	Algorithm           string `json:"algorithm,omitempty"`
 	Base64Secret        *bool  `json:"base64_secret,omitempty"`
 	LifetimeGracePeriod int64  `json:"lifetime_grace_period,omitempty"`
@@ -228,11 +236,7 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
 
-	secret, ok := authConfig.secret()
-	if !ok {
-		return resource.Consumer{}, token, "failed to verify jwt"
-	}
-	if !verifyHMAC(token, authConfig.Algorithm, secret) {
+	if !verifySignature(token, authConfig) {
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
 	if err := p.verifyClaims(token.payload, authConfig.LifetimeGracePeriod); err != nil {
@@ -308,6 +312,31 @@ func parseJWT(raw string) (jwtToken, error) {
 	}, nil
 }
 
+func verifySignature(token jwtToken, authConfig consumerConfig) bool {
+	if strings.HasPrefix(authConfig.Algorithm, "HS") {
+		secret, ok := authConfig.secret()
+		return ok && verifyHMAC(token, authConfig.Algorithm, secret)
+	}
+
+	publicKey, ok := authConfig.publicKey()
+	if !ok {
+		return false
+	}
+
+	switch authConfig.Algorithm {
+	case "RS256", "RS384", "RS512":
+		return verifyRSA(token, authConfig.Algorithm, publicKey, false)
+	case "PS256", "PS384", "PS512":
+		return verifyRSA(token, authConfig.Algorithm, publicKey, true)
+	case "ES256", "ES384", "ES512":
+		return verifyECDSA(token, authConfig.Algorithm, publicKey)
+	case "EdDSA":
+		return verifyEdDSA(token, publicKey)
+	default:
+		return false
+	}
+}
+
 func verifyHMAC(token jwtToken, algorithm string, secret []byte) bool {
 	hashFunc, ok := hmacHash(algorithm)
 	if !ok {
@@ -331,6 +360,80 @@ func hmacHash(algorithm string) (func() hash.Hash, bool) {
 		return sha512.New, true
 	default:
 		return nil, false
+	}
+}
+
+func verifyRSA(token jwtToken, algorithm string, publicKey any, pss bool) bool {
+	rsaKey, ok := publicKey.(*rsa.PublicKey)
+	if !ok {
+		return false
+	}
+	hashAlg, digest, ok := signingDigest(algorithm, token.signing)
+	if !ok {
+		return false
+	}
+	if pss {
+		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.signature, nil) == nil
+	}
+	return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.signature) == nil
+}
+
+func verifyECDSA(token jwtToken, algorithm string, publicKey any) bool {
+	ecdsaKey, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return false
+	}
+	_, digest, ok := signingDigest(algorithm, token.signing)
+	if !ok {
+		return false
+	}
+
+	size, ok := ecdsaSignatureSize(algorithm)
+	if !ok || len(token.signature) != size*2 {
+		return false
+	}
+
+	r := new(big.Int).SetBytes(token.signature[:size])
+	s := new(big.Int).SetBytes(token.signature[size:])
+	return ecdsa.Verify(ecdsaKey, digest, r, s)
+}
+
+func verifyEdDSA(token jwtToken, publicKey any) bool {
+	edKey, ok := publicKey.(ed25519.PublicKey)
+	if !ok {
+		return false
+	}
+	return ed25519.Verify(edKey, []byte(token.signing), token.signature)
+}
+
+func signingDigest(algorithm, signing string) (crypto.Hash, []byte, bool) {
+	var hashAlg crypto.Hash
+	switch algorithm {
+	case "RS256", "PS256", "ES256":
+		hashAlg = crypto.SHA256
+	case "RS384", "PS384", "ES384":
+		hashAlg = crypto.SHA384
+	case "RS512", "PS512", "ES512":
+		hashAlg = crypto.SHA512
+	default:
+		return 0, nil, false
+	}
+
+	hashFunc := hashAlg.New()
+	hashFunc.Write([]byte(signing))
+	return hashAlg, hashFunc.Sum(nil), true
+}
+
+func ecdsaSignatureSize(algorithm string) (int, bool) {
+	switch algorithm {
+	case "ES256":
+		return 32, true
+	case "ES384":
+		return 48, true
+	case "ES512":
+		return 66, true
+	default:
+		return 0, false
 	}
 }
 
@@ -397,6 +500,33 @@ func (c consumerConfig) secret() ([]byte, bool) {
 	}
 
 	return []byte(c.Secret), true
+}
+
+func (c consumerConfig) publicKey() (any, bool) {
+	if c.PublicKey == "" {
+		return nil, false
+	}
+
+	publicKeyBytes := []byte(c.PublicKey)
+	if block, _ := pem.Decode(publicKeyBytes); block != nil {
+		publicKeyBytes = block.Bytes
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(publicKeyBytes)
+			if err != nil {
+				return nil, false
+			}
+			return cert.PublicKey, true
+		}
+	}
+
+	if publicKey, err := x509.ParsePKIXPublicKey(publicKeyBytes); err == nil {
+		return publicKey, true
+	}
+	if publicKey, err := x509.ParsePKCS1PublicKey(publicKeyBytes); err == nil {
+		return publicKey, true
+	}
+
+	return nil, false
 }
 
 func removeCookie(r *http.Request, name string) {

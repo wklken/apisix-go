@@ -318,18 +318,18 @@ Loggers:
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 68%
   - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`
-- [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 58%
-  - support `host`, `port`, `timeout`, `log_format`, `tls`, `tls_options` as TLS server name / SNI, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior or `max_pending_entries`
+- [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 70%
+  - support `host`, `port`, `timeout`, `log_format`, `tls`, `tls_options` as TLS server name / SNI, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, and `max_pending_entries`
+  - not support OpenResty cosocket connection pooling or APISIX batch Prometheus gauge/stale-object cleanup exactness
 - [x] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/) 68%
   - support `brokers`, deprecated `broker_list`, broker `sasl_config` for `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`, `kafka_topic`, `key`, `producer_type`, `required_acks`, `timeout`, producer batch defaults, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior, `max_pending_entries`, or `meta_format = origin`
 - [x] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/) 63%
   - support `nameserver_list`, `topic`, `key`, `tag`, `timeout`, `access_key`, `secret_key`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture with RocketMQ sync producer delivery
   - not support APISIX batch processor behavior, `max_pending_entries`, `meta_format = origin`, or `use_tls`
-- [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 58%
-  - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior or `max_pending_entries`
+- [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 70%
+  - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, and `max_pending_entries`
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
 - [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 68%
   - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`

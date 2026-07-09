@@ -104,11 +104,11 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `skywalking-logger` | yes | 68% | implement |
 | `google-cloud-logging` | yes | 55% | implement |
 | `sls-logger` | yes | 63% | implement |
-| `tcp-logger` | yes | 58% | implement |
+| `tcp-logger` | yes | 70% | implement |
 | `kafka-logger` | yes | 68% | implement |
 | `rocketmq-logger` | yes | 63% | implement |
 | `syslog` | yes | 58% | implement |
-| `udp-logger` | yes | 58% | implement |
+| `udp-logger` | yes | 70% | implement |
 | `file-logger` | yes | 75% | monitor |
 | `clickhouse-logger` | yes | 68% | implement |
 | `tencent-cloud-cls` | yes | 63% | implement |

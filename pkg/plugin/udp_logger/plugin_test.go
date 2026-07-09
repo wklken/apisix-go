@@ -32,6 +32,18 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	if p.config.Timeout != 3 {
 		t.Fatalf("timeout = %d, want official default 3 seconds", p.config.Timeout)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
 }
 
 func TestSendWritesUDPMessage(t *testing.T) {
@@ -59,6 +71,42 @@ func TestSendWritesUDPMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerBatchesUDPLogs(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:            host,
+		Port:            mustAtoi(t, port),
+		Timeout:         3,
+		BatchMaxSize:    2,
+		InactiveTimeout: 60,
+		BufferDuration:  60,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+
+	select {
+	case message := <-received:
+		var payload []map[string]any
+		if err := json.Unmarshal([]byte(message), &payload); err != nil {
+			t.Fatalf("unmarshal UDP batch payload: %v, message=%q", err, message)
+		}
+		if len(payload) != 2 {
+			t.Fatalf("batch length = %d, want 2", len(payload))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UDP batch message")
+	}
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
@@ -70,6 +118,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		Host:             host,
 		Port:             mustAtoi(t, port),
 		Timeout:          3,
+		BatchMaxSize:     1,
 		IncludeReqBody:   true,
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
@@ -137,6 +186,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		Host:                host,
 		Port:                mustAtoi(t, port),
 		Timeout:             3,
+		BatchMaxSize:        1,
 		IncludeReqBody:      true,
 		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
 		IncludeRespBody:     true,
@@ -189,6 +239,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		Host:                host,
 		Port:                mustAtoi(t, port),
 		Timeout:             3,
+		BatchMaxSize:        1,
 		IncludeReqBody:      true,
 		IncludeReqBodyExpr:  []any{[]any{"http_x_log_body", "==", "yes"}},
 		IncludeRespBody:     true,
@@ -250,6 +301,27 @@ func TestSchemaAcceptsOfficialBodySizeFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body size fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"host":                "127.0.0.1",
+		"port":                9000,
+		"batch_max_size":      10,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     2,
+		"inactive_timeout":    1,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official batch fields: %v", err)
 	}
 }
 

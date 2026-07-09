@@ -26,11 +26,11 @@
 |---|---:|---|
 | `http-logger` | 76% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness and encrypted `auth_header`. |
 | `skywalking-logger` | 68% | Reuse shared batch processor; improve SkyWalking log-entry shape and trace correlation where APISIX source has stable fields. |
-| `tcp-logger` | 58% | Add shared batch processor; improve TLS/socket pooling only where practical in Go, not OpenResty cosocket parity. |
+| `tcp-logger` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are OpenResty cosocket pooling and APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `kafka-logger` | 68% | Add shared batch processor and `max_pending_entries`; evaluate `meta_format = origin`; keep encrypted field storage out of scope. |
 | `rocketmq-logger` | 63% | Add shared batch processor, `max_pending_entries`, `meta_format = origin`, and `use_tls` if supported by current RocketMQ client without large dependency churn. |
 | `syslog` | 58% | Add shared batch processor; improve TLS config acceptance/delivery if practical; do not chase OpenResty connection pooling. |
-| `udp-logger` | 58% | Add shared batch processor and drop/flush limit parity; keep UDP delivery simple and bounded. |
+| `udp-logger` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `clickhouse-logger` | 68% | Add shared batch processor and `max_pending_entries`; improve payload batching around JSONEachRow inserts. |
 | `log-rotate` | 60% | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical; keep NGINX master `USR1`, OpenResty timer, and runtime log-path discovery out of scope. |
 | `error-log-logger` | 55% | Reuse shared batch/retry semantics for supported sinks; improve sink-specific auth/options; keep direct `ngx.errlog` capture and OpenResty timer lifecycle out of scope. |
@@ -57,7 +57,7 @@
   - Commit before touching other loggers.
 
 - [ ] **Task L3: Apply batch processor to remaining network loggers in small groups**
-  - Group 1: `tcp-logger`, `udp-logger`, `syslog`.
+  - Group 1: `tcp-logger` done, `udp-logger` done, `syslog` pending.
   - Group 2: `clickhouse-logger`, `loki-logger`, `loggly`.
   - Group 3: `skywalking-logger`, `sls-logger`, `tencent-cloud-cls`.
   - Group 4: `google-cloud-logging`, `splunk-hec-logging`, `rocketmq-logger`, `kafka-logger`, `lago`.

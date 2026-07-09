@@ -288,6 +288,69 @@ func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 	}
 }
 
+func TestHandlerResolvesDynamicRequestAndResponseVariables(t *testing.T) {
+	requests := make(chan lagoPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lagoPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Token:               "token",
+		EventTransactionID:  "${arg_request_id}",
+		EventSubscriptionID: "${cookie_subscription}",
+		EventCode:           "api-call",
+		EventProperties: map[string]string{
+			"plan":       "${arg_plan}",
+			"request_id": "${http_x_request_id}",
+			"upstream":   "${sent_http_x_upstream_plan}",
+		},
+		Timeout:      1000,
+		BatchMaxSize: 1,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/orders?request_id=req-1&plan=pro", nil)
+	req.Header.Set("Cookie", "subscription=sub-1")
+	req.Header.Set("X-Request-ID", "header-req")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Upstream-Plan", "enterprise")
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-requests:
+		if len(body.Events) != 1 {
+			t.Fatalf("events = %d, want 1", len(body.Events))
+		}
+		event := body.Events[0]
+		if event.TransactionID != "req-1" {
+			t.Fatalf("transaction_id = %q, want query arg request_id", event.TransactionID)
+		}
+		if event.ExternalSubscriptionID != "sub-1" {
+			t.Fatalf("external_subscription_id = %q, want cookie subscription", event.ExternalSubscriptionID)
+		}
+		if event.Properties["plan"] != "pro" {
+			t.Fatalf("plan property = %q, want query arg plan", event.Properties["plan"])
+		}
+		if event.Properties["request_id"] != "header-req" {
+			t.Fatalf("request_id property = %q, want request header", event.Properties["request_id"])
+		}
+		if event.Properties["upstream"] != "enterprise" {
+			t.Fatalf("upstream property = %q, want response header", event.Properties["upstream"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago event")
+	}
+}
+
 func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
 	requests := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

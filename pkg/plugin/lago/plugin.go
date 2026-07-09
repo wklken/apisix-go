@@ -328,7 +328,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			responseBody = recorder.body.String()
 		}
 
-		p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart))
+		p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -418,6 +418,7 @@ func (p *Plugin) logFields(
 	requestBody string,
 	responseBody string,
 	requestStart time.Time,
+	responseHeader http.Header,
 ) map[string]any {
 	fields := map[string]any{
 		"status":              status,
@@ -434,7 +435,7 @@ func (p *Plugin) logFields(
 			if _, ok := fields[name]; ok {
 				continue
 			}
-			fields[name] = requestVariable(r, name, status)
+			fields[name] = requestVariable(r, name, status, responseHeader)
 		}
 	}
 	return fields
@@ -478,12 +479,28 @@ func templateVariables(template string) []string {
 	return variables
 }
 
-func requestVariable(r *http.Request, name string, status int) any {
+func requestVariable(r *http.Request, name string, status int, responseHeader http.Header) any {
 	if name == "status" {
 		return status
 	}
+	if strings.HasPrefix(name, "arg_") {
+		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	}
+	if strings.HasPrefix(name, "cookie_") {
+		cookie, err := r.Cookie(strings.TrimPrefix(name, "cookie_"))
+		if err != nil {
+			return ""
+		}
+		return cookie.Value
+	}
 	if strings.HasPrefix(name, "http_") {
 		return r.Header.Get(strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-"))
+	}
+	if strings.HasPrefix(name, "sent_http_") {
+		return responseHeader.Get(strings.ReplaceAll(strings.TrimPrefix(name, "sent_http_"), "_", "-"))
+	}
+	if strings.HasPrefix(name, "upstream_http_") {
+		return responseHeader.Get(strings.ReplaceAll(strings.TrimPrefix(name, "upstream_http_"), "_", "-"))
 	}
 
 	return log.GetField(r, "$"+name)

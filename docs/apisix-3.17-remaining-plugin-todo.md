@@ -23,7 +23,7 @@ Not required unless explicitly requested: `ext-plugin-pre-req`, `ext-plugin-post
 | `loggly` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `customer_token` after a project-level secret design exists. |
 | `loki-logger` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness. |
 | `tencent-cloud-cls` | Only lower-priority gaps remain: APISIX batch metric/stale-object cleanup exactness and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
-| `lago` | Remaining gaps are fuller APISIX/NGINX variable template coverage and encrypted `token`. APISIX `batch_max_size` default of 100 and request-start event timestamps are implemented. |
+| `lago` | Remaining gaps are encrypted `token` and exotic OpenResty/NGINX-only variable fidelity. APISIX `batch_max_size` default of 100, request-start event timestamps, and common dynamic request/response variables are implemented. |
 | `log-rotate` | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical. Keep NGINX master `USR1`, OpenResty timers, and runtime log-path discovery out of scope. |
 | `error-log-logger` | Improve sink-specific auth/options beyond Kafka `PLAIN` SASL. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch Prometheus gauge/stale-object cleanup exactness, and encrypted metadata fields out of normal scope unless a separate design requests them. |
 | `file-logger` | Remaining gap is Go-native file reopen/cache approximation if useful. Keep OpenResty file-cache exactness out of scope. |

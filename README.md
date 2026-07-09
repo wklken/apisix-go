@@ -367,9 +367,9 @@ Loggers:
 - [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 76%
   - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), one-stream multi-value Loki batches, and `max_pending_entries`
   - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
-- [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 74%
-  - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, request-start event timestamps, `include_req_body`, `include_resp_body`, capped body-size capture through `${request_body}` / `${response_body}` templates, `ssl_verify`, timeout, keepalive config defaults, APISIX `batch_max_size` default of 100, and APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`)
-  - not support full APISIX/NGINX variable coverage or encrypted `token`
+- [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 76%
+  - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, request-start event timestamps, dynamic `${arg_*}`, `${cookie_*}`, `${http_*}`, `${sent_http_*}`, and `${upstream_http_*}` template variables, `include_req_body`, `include_resp_body`, capped body-size capture through `${request_body}` / `${response_body}` templates, `ssl_verify`, timeout, keepalive config defaults, APISIX `batch_max_size` default of 100, and APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`)
+  - not support encrypted `token` or exotic OpenResty/NGINX-only variable fidelity
 
 ### AI
 

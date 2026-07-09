@@ -51,6 +51,18 @@ func TestPostInitSetsSLSDefaults(t *testing.T) {
 	if p.addr != "127.0.0.1:10009" {
 		t.Fatalf("addr = %q, want 127.0.0.1:10009", p.addr)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
 }
 
 func TestBuildMessageUsesRFC5424Shape(t *testing.T) {
@@ -115,6 +127,43 @@ func TestSendWritesTLSMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerBatchesSLSMessages(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:            host,
+		Port:            mustAtoi(t, port),
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+		Timeout:         1000,
+		BatchMaxSize:    2,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+
+	select {
+	case message := <-received:
+		if got := strings.Count(message, "<46>1 "); got != 2 {
+			t.Fatalf("message = %q, want two RFC5424 messages", message)
+		}
+		if got := strings.Count(message, "\n"); got != 2 {
+			t.Fatalf("message = %q, want two newline-terminated messages", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched TLS log messages")
+	}
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
@@ -134,6 +183,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -202,6 +252,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -256,6 +307,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
@@ -306,6 +358,30 @@ func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body expression fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsBatchFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"host":              "127.0.0.1",
+		"port":              10009,
+		"project":           "project-a",
+		"logstore":          "store-a",
+		"access_key_id":     "id",
+		"access_key_secret": "secret",
+		"batch_max_size":    2,
+		"max_retry_count":   1,
+		"retry_delay":       1,
+		"buffer_duration":   60,
+		"inactive_timeout":  5,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected batch fields: %v", err)
 	}
 }
 

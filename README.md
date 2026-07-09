@@ -315,9 +315,9 @@ Loggers:
 - [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 76%
   - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON/newline batch payloads, and `max_pending_entries`
   - not support APISIX batch processor Prometheus gauge/stale-object cleanup exactness or encrypted `auth_header`
-- [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 68%
-  - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior or `max_pending_entries`
+- [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 76%
+  - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), SkyWalking JSON-array batch payloads, and `max_pending_entries`
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness
 - [x] [tcp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/tcp-logger/) 70%
   - support `host`, `port`, `timeout`, `log_format`, `tls`, `tls_options` as TLS server name / SNI, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, and `max_pending_entries`
   - not support OpenResty cosocket connection pooling or APISIX batch Prometheus gauge/stale-object cleanup exactness
@@ -342,9 +342,9 @@ Loggers:
 - [x] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/) 55%
   - support official metadata-shaped config for `tcp`, `skywalking`, `clickhouse`, and `kafka`, level filtering, TCP/TLS delivery, SkyWalking `/v3/logs` entries, ClickHouse JSONEachRow inserts, Kafka topic/key publishing, legacy `host` / `port` TCP config, and official batch/default knobs
   - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch processor retry semantics, Kafka SASL, or encrypted metadata fields
-- [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 63%
-  - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
-  - not support APISIX batch processor behavior
+- [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 72%
+  - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), and concatenated RFC5424 batch writes
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness or encrypted `access_key_secret`
 - [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 55%
   - support service-account `auth_config`, `auth_file`, JWT bearer token exchange, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, and default Cloud Logging `httpRequest` entry expansion
   - not support APISIX batch processor behavior, `max_pending_entries`, or request/response body capture
@@ -361,9 +361,9 @@ Loggers:
 - [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 80%
   - support `endpoint_addr`, random `endpoint_addrs` selection, `field.index`, time/APISIX variable expansion in `field.index`, Elasticsearch major-version discovery for legacy `_type`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, and `_bulk` NDJSON delivery
   - not support APISIX batch processor behavior or `max_pending_entries`
-- [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 63%
-  - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, Tencent CLS sha1 authorization, and `/structuredlog` protobuf delivery
-  - not support APISIX batch processor behavior, `max_pending_entries`, or lz4/zstd compression
+- [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 76%
+  - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, Tencent CLS sha1 authorization, `/structuredlog` protobuf delivery, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-log protobuf batch payloads, and `max_pending_entries`
+  - not support APISIX batch Prometheus gauge/stale-object cleanup exactness, encrypted `secret_key`, or lz4/zstd compression
 - [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 76%
   - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), one-stream multi-value Loki batches, and `max_pending_entries`
   - not support APISIX batch Prometheus gauge/stale-object cleanup exactness

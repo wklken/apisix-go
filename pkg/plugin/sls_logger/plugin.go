@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -94,6 +95,31 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 524288
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
     }
   },
   "required": ["host", "port", "project", "logstore", "access_key_id", "access_key_secret"]
@@ -120,6 +146,12 @@ type Config struct {
 	IncludeRespBodyExpr [][]any `json:"include_resp_body_expr,omitempty"`
 	MaxReqBodyBytes     int     `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int     `json:"max_resp_body_bytes,omitempty"`
+
+	BatchMaxSize    int `json:"batch_max_size,omitempty"`
+	MaxRetryCount   int `json:"max_retry_count,omitempty"`
+	RetryDelay      int `json:"retry_delay,omitempty"`
+	BufferDuration  int `json:"buffer_duration,omitempty"`
+	InactiveTimeout int `json:"inactive_timeout,omitempty"`
 }
 
 func (p *Plugin) Config() interface{} {
@@ -148,6 +180,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 	p.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
 
 	if len(p.config.LogFormat) > 0 {
@@ -156,7 +200,15 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = loadMetadataLogFormat()
 	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:            "sls logger",
+		BatchMaxSize:    p.config.BatchMaxSize,
+		MaxRetryCount:   p.config.MaxRetryCount,
+		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
+	}, p.SendBatch)
+
 	return nil
 }
 
@@ -383,17 +435,33 @@ func requestVar(r *http.Request, name string, status int) string {
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+	_ = batchMaxSize
+
+	messages := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		messages = append(messages, p.buildMessage(entry))
+	}
+	return 0, p.sendMessage(strings.Join(messages, ""))
+}
+
+func (p *Plugin) sendMessage(message string) error {
 	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
 	conn, err := tls.DialWithDialer(dialer, "tcp", p.addr, &tls.Config{InsecureSkipVerify: true})
 	if err != nil {
-		logger.Errorf("failed to connect to SLS TLS endpoint %s: %s", p.addr, err)
-		return
+		return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, err)
 	}
 	defer conn.Close()
 
-	if _, err := conn.Write([]byte(p.buildMessage(log))); err != nil {
-		logger.Errorf("failed to send SLS log message: %s", err)
+	if _, err := conn.Write([]byte(message)); err != nil {
+		return fmt.Errorf("failed to send SLS log message: %w", err)
 	}
+	return nil
 }
 
 func (p *Plugin) buildMessage(log map[string]any) string {

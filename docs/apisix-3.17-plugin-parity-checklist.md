@@ -101,9 +101,9 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `loggly` | yes | 76% | implement |
 | `http-logger` | yes | 76% | implement |
 | `splunk-hec-logging` | yes | 50% | implement |
-| `skywalking-logger` | yes | 68% | implement |
+| `skywalking-logger` | yes | 76% | implement |
 | `google-cloud-logging` | yes | 55% | implement |
-| `sls-logger` | yes | 63% | implement |
+| `sls-logger` | yes | 72% | implement |
 | `tcp-logger` | yes | 70% | implement |
 | `kafka-logger` | yes | 68% | implement |
 | `rocketmq-logger` | yes | 63% | implement |
@@ -111,7 +111,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `udp-logger` | yes | 70% | implement |
 | `file-logger` | yes | 75% | monitor |
 | `clickhouse-logger` | yes | 76% | implement |
-| `tencent-cloud-cls` | yes | 63% | implement |
+| `tencent-cloud-cls` | yes | 76% | implement |
 | `inspect` | no | unsupported: lua feature | not-required-native |
 | `example-plugin` | yes | 60% | implement |
 | `aws-lambda` | yes | 70% | monitor |

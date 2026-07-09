@@ -41,6 +41,18 @@ func TestPostInitSetsSkyWalkingDefaults(t *testing.T) {
 	if p.config.Timeout != 3 {
 		t.Fatalf("timeout = %d, want 3", p.config.Timeout)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
 }
 
 func TestEndpointURLAppendsLogsPath(t *testing.T) {
@@ -116,6 +128,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:     true,
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":1}`))
@@ -193,6 +206,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":2}`))
@@ -256,6 +270,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":3}`))
@@ -307,6 +322,26 @@ func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body expression fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"endpoint_addr":       "http://127.0.0.1:12800",
+		"batch_max_size":      2,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     60,
+		"inactive_timeout":    5,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected batch and max pending fields: %v", err)
 	}
 }
 
@@ -381,5 +416,44 @@ func TestSendPostsSkyWalkingEntries(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SkyWalking body")
+	}
+}
+
+func TestHandlerBatchesSkyWalkingEntries(t *testing.T) {
+	bodies := make(chan []skyWalkingEntry, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []skyWalkingEntry
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddr:        server.URL,
+		ServiceName:         "gateway",
+		ServiceInstanceName: "instance-a",
+		Timeout:             1,
+		BatchMaxSize:        2,
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+
+	select {
+	case body := <-bodies:
+		if len(body) != 2 {
+			t.Fatalf("entries = %d, want 2", len(body))
+		}
+		if body[0].Endpoint != "/first" || body[1].Endpoint != "/second" {
+			t.Fatalf("endpoints = %q, %q; want /first, /second", body[0].Endpoint, body[1].Endpoint)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batched SkyWalking body")
 	}
 }

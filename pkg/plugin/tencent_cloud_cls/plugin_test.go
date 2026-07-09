@@ -53,6 +53,18 @@ func TestPostInitAppliesCLSDefaults(t *testing.T) {
 	if p.config.MaxRespBodyBytes != 524288 {
 		t.Fatalf("max_resp_body_bytes = %d, want 524288", p.config.MaxRespBodyBytes)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+	if p.config.RetryDelay != 1 {
+		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+	if p.config.BufferDuration != 60 {
+		t.Fatalf("buffer_duration = %d, want 60", p.config.BufferDuration)
+	}
+	if p.config.InactiveTimeout != 5 {
+		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
 }
 
 func TestSendPostsCLSProtobufPayload(t *testing.T) {
@@ -145,7 +157,8 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 			"path":   "$request_uri",
 			"plugin": "tencent-cloud-cls",
 		},
-		Timeout: 1000,
+		Timeout:      1000,
+		BatchMaxSize: 1,
 	})
 
 	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
@@ -196,6 +209,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
 		Timeout:          1000,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -261,6 +275,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
 		Timeout:             1000,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -312,6 +327,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
 		Timeout:             1000,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
@@ -358,6 +374,69 @@ func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected official body expression fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"cls_host":            "cls.example.com",
+		"cls_topic":           "topic-a",
+		"secret_id":           "secret-id",
+		"secret_key":          "secret-key",
+		"batch_max_size":      2,
+		"max_retry_count":     1,
+		"retry_delay":         1,
+		"buffer_duration":     60,
+		"inactive_timeout":    5,
+		"max_pending_entries": 100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected batch and max pending fields: %v", err)
+	}
+}
+
+func TestHandlerBatchesCLSLogs(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Scheme:       "http",
+		CLSHost:      strings.TrimPrefix(server.URL, "http://"),
+		CLSTopic:     "topic-a",
+		SecretID:     "secret-id",
+		SecretKey:    "secret-key",
+		Timeout:      1000,
+		BatchMaxSize: 2,
+		LogFormat: map[string]string{
+			"path": "$uri",
+		},
+	})
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+
+	logs := decodeCLSBody(t, waitBody(t, bodies))
+	if len(logs) != 2 {
+		t.Fatalf("logs = %d, want 2", len(logs))
+	}
+	if logs[0]["path"] != "/first" || logs[1]["path"] != "/second" {
+		t.Fatalf("paths = %q, %q; want /first, /second", logs[0]["path"], logs[1]["path"])
 	}
 }
 

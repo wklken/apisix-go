@@ -7359,3 +7359,35 @@ Updated `fault-injection` README support notes and the live APISIX 3.17 parity c
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/fault_injection -run 'Test(AbortSupportsBoundedVarsAndVariableRendering|MatchExprSupportsBoundedOperators)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/fault_injection -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 223: Decode Gzip Bodies Before `response-rewrite` Filters
+
+**Files:**
+- Modify: `pkg/plugin/response_rewrite/plugin.go`
+- Modify: `pkg/plugin/response_rewrite/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX `response-rewrite` filters applied to gzip-encoded upstream response bodies.
+- Produces: gzip decode before regex filters, removes `Content-Encoding` and `Content-Length` after decoded body rewrite.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `response-rewrite.lua`; when filters are configured, APISIX decodes supported compressed response bodies before applying regex substitutions.
+
+- [x] **Step 2: Add focused failing test**
+
+Added a gzip response-body filter test. The first run failed because the local plugin filtered raw gzip bytes and returned the compressed body unchanged.
+
+- [x] **Step 3: Implement bounded gzip decode**
+
+Added a narrow gzip decode path for filter rewrites and kept existing raw-body behavior when content encoding is unsupported or decoding fails.
+
+- [x] **Step 4: Update docs**
+
+Updated `response-rewrite` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/response_rewrite -run TestHandlerDecodesGzipBodyBeforeFilters -count=1 -timeout=10s -v` and `go test ./pkg/plugin/response_rewrite -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

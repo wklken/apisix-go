@@ -1,9 +1,12 @@
 package response_rewrite
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"regexp"
@@ -199,13 +202,19 @@ func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
 	}
 
 	if len(p.config.Filters) > 0 {
+		body := resp.body
+		if decoded, ok := decodeFilterBody(resp); ok {
+			body = decoded
+			resp.header.Del("Content-Encoding")
+		}
 		for _, filter := range p.config.Filters {
 			if filter.Scope == "global" {
-				resp.body = []byte(filter.pattern.ReplaceAllString(string(resp.body), filter.Replace))
+				body = []byte(filter.pattern.ReplaceAllString(string(body), filter.Replace))
 				continue
 			}
-			resp.body = []byte(replaceFirstString(filter.pattern, string(resp.body), filter.Replace))
+			body = []byte(replaceFirstString(filter.pattern, string(body), filter.Replace))
 		}
+		resp.body = body
 		resp.header.Del("Content-Length")
 	}
 
@@ -290,6 +299,24 @@ func replaceFirstString(pattern *regexp.Regexp, body string, replacement string)
 		replaced = true
 		return pattern.ReplaceAllString(match, replacement)
 	})
+}
+
+func decodeFilterBody(resp *responseRecorder) ([]byte, bool) {
+	switch strings.ToLower(strings.TrimSpace(resp.header.Get("Content-Encoding"))) {
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(resp.body))
+		if err != nil {
+			return nil, false
+		}
+		defer reader.Close()
+		decoded, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, false
+		}
+		return decoded, true
+	default:
+		return nil, false
+	}
 }
 
 func matchCondition(r *http.Request, resp *responseRecorder, condition any) bool {

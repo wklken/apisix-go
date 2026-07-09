@@ -1,6 +1,8 @@
 package response_rewrite
 
 import (
+	"bytes"
+	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -185,6 +187,32 @@ func TestHandlerAppliesResponseBodyFilters(t *testing.T) {
 	}
 }
 
+func TestHandlerDecodesGzipBodyBeforeFilters(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Filters: []Filter{
+			{Regex: `secret`, Replace: "redacted", Scope: "global"},
+		},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		body := gzipBody(t, "secret token")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", "42")
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+	})
+
+	if got := res.Body.String(); got != "redacted token" {
+		t.Fatalf("body = %q, want decoded and filtered body", got)
+	}
+	if got := res.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want removed after decoded filter rewrite", got)
+	}
+	if got := res.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want removed after decoded filter rewrite", got)
+	}
+}
+
 func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 	p := &Plugin{
 		config: Config{
@@ -214,4 +242,18 @@ func stringPtr(v string) *string {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func gzipBody(t *testing.T, value string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write([]byte(value)); err != nil {
+		t.Fatalf("write gzip body: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close gzip body: %v", err)
+	}
+	return buf.Bytes()
 }

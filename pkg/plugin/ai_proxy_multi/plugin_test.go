@@ -252,6 +252,42 @@ func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
 	}
 }
 
+func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := newBodyCaptureLLMServer(t, "Bearer azure-token", &upstreamBody)
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{
+			{
+				Name:     "azure",
+				Provider: "azure-openai",
+				Weight:   1,
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer azure-token"}},
+				Options: map[string]any{
+					"model":       "gpt-4",
+					"temperature": float64(0),
+				},
+				Override: Override{
+					Endpoint: upstream.URL + "/openai/deployments/gpt-4/chat/completions?api-version=2024-02-15-preview",
+				},
+			},
+		},
+	})
+
+	serveChatWithBody(t, p, `{
+	  "model": "caller-model",
+	  "messages": [{"role": "user", "content": "ping"}]
+	}`)
+
+	if _, ok := upstreamBody["model"]; ok {
+		t.Fatalf("upstream body model = %v, want omitted for azure-openai", upstreamBody["model"])
+	}
+	if got := upstreamBody["temperature"]; got != float64(0) {
+		t.Fatalf("temperature = %v, want configured option", got)
+	}
+}
+
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Instances: []Instance{

@@ -341,6 +341,7 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, error) {
 		bodyTab[key] = value
 	}
 	p.applyLLMOptions(bodyTab)
+	p.applyProviderBodyRules(bodyTab)
 
 	rewritten, err := json.Marshal(bodyTab)
 	if err != nil {
@@ -418,6 +419,12 @@ func cloneJSONValue(value any) any {
 		return out
 	default:
 		return value
+	}
+}
+
+func (p *Plugin) applyProviderBodyRules(body map[string]any) {
+	if p.config.Provider == "azure-openai" {
+		delete(body, "model")
 	}
 }
 

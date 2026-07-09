@@ -7455,3 +7455,37 @@ Updated `ai-proxy-multi` README support notes and the live APISIX 3.17 parity ch
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/ai_proxy_multi -run 'TestHandler(MergesRequestBodyOverrideWithoutForce|ForceMergesRequestBodyOverride)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_proxy_multi -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 226: Omit `model` for Azure OpenAI Provider Requests
+
+**Files:**
+- Modify: `pkg/plugin/ai_proxy/plugin.go`
+- Modify: `pkg/plugin/ai_proxy/plugin_test.go`
+- Modify: `pkg/plugin/ai_proxy_multi/plugin.go`
+- Modify: `pkg/plugin/ai_proxy_multi/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX Azure OpenAI provider behavior where deployment/model selection is encoded in the configured endpoint.
+- Produces: `ai-proxy` and `ai-proxy-multi` provider request bodies that omit `model` when `provider = "azure-openai"`.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 Azure OpenAI provider source; the provider sets `remove_model = true`, so model is not sent in the outgoing JSON request body.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added focused tests for `ai-proxy` and `ai-proxy-multi` that configure Azure OpenAI with a client/body model and option model. The first focused runs failed because `model` was forwarded as `gpt-4`.
+
+- [x] **Step 3: Implement provider body rule**
+
+Added a small provider-specific body rule in both AI proxy packages to delete `model` after request body overrides, options, and LLM option shaping are applied.
+
+- [x] **Step 4: Update docs**
+
+Updated `ai-proxy` / `ai-proxy-multi` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ai_proxy -run TestHandlerOmitsModelForAzureOpenAI -count=1 -timeout=10s -v`, `go test ./pkg/plugin/ai_proxy_multi -run TestHandlerOmitsModelForAzureOpenAI -count=1 -timeout=10s -v`, and `go test ./pkg/plugin/ai_proxy ./pkg/plugin/ai_proxy_multi -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

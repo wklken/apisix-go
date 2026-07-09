@@ -219,6 +219,51 @@ func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
 	}
 }
 
+func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Provider: "azure-openai",
+		Auth:     Auth{Header: map[string]string{"api-key": "test-key"}},
+		Options: map[string]any{
+			"model":       "gpt-4",
+			"temperature": float64(0),
+		},
+		Override: Override{
+			Endpoint: upstream.URL + "/openai/deployments/gpt-4/chat/completions?api-version=2024-02-15-preview",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
+	  "model": "caller-model",
+	  "messages": [{"role": "user", "content": "ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called by ai-proxy")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	if _, ok := upstreamBody["model"]; ok {
+		t.Fatalf("upstream body model = %v, want omitted for azure-openai", upstreamBody["model"])
+	}
+	if got := upstreamBody["temperature"]; got != float64(0) {
+		t.Fatalf("temperature = %v, want configured option", got)
+	}
+}
+
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Provider:       "openai-compatible",

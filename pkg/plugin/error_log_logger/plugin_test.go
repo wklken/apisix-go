@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -117,6 +118,41 @@ func TestSendLogsToSkyWalking(t *testing.T) {
 	text := body["text"].(map[string]any)
 	if text["text"] != `2026/07/06 [warn] hello` {
 		t.Fatalf("skywalking text = %v", text["text"])
+	}
+}
+
+func TestSendLogsToSkyWalkingResolvesHostnameInstance(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+
+	var entries []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+			t.Fatalf("decode skywalking entries: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Skywalking: &SkywalkingConfig{
+			EndpointAddr:        server.URL,
+			ServiceInstanceName: "$hostname",
+		},
+		Level: "INFO",
+	})
+
+	if err := p.SendLogs(context.Background(), []string{`2026/07/06 [warn] hello`}); err != nil {
+		t.Fatalf("SendLogs() error = %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("entries len = %d, want 1", len(entries))
+	}
+	if entries[0]["serviceInstance"] != hostname {
+		t.Fatalf("serviceInstance = %q, want hostname %q", entries[0]["serviceInstance"], hostname)
 	}
 }
 

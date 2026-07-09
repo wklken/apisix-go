@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -318,10 +319,11 @@ func (p *Plugin) sendToTCP(lines []string) error {
 
 func (p *Plugin) sendToSkywalking(ctx context.Context, lines []string) error {
 	entries := make([]skywalkingLogEntry, 0, len(lines))
+	serviceInstanceName := p.skywalkingServiceInstanceName()
 	for _, line := range lines {
 		entries = append(entries, skywalkingLogEntry{
 			Service:         p.config.Skywalking.ServiceName,
-			ServiceInstance: p.config.Skywalking.ServiceInstanceName,
+			ServiceInstance: serviceInstanceName,
 			Endpoint:        "",
 			Body: skywalkingLogBody{
 				Text: skywalkingText{Text: line},
@@ -344,6 +346,17 @@ func (p *Plugin) sendToSkywalking(ctx context.Context, lines []string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return p.do(req)
+}
+
+func (p *Plugin) skywalkingServiceInstanceName() string {
+	if p.config.Skywalking.ServiceInstanceName != "$hostname" {
+		return p.config.Skywalking.ServiceInstanceName
+	}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return p.config.Skywalking.ServiceInstanceName
+	}
+	return hostname
 }
 
 func (p *Plugin) sendToClickHouse(ctx context.Context, lines []string) error {

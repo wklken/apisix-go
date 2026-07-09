@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -288,6 +289,56 @@ func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
 	}
 }
 
+func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+		  "model": "gpt-4-0613",
+		  "usage": {"prompt_tokens": 23, "completion_tokens": 8, "total_tokens": 31}
+		}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{
+			{
+				Name:     "one",
+				Provider: "openai-compatible",
+				Weight:   1,
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+				Options:  map[string]any{"model": "gpt-4"},
+				Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
+	  "messages": [{"role": "user", "content": "ping"}]
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called by ai-proxy-multi")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	assertLLMRequestVar(t, req, "$request_type", "ai_chat")
+	assertLLMRequestVar(t, req, "$request_llm_model", "gpt-4")
+	assertLLMRequestVar(t, req, "$llm_model", "gpt-4-0613")
+	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(23))
+	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(8))
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+}
+
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Instances: []Instance{
@@ -423,4 +474,12 @@ func intPtr(v int) *int {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func assertLLMRequestVar(t *testing.T, req *http.Request, key string, want any) {
+	t.Helper()
+
+	if got := apisixctx.GetRequestVar(req, key); got != want {
+		t.Fatalf("%s = %#v, want %#v", key, got, want)
+	}
 }

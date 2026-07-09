@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -432,7 +434,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 
 			defer resp.Body.Close()
-			p.writeProviderResponse(w, resp)
+			p.writeProviderResponse(w, r, body, resp)
 			return
 		}
 	}
@@ -484,6 +486,7 @@ func (p *Plugin) requestInstance(r *http.Request, body []byte, instance Instance
 	if err != nil {
 		return nil, err
 	}
+	registerLLMRequestVars(r, providerBody, nil)
 
 	endpoint, err := p.endpoint(instance)
 	if err != nil {
@@ -741,7 +744,12 @@ func (p *Plugin) endpoint(instance Instance) (string, error) {
 	}
 }
 
-func (p *Plugin) writeProviderResponse(w http.ResponseWriter, resp *http.Response) {
+func (p *Plugin) writeProviderResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	requestBody []byte,
+	resp *http.Response,
+) {
 	bodyReader := io.Reader(resp.Body)
 	if p.config.MaxResponseBytes > 0 {
 		bodyReader = io.LimitReader(resp.Body, p.config.MaxResponseBytes+1)
@@ -755,6 +763,7 @@ func (p *Plugin) writeProviderResponse(w http.ResponseWriter, resp *http.Respons
 		writeJSONMessage(w, http.StatusBadGateway, "max_response_bytes exceeded")
 		return
 	}
+	registerLLMRequestVars(r, requestBody, body)
 
 	for field, values := range resp.Header {
 		for _, value := range values {
@@ -763,6 +772,63 @@ func (p *Plugin) writeProviderResponse(w http.ResponseWriter, resp *http.Respons
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+func registerLLMRequestVars(r *http.Request, requestBody []byte, responseBody []byte) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+
+	requestModel := modelFromBody(requestBody)
+	responseModel, promptTokens, completionTokens := llmResponseInfo(responseBody)
+
+	apisixctx.RegisterRequestVar(r, "$request_type", "ai_chat")
+	if requestModel != "" {
+		apisixctx.RegisterRequestVar(r, "$request_llm_model", requestModel)
+	}
+	if responseModel != "" {
+		apisixctx.RegisterRequestVar(r, "$llm_model", responseModel)
+	}
+	if promptTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_prompt_tokens", promptTokens)
+	}
+	if completionTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", completionTokens)
+	}
+}
+
+func modelFromBody(body []byte) string {
+	var decoded struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return ""
+	}
+	return decoded.Model
+}
+
+func llmResponseInfo(body []byte) (string, int64, int64) {
+	var decoded struct {
+		Model string         `json:"model"`
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return "", -1, -1
+	}
+	return decoded.Model, numericUsage(decoded.Usage["prompt_tokens"]), numericUsage(decoded.Usage["completion_tokens"])
+}
+
+func numericUsage(value any) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(math.Round(typed))
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	default:
+		return -1
+	}
 }
 
 func (p *Plugin) transport() http.RoundTripper {

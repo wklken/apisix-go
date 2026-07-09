@@ -213,7 +213,10 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 		return nil, err
 	}
 
-	llmBody, err := json.Marshal(buildOpenAIChatRequest(p.config.Prompt, originalBody, p.config.Options))
+	llmRequest := buildOpenAIChatRequest(p.config.Prompt, originalBody, p.config.Options)
+	p.applyProviderBodyRules(llmRequest)
+
+	llmBody, err := json.Marshal(llmRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode LLM request body: %w", err)
 	}
@@ -251,6 +254,12 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 		return nil, err
 	}
 	return []byte(rewritten), nil
+}
+
+func (p *Plugin) applyProviderBodyRules(body map[string]any) {
+	if p.config.Provider == "azure-openai" {
+		delete(body, "model")
+	}
 }
 
 func (p *Plugin) endpoint() (string, error) {

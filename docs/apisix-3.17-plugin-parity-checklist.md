@@ -120,7 +120,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `serverless-post-function` | yes | 45% | implement |
 | `ext-plugin-post-req` | no | unsupported: No need | defer-large |
 | `ext-plugin-post-resp` | no | unsupported: No need | defer-large |
-| `ai-request-rewrite` | yes | 45% | implement |
+| `ai-request-rewrite` | yes | 48% | implement |
 
 ## Next Priority Lanes
 

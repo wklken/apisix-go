@@ -99,6 +99,52 @@ func TestHandlerRewritesRequestWithOpenAICompatibleProvider(t *testing.T) {
 	}
 }
 
+func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
+	var llmRequest map[string]any
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&llmRequest); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"content\":\"redacted\"}"}}]}`))
+	}))
+	defer llm.Close()
+
+	p := newTestPlugin(t, Config{
+		Prompt:   "redact sensitive fields",
+		Provider: "azure-openai",
+		Auth:     Auth{Header: map[string]string{"api-key": "test-key"}},
+		Options: map[string]any{
+			"model":       "gpt-4",
+			"temperature": float64(0),
+		},
+		Override: Override{
+			Endpoint: llm.URL + "/openai/deployments/gpt-4/chat/completions?api-version=2024-02-15-preview",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"content":"4111"}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := string(readTestBody(t, r))
+		if got != `{"content":"redacted"}` {
+			t.Fatalf("rewritten body = %q, want redacted JSON", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+	if _, ok := llmRequest["model"]; ok {
+		t.Fatalf("LLM request model = %v, want omitted for azure-openai", llmRequest["model"])
+	}
+	if got := llmRequest["temperature"]; got != float64(0) {
+		t.Fatalf("LLM request temperature = %v, want 0", got)
+	}
+}
+
 func TestHandlerRejectsMissingRequestBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Prompt:   "rewrite",

@@ -7523,3 +7523,35 @@ Updated `ai-proxy` / `ai-proxy-multi` README support notes and the live APISIX 3
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/ai_proxy -run TestHandlerRegistersNonStreamingLLMRequestVars -count=1 -timeout=10s -v`, `go test ./pkg/plugin/ai_proxy_multi -run TestHandlerRegistersNonStreamingLLMRequestVars -count=1 -timeout=10s -v`, and `go test ./pkg/plugin/ai_proxy ./pkg/plugin/ai_proxy_multi -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 228: Omit `model` for Azure OpenAI ai-request-rewrite Requests
+
+**Files:**
+- Modify: `pkg/plugin/ai_request_rewrite/plugin.go`
+- Modify: `pkg/plugin/ai_request_rewrite/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX Azure OpenAI provider behavior where deployment/model selection is encoded in the configured endpoint.
+- Produces: `ai-request-rewrite` sidecar LLM request bodies that omit `model` when `provider = "azure-openai"`.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 AI request rewrite and Azure OpenAI provider behavior; Azure OpenAI removes `model` from the outgoing request body because the deployment is part of the configured endpoint.
+
+- [x] **Step 2: Add focused failing test**
+
+Added a focused `ai-request-rewrite` test that configures Azure OpenAI with an option model. The first focused run failed because `model` was forwarded as `gpt-4`.
+
+- [x] **Step 3: Implement provider body rule**
+
+Added a small provider-specific body rule before encoding the sidecar LLM request body to delete `model` when the configured provider is `azure-openai`.
+
+- [x] **Step 4: Update docs**
+
+Updated `ai-request-rewrite` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ai_request_rewrite -run TestHandlerOmitsModelForAzureOpenAI -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_request_rewrite -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

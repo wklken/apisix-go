@@ -182,6 +182,43 @@ func TestHandlerSkipsWhenNoMatchVarsPass(t *testing.T) {
 	}
 }
 
+func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []Match{
+					{Vars: []any{
+						[]any{"$request_method", "==", http.MethodGet},
+						[]any{"arg_score", ">=", "10"},
+						[]any{"http_x_region", "~", "^west-[0-9]+$"},
+						[]any{"uri", "!~", "/internal"},
+					}},
+				},
+				WeightedUpstreams: []WeightedUpstream{
+					{
+						Weight: 1,
+						Upstream: &Upstream{
+							Scheme: "http",
+							Nodes:  []Node{{Host: "canary.example.com", Port: 80, Weight: 1}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?score=12", nil)
+	req.Header.Set("X-Region", "west-1")
+	override := performRequestWithRequest(t, p, req)
+
+	if override == nil {
+		t.Fatal("traffic split override is nil")
+	}
+	if override.Host != "canary.example.com:80" {
+		t.Fatalf("override host = %q, want canary.example.com:80", override.Host)
+	}
+}
+
 func TestHandlerSetsUpstreamIDOverride(t *testing.T) {
 	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
 		if id != "shadow" {

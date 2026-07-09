@@ -7295,3 +7295,35 @@ Updated `traffic-label` README support notes and the live APISIX 3.17 parity che
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/traffic_label -run TestMatchSupportsPrefixedVarsNumericAndRegexOperators -count=1 -timeout=10s -v` and `go test ./pkg/plugin/traffic_label -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 221: Expand `traffic-split` Bounded Match Operators
+
+**Files:**
+- Modify: `pkg/plugin/traffic_split/plugin.go`
+- Modify: `pkg/plugin/traffic_split/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX `traffic-split` `match.vars` expressions using bounded `resty.expr`-style operators and request variables.
+- Produces: upstream override selection for `$`-prefixed variables, `request_method`, numeric comparison operators, and regex match/negation.
+
+- [x] **Step 1: Confirm current gap**
+
+Local `traffic-split` used only `==` and `!=` even though APISIX traffic plugins rely on `resty.expr`-style match expressions.
+
+- [x] **Step 2: Add focused failing test**
+
+Added a test covering `$request_method`, `arg_score >= 10`, `http_x_region ~ "^west-[0-9]+$"`, and `uri !~ "/internal"`. The first run failed because no upstream override was selected.
+
+- [x] **Step 3: Implement bounded expression parity**
+
+Added numeric comparisons and regex match/negation operators, matching the bounded pattern used by `traffic-label` and `response-rewrite`.
+
+- [x] **Step 4: Update docs**
+
+Updated `traffic-split` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/traffic_split -run TestMatchSupportsPrefixedVarsNumericAndRegexOperators -count=1 -timeout=10s -v` and `go test ./pkg/plugin/traffic_split -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

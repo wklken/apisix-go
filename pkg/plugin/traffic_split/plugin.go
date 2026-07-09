@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -397,9 +398,35 @@ func matchCondition(r *http.Request, condition any) bool {
 		return actual == right
 	case "!=":
 		return actual != right
+	case ">":
+		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
+	case ">=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
+	case "<":
+		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
+	case "<=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
+	case "~":
+		matched, _ := regexp.MatchString(right, actual)
+		return matched
+	case "!~":
+		matched, _ := regexp.MatchString(right, actual)
+		return !matched
 	default:
 		return false
 	}
+}
+
+func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
+	l, err := strconv.ParseFloat(left, 64)
+	if err != nil {
+		return false
+	}
+	r, err := strconv.ParseFloat(right, 64)
+	if err != nil {
+		return false
+	}
+	return compare(l, r)
 }
 
 func requestVar(r *http.Request, name string) string {

@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 var (
@@ -65,6 +66,35 @@ func addJWTConsumer(t *testing.T, username, key, secret string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("consumer %q was not indexed for jwt-auth key %q", username, key)
+}
+
+func addConsumer(t *testing.T, username string) {
+	t.Helper()
+	setupStore(t)
+
+	consumer := map[string]any{
+		"username": username,
+		"plugins":  map[string]any{},
+	}
+	body, err := json.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/" + username)
+	event.Value = body
+	testEvents <- event
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.GetConsumer(username); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("consumer %q was not stored", username)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -123,6 +153,25 @@ func TestHandlerRejectsMissingToken(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesAnonymousConsumerWhenTokenIsMissing(t *testing.T) {
+	addConsumer(t, "anonymous-jwt-user")
+	p := newTestPlugin(t, Config{AnonymousConsumer: "anonymous-jwt-user"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-jwt-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-jwt-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestHandlerRejectsInvalidSignature(t *testing.T) {
 	addJWTConsumer(t, "bad-signature-user", "bad-signature-key", "jwt-secret")
 	p := newTestPlugin(t, Config{})
@@ -143,6 +192,34 @@ func TestHandlerRejectsInvalidSignature(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesAnonymousConsumerForInvalidSignatureAndHidesCredentials(t *testing.T) {
+	addJWTConsumer(t, "bad-signature-user-anonymous", "bad-signature-anonymous-key", "jwt-secret")
+	addConsumer(t, "anonymous-bad-signature-user")
+	hideCredentials := true
+	p := newTestPlugin(t, Config{
+		HideCredentials:   &hideCredentials,
+		AnonymousConsumer: "anonymous-bad-signature-user",
+	})
+	token := signHS256(t, "wrong-secret", map[string]any{
+		"key": "bad-signature-anonymous-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-bad-signature-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-bad-signature-user", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization header = %q, want removed", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})), token)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
 func TestHandlerRejectsExpiredTokenByDefault(t *testing.T) {
 	addJWTConsumer(t, "expired-user", "expired-key", "jwt-secret")
 	p := newTestPlugin(t, Config{})
@@ -160,6 +237,20 @@ func TestHandlerRejectsExpiredTokenByDefault(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "failed to verify jwt") {
 		t.Fatalf("body = %q, want verification failure message", res.Body.String())
+	}
+}
+
+func TestSchemaAcceptsAnonymousConsumer(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"anonymous_consumer": "anonymous-jwt-user",
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected anonymous_consumer: %v", err)
 	}
 }
 

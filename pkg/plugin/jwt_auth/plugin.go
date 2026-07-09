@@ -64,6 +64,10 @@ const schema = `
       "type": "string",
       "default": "jwt"
     },
+    "anonymous_consumer": {
+      "type": "string",
+      "minLength": 1
+    },
     "claims_to_verify": {
       "type": "array",
       "items": {
@@ -77,14 +81,15 @@ const schema = `
 `
 
 type Config struct {
-	Header          string   `json:"header,omitempty"`
-	Query           string   `json:"query,omitempty"`
-	Cookie          string   `json:"cookie,omitempty"`
-	HideCredentials *bool    `json:"hide_credentials,omitempty"`
-	KeyClaimName    string   `json:"key_claim_name,omitempty"`
-	StoreInCtx      *bool    `json:"store_in_ctx,omitempty"`
-	Realm           string   `json:"realm,omitempty"`
-	ClaimsToVerify  []string `json:"claims_to_verify,omitempty"`
+	Header            string   `json:"header,omitempty"`
+	Query             string   `json:"query,omitempty"`
+	Cookie            string   `json:"cookie,omitempty"`
+	HideCredentials   *bool    `json:"hide_credentials,omitempty"`
+	KeyClaimName      string   `json:"key_claim_name,omitempty"`
+	StoreInCtx        *bool    `json:"store_in_ctx,omitempty"`
+	Realm             string   `json:"realm,omitempty"`
+	AnonymousConsumer string   `json:"anonymous_consumer,omitempty"`
+	ClaimsToVerify    []string `json:"claims_to_verify,omitempty"`
 }
 
 type consumerConfig struct {
@@ -149,6 +154,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		consumer, token, errMsg := p.findConsumer(r)
 		if errMsg != "" {
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
 			http.Error(w, util.BuildMessageResponse(errMsg), http.StatusUnauthorized)
 			return
@@ -162,6 +170,23 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	if p.config.AnonymousConsumer == "" {
+		return false
+	}
+
+	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
+		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
+		return true
+	}
+
+	ctx.AttachConsumer(r, consumer)
+	next.ServeHTTP(w, r)
+	return true
 }
 
 func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, string) {

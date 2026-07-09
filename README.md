@@ -122,10 +122,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) 75%
   - support header/query API key lookup, APISIX-style missing/invalid key errors, consumer attachment, `hide_credentials` removal from headers or query strings, and `anonymous_consumer` fallback
   - not support encrypted consumer fields
-- [x] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/) 60%
-  - only support `HS256`, `HS384`, `HS512`
+- [x] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/) 68%
+  - support `HS256`, `HS384`, `HS512`, header/query/cookie token lookup, claim verification for `exp`/`nbf`, `hide_credentials`, `store_in_ctx`, and `anonymous_consumer` fallback
   - not support `RS*`, `ES*`, `PS*`, or `EdDSA`
-  - not support `anonymous_consumer`
 - [x] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/) 65%
   - support compact JWE parsing, `Bearer` token extraction, `kid` consumer lookup, AES-256-GCM decrypt, base64url consumer secrets, and forwarding plaintext to `forward_header`
   - not support alternate JWE algorithms, AAD/header authentication, encrypted consumer field handling, or anonymous consumer behavior

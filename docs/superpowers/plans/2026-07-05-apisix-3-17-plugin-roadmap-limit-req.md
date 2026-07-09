@@ -6987,3 +6987,31 @@ Updated `key-auth` README support notes and the live APISIX 3.17 parity checklis
 - [x] **Step 4: Verify**
 
 Run: `go test ./pkg/plugin/key_auth -run 'TestHandlerUsesAnonymousConsumer|TestSchemaAcceptsAnonymousConsumer' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/key_auth -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 211: Support `jwt-auth` Anonymous Consumer Fallback
+
+**Files:**
+- Modify: `pkg/plugin/jwt_auth/plugin.go`
+- Modify: `pkg/plugin/jwt_auth/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `jwt-auth` `anonymous_consumer` config.
+- Produces: failed or missing JWT authentication can attach the configured anonymous consumer and continue; extracted credentials still honor existing `hide_credentials` removal before fallback.
+
+- [x] **Step 1: Add focused failing tests**
+
+Added tests for missing-token fallback, invalid-signature fallback with credential stripping, and schema acceptance. The first focused run failed because `Config` did not yet expose `AnonymousConsumer`.
+
+- [x] **Step 2: Implement fallback**
+
+Added schema/config support for `anonymous_consumer`, looked up the anonymous consumer with `store.GetConsumer`, attached it with the existing APISIX context helper, and preserved the existing APISIX-style `401 {"message":"Invalid user authorization"}` response when the configured anonymous consumer cannot be loaded.
+
+- [x] **Step 3: Update docs**
+
+Updated `jwt-auth` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/jwt_auth -run 'TestHandlerUsesAnonymousConsumer|TestSchemaAcceptsAnonymousConsumer' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/jwt_auth -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

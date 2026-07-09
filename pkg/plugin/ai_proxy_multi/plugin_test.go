@@ -149,6 +149,109 @@ func TestHandlerChashUsesHeaderKey(t *testing.T) {
 	}
 }
 
+func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := newBodyCaptureLLMServer(t, "Bearer token", &upstreamBody)
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{
+			{
+				Name:     "one",
+				Provider: "openai-compatible",
+				Weight:   1,
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+				Override: Override{
+					Endpoint: upstream.URL + "/v1/chat/completions",
+					RequestBody: map[string]any{
+						"openai-chat": map[string]any{
+							"temperature": float64(0),
+							"stream":      false,
+							"metadata": map[string]any{
+								"client":  "override",
+								"gateway": "apisix-go",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	serveChatWithBody(t, p, `{
+	  "messages": [{"role": "user", "content": "ping"}],
+	  "temperature": 1,
+	  "metadata": {"client": "caller"}
+	}`)
+
+	if got := upstreamBody["temperature"]; got != float64(1) {
+		t.Fatalf("temperature = %v, want client value to win without force", got)
+	}
+	if got := upstreamBody["stream"]; got != false {
+		t.Fatalf("stream = %v, want override to fill missing field", got)
+	}
+	metadata, ok := upstreamBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v, want object", upstreamBody["metadata"])
+	}
+	if got := metadata["client"]; got != "caller" {
+		t.Fatalf("metadata.client = %v, want caller", got)
+	}
+	if got := metadata["gateway"]; got != "apisix-go" {
+		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
+func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := newBodyCaptureLLMServer(t, "Bearer token", &upstreamBody)
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{
+			{
+				Name:     "one",
+				Provider: "openai-compatible",
+				Weight:   1,
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+				Override: Override{
+					Endpoint:                 upstream.URL + "/v1/chat/completions",
+					RequestBodyForceOverride: boolPtr(true),
+					RequestBody: map[string]any{
+						"openai-chat": map[string]any{
+							"temperature": float64(0),
+							"metadata": map[string]any{
+								"client":  "override",
+								"gateway": "apisix-go",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	serveChatWithBody(t, p, `{
+	  "messages": [{"role": "user", "content": "ping"}],
+	  "temperature": 1,
+	  "metadata": {"client": "caller"}
+	}`)
+
+	if got := upstreamBody["temperature"]; got != float64(0) {
+		t.Fatalf("temperature = %v, want override value with force", got)
+	}
+	metadata, ok := upstreamBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v, want object", upstreamBody["metadata"])
+	}
+	if got := metadata["client"]; got != "override" {
+		t.Fatalf("metadata.client = %v, want override", got)
+	}
+	if got := metadata["gateway"]; got != "apisix-go" {
+		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Instances: []Instance{
@@ -227,16 +330,43 @@ func newLLMServer(t *testing.T, instance string, wantAuth string, calls *atomic.
 	}))
 }
 
+func newBodyCaptureLLMServer(t *testing.T, wantAuth string, body *map[string]any) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != wantAuth {
+			t.Fatalf("Authorization header = %q, want %q", got, wantAuth)
+		}
+		if err := json.NewDecoder(r.Body).Decode(body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+}
+
 func serveChat(t *testing.T, p *Plugin, tenant string) string {
+	t.Helper()
+
+	return serveChatWithBody(t, p, `{
+	  "messages": [{"role": "user", "content": "ping"}],
+	  "temperature": 1
+	}`, tenant)
+}
+
+func serveChatWithBody(t *testing.T, p *Plugin, body string, tenant ...string) string {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{
 	  "messages": [{"role": "user", "content": "ping"}],
 	  "temperature": 1
 	}`))
+	if body != "" {
+		req = httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(body))
+	}
 	req.Header.Set("Content-Type", "application/json")
-	if tenant != "" {
-		req.Header.Set("X-Tenant", tenant)
+	if len(tenant) > 0 && tenant[0] != "" {
+		req.Header.Set("X-Tenant", tenant[0])
 	}
 	rr := httptest.NewRecorder()
 
@@ -252,5 +382,9 @@ func serveChat(t *testing.T, p *Plugin, tenant string) string {
 }
 
 func intPtr(v int) *int {
+	return &v
+}
+
+func boolPtr(v bool) *bool {
 	return &v
 }

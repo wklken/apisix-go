@@ -65,7 +65,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `ai-prompt-guard` | yes | 60% | implement |
 | `ai-rag` | yes | 55% | implement |
 | `ai-rate-limiting` | yes | 50% | implement |
-| `ai-proxy-multi` | yes | 45% | implement |
+| `ai-proxy-multi` | yes | 52% | implement |
 | `ai-proxy` | yes | 52% | implement |
 | `ai-aws-content-moderation` | yes | 55% | implement |
 | `ai-aliyun-content-moderation` | yes | 50% | implement |

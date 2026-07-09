@@ -513,6 +513,7 @@ func (p *Plugin) providerBody(body []byte, instance Instance) ([]byte, error) {
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
+	p.applyRequestBodyOverride(bodyTab, instance)
 	for key, value := range instance.Options {
 		bodyTab[key] = value
 	}
@@ -523,6 +524,78 @@ func (p *Plugin) providerBody(body []byte, instance Instance) ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode provider request body: %w", err)
 	}
 	return rewritten, nil
+}
+
+func (p *Plugin) applyRequestBodyOverride(body map[string]any, instance Instance) {
+	override := requestBodyOverride(instance.Override.RequestBody)
+	if len(override) == 0 {
+		return
+	}
+	force := instance.Override.RequestBodyForceOverride != nil && *instance.Override.RequestBodyForceOverride
+	mergeBodyMap(body, override, force)
+}
+
+func requestBodyOverride(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	if override, ok := asAnyMap(values["openai-chat"]); ok {
+		return override
+	}
+	if hasProtocolRequestBodyOverride(values) {
+		return nil
+	}
+	return values
+}
+
+func hasProtocolRequestBodyOverride(values map[string]any) bool {
+	for key := range values {
+		switch key {
+		case "openai-chat", "openai-responses", "openai-embeddings", "anthropic-messages",
+			"bedrock-converse", "passthrough":
+			return true
+		}
+	}
+	return false
+}
+
+func mergeBodyMap(dst map[string]any, override map[string]any, force bool) {
+	for key, overrideValue := range override {
+		currentValue, exists := dst[key]
+		currentMap, currentIsMap := asAnyMap(currentValue)
+		overrideMap, overrideIsMap := asAnyMap(overrideValue)
+		if exists && currentIsMap && overrideIsMap {
+			mergeBodyMap(currentMap, overrideMap, force)
+			continue
+		}
+		if !exists || force {
+			dst[key] = cloneJSONValue(overrideValue)
+		}
+	}
+}
+
+func asAnyMap(value any) (map[string]any, bool) {
+	out, ok := value.(map[string]any)
+	return out, ok
+}
+
+func cloneJSONValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = cloneJSONValue(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func (p *Plugin) applyLLMOptions(body map[string]any, instance Instance) {

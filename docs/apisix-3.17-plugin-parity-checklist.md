@@ -110,7 +110,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `udp-logger` | yes | 58% | implement |
 | `file-logger` | yes | 75% | monitor |
 | `clickhouse-logger` | yes | 68% | implement |
-| `tencent-cloud-cls` | yes | 55% | implement |
+| `tencent-cloud-cls` | yes | 63% | implement |
 | `inspect` | no | unsupported: lua feature | defer-native |
 | `example-plugin` | yes | 60% | implement |
 | `aws-lambda` | yes | 70% | monitor |

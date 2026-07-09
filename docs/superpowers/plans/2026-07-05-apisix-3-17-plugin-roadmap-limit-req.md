@@ -6931,3 +6931,31 @@ Updated `elasticsearch-logger` README support notes and the live APISIX 3.17 par
 - [x] **Step 4: Verify**
 
 Run: `go test ./pkg/plugin/elasticsearch_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)|TestSchemaAcceptsOfficialBodyExpressionFields' -count=1 -timeout=15s -v` and `go test ./pkg/plugin/elasticsearch_logger -count=1 -timeout=15s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 209: Support `tencent-cloud-cls` Body Expression Gates
+
+**Files:**
+- Modify: `pkg/plugin/tencent_cloud_cls/plugin.go`
+- Modify: `pkg/plugin/tencent_cloud_cls/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `tencent-cloud-cls` `include_req_body_expr` and `include_resp_body_expr` config.
+- Produces: Tencent CLS protobuf log entries whose request and response body fields are gated by bounded request-variable expressions while preserving sampling, request body replay, capped capture, sha1 authorization, global tags, and `/structuredlog` delivery behavior.
+
+- [x] **Step 1: Add focused failing tests**
+
+Added tests for matching expressions, non-matching expressions, and schema acceptance. The first focused run failed because the handler logged body fields even when expressions did not match.
+
+- [x] **Step 2: Implement bounded expression gates**
+
+Gated request body reads before downstream execution, captured response status in the CLS logger recorder, and evaluated response body logging after downstream completion using the existing local `==`, `!=`, numeric comparison, regex, `AND`, and `OR` expression subset.
+
+- [x] **Step 3: Update docs**
+
+Updated `tencent-cloud-cls` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/tencent_cloud_cls -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)|TestSchemaAcceptsOfficialBodyExpressionFields' -count=1 -timeout=15s -v` and `go test ./pkg/plugin/tencent_cloud_cls -count=1 -timeout=15s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

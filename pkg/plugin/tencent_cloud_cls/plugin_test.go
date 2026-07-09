@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -232,6 +233,131 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	response := decodeJSONStringField(t, logs[0]["response"])
 	if response["body"] != `{"ok":true}` {
 		t.Fatalf("response body = %#v, want upstream response body", response["body"])
+	}
+}
+
+func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Scheme:              "http",
+		CLSHost:             strings.TrimPrefix(server.URL, "http://"),
+		CLSTopic:            "topic-a",
+		SecretID:            "secret-id",
+		SecretKey:           "secret-key",
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+		Timeout:             1000,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req.Header.Set("X-Log-Body", "yes")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	})).ServeHTTP(rr, req)
+
+	logs := decodeCLSBody(t, waitBody(t, bodies))
+	if len(logs) != 1 {
+		t.Fatalf("logs = %d, want 1", len(logs))
+	}
+
+	request := decodeJSONStringField(t, logs[0]["request"])
+	if request["body"] != `{"order":2}` {
+		t.Fatalf("request body = %#v, want captured request body", request["body"])
+	}
+
+	response := decodeJSONStringField(t, logs[0]["response"])
+	if response["body"] != `{"created":true}` {
+		t.Fatalf("response body = %#v, want captured response body", response["body"])
+	}
+}
+
+func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Scheme:              "http",
+		CLSHost:             strings.TrimPrefix(server.URL, "http://"),
+		CLSTopic:            "topic-a",
+		SecretID:            "secret-id",
+		SecretKey:           "secret-key",
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+		Timeout:             1000,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req.Header.Set("X-Log-Body", "no")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":3}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":false}`))
+	})).ServeHTTP(rr, req)
+
+	logs := decodeCLSBody(t, waitBody(t, bodies))
+	if len(logs) != 1 {
+		t.Fatalf("logs = %d, want 1", len(logs))
+	}
+	if _, ok := logs[0]["request"]; ok {
+		t.Fatalf("request field = %q, want no request body", logs[0]["request"])
+	}
+	if _, ok := logs[0]["response"]; ok {
+		t.Fatalf("response field = %q, want no response body", logs[0]["response"])
+	}
+}
+
+func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"cls_host":               "cls.example.com",
+		"cls_topic":              "topic-a",
+		"secret_id":              "secret-id",
+		"secret_key":             "secret-key",
+		"include_req_body_expr":  []any{[]any{"http_x_log_body", "==", "yes"}},
+		"include_resp_body_expr": []any{[]any{"status", "==", "201"}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official body expression fields: %v", err)
 	}
 }
 

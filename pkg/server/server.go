@@ -58,7 +58,7 @@ func (s *Server) Start() {
 	s.startEtcdWatcher()
 
 	logger.Info("build the routes")
-	s.server.Handler = route.NewBuilder(s.storage).Build()
+	s.server.Handler = route.NewBuilderWithServerAddr(s.storage, s.addr).Build()
 
 	// start the reloader
 	reloadCheckInterval := 60 * time.Second

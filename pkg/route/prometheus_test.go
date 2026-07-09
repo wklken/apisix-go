@@ -102,6 +102,60 @@ func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
 	}
 }
 
+func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
+	oldBatchProcessEntries := metrics.BatchProcessEntries
+	gauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_route_server_batch_process_entries"},
+		[]string{"name", "route_id", "server_addr"},
+	)
+	metrics.BatchProcessEntries = gauge
+	t.Cleanup(func() {
+		metrics.BatchProcessEntries = oldBatchProcessEntries
+	})
+
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	plugins := builder.initPlugins(
+		map[string]resource.PluginConfig{
+			"http-logger": map[string]any{
+				"uri":              "http://127.0.0.1/logs",
+				"batch_max_size":   10,
+				"buffer_duration":  60,
+				"inactive_timeout": 60,
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
+	)
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	}
+
+	httpLogger, ok := plugins[0].(*http_logger.Plugin)
+	if !ok {
+		t.Fatalf("plugin type = %T, want *http_logger.Plugin", plugins[0])
+	}
+	t.Cleanup(httpLogger.BatchProcessor.Stop)
+
+	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
+		t.Fatalf("Fire() error = %v", err)
+	}
+
+	if got := routeGaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {
+		t.Fatalf("batch_process_entries server label value = %v, want 1", got)
+	}
+	if got := routeGaugeValue(t, gauge, "http logger", "route-a", ""); got != 0 {
+		t.Fatalf("batch_process_entries empty-server value = %v, want 0", got)
+	}
+}
+
+func TestNewBuilderWithServerAddrNormalizesPortOnlyAddr(t *testing.T) {
+	builder := NewBuilderWithServerAddr(nil, ":8080")
+
+	ctx := builder.pluginRouteContext(resource.Route{ID: "route-a"})
+	if ctx.serverAddr != "0.0.0.0:8080" {
+		t.Fatalf("serverAddr = %q, want 0.0.0.0:8080", ctx.serverAddr)
+	}
+}
+
 func routeGaugeValue(t *testing.T, gauge *prometheus.GaugeVec, labels ...string) float64 {
 	t.Helper()
 

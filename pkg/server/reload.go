@@ -71,7 +71,7 @@ func (s *Server) reload(ctx context.Context) {
 		}
 	}()
 
-	r = route.NewBuilder(s.storage).Build()
+	r = route.NewBuilderWithServerAddr(s.storage, s.addr).Build()
 
 	logger.Info("reload done")
 }

@@ -10,21 +10,21 @@ Use this file as the planning backlog. Use `README.md` and `docs/apisix-3.17-plu
 
 | Plugin | What needs to be done |
 |---|---|
-| `http-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and encrypted `auth_header` after a project-level secret design exists. |
-| `skywalking-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population and stale-object cleanup exactness. |
-| `tcp-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and OpenResty cosocket pooling, which is not required. |
+| `http-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `auth_header` after a project-level secret design exists. |
+| `skywalking-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness. |
+| `tcp-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and OpenResty cosocket pooling, which is not required. |
 | `kafka-logger` | Only remaining gap is encrypted broker password storage after a project-level secret design exists. |
 | `rocketmq-logger` | Remaining gaps are encrypted `secret_key` and `use_tls`; the current RocketMQ Go client exposes no TLS option. |
-| `syslog` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and native connection pooling/TLS exactness, which is not required. |
-| `udp-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population and stale-object cleanup exactness. |
-| `clickhouse-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and encrypted `password` after a project-level secret design exists. |
-| `sls-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and encrypted `access_key_secret` after a project-level secret design exists. |
+| `syslog` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and native connection pooling/TLS exactness, which is not required. |
+| `udp-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness. |
+| `clickhouse-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `password` after a project-level secret design exists. |
+| `sls-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `access_key_secret` after a project-level secret design exists. |
 | `google-cloud-logging` | Remaining gaps are encrypted `auth_config.private_key` and request/response body capture only if a future APISIX version defines it. |
 | `splunk-hec-logging` | Remaining gaps are encrypted `endpoint.token` and request/response body capture only if a future APISIX version defines it. |
-| `elasticsearch-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and encrypted `auth.password` after a project-level secret design exists. |
-| `loggly` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and encrypted `customer_token` after a project-level secret design exists. |
-| `loki-logger` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population and stale-object cleanup exactness. |
-| `tencent-cloud-cls` | Route-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are `server_addr` label population, stale-object cleanup exactness, and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
+| `elasticsearch-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `auth.password` after a project-level secret design exists. |
+| `loggly` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `customer_token` after a project-level secret design exists. |
+| `loki-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness. |
+| `tencent-cloud-cls` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
 | `lago` | Remaining gaps are encrypted `token` and exotic OpenResty/NGINX-only variable fidelity. APISIX `batch_max_size` default of 100, request-start event timestamps, and common dynamic request/response variables are implemented. |
 | `error-log-logger` | Remaining gaps are APISIX batch `server_addr` label population, stale-object cleanup exactness, Lua-resty-kafka producer cache exactness, and encrypted metadata fields. Keep direct `ngx.errlog` capture and OpenResty timer lifecycle out of normal scope. |
 

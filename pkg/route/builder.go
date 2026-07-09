@@ -110,10 +110,16 @@ func convertURI(uri string) (string, error) {
 	return "", fmt.Errorf("not supported uri: %s", uri)
 }
 
-type Builder struct{}
+type Builder struct {
+	serverAddr string
+}
 
 func NewBuilder(storage *store.Store) *Builder {
-	return &Builder{}
+	return NewBuilderWithServerAddr(storage, "")
+}
+
+func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
+	return &Builder{serverAddr: normalizeServerAddr(serverAddr)}
 }
 
 func (b *Builder) Build() *chi.Mux {
@@ -225,7 +231,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 	var chain alice.Chain
 
-	routeContext := pluginRouteContext{routeID: r.ID}
+	routeContext := b.pluginRouteContext(r)
 	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
 	localPlugins = append(localPlugins, b.initPlugins(resourcePlugins, routeContext)...)
 	localPlugins = append(localPlugins, b.initPlugins(systemPlugins, routeContext)...)
@@ -300,6 +306,20 @@ func prometheusPreferName(pluginConfigs map[string]resource.PluginConfig) bool {
 type pluginRouteContext struct {
 	routeID    string
 	serverAddr string
+}
+
+func (b *Builder) pluginRouteContext(r resource.Route) pluginRouteContext {
+	return pluginRouteContext{
+		routeID:    r.ID,
+		serverAddr: b.serverAddr,
+	}
+}
+
+func normalizeServerAddr(serverAddr string) string {
+	if strings.HasPrefix(serverAddr, ":") {
+		return "0.0.0.0" + serverAddr
+	}
+	return serverAddr
 }
 
 type pluginRouteContextSetter interface {

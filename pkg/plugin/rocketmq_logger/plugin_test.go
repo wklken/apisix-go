@@ -44,6 +44,25 @@ func (s *captureSender) waitForMessage(t *testing.T) rocketmqMessage {
 	return rocketmqMessage{}
 }
 
+func (s *captureSender) waitForMessages(t *testing.T, count int) []rocketmqMessage {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		if len(s.messages) >= count {
+			messages := append([]rocketmqMessage(nil), s.messages[:count]...)
+			s.mu.Unlock()
+			return messages
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %d rocketmq messages", count)
+	return nil
+}
+
 func newTestPlugin(t *testing.T, cfg Config, sender rocketmqSender) *Plugin {
 	t.Helper()
 
@@ -115,6 +134,45 @@ func TestPostInitAppliesDefaults(t *testing.T) {
 	if p.config.MaxRespBodyBytes != 524288 {
 		t.Fatalf("max_resp_body_bytes = %d, want 524288", p.config.MaxRespBodyBytes)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestSendBatchEncodesEntriesAsSingleRocketMQMessage(t *testing.T) {
+	sender := &captureSender{}
+	p := newTestPlugin(t, Config{
+		NameServerList: []string{"127.0.0.1:9876"},
+		Topic:          "apisix-logs",
+		Key:            "route-a",
+		Tag:            "access",
+		BatchMaxSize:   2,
+	}, sender)
+
+	firstFail, err := p.SendBatch([]map[string]any{{"route_id": "r1"}, {"route_id": "r2"}}, 2)
+	if err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+	if firstFail != 0 {
+		t.Fatalf("firstFail = %d, want 0", firstFail)
+	}
+
+	messages := sender.waitForMessages(t, 1)
+	message := messages[0]
+	if message.Key != "route-a" {
+		t.Fatalf("key = %q, want route-a", message.Key)
+	}
+	if message.Tag != "access" {
+		t.Fatalf("tag = %q, want access", message.Tag)
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(message.Body, &payload); err != nil {
+		t.Fatalf("unmarshal rocketmq batch payload: %v", err)
+	}
+	if len(payload) != 2 {
+		t.Fatalf("batch payload length = %d, want 2", len(payload))
+	}
 }
 
 func TestHandlerSendsFormattedRequestLog(t *testing.T) {
@@ -127,6 +185,7 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 			"path":   "$request_uri",
 			"plugin": "rocketmq-logger",
 		},
+		BatchMaxSize: 1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
@@ -165,6 +224,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -223,6 +283,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -267,6 +328,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))

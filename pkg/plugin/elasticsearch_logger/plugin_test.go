@@ -40,6 +40,9 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	if p.config.SslVerify == nil || !*p.config.SslVerify {
 		t.Fatalf("ssl_verify = %v, want true", p.config.SslVerify)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
 }
 
 func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
@@ -97,6 +100,50 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestSendBatchWritesMultipleBulkEntries(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read bulk body: %v", err)
+		}
+		received <- string(body)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "apisix-logs"},
+		BatchMaxSize:  2,
+	})
+
+	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	select {
+	case body := <-received:
+		lines := strings.Split(strings.TrimSpace(body), "\n")
+		if len(lines) != 4 {
+			t.Fatalf("bulk lines = %d, want 4, body = %q", len(lines), body)
+		}
+		if !strings.Contains(body, `"path":"/a"`) || !strings.Contains(body, `"path":"/b"`) {
+			t.Fatalf("bulk body = %q, want both documents", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch batch bulk request")
 	}
 }
 
@@ -224,6 +271,7 @@ func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
 		Field:         FieldConfig{Index: "apisix-$route_id-{%Y}"},
 		LogFormat:     map[string]string{"path": "$uri"},
 		Timeout:       10,
+		BatchMaxSize:  1,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
@@ -278,6 +326,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -355,6 +404,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -418,6 +468,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
@@ -477,6 +528,8 @@ func TestSchemaAcceptsEndpointAddrHeadersAndBodyFields(t *testing.T) {
 		"endpoint_addr":       "http://127.0.0.1:9200",
 		"field":               map[string]any{"index": "apisix"},
 		"headers":             map[string]any{"X-Cluster": "logs"},
+		"batch_max_size":      2,
+		"max_pending_entries": 100,
 		"include_req_body":    true,
 		"include_resp_body":   true,
 		"max_req_body_bytes":  1024,

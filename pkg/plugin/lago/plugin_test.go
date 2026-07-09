@@ -52,6 +52,9 @@ func TestPostInitSetsLagoDefaults(t *testing.T) {
 	if p.config.KeepalivePool != 5 {
 		t.Fatalf("keepalive_pool = %d, want 5", p.config.KeepalivePool)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
 }
 
 func TestBuildEventResolvesConfiguredTemplates(t *testing.T) {
@@ -184,6 +187,48 @@ func TestSendPostsLagoBatchEvent(t *testing.T) {
 	}
 }
 
+func TestSendBatchPostsMultipleLagoEvents(t *testing.T) {
+	bodies := make(chan lagoPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lagoPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Token:               "lago-token",
+		EventTransactionID:  "${request_id}",
+		EventSubscriptionID: "${consumer_name}",
+		EventCode:           "api-call",
+		Timeout:             1000,
+		BatchMaxSize:        2,
+	})
+
+	if _, err := p.SendBatch([]map[string]any{
+		{"request_id": "req-1", "consumer_name": "sub-1"},
+		{"request_id": "req-2", "consumer_name": "sub-2"},
+	}, 2); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	select {
+	case body := <-bodies:
+		if len(body.Events) != 2 {
+			t.Fatalf("events = %d, want 2", len(body.Events))
+		}
+		if body.Events[0].TransactionID != "req-1" || body.Events[1].TransactionID != "req-2" {
+			t.Fatalf("events = %#v, want both transaction IDs", body.Events)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Lago batch request")
+	}
+}
+
 func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 	requests := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +251,8 @@ func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 			"path":   "${uri}",
 			"status": "${status}",
 		},
-		Timeout: 1000,
+		Timeout:      1000,
+		BatchMaxSize: 1,
 	})
 
 	req := httptest.NewRequest(http.MethodPut, "/orders/1?debug=true", strings.NewReader("request"))
@@ -268,6 +314,7 @@ func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":1}`))

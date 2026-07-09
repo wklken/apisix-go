@@ -94,19 +94,19 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `public-api` | yes | 60% | implement |
 | `prometheus` | yes | 45% | implement |
 | `datadog` | yes | 68% | implement |
-| `lago` | yes | 64% | implement |
+| `lago` | yes | 70% | monitor |
 | `loki-logger` | yes | 76% | implement |
-| `elasticsearch-logger` | yes | 80% | monitor |
+| `elasticsearch-logger` | yes | 84% | monitor |
 | `echo` | yes | 90% | monitor |
 | `loggly` | yes | 76% | implement |
 | `http-logger` | yes | 76% | implement |
-| `splunk-hec-logging` | yes | 50% | implement |
+| `splunk-hec-logging` | yes | 62% | monitor |
 | `skywalking-logger` | yes | 76% | implement |
-| `google-cloud-logging` | yes | 55% | implement |
+| `google-cloud-logging` | yes | 64% | monitor |
 | `sls-logger` | yes | 72% | implement |
 | `tcp-logger` | yes | 70% | implement |
-| `kafka-logger` | yes | 68% | implement |
-| `rocketmq-logger` | yes | 63% | implement |
+| `kafka-logger` | yes | 74% | monitor |
+| `rocketmq-logger` | yes | 70% | monitor |
 | `syslog` | yes | 70% | implement |
 | `udp-logger` | yes | 70% | implement |
 | `file-logger` | yes | 75% | monitor |
@@ -125,7 +125,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 
 ## Next Priority Lanes
 
-1. Finish low-risk logger body expression gates: `sls-logger`, `skywalking-logger`, `loki-logger`, `loggly`, `elasticsearch-logger`, and `tencent-cloud-cls`.
+1. Finish lower-risk logger lifecycle gaps: `log-rotate`, `error-log-logger`, and `file-logger`.
 2. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
 3. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
 4. Keep OpenResty/NGINX/Lua-runtime-native plugins out of normal parity work: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`.

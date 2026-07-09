@@ -1,13 +1,17 @@
 package splunk_hec_logging
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -91,6 +95,10 @@ const schema = `
       "type": "integer",
       "minimum": 0,
       "default": 0
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "required": ["endpoint"]
@@ -98,7 +106,8 @@ const schema = `
 `
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type Endpoint struct {
@@ -114,12 +123,13 @@ type Config struct {
 	SSLVerify *bool             `json:"ssl_verify,omitempty"`
 	LogFormat map[string]string `json:"log_format,omitempty"`
 
-	Name            string `json:"name,omitempty"`
-	BatchMaxSize    int    `json:"batch_max_size,omitempty"`
-	InactiveTimeout int    `json:"inactive_timeout,omitempty"`
-	BufferDuration  int    `json:"buffer_duration,omitempty"`
-	RetryDelay      int    `json:"retry_delay,omitempty"`
-	MaxRetryCount   int    `json:"max_retry_count,omitempty"`
+	Name              string `json:"name,omitempty"`
+	BatchMaxSize      int    `json:"batch_max_size,omitempty"`
+	InactiveTimeout   int    `json:"inactive_timeout,omitempty"`
+	BufferDuration    int    `json:"buffer_duration,omitempty"`
+	RetryDelay        int    `json:"retry_delay,omitempty"`
+	MaxRetryCount     int    `json:"max_retry_count,omitempty"`
+	MaxPendingEntries int    `json:"max_pending_entries,omitempty"`
 }
 
 type splunkEvent struct {
@@ -153,6 +163,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.Endpoint.KeepaliveTimeout == 0 {
 		p.config.Endpoint.KeepaliveTimeout = 60000
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Endpoint.URI)
@@ -172,31 +194,69 @@ func (p *Plugin) PostInit() error {
 	}
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
+	metadata := loadMetadata()
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
+	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              name,
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
 	return nil
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	resp, err := p.client.R().SetBody(p.buildEvent(log)).Post(p.config.Endpoint.URI)
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
+	body, err := p.encodeBatch(entries)
 	if err != nil {
-		logger.Errorf("failed to send log to Splunk HEC endpoint %s: %s", p.config.Endpoint.URI, err)
-		return
+		return 0, err
 	}
 
-	if resp.StatusCode() >= 400 {
-		logger.Errorf(
-			"Splunk HEC endpoint returned status code [%d] uri [%s], body [%s]",
-			resp.StatusCode(),
-			p.config.Endpoint.URI,
-			resp.String(),
-		)
+	resp, err := p.client.R().SetBody(body).Post(p.config.Endpoint.URI)
+	if err != nil {
+		return 0, fmt.Errorf("failed to send log to Splunk HEC endpoint %s: %w", p.config.Endpoint.URI, err)
 	}
+
+	if resp.StatusCode() != 200 {
+		message := resp.String()
+		var errorBody struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(resp.Body(), &errorBody); err == nil && errorBody.Text != "" {
+			message = errorBody.Text
+		}
+		return 0, fmt.Errorf("Splunk HEC endpoint returned status code [%d] uri [%s], body [%s]",
+			resp.StatusCode(), p.config.Endpoint.URI, message)
+	}
+	return 0, nil
+}
+
+func (p *Plugin) encodeBatch(entries []map[string]any) ([]byte, error) {
+	var body bytes.Buffer
+	for _, entry := range entries {
+		event, err := json.Marshal(p.buildEvent(entry))
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal Splunk HEC event: %w", err)
+		}
+		body.Write(event)
+	}
+	return body.Bytes(), nil
 }
 
 func (p *Plugin) buildEvent(log map[string]any) splunkEvent {
@@ -218,16 +278,15 @@ func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

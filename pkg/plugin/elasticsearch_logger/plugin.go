@@ -22,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -128,6 +129,35 @@ const schema = `
 		"type": "integer",
 		"minimum": 1,
 		"default": 524288
+	  },
+	  "batch_max_size": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 1000
+	  },
+	  "inactive_timeout": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 5
+	  },
+	  "buffer_duration": {
+		"type": "integer",
+		"minimum": 1,
+		"default": 60
+	  },
+	  "retry_delay": {
+		"type": "integer",
+		"minimum": 0,
+		"default": 1
+	  },
+	  "max_retry_count": {
+		"type": "integer",
+		"minimum": 0,
+		"default": 0
+	  },
+	  "max_pending_entries": {
+		"type": "integer",
+		"minimum": 1
 	  }
 	},
 	"oneOf": [
@@ -143,7 +173,8 @@ const elasticsearchIndexField = "__elasticsearch_logger_index"
 // endpoint_addr is deprecated, use endpoint_addrs instead
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type Plugin struct {
@@ -172,6 +203,13 @@ type Config struct {
 	IncludeRespBodyExpr [][]any `json:"include_resp_body_expr,omitempty"`
 	MaxReqBodyBytes     int     `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int     `json:"max_resp_body_bytes,omitempty"`
+
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
 type FieldConfig struct {
@@ -215,17 +253,41 @@ func (p *Plugin) PostInit() error {
 	if p.config.MaxRespBodyBytes == 0 {
 		p.config.MaxRespBodyBytes = base.MAX_RESP_BODY
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 	if len(p.config.EndpointAddrs) == 0 && p.config.EndpointAddr != "" {
 		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
 	}
 
+	metadata := loadMetadata()
 	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
 	} else {
 		p.LogFormat = p.config.LogFormat
 	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
+	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              name,
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
 
 	return nil
 }
@@ -449,22 +511,25 @@ func requestVar(r *http.Request, name string, status int) string {
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	endpoint := p.endpointAddr()
 	if endpoint == "" {
-		return
+		return 0, nil
 	}
 	client, err := p.clientForEndpoint(endpoint)
 	if err != nil {
-		logger.Errorf("failed to create Elasticsearch client: %s in elasticsearch-logger", err)
-		return
+		return 0, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
 	p.fetchAndUpdateVersion(endpoint)
 
-	// FIXME: support batch-processor features like: send every 5 seconds or 1000 logs
-	body, err := p.bulkBody(log)
+	body, err := p.bulkBodyEntries(entries)
 	if err != nil {
-		logger.Errorf("failed to marshal log message: %s in elasticsearch-logger", err)
-		return
+		return 0, fmt.Errorf("failed to marshal Elasticsearch bulk body: %w", err)
 	}
 
 	resp, err := client.Bulk(
@@ -472,14 +537,13 @@ func (p *Plugin) Send(log map[string]any) {
 		client.Bulk.WithTimeout(time.Duration(p.config.Timeout)*time.Second),
 	)
 	if err != nil {
-		logger.Errorf("failed to send log message: %s in elasticsearch-logger", err)
-		return
+		return 0, fmt.Errorf("failed to send log message: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.IsError() {
-		logger.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
-		return
+		return 0, fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
 	}
+	return 0, nil
 }
 
 func (p *Plugin) endpointAddr() string {
@@ -523,6 +587,22 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 }
 
 func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
+	return p.bulkBodyEntries([]map[string]any{log})
+}
+
+func (p *Plugin) bulkBodyEntries(entries []map[string]any) ([]byte, error) {
+	var body bytes.Buffer
+	for _, entry := range entries {
+		entryBody, err := p.bulkBodyEntry(entry)
+		if err != nil {
+			return nil, err
+		}
+		body.Write(entryBody)
+	}
+	return body.Bytes(), nil
+}
+
+func (p *Plugin) bulkBodyEntry(log map[string]any) ([]byte, error) {
 	index := p.config.Field.Index
 	if resolvedIndex, ok := log[elasticsearchIndexField].(string); ok && resolvedIndex != "" {
 		index = resolvedIndex
@@ -734,16 +814,15 @@ func headerFromMap(headers map[string]string) http.Header {
 	return out
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

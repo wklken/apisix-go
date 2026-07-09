@@ -46,6 +46,25 @@ func (s *captureSender) waitForMessage(t *testing.T) kafkaMessage {
 	return kafkaMessage{}
 }
 
+func (s *captureSender) waitForMessages(t *testing.T, count int) []kafkaMessage {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		if len(s.messages) >= count {
+			messages := append([]kafkaMessage(nil), s.messages[:count]...)
+			s.mu.Unlock()
+			return messages
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for %d kafka messages", count)
+	return nil
+}
+
 func newTestPlugin(t *testing.T, cfg Config, sender kafkaSender) *Plugin {
 	t.Helper()
 
@@ -114,6 +133,41 @@ func TestPostInitAcceptsDeprecatedBrokerListAndAppliesDefaults(t *testing.T) {
 	if p.config.Timeout != 3 {
 		t.Fatalf("timeout = %d, want 3", p.config.Timeout)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestSendBatchEncodesEntriesAsSingleKafkaMessage(t *testing.T) {
+	sender := &captureSender{}
+	p := newTestPlugin(t, Config{
+		Brokers:      []Broker{{Host: "127.0.0.1", Port: 9092}},
+		KafkaTopic:   "apisix-logs",
+		Key:          "route-a",
+		BatchMaxSize: 2,
+	}, sender)
+
+	firstFail, err := p.SendBatch([]map[string]any{{"route_id": "r1"}, {"route_id": "r2"}}, 2)
+	if err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+	if firstFail != 0 {
+		t.Fatalf("firstFail = %d, want 0", firstFail)
+	}
+
+	messages := sender.waitForMessages(t, 1)
+	message := messages[0]
+	if string(message.Key) != "route-a" {
+		t.Fatalf("key = %q, want route-a", string(message.Key))
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(message.Value, &payload); err != nil {
+		t.Fatalf("unmarshal kafka batch payload: %v", err)
+	}
+	if len(payload) != 2 {
+		t.Fatalf("batch payload length = %d, want 2", len(payload))
+	}
 }
 
 func TestHandlerSendsFormattedRequestLog(t *testing.T) {
@@ -126,6 +180,7 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 			"path":   "$request_uri",
 			"plugin": "kafka-logger",
 		},
+		BatchMaxSize: 1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
@@ -164,6 +219,7 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		IncludeRespBody:  true,
 		MaxReqBodyBytes:  32,
 		MaxRespBodyBytes: 32,
+		BatchMaxSize:     1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":1}`))
@@ -222,6 +278,7 @@ func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
@@ -266,6 +323,7 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
 		MaxReqBodyBytes:     32,
 		MaxRespBodyBytes:    32,
+		BatchMaxSize:        1,
 	}, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))

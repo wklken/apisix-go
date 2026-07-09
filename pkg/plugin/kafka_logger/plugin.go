@@ -22,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -177,6 +178,35 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 30
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "oneOf": [
@@ -226,10 +256,18 @@ type Config struct {
 	ProducerMaxBuffering int `json:"producer_max_buffering,omitempty"`
 	ProducerTimeLinger   int `json:"producer_time_linger,omitempty"`
 	MetaRefreshInterval  int `json:"meta_refresh_interval,omitempty"`
+
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type kafkaMessage struct {
@@ -265,10 +303,14 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
 
+	metadata := loadMetadata()
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
+	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
 	if p.sender == nil {
@@ -279,7 +321,15 @@ func (p *Plugin) PostInit() error {
 		p.sender = &kafkaGoSender{writer: writer}
 	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              "kafka logger",
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
 	return nil
 }
 
@@ -506,10 +556,15 @@ func requestVar(r *http.Request, name string, status int) string {
 }
 
 func (p *Plugin) Send(log map[string]any) {
-	message, err := json.Marshal(log)
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, error) {
+	message, err := encodeKafkaBatch(entries, batchMaxSize)
 	if err != nil {
-		logger.Errorf("failed to marshal kafka log message: %s", err)
-		return
+		return 0, fmt.Errorf("failed to marshal kafka log message: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Timeout)*time.Second)
@@ -521,8 +576,16 @@ func (p *Plugin) Send(log map[string]any) {
 		Value: message,
 	})
 	if err != nil {
-		logger.Errorf("failed to send data to Kafka topic %s: %s", p.config.KafkaTopic, err)
+		return 0, fmt.Errorf("failed to send data to Kafka topic %s: %w", p.config.KafkaTopic, err)
 	}
+	return 0, nil
+}
+
+func encodeKafkaBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
+	if batchMaxSize == 1 && len(entries) == 1 {
+		return json.Marshal(entries[0])
+	}
+	return json.Marshal(entries)
 }
 
 func (p *Plugin) applyDefaults() {
@@ -555,6 +618,18 @@ func (p *Plugin) applyDefaults() {
 	}
 	if p.config.MetaRefreshInterval == 0 {
 		p.config.MetaRefreshInterval = 30
+	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 	if p.config.MaxReqBodyBytes == 0 {
 		p.config.MaxReqBodyBytes = base.MAX_REQ_BODY
@@ -646,16 +721,15 @@ func (s *kafkaGoSender) Send(ctx context.Context, message kafkaMessage) error {
 	})
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

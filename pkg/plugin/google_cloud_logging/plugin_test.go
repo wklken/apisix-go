@@ -57,6 +57,9 @@ func TestPostInitSetsGoogleDefaults(t *testing.T) {
 	if p.config.AuthConfig.EntriesURI != "https://logging.googleapis.com/v2/entries:write" {
 		t.Fatalf("entries_uri = %q, want default Google entries endpoint", p.config.AuthConfig.EntriesURI)
 	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
 }
 
 func TestBuildJWTAssertionUsesServiceAccountClaims(t *testing.T) {
@@ -314,6 +317,65 @@ func TestSendExchangesTokenAndWritesEntries(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for entries body")
+	}
+}
+
+func TestSendBatchWritesGoogleEntries(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	tokenRequests := make(chan url.Values, 1)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse token form: %v", err)
+		}
+		tokenRequests <- r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-a","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	entryBodies := make(chan map[string]any, 1)
+	entryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode entries body: %v", err)
+		}
+		entryBodies <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(entryServer.Close)
+
+	p := newTestPlugin(t, Config{
+		AuthConfig: &AuthConfig{
+			ClientEmail: "svc@example.iam.gserviceaccount.com",
+			PrivateKey:  pemKey,
+			ProjectID:   "project-a",
+			TokenURI:    tokenServer.URL,
+			EntriesURI:  entryServer.URL,
+		},
+		LogFormat: map[string]string{"path": "$uri"},
+	})
+
+	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	select {
+	case body := <-entryBodies:
+		entries, ok := body["entries"].([]any)
+		if !ok {
+			t.Fatalf("entries = %#v, want array", body["entries"])
+		}
+		if len(entries) != 2 {
+			t.Fatalf("entries length = %d, want 2", len(entries))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Google Cloud Logging entries request")
+	}
+
+	select {
+	case <-tokenRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Google OAuth token request")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 )
 
@@ -107,6 +108,31 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 524288
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
     }
   },
   "required": ["endpoint_addrs", "token", "event_transaction_id", "event_subscription_id", "event_code"]
@@ -130,6 +156,12 @@ type Config struct {
 	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
 	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
 	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
+
+	BatchMaxSize    int `json:"batch_max_size,omitempty"`
+	InactiveTimeout int `json:"inactive_timeout,omitempty"`
+	BufferDuration  int `json:"buffer_duration,omitempty"`
+	RetryDelay      int `json:"retry_delay,omitempty"`
+	MaxRetryCount   int `json:"max_retry_count,omitempty"`
 }
 
 type lagoPayload struct {
@@ -222,6 +254,18 @@ func (p *Plugin) PostInit() error {
 		value := true
 		p.config.SSLVerify = &value
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddrs)
@@ -235,7 +279,14 @@ func (p *Plugin) PostInit() error {
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !*p.config.SSLVerify})
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:            "lago logger",
+		BatchMaxSize:    p.config.BatchMaxSize,
+		MaxRetryCount:   p.config.MaxRetryCount,
+		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
+	}, p.SendBatch)
 	return nil
 }
 
@@ -288,28 +339,38 @@ func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
 }
 
 func (p *Plugin) Send(fields map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{fields}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	if len(p.config.EndpointAddrs) == 0 {
-		return
+		return 0, nil
 	}
 
+	events := make([]lagoEvent, 0, len(entries))
+	for _, entry := range entries {
+		events = append(events, p.buildEvent(entry))
+	}
 	endpoint := p.endpointURL()
 	resp, err := p.client.R().
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", "Bearer "+p.config.Token).
-		SetBody(lagoPayload{Events: []lagoEvent{p.buildEvent(fields)}}).
+		SetBody(lagoPayload{Events: events}).
 		Post(endpoint)
 	if err != nil {
-		logger.Errorf("failed to send Lago event to endpoint %s: %s", endpoint, err)
-		return
+		return 0, fmt.Errorf("failed to send Lago event to endpoint %s: %w", endpoint, err)
 	}
 	if resp.StatusCode() >= 300 {
-		logger.Errorf(
+		return 0, fmt.Errorf(
 			"Lago endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			endpoint,
 			resp.String(),
 		)
 	}
+	return 0, nil
 }
 
 func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {

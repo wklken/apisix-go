@@ -2,8 +2,10 @@ package splunk_hec_logging
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +40,9 @@ func TestPostInitSetsSplunkDefaults(t *testing.T) {
 	}
 	if !p.sslVerify() {
 		t.Fatal("sslVerify() = false, want true by default")
+	}
+	if p.config.BatchMaxSize != 1000 {
+		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
 	}
 }
 
@@ -130,5 +135,42 @@ func TestSendPostsSplunkHECEvent(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Splunk HEC body")
+	}
+}
+
+func TestSendBatchPostsConcatenatedSplunkHECEvents(t *testing.T) {
+	bodies := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		Endpoint: Endpoint{
+			URI:   server.URL,
+			Token: "secret-token",
+		},
+		BatchMaxSize: 2,
+	})
+
+	if _, err := p.SendBatch([]map[string]any{{"path": "/a"}, {"path": "/b"}}, 2); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
+
+	select {
+	case body := <-bodies:
+		if !strings.Contains(body, `"path":"/a"`) || !strings.Contains(body, `"path":"/b"`) {
+			t.Fatalf("body = %q, want both Splunk events", body)
+		}
+		if strings.Contains(body, "\n") || strings.HasPrefix(body, "[") {
+			t.Fatalf("body = %q, want concatenated JSON event objects", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Splunk HEC batch request")
 	}
 }

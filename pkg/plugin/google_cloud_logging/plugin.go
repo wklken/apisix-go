@@ -24,6 +24,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -137,6 +138,35 @@ const schema = `
     },
     "log_format": {
       "type": "object"
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
     }
   },
   "oneOf": [
@@ -147,7 +177,8 @@ const schema = `
 `
 
 type pluginMetadata struct {
-	LogFormat map[string]string `json:"log_format"`
+	LogFormat         map[string]string `json:"log_format"`
+	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
 type AuthConfig struct {
@@ -172,6 +203,13 @@ type Config struct {
 	Resource   MonitoredResource `json:"resource,omitempty"`
 	LogID      string            `json:"log_id,omitempty"`
 	LogFormat  map[string]string `json:"log_format,omitempty"`
+
+	BatchMaxSize      int `json:"batch_max_size,omitempty"`
+	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
+	BufferDuration    int `json:"buffer_duration,omitempty"`
+	RetryDelay        int `json:"retry_delay,omitempty"`
+	MaxRetryCount     int `json:"max_retry_count,omitempty"`
+	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
 type googleLogEntry struct {
@@ -266,6 +304,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.LogID == "" {
 		p.config.LogID = defaultLogID
 	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 	p.applyAuthDefaults(p.config.AuthConfig)
 
 	configUID := shared.NewConfigUID()
@@ -282,34 +332,54 @@ func (p *Plugin) PostInit() error {
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.sslVerify()})
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
+	metadata := loadMetadata()
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
-		p.LogFormat = loadMetadataLogFormat()
+		p.LogFormat = metadata.LogFormat
+	}
+	if p.config.MaxPendingEntries == 0 {
+		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
 
-	p.Consume()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:              name,
+		BatchMaxSize:      p.config.BatchMaxSize,
+		MaxRetryCount:     p.config.MaxRetryCount,
+		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
+		MaxPendingEntries: p.config.MaxPendingEntries,
+	}, p.SendBatch)
 	return nil
 }
 
 func (p *Plugin) Send(log map[string]any) {
+	if _, err := p.SendBatch([]map[string]any{log}, 1); err != nil {
+		logger.Errorf("%s", err)
+	}
+}
+
+func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	auth, err := p.authConfig()
 	if err != nil {
-		logger.Errorf("failed to load google-cloud-logging auth config: %s", err)
-		return
+		return 0, fmt.Errorf("failed to load google-cloud-logging auth config: %w", err)
 	}
 
 	accessToken, tokenType, err := p.generateAccessToken(auth)
 	if err != nil {
-		logger.Errorf("failed to get google-cloud-logging oauth token: %s", err)
-		return
+		return 0, fmt.Errorf("failed to get google-cloud-logging oauth token: %w", err)
 	}
 	if tokenType == "" {
 		tokenType = "Bearer"
 	}
 
+	googleEntries := make([]googleLogEntry, 0, len(entries))
+	for _, entry := range entries {
+		googleEntries = append(googleEntries, p.buildEntry(entry))
+	}
 	body := map[string]any{
-		"entries":        []googleLogEntry{p.buildEntry(log)},
+		"entries":        googleEntries,
 		"partialSuccess": false,
 	}
 	resp, err := p.client.R().
@@ -318,16 +388,16 @@ func (p *Plugin) Send(log map[string]any) {
 		SetBody(body).
 		Post(auth.EntriesURI)
 	if err != nil {
-		logger.Errorf("failed to write log to Google Cloud Logging endpoint %s: %s", auth.EntriesURI, err)
-		return
+		return 0, fmt.Errorf("failed to write log to Google Cloud Logging endpoint %s: %w", auth.EntriesURI, err)
 	}
 	if resp.StatusCode() != http.StatusOK {
-		logger.Errorf(
+		return 0, fmt.Errorf(
 			"Google Cloud Logging endpoint returned status code [%d], body [%s]",
 			resp.StatusCode(),
 			resp.String(),
 		)
 	}
+	return 0, nil
 }
 
 func (p *Plugin) authConfig() (*AuthConfig, error) {
@@ -614,16 +684,15 @@ func int64FromAny(value any) int64 {
 	}
 }
 
-func loadMetadataLogFormat() (format map[string]string) {
+func loadMetadata() (metadata pluginMetadata) {
 	defer func() {
 		if recover() != nil {
-			format = nil
+			metadata = pluginMetadata{}
 		}
 	}()
 
-	var metadata pluginMetadata
 	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return nil
+		return pluginMetadata{}
 	}
-	return metadata.LogFormat
+	return metadata
 }

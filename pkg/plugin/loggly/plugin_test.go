@@ -218,6 +218,131 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	}
 }
 
+func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		CustomerToken:       "token",
+		Host:                server.URL,
+		Protocol:            "http",
+		Timeout:             1000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req.Header.Set("X-Log-Body", "yes")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case payload := <-received:
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
+		}
+		if request["body"] != `{"order":2}` {
+			t.Fatalf("payload request body = %#v, want captured request body", request["body"])
+		}
+
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if response["body"] != `{"created":true}` {
+			t.Fatalf("payload response body = %#v, want captured response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP bulk log message")
+	}
+}
+
+func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		CustomerToken:       "token",
+		Host:                server.URL,
+		Protocol:            "http",
+		Timeout:             1000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req.Header.Set("X-Log-Body", "no")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":3}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":false}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case payload := <-received:
+		if _, ok := payload["request"]; ok {
+			t.Fatalf("payload request = %#v, want no request body", payload["request"])
+		}
+		if _, ok := payload["response"]; ok {
+			t.Fatalf("payload response = %#v, want no response body", payload["response"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP bulk log message")
+	}
+}
+
+func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"customer_token":         "token",
+		"include_req_body_expr":  []any{[]any{"http_x_log_body", "==", "yes"}},
+		"include_resp_body_expr": []any{[]any{"status", "==", "201"}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official body expression fields: %v", err)
+	}
+}
+
 func TestSchemaAcceptsOfficialBodySizeAndSSLFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

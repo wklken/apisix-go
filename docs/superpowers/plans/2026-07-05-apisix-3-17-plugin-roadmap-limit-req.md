@@ -7588,3 +7588,34 @@ Updated `ai-request-rewrite` README support notes and the live APISIX 3.17 parit
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/ai_request_rewrite -run TestHandlerRegistersLLMRewriteRequestVars -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_request_rewrite -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 230: Expose AI Proxy Request Vars to Logger Field Resolution
+
+**Files:**
+- Modify: `pkg/apisix/variable/request.go`
+- Modify: `pkg/plugin/ai_proxy/plugin_test.go`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: existing `ai-proxy` and `ai-proxy-multi` non-streaming request variables for request type, request/response model, and prompt/completion tokens.
+- Produces: logger-resolvable request-variable names so logging plugins can consume those AI fields through `apisix/log.GetField`.
+
+- [x] **Step 1: Confirm local gap**
+
+Read the local AI proxy registration helpers and shared request-variable allowlist. The plugins registered AI vars in request context, but the allowlist only exposed `$status` and the newly added rewrite markers.
+
+- [x] **Step 2: Add focused failing test**
+
+Extended the existing `ai-proxy` request-var test to assert logger field resolution for `$llm_prompt_tokens`. The first focused run failed because logger resolution returned an empty value.
+
+- [x] **Step 3: Add AI variable allowlist entries**
+
+Added `$request_type`, `$request_llm_model`, `$llm_model`, `$llm_prompt_tokens`, and `$llm_completion_tokens` to the shared request-variable allowlist.
+
+- [x] **Step 4: Update docs**
+
+Tightened the `ai-proxy` and `ai-proxy-multi` README notes to say those non-streaming AI variables are logger-resolvable.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/ai_proxy -run TestHandlerRegistersNonStreamingLLMRequestVars -count=1 -timeout=10s -v` and `go test ./pkg/plugin/ai_proxy -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

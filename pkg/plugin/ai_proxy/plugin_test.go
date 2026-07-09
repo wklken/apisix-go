@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -302,6 +303,9 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	assertLLMRequestVar(t, req, "$llm_model", "gpt-4-0613")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(23))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(8))
+	if got := apisixlog.GetField(req, "$llm_prompt_tokens"); got != int64(23) {
+		t.Fatalf("log $llm_prompt_tokens = %v, want 23", got)
+	}
 }
 
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {

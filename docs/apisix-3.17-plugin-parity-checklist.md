@@ -72,7 +72,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `proxy-mirror` | yes | 73% | monitor |
 | `graphql-proxy-cache` | yes | 55% | implement |
 | `proxy-rewrite` | yes | 98% | monitor |
-| `workflow` | yes | 65% | implement |
+| `workflow` | yes | 70% | implement |
 | `api-breaker` | yes | 95% | monitor |
 | `graphql-limit-count` | yes | 55% | implement |
 | `limit-conn` | yes | 87% | monitor |

@@ -10,6 +10,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_req"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -77,6 +78,7 @@ type Action struct {
 	Return     ReturnAction
 	limitConn  *limit_conn.Plugin
 	limitCount *limit_count.Plugin
+	limitReq   *limit_req.Plugin
 }
 
 type ReturnAction struct {
@@ -121,6 +123,18 @@ func (p *Plugin) PostInit() error {
 		for actionIndex := range p.config.Rules[ruleIndex].Actions {
 			action := &p.config.Rules[ruleIndex].Actions[actionIndex]
 			switch action.Name {
+			case "limit-req":
+				plugin := &limit_req.Plugin{}
+				if err := plugin.Init(); err != nil {
+					return err
+				}
+				if err := util.Parse(action.Config, plugin.Config()); err != nil {
+					return err
+				}
+				if err := plugin.PostInit(); err != nil {
+					return err
+				}
+				action.limitReq = plugin
 			case "limit-conn":
 				plugin := &limit_conn.Plugin{}
 				if err := plugin.Init(); err != nil {
@@ -173,6 +187,10 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, next http.
 		return false
 	}
 	action := actions[0]
+	if action.Name == "limit-req" && action.limitReq != nil {
+		action.limitReq.Handler(next).ServeHTTP(w, r)
+		return true
+	}
 	if action.Name == "limit-conn" && action.limitConn != nil {
 		action.limitConn.Handler(next).ServeHTTP(w, r)
 		return true

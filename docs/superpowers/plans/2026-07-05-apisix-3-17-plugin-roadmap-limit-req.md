@@ -7235,3 +7235,31 @@ Updated `oas-validator` README support notes and the live APISIX 3.17 parity che
 - [x] **Step 4: Verify**
 
 Run: `go test ./pkg/plugin/oas_validator -run TestHandlerValidatesRequestBodyWithLocalSchemaRef -count=1 -timeout=10s -v` and `go test ./pkg/plugin/oas_validator -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 219: Delegate `limit-req` From `workflow`
+
+**Files:**
+- Modify: `pkg/plugin/workflow/plugin.go`
+- Modify: `pkg/plugin/workflow/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official workflow action-array config using `["limit-req", {...}]` and the local `limit-req` plugin config.
+- Produces: workflow-selected request-rate limiting through the existing `limit-req` handler.
+
+- [x] **Step 1: Add focused failing test**
+
+Added a workflow test that configures a `limit-req` action and sends two requests from the same remote address. The first focused run failed because the second request reached downstream with `204` instead of being rejected.
+
+- [x] **Step 2: Wire delegated action**
+
+Initialized `limit-req` actions during `workflow` `PostInit()` and invoked the delegated plugin handler when the selected action is `limit-req`.
+
+- [x] **Step 3: Update docs**
+
+Updated `workflow` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/workflow -run TestHandlerRunsLimitReqAction -count=1 -timeout=10s -v` and `go test ./pkg/plugin/workflow -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -272,8 +272,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
   - support route/global `disable_proxy_buffering` by switching to immediate reverse-proxy response flushing
   - not support NGINX `proxy_buffering` internals or disk-backed response buffering controls
 - [x] [client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 100%
-- [x] [workflow](https://apisix.apache.org/zh/docs/apisix/plugins/workflow/) 65%
-  - support official action-array config shape, first matching `case`, `return` actions with configured status code, and delegated `limit-count` / `limit-conn` actions
+- [x] [workflow](https://apisix.apache.org/zh/docs/apisix/plugins/workflow/) 70%
+  - support official action-array config shape, first matching `case`, `return` actions with configured status code, and delegated `limit-req` / `limit-count` / `limit-conn` actions
   - not support full `lua-resty-expr` or other delegated plugin actions/log handlers
 
 ### Observability

@@ -242,10 +242,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		logger.Errorf("list global rules fail: %s", err)
 		return nil
 	}
-	globalPlugins := make([]plugin.Plugin, 0, len(globalRules))
-	for _, rule := range globalRules {
-		globalPlugins = append(globalPlugins, b.initPlugins(rule.Plugins, pluginRouteContext{})...)
-	}
+	globalPlugins := b.initGlobalPlugins(globalRules, routeContext)
 	if len(globalPlugins) > 0 {
 		globalChain := plugin.BuildPluginChain(globalPlugins...)
 
@@ -358,6 +355,17 @@ func (b *Builder) initPlugins(
 		p.PostInit()
 
 		plugins = append(plugins, p)
+	}
+	return plugins
+}
+
+func (b *Builder) initGlobalPlugins(
+	globalRules []resource.GlobalRule,
+	routeContext pluginRouteContext,
+) []plugin.Plugin {
+	plugins := make([]plugin.Plugin, 0, len(globalRules))
+	for _, rule := range globalRules {
+		plugins = append(plugins, b.initPlugins(rule.Plugins, routeContext)...)
 	}
 	return plugins
 }

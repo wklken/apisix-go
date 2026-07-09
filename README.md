@@ -333,9 +333,9 @@ Loggers:
 - [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 68%
   - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior or `max_pending_entries`
-- [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 58%
-  - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, `include_req_body`, `include_req_body_expr`, Go-side `include_resp_body`, `include_resp_body_expr`, capped body-size capture, and UDP/TCP syslog delivery through the Go syslog writer
-  - not support APISIX batch processor buffering semantics or OpenResty syslog connection pooling/TLS behavior parity
+- [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 70%
+  - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, `include_req_body`, `include_req_body_expr`, Go-side `include_resp_body`, `include_resp_body_expr`, capped body-size capture, UDP/TCP syslog delivery through the Go syslog writer, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), batched JSON payloads, and `max_pending_entries`
+  - not support OpenResty syslog connection pooling/TLS behavior parity or APISIX batch Prometheus gauge/stale-object cleanup exactness
 - [x] [log-rotate](https://apisix.apache.org/zh/docs/apisix/plugins/log-rotate/) 60%
   - support `plugin_attr.log-rotate` defaults for `interval`, `max_kept`, `max_size`, `timeout`, and `enable_compression`, APISIX timestamped `__access.log` / `__error.log` naming, max-size rotation, interval checks on request, current-file recreation, history pruning, and `.tar.gz` compression
   - not support OpenResty timer lifecycle, NGINX master `USR1` log reopening, NGINX config path discovery, or shelling out to system `tar`

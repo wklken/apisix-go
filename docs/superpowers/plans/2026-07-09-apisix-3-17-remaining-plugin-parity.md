@@ -29,7 +29,7 @@
 | `tcp-logger` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are OpenResty cosocket pooling and APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `kafka-logger` | 68% | Add shared batch processor and `max_pending_entries`; evaluate `meta_format = origin`; keep encrypted field storage out of scope. |
 | `rocketmq-logger` | 63% | Add shared batch processor, `max_pending_entries`, `meta_format = origin`, and `use_tls` if supported by current RocketMQ client without large dependency churn. |
-| `syslog` | 58% | Add shared batch processor; improve TLS config acceptance/delivery if practical; do not chase OpenResty connection pooling. |
+| `syslog` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are OpenResty syslog connection pooling/TLS behavior parity and APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `udp-logger` | 70% | Shared batch processor and `max_pending_entries` are implemented. Remaining gaps are APISIX batch Prometheus gauge/stale-object cleanup exactness. |
 | `clickhouse-logger` | 68% | Add shared batch processor and `max_pending_entries`; improve payload batching around JSONEachRow inserts. |
 | `log-rotate` | 60% | Improve Go-native rotation lifecycle, file reopening, and compression behavior where practical; keep NGINX master `USR1`, OpenResty timer, and runtime log-path discovery out of scope. |
@@ -57,7 +57,7 @@
   - Commit before touching other loggers.
 
 - [ ] **Task L3: Apply batch processor to remaining network loggers in small groups**
-  - Group 1: `tcp-logger` done, `udp-logger` done, `syslog` pending.
+  - Group 1: `tcp-logger` done, `udp-logger` done, `syslog` done.
   - Group 2: `clickhouse-logger`, `loki-logger`, `loggly`.
   - Group 3: `skywalking-logger`, `sls-logger`, `tencent-cloud-cls`.
   - Group 4: `google-cloud-logging`, `splunk-hec-logging`, `rocketmq-logger`, `kafka-logger`, `lago`.

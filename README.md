@@ -212,9 +212,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [data-mask](https://apisix.apache.org/zh/docs/apisix/plugins/data-mask/) 65%
   - support query/header/urlencoded-body masking, simple JSONPath body masking for dot paths, `[*]`, and numeric array indexes, `remove` / `replace` / `regex`, `max_body_size`, `max_req_post_args`, and official plugin name/schema/priority
   - not support APISIX log-phase-only behavior, full `jsonpath` syntax, temporary-file request bodies, access-log `$request_line` rewriting, or preserving original upstream request data while masking logger output
-- [x] [oas-validator](https://apisix.apache.org/docs/apisix/plugins/oas-validator/) 55%
-  - support official plugin name, priority, schema, inline JSON `spec`, `spec_url` fetch with custom headers, timeout and `ssl_verify`, method/path matching, required path/query/header parameters, JSON request body schema validation, skip flags, `reject_if_not_match`, `verbose_errors`, and configurable rejection status
-  - not support OpenAPI `$ref` / `components` resolution, plugin metadata `spec_url_ttl` refresh semantics, all OpenAPI parameter style/explode combinations, non-JSON request body schema validation, or response validation
+- [x] [oas-validator](https://apisix.apache.org/docs/apisix/plugins/oas-validator/) 62%
+  - support official plugin name, priority, schema, inline JSON `spec`, `spec_url` fetch with custom headers, timeout and `ssl_verify`, method/path matching, required path/query/header parameters, JSON request body schema validation, local `#/components/schemas/...` schema refs, skip flags, `reject_if_not_match`, `verbose_errors`, and configurable rejection status
+  - not support external `$ref` resolution, plugin metadata `spec_url_ttl` refresh semantics, all OpenAPI parameter style/explode combinations, non-JSON request body schema validation, or response validation
 
 ### Traffic
 

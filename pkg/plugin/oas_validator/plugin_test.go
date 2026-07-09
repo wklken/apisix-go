@@ -71,6 +71,28 @@ func TestHandlerPassesAndRestoresValidRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerValidatesRequestBodyWithLocalSchemaRef(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Spec:          testSpecWithComponentsRef(),
+		VerboseErrors: true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"age":3}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for invalid request")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "name") {
+		t.Fatalf("response body = %q, want validation error mentioning name", rr.Body.String())
+	}
+}
+
 func TestHandlerCanSkipValidationAndAllowMismatch(t *testing.T) {
 	tests := []struct {
 		name string
@@ -179,6 +201,40 @@ func testSpec() string {
           }
         },
         "responses": {"200": {"description": "OK"}}
+      }
+    }
+  }
+}`
+}
+
+func testSpecWithComponentsRef() string {
+	return `{
+  "openapi": "3.0.2",
+  "info": {"title": "Pet API", "version": "1.0.0"},
+  "paths": {
+    "/pets": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Pet"}
+            }
+          }
+        },
+        "responses": {"200": {"description": "OK"}}
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Pet": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "age": {"type": "integer"}
+        }
       }
     }
   }

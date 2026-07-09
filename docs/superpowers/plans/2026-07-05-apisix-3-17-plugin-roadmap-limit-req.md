@@ -7207,3 +7207,31 @@ Updated `openid-connect` README support notes and the live APISIX 3.17 parity ch
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/openid_connect -run 'TestHandlerVerifiesBearerJWTWith(PublicKey|JWKS)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/openid_connect -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 218: Support `oas-validator` Local Component Schema References
+
+**Files:**
+- Modify: `pkg/plugin/oas_validator/plugin.go`
+- Modify: `pkg/plugin/oas_validator/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: normal OpenAPI 3 local schema references in request/parameter schemas using `#/components/schemas/<name>`.
+- Produces: request body and parameter schema validation after expanding local component schema refs before compiling JSON Schema validators.
+
+- [x] **Step 1: Confirm current gap**
+
+Added a focused test for a request body schema using `"$ref": "#/components/schemas/Pet"`. The first run failed because `jsonschema` received only the operation schema and could not find `#/components/schemas/Pet`.
+
+- [x] **Step 2: Implement local schema ref expansion**
+
+Added `components.schemas` parsing and a bounded local `$ref` resolver during OpenAPI spec compilation. The resolver handles nested maps/slices and cycles by tracking seen component names.
+
+- [x] **Step 3: Update docs**
+
+Updated `oas-validator` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/oas_validator -run TestHandlerValidatesRequestBodyWithLocalSchemaRef -count=1 -timeout=10s -v` and `go test ./pkg/plugin/oas_validator -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

@@ -113,7 +113,12 @@ type Config struct {
 }
 
 type openAPISpec struct {
-	Paths map[string]pathItem `json:"paths"`
+	Paths      map[string]pathItem `json:"paths"`
+	Components components          `json:"components,omitempty"`
+}
+
+type components struct {
+	Schemas map[string]map[string]any `json:"schemas,omitempty"`
 }
 
 type pathItem struct {
@@ -298,31 +303,97 @@ func compileSpec(spec string) (*compiledSpec, error) {
 
 	compiled := &compiledSpec{}
 	for path, item := range parsed.Paths {
-		compiled.addOperation(path, http.MethodGet, item.Get, item.Parameters)
-		compiled.addOperation(path, http.MethodPost, item.Post, item.Parameters)
-		compiled.addOperation(path, http.MethodPut, item.Put, item.Parameters)
-		compiled.addOperation(path, http.MethodDelete, item.Delete, item.Parameters)
-		compiled.addOperation(path, http.MethodPatch, item.Patch, item.Parameters)
-		compiled.addOperation(path, http.MethodHead, item.Head, item.Parameters)
-		compiled.addOperation(path, http.MethodOptions, item.Options, item.Parameters)
+		compiled.addOperation(path, http.MethodGet, item.Get, item.Parameters, parsed.Components.Schemas)
+		compiled.addOperation(path, http.MethodPost, item.Post, item.Parameters, parsed.Components.Schemas)
+		compiled.addOperation(path, http.MethodPut, item.Put, item.Parameters, parsed.Components.Schemas)
+		compiled.addOperation(path, http.MethodDelete, item.Delete, item.Parameters, parsed.Components.Schemas)
+		compiled.addOperation(path, http.MethodPatch, item.Patch, item.Parameters, parsed.Components.Schemas)
+		compiled.addOperation(path, http.MethodHead, item.Head, item.Parameters, parsed.Components.Schemas)
+		compiled.addOperation(path, http.MethodOptions, item.Options, item.Parameters, parsed.Components.Schemas)
 	}
 	return compiled, nil
 }
 
-func (s *compiledSpec) addOperation(path string, method string, op *operation, pathParams []parameter) {
+func (s *compiledSpec) addOperation(
+	path string,
+	method string,
+	op *operation,
+	pathParams []parameter,
+	schemas map[string]map[string]any,
+) {
 	if op == nil {
 		return
 	}
 	params := make([]parameter, 0, len(pathParams)+len(op.Parameters))
 	params = append(params, pathParams...)
 	params = append(params, op.Parameters...)
+	for i := range params {
+		params[i].Schema = resolveSchemaRefs(params[i].Schema, schemas)
+	}
 	s.operations = append(s.operations, compiledOperation{
 		method:     method,
 		template:   path,
 		segments:   splitPath(path),
 		parameters: params,
-		body:       op.RequestBody,
+		body:       resolveRequestBodyRefs(op.RequestBody, schemas),
 	})
+}
+
+func resolveRequestBodyRefs(body *requestBody, schemas map[string]map[string]any) *requestBody {
+	if body == nil {
+		return nil
+	}
+
+	out := &requestBody{
+		Required: body.Required,
+		Content:  make(map[string]mediaType, len(body.Content)),
+	}
+	for contentType, media := range body.Content {
+		out.Content[contentType] = mediaType{Schema: resolveSchemaRefs(media.Schema, schemas)}
+	}
+	return out
+}
+
+func resolveSchemaRefs(schema map[string]any, schemas map[string]map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	resolved, ok := resolveSchemaValue(schema, schemas, map[string]bool{}).(map[string]any)
+	if !ok {
+		return schema
+	}
+	return resolved
+}
+
+func resolveSchemaValue(value any, schemas map[string]map[string]any, seen map[string]bool) any {
+	switch v := value.(type) {
+	case map[string]any:
+		if ref, ok := v["$ref"].(string); ok {
+			name, ok := strings.CutPrefix(ref, "#/components/schemas/")
+			if ok && !seen[name] {
+				if target, exists := schemas[name]; exists {
+					seen[name] = true
+					resolved := resolveSchemaValue(target, schemas, seen)
+					delete(seen, name)
+					return resolved
+				}
+			}
+		}
+
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = resolveSchemaValue(item, schemas, seen)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = resolveSchemaValue(item, schemas, seen)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func (s *compiledSpec) match(method string, path string) (*compiledOperation, map[string]string) {

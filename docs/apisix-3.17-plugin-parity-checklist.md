@@ -11,6 +11,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
   - `implement`: normal Go parity/config work remains.
   - `defer-native`: OpenResty/NGINX/Lua-runtime-specific behavior.
   - `defer-large`: separate subsystem design needed.
+  - `not-required-native`: OpenResty/NGINX/Lua-runtime-native behavior that should not be implemented unless explicitly requested.
   - `monitor`: currently high enough for this pass; revisit after lower-parity plugins.
 
 ## Default Plugin Matrix
@@ -24,10 +25,10 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `proxy-control` | yes | 60% | implement |
 | `request-id` | yes | 85% | monitor |
 | `zipkin` | yes | 45% | implement |
-| `ext-plugin-pre-req` | no | unsupported: No need | defer-large |
+| `ext-plugin-pre-req` | no | unsupported: No need | not-required-native |
 | `fault-injection` | yes | 88% | monitor |
 | `mocking` | yes | 97% | monitor |
-| `serverless-pre-function` | yes | 45% | implement |
+| `serverless-pre-function` | yes | 45% | not-required-native |
 | `cors` | yes | 80% | monitor |
 | `ip-restriction` | yes | 90% | monitor |
 | `ua-restriction` | yes | 95% | monitor |
@@ -111,15 +112,15 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `file-logger` | yes | 75% | monitor |
 | `clickhouse-logger` | yes | 68% | implement |
 | `tencent-cloud-cls` | yes | 63% | implement |
-| `inspect` | no | unsupported: lua feature | defer-native |
+| `inspect` | no | unsupported: lua feature | not-required-native |
 | `example-plugin` | yes | 60% | implement |
 | `aws-lambda` | yes | 70% | monitor |
 | `azure-functions` | yes | 65% | implement |
 | `openwhisk` | yes | 75% | monitor |
 | `openfunction` | yes | 65% | implement |
-| `serverless-post-function` | yes | 45% | implement |
-| `ext-plugin-post-req` | no | unsupported: No need | defer-large |
-| `ext-plugin-post-resp` | no | unsupported: No need | defer-large |
+| `serverless-post-function` | yes | 45% | not-required-native |
+| `ext-plugin-post-req` | no | unsupported: No need | not-required-native |
+| `ext-plugin-post-resp` | no | unsupported: No need | not-required-native |
 | `ai-request-rewrite` | yes | 50% | implement |
 
 ## Next Priority Lanes
@@ -127,4 +128,4 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 1. Finish low-risk logger body expression gates: `sls-logger`, `skywalking-logger`, `loki-logger`, `loggly`, `elasticsearch-logger`, and `tencent-cloud-cls`.
 2. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
 3. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
-4. Revisit external plugin runner support as a separate `defer-large` design: `ext-plugin-pre-req`, `ext-plugin-post-req`, and `ext-plugin-post-resp`.
+4. Keep OpenResty/NGINX/Lua-runtime-native plugins out of normal parity work: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`.

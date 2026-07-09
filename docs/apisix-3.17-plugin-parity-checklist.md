@@ -74,7 +74,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `proxy-rewrite` | yes | 98% | monitor |
 | `workflow` | yes | 70% | implement |
 | `api-breaker` | yes | 95% | monitor |
-| `graphql-limit-count` | yes | 55% | implement |
+| `graphql-limit-count` | yes | 62% | implement |
 | `limit-conn` | yes | 87% | monitor |
 | `limit-count` | yes | 86% | monitor |
 | `limit-req` | yes | 84% | monitor |

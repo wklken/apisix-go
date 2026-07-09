@@ -7683,3 +7683,35 @@ Updated `openid-connect` README support notes and the live APISIX 3.17 parity ch
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/openid_connect -run 'TestHandler(RejectsClaimsThatDoNotMatchClaimSchema|AllowsClaimsThatMatchClaimSchema)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/openid_connect -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 233: Support graphql-limit-count Standalone Redis Policy
+
+**Files:**
+- Modify: `pkg/plugin/graphql_limit_count/plugin.go`
+- Modify: `pkg/plugin/graphql_limit_count/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX 3.17 `graphql-limit-count` reuse of the `limit-count` schema and rate-limit function, including root-level standalone Redis config fields.
+- Produces: Redis-backed fixed-window GraphQL depth quota accounting with depth as request cost, quota headers, existing rejection behavior, and `allow_degradation`.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `graphql-limit-count.lua`; it sets `schema = limit_count.schema` and calls `limit_count.rate_limit(conf, ctx, plugin_name, depth)`, so Redis policy config follows `limit-count` and the GraphQL depth is the consumed cost.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added focused tests for Redis policy defaults, missing `redis_host`, schema acceptance of official Redis fields, Redis limiter depth cost, and degradation on Redis limiter errors. The first focused run failed because Redis config fields and the Redis limiter hook were missing.
+
+- [x] **Step 3: Implement standalone Redis fixed-window limiter**
+
+Added official Redis config fields/defaults, a Redis limiter interface, shared go-redis client construction, and an atomic Redis Lua script that increments the fixed-window quota by GraphQL depth cost. Redis Cluster remains out of scope.
+
+- [x] **Step 4: Update docs**
+
+Updated `graphql-limit-count` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/graphql_limit_count -run 'Test(PostInitAcceptsRedisPolicyDefaults|PostInitRejectsRedisPolicyWithoutHost|SchemaAcceptsRedisPolicyFields|HandlerUsesRedisLimiterDepthCost|HandlerAllowsDegradationWhenRedisLimiterFails)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/graphql_limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

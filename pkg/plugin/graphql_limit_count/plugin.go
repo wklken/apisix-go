@@ -2,6 +2,7 @@ package graphql_limit_count
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -11,9 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/shared"
 )
 
 type Plugin struct {
@@ -23,6 +26,8 @@ type Plugin struct {
 	mu       sync.Mutex
 	counters map[string]*counter
 	now      func() time.Time
+
+	redisLimiter countLimiter
 }
 
 const (
@@ -69,6 +74,51 @@ const schema = `
       "enum": ["local", "redis", "redis-cluster"],
       "default": "local"
     },
+    "redis_host": {
+      "type": "string",
+      "minLength": 2
+    },
+    "redis_port": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 6379
+    },
+    "redis_username": {
+      "type": "string",
+      "minLength": 1
+    },
+    "redis_password": {
+      "type": "string",
+      "minLength": 0
+    },
+    "redis_database": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "redis_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "redis_ssl": {
+      "type": "boolean",
+      "default": false
+    },
+    "redis_ssl_verify": {
+      "type": "boolean",
+      "default": false
+    },
+    "redis_keepalive_timeout": {
+      "type": "integer",
+      "minimum": 1000,
+      "default": 10000
+    },
+    "redis_keepalive_pool": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 100
+    },
     "allow_degradation": {
       "type": "boolean",
       "default": false
@@ -83,21 +133,57 @@ const schema = `
 `
 
 type Config struct {
-	Count                int64  `json:"count"`
-	TimeWindow           int64  `json:"time_window"`
-	Group                string `json:"group,omitempty"`
-	Key                  string `json:"key,omitempty"`
-	KeyType              string `json:"key_type,omitempty"`
-	RejectedCode         int    `json:"rejected_code,omitempty"`
-	RejectedMsg          string `json:"rejected_msg,omitempty"`
-	Policy               string `json:"policy,omitempty"`
-	AllowDegradation     *bool  `json:"allow_degradation,omitempty"`
-	ShowLimitQuotaHeader *bool  `json:"show_limit_quota_header,omitempty"`
+	Count                 int64  `json:"count"`
+	TimeWindow            int64  `json:"time_window"`
+	Group                 string `json:"group,omitempty"`
+	Key                   string `json:"key,omitempty"`
+	KeyType               string `json:"key_type,omitempty"`
+	RejectedCode          int    `json:"rejected_code,omitempty"`
+	RejectedMsg           string `json:"rejected_msg,omitempty"`
+	Policy                string `json:"policy,omitempty"`
+	RedisHost             string `json:"redis_host,omitempty"`
+	RedisPort             int    `json:"redis_port,omitempty"`
+	RedisUsername         string `json:"redis_username,omitempty"`
+	RedisPassword         string `json:"redis_password,omitempty"`
+	RedisDatabase         int    `json:"redis_database,omitempty"`
+	RedisTimeout          int    `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool  `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool  `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int    `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int    `json:"redis_keepalive_pool,omitempty"`
+	AllowDegradation      *bool  `json:"allow_degradation,omitempty"`
+	ShowLimitQuotaHeader  *bool  `json:"show_limit_quota_header,omitempty"`
 }
 
 type counter struct {
 	used    int64
 	resetAt time.Time
+}
+
+const redisLimitCountScript = `
+local current = redis.call("INCRBY", KEYS[1], ARGV[1])
+local ttl = redis.call("TTL", KEYS[1])
+if ttl < 0 then
+  redis.call("EXPIRE", KEYS[1], ARGV[3])
+  ttl = tonumber(ARGV[3])
+end
+
+local limit = tonumber(ARGV[2])
+local remaining = limit - current
+if remaining < 0 then
+  remaining = 0
+end
+
+local allowed = 1
+if current > limit then
+  allowed = 0
+end
+
+return {allowed, remaining, ttl}
+`
+
+type countLimiter interface {
+	incoming(r *http.Request, key string, cost int64) (int64, int64, bool, error)
 }
 
 type graphqlRequest struct {
@@ -131,8 +217,33 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
 	}
-	if p.config.Policy != "local" {
+	if p.config.Policy != "local" && p.config.Policy != "redis" {
 		return fmt.Errorf("not supported policy: %s", p.config.Policy)
+	}
+	if p.config.Policy == "redis" {
+		if p.config.RedisHost == "" {
+			return fmt.Errorf("redis_host is required")
+		}
+		if p.config.RedisPort == 0 {
+			p.config.RedisPort = 6379
+		}
+		if p.config.RedisTimeout == 0 {
+			p.config.RedisTimeout = 1000
+		}
+		if p.config.RedisSSL == nil {
+			value := false
+			p.config.RedisSSL = &value
+		}
+		if p.config.RedisSSLVerify == nil {
+			value := false
+			p.config.RedisSSLVerify = &value
+		}
+		if p.config.RedisKeepalivePool == 0 {
+			p.config.RedisKeepalivePool = 100
+		}
+		if p.redisLimiter == nil {
+			p.redisLimiter = p.newRedisLimiter()
+		}
 	}
 	if p.config.RejectedCode == 0 {
 		p.config.RejectedCode = http.StatusServiceUnavailable
@@ -167,7 +278,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		remaining, reset, allowed := p.incoming(p.resolveKey(r), int64(depth))
+		remaining, reset, allowed, err := p.incoming(r, p.resolveKey(r), int64(depth))
+		if err != nil {
+			if *p.config.AllowDegradation {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "failed to limit graphql count", http.StatusInternalServerError)
+			return
+		}
 		if *p.config.ShowLimitQuotaHeader {
 			w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(p.config.Count, 10))
 			w.Header().Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
@@ -221,7 +340,11 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 	return "", false
 }
 
-func (p *Plugin) incoming(key string, cost int64) (int64, int64, bool) {
+func (p *Plugin) incoming(r *http.Request, key string, cost int64) (int64, int64, bool, error) {
+	if p.config.Policy == "redis" {
+		return p.redisLimiter.incoming(r, key, cost)
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -241,10 +364,99 @@ func (p *Plugin) incoming(key string, cost int64) (int64, int64, bool) {
 	}
 
 	if c.used+cost > p.config.Count {
-		return 0, reset, false
+		return 0, reset, false, nil
 	}
 	c.used += cost
-	return p.config.Count - c.used, reset, true
+	return p.config.Count - c.used, reset, true, nil
+}
+
+type redisCountLimiter struct {
+	client     *redis.Client
+	count      int64
+	timeWindow int64
+}
+
+func (p *Plugin) newRedisLimiter() countLimiter {
+	configUID := shared.NewConfigUID()
+	configUID.Add(
+		p.config.RedisHost,
+		p.config.RedisPort,
+		p.config.RedisUsername,
+		p.config.RedisPassword,
+		p.config.RedisDatabase,
+		p.config.RedisTimeout,
+		*p.config.RedisSSL,
+		*p.config.RedisSSLVerify,
+	)
+
+	options := &redis.Options{
+		Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+		Username:     p.config.RedisUsername,
+		Password:     p.config.RedisPassword,
+		DB:           p.config.RedisDatabase,
+		DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		PoolSize:     p.config.RedisKeepalivePool,
+	}
+	if p.config.RedisKeepaliveTimeout > 0 {
+		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
+	}
+	if p.config.RedisSSL != nil && *p.config.RedisSSL {
+		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
+	}
+
+	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(*redis.Client)
+	return &redisCountLimiter{client: client, count: p.config.Count, timeWindow: p.config.TimeWindow}
+}
+
+func (l *redisCountLimiter) incoming(r *http.Request, key string, cost int64) (int64, int64, bool, error) {
+	result, err := l.client.Eval(
+		r.Context(),
+		redisLimitCountScript,
+		[]string{"plugin-graphql-limit-count:" + key},
+		cost,
+		l.count,
+		l.timeWindow,
+	).Result()
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	values, ok := result.([]any)
+	if !ok || len(values) != 3 {
+		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count result: %v", result)
+	}
+	allowed, ok := redisInt(values[0])
+	if !ok {
+		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count allowed value: %v", values[0])
+	}
+	remaining, ok := redisInt(values[1])
+	if !ok {
+		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count remaining value: %v", values[1])
+	}
+	reset, ok := redisInt(values[2])
+	if !ok {
+		return 0, 0, false, fmt.Errorf("unexpected redis graphql-limit-count reset value: %v", values[2])
+	}
+
+	return remaining, reset, allowed == 1, nil
+}
+
+func redisInt(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint64:
+		return int64(v), true
+	case string:
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {

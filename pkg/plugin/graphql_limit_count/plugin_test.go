@@ -1,11 +1,14 @@
 package graphql_limit_count
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -20,6 +23,144 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:      5,
+		TimeWindow: 60,
+		Key:        "remote_addr",
+		Policy:     "redis",
+		RedisHost:  "127.0.0.1",
+	})
+
+	if p.config.Policy != "redis" {
+		t.Fatalf("Policy = %q, want redis", p.config.Policy)
+	}
+	if p.config.RedisPort != 6379 {
+		t.Fatalf("RedisPort = %d, want 6379", p.config.RedisPort)
+	}
+	if p.config.RedisTimeout != 1000 {
+		t.Fatalf("RedisTimeout = %d, want 1000", p.config.RedisTimeout)
+	}
+	if p.config.RedisSSL == nil || *p.config.RedisSSL {
+		t.Fatalf("RedisSSL = %v, want false", p.config.RedisSSL)
+	}
+	if p.config.RedisSSLVerify == nil || *p.config.RedisSSLVerify {
+		t.Fatalf("RedisSSLVerify = %v, want false", p.config.RedisSSLVerify)
+	}
+	if p.redisLimiter == nil {
+		t.Fatal("redisLimiter = nil, want initialized limiter")
+	}
+}
+
+func TestPostInitRejectsRedisPolicyWithoutHost(t *testing.T) {
+	p := &Plugin{config: Config{
+		Count:      5,
+		TimeWindow: 60,
+		Key:        "remote_addr",
+		Policy:     "redis",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "redis_host is required") {
+		t.Fatalf("PostInit() error = %v, want redis_host required", err)
+	}
+}
+
+func TestSchemaAcceptsRedisPolicyFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"count":                   5,
+		"time_window":             60,
+		"key":                     "remote_addr",
+		"policy":                  "redis",
+		"redis_host":              "127.0.0.1",
+		"redis_port":              6379,
+		"redis_username":          "default",
+		"redis_password":          "",
+		"redis_database":          0,
+		"redis_timeout":           1000,
+		"redis_ssl":               false,
+		"redis_ssl_verify":        false,
+		"redis_keepalive_timeout": 10000,
+		"redis_keepalive_pool":    100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected redis policy fields: %v", err)
+	}
+}
+
+func TestHandlerUsesRedisLimiterDepthCost(t *testing.T) {
+	redisLimiter := &fakeRedisLimiter{
+		remaining: 1,
+		reset:     60,
+		allowed:   true,
+	}
+	p := newTestPlugin(t, Config{
+		Count:      5,
+		TimeWindow: 60,
+		Key:        "remote_addr",
+		Policy:     "redis",
+		RedisHost:  "127.0.0.1",
+	})
+	p.redisLimiter = redisLimiter
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/graphql",
+		strings.NewReader(`{"query":"query { foo { bar { baz { id } } } }"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.10:1234"
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if redisLimiter.key != "192.0.2.10" {
+		t.Fatalf("redis key = %q, want 192.0.2.10", redisLimiter.key)
+	}
+	if redisLimiter.cost != 4 {
+		t.Fatalf("redis cost = %d, want query depth 4", redisLimiter.cost)
+	}
+	if got := rr.Header().Get("X-RateLimit-Remaining"); got != "1" {
+		t.Fatalf("X-RateLimit-Remaining = %q, want 1", got)
+	}
+}
+
+func TestHandlerAllowsDegradationWhenRedisLimiterFails(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:            5,
+		TimeWindow:       60,
+		Key:              "remote_addr",
+		Policy:           "redis",
+		RedisHost:        "127.0.0.1",
+		AllowDegradation: boolPtr(true),
+	})
+	p.redisLimiter = &fakeRedisLimiter{err: errors.New("redis down")}
+
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ foo { id } }"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.20:1234"
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204 degradation pass; body=%s", rr.Code, rr.Body.String())
+	}
 }
 
 func TestGraphQLDepthCountsNestedSelections(t *testing.T) {
@@ -205,4 +346,19 @@ func TestWindowResetsAfterTimeWindow(t *testing.T) {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+type fakeRedisLimiter struct {
+	key       string
+	cost      int64
+	remaining int64
+	reset     int64
+	allowed   bool
+	err       error
+}
+
+func (f *fakeRedisLimiter) incoming(_ *http.Request, key string, cost int64) (int64, int64, bool, error) {
+	f.key = key
+	f.cost = cost
+	return f.remaining, f.reset, f.allowed, f.err
 }

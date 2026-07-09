@@ -52,8 +52,8 @@ func TestPostInitSetsLagoDefaults(t *testing.T) {
 	if p.config.KeepalivePool != 5 {
 		t.Fatalf("keepalive_pool = %d, want 5", p.config.KeepalivePool)
 	}
-	if p.config.BatchMaxSize != 1000 {
-		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	if p.config.BatchMaxSize != 100 {
+		t.Fatalf("batch_max_size = %d, want 100", p.config.BatchMaxSize)
 	}
 }
 

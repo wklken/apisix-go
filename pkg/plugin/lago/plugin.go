@@ -29,6 +29,8 @@ type Plugin struct {
 const (
 	priority = 415
 	name     = "lago"
+
+	defaultBatchMaxSize = 100
 )
 
 const schema = `
@@ -255,7 +257,7 @@ func (p *Plugin) PostInit() error {
 		p.config.SSLVerify = &value
 	}
 	if p.config.BatchMaxSize == 0 {
-		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+		p.config.BatchMaxSize = defaultBatchMaxSize
 	}
 	if p.config.RetryDelay == 0 {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)

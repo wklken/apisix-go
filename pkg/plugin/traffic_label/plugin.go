@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -207,9 +208,35 @@ func matchCondition(r *http.Request, condition any) bool {
 		return actual == right
 	case "!=":
 		return actual != right
+	case ">":
+		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
+	case ">=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
+	case "<":
+		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
+	case "<=":
+		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
+	case "~":
+		matched, _ := regexp.MatchString(right, actual)
+		return matched
+	case "!~":
+		matched, _ := regexp.MatchString(right, actual)
+		return !matched
 	default:
 		return false
 	}
+}
+
+func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
+	l, err := strconv.ParseFloat(left, 64)
+	if err != nil {
+		return false
+	}
+	r, err := strconv.ParseFloat(right, 64)
+	if err != nil {
+		return false
+	}
+	return compare(l, r)
 }
 
 func resolveValue(r *http.Request, value string) string {
@@ -219,12 +246,13 @@ func resolveValue(r *http.Request, value string) string {
 }
 
 func requestVar(r *http.Request, name string) string {
+	name = strings.TrimPrefix(name, "$")
 	switch {
 	case name == "uri":
 		return r.URL.Path
 	case name == "request_uri":
 		return r.URL.RequestURI()
-	case name == "method":
+	case name == "method", name == "request_method":
 		return r.Method
 	case name == "host":
 		return r.Host

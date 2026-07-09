@@ -79,7 +79,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `limit-count` | yes | 86% | monitor |
 | `limit-req` | yes | 84% | monitor |
 | `gzip` | yes | 98% | monitor |
-| `traffic-label` | yes | 55% | implement |
+| `traffic-label` | yes | 63% | implement |
 | `traffic-split` | yes | 75% | monitor |
 | `redirect` | yes | 90% | monitor |
 | `response-rewrite` | yes | 80% | monitor |

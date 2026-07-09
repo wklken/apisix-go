@@ -7263,3 +7263,35 @@ Updated `workflow` README support notes and the live APISIX 3.17 parity checklis
 - [x] **Step 4: Verify**
 
 Run: `go test ./pkg/plugin/workflow -run TestHandlerRunsLimitReqAction -count=1 -timeout=10s -v` and `go test ./pkg/plugin/workflow -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 220: Expand `traffic-label` Bounded Match Operators
+
+**Files:**
+- Modify: `pkg/plugin/traffic_label/plugin.go`
+- Modify: `pkg/plugin/traffic_label/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: APISIX `traffic-label` `match` expressions using bounded `resty.expr`-style operators and request variables.
+- Produces: local matching for `$`-prefixed variables, `request_method`, numeric comparison operators, and regex match/negation.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `traffic-label.lua`; official `match` is compiled with `resty.expr.v1`, while local support was limited to `==` and `!=`.
+
+- [x] **Step 2: Add focused failing test**
+
+Added a test covering `$request_method`, `arg_score >= 10`, `http_x_region ~ "^west-[0-9]+$"`, and `uri !~ "/internal"`. The first run failed because no header was set.
+
+- [x] **Step 3: Implement bounded expression parity**
+
+Added `$` variable trimming, `request_method`, numeric comparisons, and regex match/negation operators, matching the existing bounded pattern already used by `response-rewrite`.
+
+- [x] **Step 4: Update docs**
+
+Updated `traffic-label` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/traffic_label -run TestMatchSupportsPrefixedVarsNumericAndRegexOperators -count=1 -timeout=10s -v` and `go test ./pkg/plugin/traffic_label -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

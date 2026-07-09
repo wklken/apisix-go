@@ -152,3 +152,36 @@ func TestMatchSupportsRequestHeaderAndNotEquals(t *testing.T) {
 		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
+
+func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []any{
+					[]any{"$request_method", "==", http.MethodGet},
+					[]any{"arg_score", ">=", "10"},
+					[]any{"http_x_region", "~", "^west-[0-9]+$"},
+					[]any{"uri", "!~", "/internal"},
+				},
+				Actions: []Action{
+					{SetHeaders: map[string]string{"X-Traffic-Label": "$arg_score-$http_x_region"}},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/anything?score=12", nil)
+	req.Header.Set("X-Region", "west-1")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Traffic-Label"); got != "12-west-1" {
+			t.Fatalf("X-Traffic-Label = %q, want 12-west-1", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}

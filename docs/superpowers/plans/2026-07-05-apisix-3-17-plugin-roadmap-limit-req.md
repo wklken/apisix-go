@@ -7079,3 +7079,35 @@ Updated `jwt-auth` README support notes and moved the live APISIX 3.17 parity ch
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/jwt_auth -run 'TestHandlerAccepts(RS256|PS256|ES256|EdDSA)TokenAndAttachesConsumer' -count=1 -timeout=20s -v` and `go test ./pkg/plugin/jwt_auth -count=1 -timeout=20s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 214: Support `limit-req` Standalone Redis Policy
+
+**Files:**
+- Modify: `pkg/plugin/limit_req/plugin.go`
+- Modify: `pkg/plugin/limit_req/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `limit-req` `policy = redis` fields: `redis_host`, `redis_port`, `redis_username`, `redis_password`, `redis_database`, `redis_timeout`, `redis_ssl`, `redis_ssl_verify`, `redis_keepalive_timeout`, and `redis_keepalive_pool`.
+- Produces: Redis-backed leaky-bucket request-rate limiting with shared go-redis clients, atomic Redis Lua state updates, existing rejection bodies/codes, `nodelay`, and `allow_degradation`.
+
+- [x] **Step 1: Confirm official behavior**
+
+Fetched Apache APISIX `release/3.17` and confirmed `limit-req.lua` supports `local`, `redis`, and `redis-cluster` policies through the shared Redis schema, with root-level Redis fields.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added tests for Redis schema acceptance, Redis defaulting in `PostInit`, handler delegation to a Redis limiter, and Redis limiter rejection behavior. The first focused run failed because `Config` did not expose Redis fields.
+
+- [x] **Step 3: Implement standalone Redis policy**
+
+Added official Redis config fields, standalone Redis defaulting, shared go-redis client construction, and a Redis Lua leaky-bucket limiter. Kept `redis-cluster` unsupported for a later slice.
+
+- [x] **Step 4: Update docs**
+
+Updated `limit-req` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/limit_req -run 'Test(PostInitAcceptsRedisPolicyDefaults|SchemaAcceptsRedisPolicyFields|HandlerUsesRedisLimiter|HandlerRejectsWhenRedisLimiterRejects)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/limit_req -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

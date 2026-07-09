@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -53,6 +56,115 @@ func TestPostInitDefaults(t *testing.T) {
 	}
 	if p.config.Nodelay == nil || *p.config.Nodelay {
 		t.Fatalf("Nodelay = %v, want false", p.config.Nodelay)
+	}
+}
+
+func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rate:      1,
+		Burst:     1,
+		Key:       "remote_addr",
+		Policy:    "redis",
+		RedisHost: "127.0.0.1",
+	})
+
+	if p.config.Policy != "redis" {
+		t.Fatalf("Policy = %q, want redis", p.config.Policy)
+	}
+	if p.config.RedisPort != 6379 {
+		t.Fatalf("RedisPort = %d, want 6379", p.config.RedisPort)
+	}
+	if p.config.RedisTimeout != 1000 {
+		t.Fatalf("RedisTimeout = %d, want 1000", p.config.RedisTimeout)
+	}
+	if p.config.RedisSSL == nil || *p.config.RedisSSL {
+		t.Fatalf("RedisSSL = %v, want false", p.config.RedisSSL)
+	}
+	if p.config.RedisSSLVerify == nil || *p.config.RedisSSLVerify {
+		t.Fatalf("RedisSSLVerify = %v, want false", p.config.RedisSSLVerify)
+	}
+}
+
+func TestSchemaAcceptsRedisPolicyFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"rate":                    1,
+		"burst":                   1,
+		"key":                     "remote_addr",
+		"policy":                  "redis",
+		"redis_host":              "127.0.0.1",
+		"redis_port":              6379,
+		"redis_username":          "default",
+		"redis_password":          "",
+		"redis_database":          0,
+		"redis_timeout":           1000,
+		"redis_ssl":               false,
+		"redis_ssl_verify":        false,
+		"redis_keepalive_timeout": 10000,
+		"redis_keepalive_pool":    100,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected redis policy fields: %v", err)
+	}
+}
+
+func TestHandlerUsesRedisLimiter(t *testing.T) {
+	redisLimiter := &fakeRedisLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Rate:      1,
+		Burst:     0,
+		Key:       "remote_addr",
+		Policy:    "redis",
+		RedisHost: "127.0.0.1",
+		Nodelay:   boolPtr(true),
+	})
+	p.redisLimiter = redisLimiter
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	res := performRequest(handler, "192.0.2.40:12345")
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+	if redisLimiter.key != "192.0.2.40" {
+		t.Fatalf("redis key = %q, want 192.0.2.40", redisLimiter.key)
+	}
+	if redisLimiter.rate != 1 {
+		t.Fatalf("redis rate = %f, want 1", redisLimiter.rate)
+	}
+	if redisLimiter.burst != 0 {
+		t.Fatalf("redis burst = %f, want 0", redisLimiter.burst)
+	}
+}
+
+func TestHandlerRejectsWhenRedisLimiterRejects(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rate:        1,
+		Burst:       0,
+		Key:         "remote_addr",
+		Policy:      "redis",
+		RedisHost:   "127.0.0.1",
+		RejectedMsg: "slow down",
+		Nodelay:     boolPtr(true),
+	})
+	p.redisLimiter = &fakeRedisLimiter{allowed: false}
+
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	res := performRequest(handler, "192.0.2.50:12345")
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+	if got := res.Body.String(); got != `{"error_msg":"slow down"}` {
+		t.Fatalf("response body = %q, want %q", got, `{"error_msg":"slow down"}`)
 	}
 }
 
@@ -128,4 +240,20 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+type fakeRedisLimiter struct {
+	key     string
+	rate    float64
+	burst   float64
+	delay   time.Duration
+	allowed bool
+	err     error
+}
+
+func (f *fakeRedisLimiter) incoming(key string, rate float64, burst float64) (time.Duration, bool, error) {
+	f.key = key
+	f.rate = rate
+	f.burst = burst
+	return f.delay, f.allowed, f.err
 }

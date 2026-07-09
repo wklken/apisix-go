@@ -344,8 +344,8 @@ Loggers:
 - [x] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/) 55%
   - support official metadata-shaped config for `tcp`, `skywalking`, `clickhouse`, and `kafka`, level filtering, TCP/TLS delivery, SkyWalking `/v3/logs` entries, ClickHouse JSONEachRow inserts, Kafka topic/key publishing, legacy `host` / `port` TCP config, and official batch/default knobs
   - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, APISIX batch processor retry semantics, Kafka SASL, or encrypted metadata fields
-- [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 55%
-  - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_resp_body`, and capped body-size capture
+- [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 63%
+  - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, and capped body-size capture
   - not support APISIX batch processor behavior
 - [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 55%
   - support service-account `auth_config`, `auth_file`, JWT bearer token exchange, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, and default Cloud Logging `httpRequest` entry expansion

@@ -6787,3 +6787,31 @@ Added a checklist that marks normal Go feature/config parity as `implement`, Ope
 - [x] **Step 4: Verify**
 
 Docs-only change; verify with `git diff --check`.
+
+### Task 204: Support `sls-logger` Body Expression Gates
+
+**Files:**
+- Modify: `pkg/plugin/sls_logger/plugin.go`
+- Modify: `pkg/plugin/sls_logger/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-plugin-parity-checklist.md`
+
+**Interfaces:**
+- Consumes: official APISIX 3.17 `sls-logger` `include_req_body_expr` and `include_resp_body_expr` config.
+- Produces: SLS RFC5424 log payloads whose request and response body fields are gated by bounded request-variable expressions while preserving request body replay, capped capture, and existing TLS delivery behavior.
+
+- [x] **Step 1: Add focused failing tests**
+
+Added tests for matching expressions, non-matching expressions, and schema acceptance. The first focused run failed because `Config` did not yet expose `IncludeReqBodyExpr` or `IncludeRespBodyExpr`.
+
+- [x] **Step 2: Implement bounded expression gates**
+
+Added schema/config fields for `include_req_body_expr` / `include_resp_body_expr`, gated request body reads before downstream execution, captured response status in the SLS logger recorder, and evaluated response body logging after downstream completion using the existing local `==`, `!=`, numeric comparison, regex, `AND`, and `OR` expression subset.
+
+- [x] **Step 3: Update docs**
+
+Updated `sls-logger` README support notes and the live APISIX 3.17 parity checklist.
+
+- [x] **Step 4: Verify**
+
+Run: `go test ./pkg/plugin/sls_logger -run 'TestHandler(IncludesBodiesWhenExpressionsMatch|SkipsBodiesWhenExpressionsDoNotMatch)|TestSchemaAcceptsOfficialBodyExpressionFields' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/sls_logger -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.

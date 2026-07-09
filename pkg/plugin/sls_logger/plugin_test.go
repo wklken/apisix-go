@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -176,6 +178,134 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for TLS log message")
+	}
+}
+
+func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:                host,
+		Port:                mustAtoi(t, port),
+		Project:             "project-a",
+		Logstore:            "store-a",
+		AccessKeyID:         "id",
+		AccessKeySecret:     "secret",
+		Timeout:             1000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req.Header.Set("X-Log-Body", "yes")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
+		}
+		if request["body"] != `{"order":2}` {
+			t.Fatalf("payload request body = %#v, want captured request body", request["body"])
+		}
+
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if response["body"] != `{"created":true}` {
+			t.Fatalf("payload response body = %#v, want captured response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TLS log message")
+	}
+}
+
+func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:                host,
+		Port:                mustAtoi(t, port),
+		Project:             "project-a",
+		Logstore:            "store-a",
+		AccessKeyID:         "id",
+		AccessKeySecret:     "secret",
+		Timeout:             1000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req.Header.Set("X-Log-Body", "no")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":3}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":false}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		if _, ok := payload["request"]; ok {
+			t.Fatalf("payload request = %#v, want no request body", payload["request"])
+		}
+		if _, ok := payload["response"]; ok {
+			t.Fatalf("payload response = %#v, want no response body", payload["response"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TLS log message")
+	}
+}
+
+func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"host":                   "127.0.0.1",
+		"port":                   10009,
+		"project":                "project-a",
+		"logstore":               "store-a",
+		"access_key_id":          "id",
+		"access_key_secret":      "secret",
+		"include_req_body_expr":  []any{[]any{"http_x_log_body", "==", "yes"}},
+		"include_resp_body_expr": []any{[]any{"status", "==", "201"}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official body expression fields: %v", err)
 	}
 }
 

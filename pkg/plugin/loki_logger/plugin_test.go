@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -231,6 +233,129 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Loki body")
+	}
+}
+
+func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
+	bodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Timeout:             1000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "201"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":2}`))
+	req.Header.Set("X-Log-Body", "yes")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":true}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-bodies:
+		entry := extractLokiEntry(t, body)
+		request, ok := entry["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("entry request = %#v, want object", entry["request"])
+		}
+		if request["body"] != `{"order":2}` {
+			t.Fatalf("entry request body = %#v, want captured request body", request["body"])
+		}
+
+		response, ok := entry["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("entry response = %#v, want object", entry["response"])
+		}
+		if response["body"] != `{"created":true}` {
+			t.Fatalf("entry response body = %#v, want captured response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Loki body")
+	}
+}
+
+func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
+	bodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs:       []string{server.URL},
+		Timeout:             1000,
+		IncludeReqBody:      true,
+		IncludeReqBodyExpr:  [][]any{{"http_x_log_body", "==", "yes"}},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: [][]any{{"status", "==", "500"}},
+		MaxReqBodyBytes:     32,
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", bytes.NewBufferString(`{"order":3}`))
+	req.Header.Set("X-Log-Body", "no")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if string(body) != `{"order":3}` {
+			t.Fatalf("upstream body = %q, want original request body", body)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"created":false}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-bodies:
+		entry := extractLokiEntry(t, body)
+		if _, ok := entry["request"]; ok {
+			t.Fatalf("entry request = %#v, want no request body", entry["request"])
+		}
+		if _, ok := entry["response"]; ok {
+			t.Fatalf("entry response = %#v, want no response body", entry["response"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Loki body")
+	}
+}
+
+func TestSchemaAcceptsOfficialBodyExpressionFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"endpoint_addrs":         []any{"http://127.0.0.1:3100"},
+		"include_req_body_expr":  []any{[]any{"http_x_log_body", "==", "yes"}},
+		"include_resp_body_expr": []any{[]any{"status", "==", "201"}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected official body expression fields: %v", err)
 	}
 }
 

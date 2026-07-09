@@ -94,7 +94,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `prometheus` | yes | 45% | implement |
 | `datadog` | yes | 68% | implement |
 | `lago` | yes | 64% | implement |
-| `loki-logger` | yes | 60% | implement |
+| `loki-logger` | yes | 68% | implement |
 | `elasticsearch-logger` | yes | 73% | monitor |
 | `echo` | yes | 90% | monitor |
 | `loggly` | yes | 60% | implement |

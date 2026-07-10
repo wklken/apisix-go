@@ -79,7 +79,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 
 | Plugin | Current | What remains |
 |---|---:|---|
-| `openid-connect` | 68% | Authorization-code/session flow, PKCE, logout/revocation, token renewal, client assertion auth, session-flow claim schema behavior, proxy options. |
+| `openid-connect` | 78% | Redis sessions, revocation, token renewal, client assertion auth, session-flow claim schema behavior, proxy options, and exact OpenResty session semantics. |
 | `key-auth` | 75% | Encrypted consumer-field parity only if a project-level encrypted-secret design exists; otherwise keep current API-key, hide-credentials, and anonymous-consumer behavior. |
 | `jwt-auth` | 85% | Encrypted consumer-field parity only if a project-level encrypted-secret design exists; otherwise verify asymmetric algorithm and anonymous-consumer coverage stays aligned with APISIX 3.17. |
 | `saml-auth` | 55% | IdP metadata loading, IdP-initiated SSO/SLO gaps, artifact binding if practical, richer logout semantics, more metadata/userinfo forwarding. Do not implement encrypted `resty.session` parity. |
@@ -101,8 +101,8 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 ### Auth Execution Tasks
 
 - [ ] **Task A1: Continue `openid-connect` with PKCE or code flow**
-  - Start with PKCE verifier/challenge generation and validation if current session scaffolding supports it.
-  - Tests: auth redirect includes `code_challenge`, callback validates session verifier, invalid state/verifier is rejected.
+  - [x] A1a: authorization-code cookie session flow, encrypted cookie storage, state validation, PKCE S256, token exchange, downstream token headers, and end-session logout redirect.
+  - [ ] Later slices: token renewal, revocation, private-key JWT/client assertion auth, session-flow claim validation, and proxy options.
 
 - [ ] **Task A2: Expand `multi-auth` plugin coverage**
   - Add one auth plugin at a time, only if the target plugin already has stable handler tests.

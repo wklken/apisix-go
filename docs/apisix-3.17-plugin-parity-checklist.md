@@ -38,7 +38,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `request-validation` | yes | 85% | monitor |
 | `chaitin-waf` | yes | 55% | implement |
 | `multi-auth` | yes | 60% | implement |
-| `openid-connect` | yes | 68% | implement |
+| `openid-connect` | yes | 78% | monitor |
 | `saml-auth` | yes | 55% | implement |
 | `cas-auth` | yes | 60% | implement |
 | `authz-casbin` | yes | 70% | monitor |

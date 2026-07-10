@@ -1,6 +1,8 @@
 package route
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -59,6 +61,7 @@ func TestBuildRequestContextConfigDefaultsPrometheusPreferNameFalse(t *testing.T
 }
 
 func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
+	loggerEndpoint := newLoggerEndpoint(t)
 	oldBatchProcessEntries := metrics.BatchProcessEntries
 	gauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_route_batch_process_entries"},
@@ -69,16 +72,17 @@ func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
 		metrics.BatchProcessEntries = oldBatchProcessEntries
 	})
 
-	plugins := NewBuilder(nil).initPlugins(
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"http-logger": map[string]any{
-				"uri":              "http://127.0.0.1/logs",
+				"uri":              loggerEndpoint,
 				"batch_max_size":   10,
 				"buffer_duration":  60,
 				"inactive_timeout": 60,
 			},
 		},
-		pluginRouteContext{routeID: "route-a"},
+		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
 	)
 	if len(plugins) != 1 {
 		t.Fatalf("plugins len = %d, want 1", len(plugins))
@@ -94,15 +98,16 @@ func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
 		t.Fatalf("Fire() error = %v", err)
 	}
 
-	if got := routeGaugeValue(t, gauge, "http logger", "route-a", ""); got != 1 {
+	if got := routeGaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {
 		t.Fatalf("batch_process_entries route label value = %v, want 1", got)
 	}
-	if got := routeGaugeValue(t, gauge, "http logger", "", ""); got != 0 {
+	if got := routeGaugeValue(t, gauge, "http logger", "", "127.0.0.1:9080"); got != 0 {
 		t.Fatalf("batch_process_entries empty-route value = %v, want 0", got)
 	}
 }
 
 func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
+	loggerEndpoint := newLoggerEndpoint(t)
 	oldBatchProcessEntries := metrics.BatchProcessEntries
 	gauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_route_server_batch_process_entries"},
@@ -117,7 +122,7 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 	plugins := builder.initPlugins(
 		map[string]resource.PluginConfig{
 			"http-logger": map[string]any{
-				"uri":              "http://127.0.0.1/logs",
+				"uri":              loggerEndpoint,
 				"batch_max_size":   10,
 				"buffer_duration":  60,
 				"inactive_timeout": 60,
@@ -157,6 +162,7 @@ func TestNewBuilderWithServerAddrNormalizesPortOnlyAddr(t *testing.T) {
 }
 
 func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
+	loggerEndpoint := newLoggerEndpoint(t)
 	oldBatchProcessEntries := metrics.BatchProcessEntries
 	gauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_global_route_batch_process_entries"},
@@ -173,7 +179,7 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 			{
 				Plugins: map[string]resource.PluginConfig{
 					"http-logger": map[string]any{
-						"uri":              "http://127.0.0.1/logs",
+						"uri":              loggerEndpoint,
 						"batch_max_size":   10,
 						"buffer_duration":  60,
 						"inactive_timeout": 60,
@@ -200,6 +206,16 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 	if got := routeGaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {
 		t.Fatalf("global batch_process_entries route/server value = %v, want 1", got)
 	}
+}
+
+func newLoggerEndpoint(t *testing.T) string {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
 }
 
 func routeGaugeValue(t *testing.T, gauge *prometheus.GaugeVec, labels ...string) float64 {

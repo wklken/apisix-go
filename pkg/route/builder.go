@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -112,6 +113,8 @@ func convertURI(uri string) (string, error) {
 
 type Builder struct {
 	serverAddr string
+	stoppers   []pluginStopper
+	stopOnce   sync.Once
 }
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -120,6 +123,14 @@ func NewBuilder(storage *store.Store) *Builder {
 
 func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
 	return &Builder{serverAddr: normalizeServerAddr(serverAddr)}
+}
+
+func (b *Builder) Stop() {
+	b.stopOnce.Do(func() {
+		for _, stopper := range b.stoppers {
+			stopper.Stop()
+		}
+	})
 }
 
 func (b *Builder) Build() *chi.Mux {
@@ -323,6 +334,10 @@ type pluginRouteContextSetter interface {
 	SetRouteContext(routeID string, serverAddr string)
 }
 
+type pluginStopper interface {
+	Stop()
+}
+
 func (b *Builder) initPlugins(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
@@ -353,6 +368,9 @@ func (b *Builder) initPlugins(
 		}
 
 		p.PostInit()
+		if stopper, ok := p.(pluginStopper); ok {
+			b.stoppers = append(b.stoppers, stopper)
+		}
 
 		plugins = append(plugins, p)
 	}

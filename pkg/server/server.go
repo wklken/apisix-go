@@ -24,6 +24,7 @@ import (
 type Server struct {
 	addr            string
 	server          *http.Server
+	routes          *routeHandler
 	reloadEventChan chan struct{}
 
 	events  chan *store.Event
@@ -33,10 +34,12 @@ type Server struct {
 func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
 	storage := store.NewStore("apisix-go-store.db", events)
+	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	return &Server{
 		// FIXME: listen to multiple address from global config
 		addr:            ":8080",
-		server:          &http.Server{},
+		server:          &http.Server{Handler: routes},
+		routes:          routes,
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
@@ -58,7 +61,8 @@ func (s *Server) Start() {
 	s.startEtcdWatcher()
 
 	logger.Info("build the routes")
-	s.server.Handler = route.NewBuilderWithServerAddr(s.storage, s.addr).Build()
+	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
+	s.routes.Replace(builder.Build(), builder.Stop)
 
 	// start the reloader
 	reloadCheckInterval := 60 * time.Second
@@ -98,12 +102,20 @@ func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.C
 				logger.Fatal("graceful shutdown timed out.. forcing exit.")
 			}
 		}()
-		err := s.server.Shutdown(shutdownCtx)
+		err := s.shutdown(shutdownCtx)
 		if err != nil {
 			logger.Fatal(err.Error())
 		}
 		cancelFunc()
 	}()
+}
+
+func (s *Server) shutdown(ctx context.Context) error {
+	if err := s.server.Shutdown(ctx); err != nil {
+		return err
+	}
+	s.routes.Close()
+	return nil
 }
 
 func (s *Server) startEtcdWatcher() {

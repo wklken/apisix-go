@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Do not implement `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, or `serverless-post-function` in normal parity work; they are OpenResty/NGINX/Lua-runtime-native or external-runner subsystem work.
-- Do not implement exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, OCSP/TLS stapling internals, or external plugin runner protocol compatibility unless explicitly requested.
+- Do not implement exact OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, APISIX Lua batch-manager stale-object cache cleanup exactness, OCSP/TLS stapling internals, or external plugin runner protocol compatibility unless explicitly requested.
 - Prefer current local plugin patterns over new abstractions.
 - Every behavior slice needs a focused failing test before implementation.
 - For code changes, run focused package tests, `go test ./...`, `make build`, `rm -f apisix`, and `git diff --check`.
@@ -22,26 +22,29 @@
 
 ## Logger
 
+Shared logger batch processor behavior now includes route/server-aware `batch_process_entries`, complete-label-only
+metric emission, `max_pending_entries`, retries, and graceful reload/shutdown buffer flushing.
+
 | Plugin | Current | What remains |
 |---|---:|---|
-| `http-logger` | 76% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness and encrypted `auth_header`. |
-| `skywalking-logger` | 76% | Shared batch processor, `max_pending_entries`, SkyWalking JSON-array batch payloads, basic `sw8` trace correlation, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness. |
-| `tcp-logger` | 70% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are OpenResty cosocket pooling and APISIX batch stale-object cleanup exactness. |
+| `http-logger` | 76% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining normal parity is encrypted `auth_header` after a project-level secret design exists. |
+| `skywalking-logger` | 76% | Shared batch processor, `max_pending_entries`, SkyWalking JSON-array batch payloads, basic `sw8` trace correlation, and route/server-aware `batch_process_entries` gauge hook are implemented. No normal Go logger gap remains. |
+| `tcp-logger` | 70% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. No normal Go logger gap remains; OpenResty cosocket pooling is not required. |
 | `kafka-logger` | 76% | Shared batch processor, `max_pending_entries`, `meta_format = origin`, and single-object / JSON-array Kafka batch payloads are implemented. Remaining gap is encrypted broker password storage after a project-level secret design exists. |
 | `rocketmq-logger` | 72% | Shared batch processor, `max_pending_entries`, `meta_format = origin`, and single-object / JSON-array RocketMQ batch payloads are implemented. Remaining gaps are encrypted `secret_key` and `use_tls`; the current RocketMQ Go client exposes no TLS option. |
-| `syslog` | 70% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are OpenResty syslog connection pooling/TLS behavior parity and APISIX batch stale-object cleanup exactness. |
-| `udp-logger` | 70% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness. |
-| `clickhouse-logger` | 76% | Shared batch processor, `max_pending_entries`, JSONEachRow batch payloads, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness and encrypted `password`. |
+| `syslog` | 70% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. No normal Go logger gap remains; OpenResty syslog connection pooling/TLS behavior parity is not required. |
+| `udp-logger` | 70% | Shared batch processor, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. No normal Go logger gap remains. |
+| `clickhouse-logger` | 76% | Shared batch processor, `max_pending_entries`, JSONEachRow batch payloads, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining normal parity is encrypted `password` after a project-level secret design exists. |
 | `log-rotate` | 72% | Go-native rotation lifecycle, file recreation, `file-logger` current-path writes after rotation, history pruning, and compression are implemented. Remaining NGINX master `USR1`, OpenResty timer, and runtime log-path discovery behavior is out of scope. |
-| `error-log-logger` | 69% | Shared batch processor buffering/retry semantics, basic `batch_process_entries` gauge hook, SkyWalking `$hostname` service-instance resolution, and Kafka broker `PLAIN` SASL are implemented for explicit error-log delivery. Remaining gaps are APISIX batch `server_addr` label population, stale-object cleanup exactness, Lua-resty-kafka producer cache exactness, encrypted metadata fields, direct `ngx.errlog` capture, and OpenResty timer lifecycle. |
-| `sls-logger` | 72% | Shared batch processor, concatenated RFC5424 batch writes, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness and encrypted `access_key_secret`. |
+| `error-log-logger` | 69% | Shared batch processor buffering/retry semantics, SkyWalking `$hostname` service-instance resolution, and Kafka broker `PLAIN` SASL are implemented for explicit error-log delivery. Remaining normal parity is encrypted metadata fields after a project-level secret design exists; direct `ngx.errlog` capture, route/server `batch_process_entries` labels for global explicit delivery, Lua-resty-kafka producer cache exactness, and OpenResty timer lifecycle are out of scope. |
+| `sls-logger` | 72% | Shared batch processor, concatenated RFC5424 batch writes, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining normal parity is encrypted `access_key_secret` after a project-level secret design exists. |
 | `google-cloud-logging` | 67% | Shared batch processor, `max_pending_entries`, access-token caching/refresh, and multi-entry Cloud Logging writes are implemented. Remaining gaps are encrypted `auth_config.private_key` and body capture, which APISIX 3.17 does not define for this plugin. |
 | `splunk-hec-logging` | 62% | Shared batch processor, `max_pending_entries`, concatenated JSON event-object batches, and HEC error-text extraction are implemented. Remaining gaps are encrypted `endpoint.token` and body capture, which APISIX 3.17 does not define for this plugin. |
 | `file-logger` | 82% | Plugin config/metadata `path`, `log_format`, and Go-native current-path writes after external rotation are implemented. Remaining exact OpenResty file-cache semantics are out of scope. |
-| `loggly` | 76% | Shared batch processor, HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness and encrypted `customer_token`. |
-| `elasticsearch-logger` | 84% | Shared batch processor, `max_pending_entries`, `_bulk` NDJSON batch delivery, and route/server-aware `batch_process_entries` gauge hook are implemented while preserving index expansion, auth, headers, and body-expression behavior. Remaining gaps are APISIX batch stale-object cleanup exactness and encrypted `auth.password`. |
-| `loki-logger` | 76% | Shared batch processor, `max_pending_entries`, one-stream multi-value Loki batches, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness. |
-| `tencent-cloud-cls` | 76% | Shared batch processor, `max_pending_entries`, multi-log protobuf batch payloads, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining gaps are APISIX batch stale-object cleanup exactness and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
+| `loggly` | 76% | Shared batch processor, HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, `max_pending_entries`, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining normal parity is encrypted `customer_token` after a project-level secret design exists. |
+| `elasticsearch-logger` | 84% | Shared batch processor, `max_pending_entries`, `_bulk` NDJSON batch delivery, and route/server-aware `batch_process_entries` gauge hook are implemented while preserving index expansion, auth, headers, and body-expression behavior. Remaining normal parity is encrypted `auth.password` after a project-level secret design exists. |
+| `loki-logger` | 76% | Shared batch processor, `max_pending_entries`, one-stream multi-value Loki batches, and route/server-aware `batch_process_entries` gauge hook are implemented. No normal Go logger gap remains. |
+| `tencent-cloud-cls` | 76% | Shared batch processor, `max_pending_entries`, multi-log protobuf batch payloads, and route/server-aware `batch_process_entries` gauge hook are implemented. Remaining normal parity is encrypted `secret_key` after a project-level secret design exists. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
 | `lago` | 76% | Shared batch processor, retry semantics, APISIX `batch_max_size` default of 100, request-start event timestamps, and common dynamic request/response variables are implemented. Remaining gaps are encrypted `token` and exotic OpenResty/NGINX-only variable fidelity. |
 
 ### Logger Execution Tasks
@@ -61,6 +64,16 @@
   - Group 2: `clickhouse-logger` done, `loki-logger` done, `loggly` done.
   - Group 3: `skywalking-logger` done, `sls-logger` done, `tencent-cloud-cls` done.
   - Group 4: `google-cloud-logging` done, `splunk-hec-logging` done, `rocketmq-logger` done, `kafka-logger` done, `lago` done.
+
+- [x] **Task L4: Fill route/server metric labels**
+  - Route-local and global-rule loggers receive route ID and server address context.
+  - Metrics are emitted only when APISIX-compatible `name`, `route_id`, and `server_addr` labels are all present.
+
+- [x] **Task L5: Finish practical batch processor lifecycle parity**
+  - Buffered entries are flushed when a processor is stopped.
+  - Route builders own the logger processors they create; graceful server reload waits for old requests before stopping
+    the retired route set, and graceful shutdown stops the active route set after HTTP requests quiesce.
+  - Exact APISIX Lua `batch-processor-manager` stale-object cache cleanup remains out of normal scope.
 
 ## Auth
 
@@ -248,8 +261,8 @@ These are intentionally not implementation TODOs for normal parity work:
 
 ## Suggested Next Five Slices
 
-1. Bound `error-log-logger` batch-label/cache parity, or defer it if it requires OpenResty runtime behavior.
-2. `ai-rate-limiting` Redis/shared policy.
-3. `workflow` delegated actions for already implemented plugins.
-4. `zipkin` span reporting transport.
-5. `oas-validator` external `$ref` or response validation, whichever is smaller after source inspection.
+1. `ai-rate-limiting` Redis/shared policy.
+2. `workflow` delegated actions for already implemented plugins.
+3. `zipkin` span reporting transport.
+4. `oas-validator` external `$ref` or response validation, whichever is smaller after source inspection.
+5. Revisit logger encrypted-secret parity only after a project-level secret/encryption design exists.

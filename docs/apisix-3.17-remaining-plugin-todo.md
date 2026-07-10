@@ -8,25 +8,29 @@ Use this file as the planning backlog. Use `README.md` and `docs/apisix-3.17-plu
 
 ## Logger
 
+Shared logger batch processor behavior now includes route/server-aware `batch_process_entries`, complete-label-only
+metric emission, `max_pending_entries`, retries, and graceful reload/shutdown buffer flushing. Exact APISIX Lua
+`batch-processor-manager` stale-object cache cleanup is runtime-cache behavior and is not a normal Go logger TODO.
+
 | Plugin | What needs to be done |
 |---|---|
-| `http-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `auth_header` after a project-level secret design exists. |
-| `skywalking-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness. |
-| `tcp-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and OpenResty cosocket pooling, which is not required. |
+| `http-logger` | Only remaining normal parity is encrypted `auth_header` after a project-level secret design exists. |
+| `skywalking-logger` | No normal Go logger TODO remains. |
+| `tcp-logger` | No normal Go logger TODO remains; OpenResty cosocket pooling is not required. |
 | `kafka-logger` | Only remaining gap is encrypted broker password storage after a project-level secret design exists. |
 | `rocketmq-logger` | Remaining gaps are encrypted `secret_key` and `use_tls`; the current RocketMQ Go client exposes no TLS option. |
-| `syslog` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and native connection pooling/TLS exactness, which is not required. |
-| `udp-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness. |
-| `clickhouse-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `password` after a project-level secret design exists. |
-| `sls-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `access_key_secret` after a project-level secret design exists. |
+| `syslog` | No normal Go logger TODO remains; native connection pooling/TLS exactness is not required. |
+| `udp-logger` | No normal Go logger TODO remains. |
+| `clickhouse-logger` | Only remaining normal parity is encrypted `password` after a project-level secret design exists. |
+| `sls-logger` | Only remaining normal parity is encrypted `access_key_secret` after a project-level secret design exists. |
 | `google-cloud-logging` | Remaining gaps are encrypted `auth_config.private_key` and request/response body capture only if a future APISIX version defines it. |
 | `splunk-hec-logging` | Remaining gaps are encrypted `endpoint.token` and request/response body capture only if a future APISIX version defines it. |
-| `elasticsearch-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `auth.password` after a project-level secret design exists. |
-| `loggly` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `customer_token` after a project-level secret design exists. |
-| `loki-logger` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness. |
-| `tencent-cloud-cls` | Route/server-aware shared `batch_process_entries` gauge hook is implemented. Remaining gaps are stale-object cleanup exactness and encrypted `secret_key`. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
+| `elasticsearch-logger` | Only remaining normal parity is encrypted `auth.password` after a project-level secret design exists. |
+| `loggly` | Only remaining normal parity is encrypted `customer_token` after a project-level secret design exists. |
+| `loki-logger` | No normal Go logger TODO remains. |
+| `tencent-cloud-cls` | Only remaining normal parity is encrypted `secret_key` after a project-level secret design exists. The upstream APISIX 3.17 SDK has an lz4/zstd TODO but no plugin config/feature to match. |
 | `lago` | Remaining gaps are encrypted `token` and exotic OpenResty/NGINX-only variable fidelity. APISIX `batch_max_size` default of 100, request-start event timestamps, and common dynamic request/response variables are implemented. |
-| `error-log-logger` | Remaining gaps are APISIX batch `server_addr` label population, stale-object cleanup exactness, Lua-resty-kafka producer cache exactness, and encrypted metadata fields. Keep direct `ngx.errlog` capture and OpenResty timer lifecycle out of normal scope. |
+| `error-log-logger` | Remaining normal parity is encrypted metadata fields after a project-level secret design exists. Keep direct `ngx.errlog` capture, OpenResty timer lifecycle, route/server `batch_process_entries` labels for global explicit delivery, stale batch-manager cache cleanup, and Lua-resty-kafka producer cache exactness out of normal scope. |
 
 ## Auth
 
@@ -141,8 +145,8 @@ Use this file as the planning backlog. Use `README.md` and `docs/apisix-3.17-plu
 
 ## Suggested Implementation Order
 
-1. Finish the remaining `error-log-logger` batch-label/cache gaps if they can be bounded without OpenResty runtime behavior.
-2. Continue high-value auth: `openid-connect`, `multi-auth`, then SSO-style plugins.
-3. Build the AI protocol abstraction and apply it to `ai-proxy`, `ai-proxy-multi`, and prompt plugins.
-4. Improve observability starting with `zipkin`, then `prometheus`, then `datadog`.
-5. Work through Others in small slices: `workflow`, validation/transformation plugins, then protocol bridge plugins.
+1. Continue high-value auth: `openid-connect`, `multi-auth`, then SSO-style plugins.
+2. Build the AI protocol abstraction and apply it to `ai-proxy`, `ai-proxy-multi`, and prompt plugins.
+3. Improve observability starting with `zipkin`, then `prometheus`, then `datadog`.
+4. Work through Others in small slices: `workflow`, validation/transformation plugins, then protocol bridge plugins.
+5. Revisit logger encrypted-secret parity only after a project-level secret/encryption design exists.

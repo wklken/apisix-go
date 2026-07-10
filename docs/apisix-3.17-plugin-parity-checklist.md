@@ -95,23 +95,23 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `prometheus` | yes | 45% | implement |
 | `datadog` | yes | 68% | implement |
 | `lago` | yes | 76% | monitor |
-| `loki-logger` | yes | 76% | implement |
+| `loki-logger` | yes | 76% | monitor |
 | `elasticsearch-logger` | yes | 84% | monitor |
 | `echo` | yes | 90% | monitor |
-| `loggly` | yes | 76% | implement |
-| `http-logger` | yes | 76% | implement |
+| `loggly` | yes | 76% | monitor |
+| `http-logger` | yes | 76% | monitor |
 | `splunk-hec-logging` | yes | 62% | monitor |
-| `skywalking-logger` | yes | 76% | implement |
+| `skywalking-logger` | yes | 76% | monitor |
 | `google-cloud-logging` | yes | 67% | monitor |
-| `sls-logger` | yes | 72% | implement |
-| `tcp-logger` | yes | 70% | implement |
+| `sls-logger` | yes | 72% | monitor |
+| `tcp-logger` | yes | 70% | monitor |
 | `kafka-logger` | yes | 76% | monitor |
 | `rocketmq-logger` | yes | 72% | monitor |
-| `syslog` | yes | 70% | implement |
-| `udp-logger` | yes | 70% | implement |
+| `syslog` | yes | 70% | monitor |
+| `udp-logger` | yes | 70% | monitor |
 | `file-logger` | yes | 82% | monitor |
-| `clickhouse-logger` | yes | 76% | implement |
-| `tencent-cloud-cls` | yes | 76% | implement |
+| `clickhouse-logger` | yes | 76% | monitor |
+| `tencent-cloud-cls` | yes | 76% | monitor |
 | `inspect` | no | unsupported: lua feature | not-required-native |
 | `example-plugin` | yes | 60% | implement |
 | `aws-lambda` | yes | 70% | monitor |
@@ -125,7 +125,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 
 ## Next Priority Lanes
 
-1. Finish the remaining `error-log-logger` batch-label/cache gaps if they can be bounded without OpenResty runtime behavior.
-2. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
-3. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
+1. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
+2. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
+3. Build the AI protocol abstraction and apply it to `ai-proxy`, `ai-proxy-multi`, and prompt plugins.
 4. Keep OpenResty/NGINX/Lua-runtime-native plugins out of normal parity work: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`.

@@ -62,6 +62,29 @@ func TestProcessorFlushesAfterInactiveTimeout(t *testing.T) {
 	}
 }
 
+func TestProcessorStopFlushesBufferedEntries(t *testing.T) {
+	delivered := make(chan []map[string]any, 1)
+	p := New(Config{
+		Name:            "test logger",
+		BatchMaxSize:    10,
+		InactiveTimeout: time.Hour,
+		BufferDuration:  time.Hour,
+	}, func(entries []map[string]any, _ int) (int, error) {
+		delivered <- entries
+		return 0, nil
+	})
+
+	if !p.Push(map[string]any{"id": "stop"}) {
+		t.Fatal("push was rejected")
+	}
+
+	p.Stop()
+	batch := waitBatch(t, delivered)
+	if len(batch) != 1 || batch[0]["id"] != "stop" {
+		t.Fatalf("batch = %#v, want stop entry", batch)
+	}
+}
+
 func TestProcessorDropsEntriesPastMaxPendingEntries(t *testing.T) {
 	block := make(chan struct{})
 	p := New(Config{
@@ -133,6 +156,35 @@ func TestProcessorUpdatesBatchProcessEntriesMetric(t *testing.T) {
 	_ = waitBatch(t, delivered)
 	if got := gaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 0 {
 		t.Fatalf("batch_process_entries = %v, want 0 after flush", got)
+	}
+}
+
+func TestProcessorSkipsBatchProcessEntriesMetricWithoutRouteContext(t *testing.T) {
+	oldBatchProcessEntries := metrics.BatchProcessEntries
+	gauge := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_batch_process_entries_without_route"},
+		[]string{"name", "route_id", "server_addr"},
+	)
+	metrics.BatchProcessEntries = gauge
+	t.Cleanup(func() {
+		metrics.BatchProcessEntries = oldBatchProcessEntries
+	})
+
+	p := New(Config{
+		Name:            "error log logger",
+		BatchMaxSize:    10,
+		InactiveTimeout: time.Hour,
+		BufferDuration:  time.Hour,
+	}, func(entries []map[string]any, _ int) (int, error) {
+		return 0, nil
+	})
+	t.Cleanup(p.Stop)
+
+	if !p.Push(map[string]any{"id": 1}) {
+		t.Fatal("push was rejected")
+	}
+	if got := gaugeValue(t, gauge, "error log logger", "", ""); got != 0 {
+		t.Fatalf("batch_process_entries with empty route context = %v, want 0", got)
 	}
 }
 

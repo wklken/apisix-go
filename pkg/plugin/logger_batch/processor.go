@@ -103,6 +103,7 @@ func (p *Processor) Flush() {
 func (p *Processor) Stop() {
 	p.mu.Lock()
 	p.stopped = true
+	p.flushLocked()
 	p.stopTimerLocked()
 	p.mu.Unlock()
 
@@ -165,6 +166,9 @@ func (p *Processor) flushLocked() {
 }
 
 func (p *Processor) setBufferedMetricLocked() {
+	if p.config.Name == "" || p.config.RouteID == "" || p.config.ServerAddr == "" {
+		return
+	}
 	metrics.SetBatchProcessEntries(p.config.Name, p.config.RouteID, p.config.ServerAddr, len(p.buffer))
 }
 

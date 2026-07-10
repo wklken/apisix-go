@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -29,6 +30,7 @@ type Plugin struct {
 	client         *http.Client
 	kafkaSender    kafkaSender
 	BatchProcessor *logger_batch.Processor
+	stopOnce       sync.Once
 }
 
 const (
@@ -172,6 +174,14 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return next
+}
+
+func (p *Plugin) Stop() {
+	p.stopOnce.Do(func() {
+		if p.BatchProcessor != nil {
+			p.BatchProcessor.Stop()
+		}
+	})
 }
 
 func (p *Plugin) SendLogs(ctx context.Context, lines []string) error {

@@ -61,6 +61,7 @@ Key runtime pieces:
 - `serverless-pre-function` and `serverless-post-function` execute Lua/OpenResty code and should stay documented as OpenResty-native and not required; do not add placeholder Go implementations for them.
 - For native-only features, document the unsupported status in README/checklist/plan files instead of adding placeholder Go implementations.
 - Examples of out-of-scope native behavior include OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, OCSP/TLS stapling internals, and external plugin runner protocol compatibility unless separately requested.
+- The canonical remaining-plugin backlog is `docs/apisix-3.17-remaining-plugin-todo.md`, grouped into Logger, Auth, AI, Observability, and Others.
 
 ## Configuration Notes
 

@@ -2,11 +2,9 @@ package server
 
 import (
 	"context"
-	"net"
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/route"
 )
@@ -47,31 +45,31 @@ func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Durat
 var reloadMu sync.Mutex
 
 // reload will do the reload
-func (s *Server) reload(ctx context.Context) {
+func (s *Server) reload(_ context.Context) {
 	reloadMu.Lock()
 	defer reloadMu.Unlock()
 
 	logger.Info("reloading")
 
-	r := chi.NewRouter()
+	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
+	installed := false
 
-	// handler the panics if any
 	defer func() {
+		if !installed {
+			builder.Stop()
+		}
 		if err := recover(); err != nil {
 			logger.Errorf("panic while reload, will not reset the handler: %v", err)
-		} else {
-			logger.Info("no errors, will reset the handler")
-
-			// replace s.server.Handler
-			// s.server.Handler = chi.ServerBaseContext(ctx, r)
-			s.server.BaseContext = func(net.Listener) context.Context {
-				return ctx
-			}
-			s.server.Handler = r
 		}
 	}()
 
-	r = route.NewBuilderWithServerAddr(s.storage, s.addr).Build()
+	handler := builder.Build()
+	if handler == nil {
+		logger.Error("reload built a nil route handler; keeping the current handler")
+		return
+	}
+	s.routes.Replace(handler, builder.Stop)
+	installed = true
 
 	logger.Info("reload done")
 }

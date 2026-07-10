@@ -59,6 +59,12 @@ func (p *BaseLoggerPlugin) SetRouteContext(routeID string, serverAddr string) {
 	p.ServerAddr = serverAddr
 }
 
+func (p *BaseLoggerPlugin) Stop() {
+	if p.BatchProcessor != nil {
+		p.BatchProcessor.Stop()
+	}
+}
+
 // func getRequest(r *http.Request, includeRequestBody bool) map[string]any {
 // }
 

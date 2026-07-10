@@ -27,11 +27,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() {
-		if p.BatchProcessor != nil {
-			p.BatchProcessor.Stop()
-		}
-	})
+	t.Cleanup(p.Stop)
 
 	return p
 }

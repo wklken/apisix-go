@@ -7958,3 +7958,30 @@ Run: `go test ./pkg/plugin/graphql_limit_count -count=1 -timeout=30s` and `go te
 - [x] **Step 4: Verify repository**
 
 Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 242: Complete GraphQL Limit Count Configuration Parity
+
+**Files:**
+- Modify: `pkg/plugin/graphql_limit_count`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: inherited limit-count rules, string limit expressions, groups, route context, and plugin metadata.
+- Produces: sequential depth-cost rules, prefixed quota headers, shared group quotas, scoped Redis keys, and metadata-defined headers.
+
+- [x] **Step 1: Add rules and dynamic limits**
+
+Accepted integer/string count and window values, resolved request variables, validated duplicate rule keys, and charged GraphQL depth through each resolved rule.
+Matched APISIX's failure behavior when no configured rule can resolve, while preserving `allow_degradation`.
+
+- [x] **Step 2: Add group and metadata behavior**
+
+Shared local group counters across plugin instances, scoped Redis keys by group or route, and loaded custom quota header names from `limit-count` metadata.
+
+- [x] **Step 3: Verify focused behavior**
+
+Run: `go test ./pkg/plugin/graphql_limit_count -count=1 -timeout=30s` and `go test -race ./pkg/plugin/graphql_limit_count -count=1 -timeout=60s`.
+
+- [x] **Step 4: Verify repository**
+
+Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

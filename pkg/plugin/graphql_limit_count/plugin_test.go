@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -151,6 +152,31 @@ func TestSchemaAndPostInitAcceptRedisClusterPolicy(t *testing.T) {
 			initialized.config.RedisKeepaliveTimeout,
 			initialized.config.RedisKeepalivePool,
 		)
+	}
+}
+
+func TestSchemaAcceptsRulesAndStringLimitValues(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"count":       "$http_x_limit",
+		"time_window": "$http_x_window",
+	}, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected string limit values: %v", err)
+	}
+	if err := util.Validate(map[string]any{
+		"rules": []any{
+			map[string]any{
+				"count":         10,
+				"time_window":   60,
+				"key":           "$http_x_tenant",
+				"header_prefix": "Tenant",
+			},
+		},
+	}, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected rules: %v", err)
 	}
 }
 
@@ -391,6 +417,190 @@ func TestHandlerEnforcesGlobalGraphQLMaxSize(t *testing.T) {
 	}
 }
 
+func TestHandlerAppliesGraphQLDepthToMultipleRules(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RejectedCode: http.StatusTooManyRequests,
+		Rules: []Rule{
+			{Count: 10, TimeWindow: 60, Key: "$http_x_tenant", HeaderPrefix: "Tenant"},
+			{Count: 3, TimeWindow: 60, Key: "$http_x_user", HeaderPrefix: "User"},
+		},
+	})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := func() *http.Request {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/graphql",
+			strings.NewReader(`{"query":"query { viewer { id } }"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant", "tenant-1")
+		req.Header.Set("X-User", "alice")
+		return req
+	}
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, request())
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusNoContent)
+	}
+	if got := first.Header().Get("X-Tenant-RateLimit-Remaining"); got != "8" {
+		t.Fatalf("tenant remaining = %q, want 8", got)
+	}
+	if got := first.Header().Get("X-User-RateLimit-Remaining"); got != "1" {
+		t.Fatalf("user remaining = %q, want 1", got)
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, request())
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second response code = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+	if got := second.Header().Get("X-User-RateLimit-Remaining"); got != "0" {
+		t.Fatalf("rejected user remaining = %q, want 0", got)
+	}
+}
+
+func TestHandlerResolvesStringLimitValues(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:        "$http_x_limit",
+		TimeWindow:   "$http_x_window",
+		Key:          "http_x_user",
+		RejectedCode: http.StatusTooManyRequests,
+	})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := func() *http.Request {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/graphql",
+			strings.NewReader(`{"query":"query { viewer { id } }"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Limit", "2")
+		req.Header.Set("X-Window", "60")
+		req.Header.Set("X-User", "alice")
+		return req
+	}
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, request())
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusNoContent)
+	}
+	if got := first.Header().Get("X-RateLimit-Remaining"); got != "0" {
+		t.Fatalf("remaining = %q, want 0", got)
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, request())
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second response code = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestHandlerRejectsWhenNoGraphQLRuleCanBeResolved(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{Count: "$http_x_limit", TimeWindow: 60, Key: "$http_x_tenant"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ viewer }"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestPostInitRejectsDuplicateGraphQLRuleKeys(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{
+		{Count: 3, TimeWindow: 60, Key: "$http_x_user"},
+		{Count: 5, TimeWindow: 60, Key: "$http_x_user"},
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want duplicate rule key rejected")
+	}
+}
+
+func TestGroupSharesLocalQuotaAcrossPluginInstances(t *testing.T) {
+	resetGroupCountersForTest()
+	t.Cleanup(resetGroupCountersForTest)
+
+	config := Config{Count: 2, TimeWindow: 60, Group: "shared-group", RejectedCode: http.StatusTooManyRequests}
+	firstPlugin := newTestPlugin(t, config)
+	secondPlugin := newTestPlugin(t, config)
+	handler := func(plugin *Plugin) http.Handler {
+		return plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+	request := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ viewer }"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.50:1234"
+		return req
+	}
+
+	for i, plugin := range []*Plugin{firstPlugin, secondPlugin} {
+		res := httptest.NewRecorder()
+		handler(plugin).ServeHTTP(res, request())
+		if res.Code != http.StatusNoContent {
+			t.Fatalf("request %d response code = %d, want %d", i+1, res.Code, http.StatusNoContent)
+		}
+	}
+	res := httptest.NewRecorder()
+	handler(firstPlugin).ServeHTTP(res, request())
+	if res.Code != http.StatusTooManyRequests {
+		t.Fatalf("third response code = %d, want shared group rejection", res.Code)
+	}
+}
+
+func TestCounterNamespaceUsesRouteUnlessGrouped(t *testing.T) {
+	p := newTestPlugin(t, Config{Count: 2, TimeWindow: 60})
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if got := p.counterNamespace(); !strings.Contains(got, "route-1") {
+		t.Fatalf("counter namespace = %q, want route-1", got)
+	}
+
+	p.config.Group = "shared"
+	if got := p.counterNamespace(); got != "group:shared" {
+		t.Fatalf("group counter namespace = %q, want group:shared", got)
+	}
+}
+
+func TestHandlerUsesLimitCountMetadataHeaders(t *testing.T) {
+	p := newTestPlugin(t, Config{Count: 2, TimeWindow: 60})
+	p.metadata = Metadata{
+		LimitHeader:     "X-Custom-Limit",
+		RemainingHeader: "X-Custom-Remaining",
+		ResetHeader:     "X-Custom-Reset",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ viewer }"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Header().Get("X-Custom-Limit") != "2" ||
+		res.Header().Get("X-Custom-Remaining") != "1" ||
+		res.Header().Get("X-Custom-Reset") == "" {
+		t.Fatalf("custom quota headers = %#v", res.Header())
+	}
+}
+
 func TestWindowResetsAfterTimeWindow(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:      2,
@@ -428,6 +638,12 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
+func resetGroupCountersForTest() {
+	groupCounters.Lock()
+	groupCounters.entries = map[string]*counter{}
+	groupCounters.Unlock()
+}
+
 type fakeRedisLimiter struct {
 	key       string
 	cost      int64
@@ -437,7 +653,13 @@ type fakeRedisLimiter struct {
 	err       error
 }
 
-func (f *fakeRedisLimiter) incoming(_ *http.Request, key string, cost int64) (int64, int64, bool, error) {
+func (f *fakeRedisLimiter) incoming(
+	_ *http.Request,
+	key string,
+	cost int64,
+	_ int64,
+	_ int64,
+) (int64, int64, bool, error) {
 	f.key = key
 	f.cost = cost
 	return f.remaining, f.reset, f.allowed, f.err

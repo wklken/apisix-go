@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -17,7 +18,9 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -30,6 +33,8 @@ type Plugin struct {
 
 	redisLimiter countLimiter
 	maxSize      int
+	routeID      string
+	metadata     Metadata
 }
 
 const (
@@ -42,12 +47,39 @@ const schema = `
   "type": "object",
   "properties": {
     "count": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "oneOf": [
+        {"type": "integer", "exclusiveMinimum": 0},
+        {"type": "string"}
+      ]
     },
     "time_window": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "oneOf": [
+        {"type": "integer", "exclusiveMinimum": 0},
+        {"type": "string"}
+      ]
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "oneOf": [
+              {"type": "integer", "exclusiveMinimum": 0},
+              {"type": "string"}
+            ]
+          },
+          "time_window": {
+            "oneOf": [
+              {"type": "integer", "exclusiveMinimum": 0},
+              {"type": "string"}
+            ]
+          },
+          "key": {"type": "string"},
+          "header_prefix": {"type": "string"}
+        },
+        "required": ["count", "time_window", "key"]
+      }
     },
     "group": {
       "type": "string"
@@ -166,13 +198,16 @@ const schema = `
       "then": {"required": ["redis_cluster_nodes", "redis_cluster_name"]}
     }
   ],
-  "required": ["count", "time_window"]
+  "oneOf": [
+    {"required": ["count", "time_window"]},
+    {"required": ["rules"]}
+  ]
 }
 `
 
 type Config struct {
-	Count                 int64    `json:"count"`
-	TimeWindow            int64    `json:"time_window"`
+	Count                 any      `json:"count,omitempty"`
+	TimeWindow            any      `json:"time_window,omitempty"`
 	Group                 string   `json:"group,omitempty"`
 	Key                   string   `json:"key,omitempty"`
 	KeyType               string   `json:"key_type,omitempty"`
@@ -195,12 +230,31 @@ type Config struct {
 	RedisClusterSSLVerify *bool    `json:"redis_cluster_ssl_verify,omitempty"`
 	AllowDegradation      *bool    `json:"allow_degradation,omitempty"`
 	ShowLimitQuotaHeader  *bool    `json:"show_limit_quota_header,omitempty"`
+	Rules                 []Rule   `json:"rules,omitempty"`
+}
+
+type Rule struct {
+	Count        any    `json:"count"`
+	TimeWindow   any    `json:"time_window"`
+	Key          string `json:"key"`
+	HeaderPrefix string `json:"header_prefix,omitempty"`
+}
+
+type Metadata struct {
+	LimitHeader     string `json:"limit_header"`
+	RemainingHeader string `json:"remaining_header"`
+	ResetHeader     string `json:"reset_header"`
 }
 
 type counter struct {
 	used    int64
 	resetAt time.Time
 }
+
+var groupCounters = struct {
+	sync.Mutex
+	entries map[string]*counter
+}{entries: map[string]*counter{}}
 
 const redisLimitCountScript = `
 local current = redis.call("INCRBY", KEYS[1], ARGV[1])
@@ -225,7 +279,7 @@ return {allowed, remaining, ttl}
 `
 
 type countLimiter interface {
-	incoming(r *http.Request, key string, cost int64) (int64, int64, bool, error)
+	incoming(r *http.Request, key string, cost int64, count int64, timeWindow int64) (int64, int64, bool, error)
 }
 
 type graphqlRequest struct {
@@ -244,11 +298,17 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if p.config.Count <= 0 {
-		return fmt.Errorf("count must be greater than 0")
-	}
-	if p.config.TimeWindow <= 0 {
-		return fmt.Errorf("time_window must be greater than 0")
+	if len(p.config.Rules) > 0 {
+		if err := validateRules(p.config.Rules); err != nil {
+			return err
+		}
+	} else {
+		if err := validateStaticLimitValue(p.config.Count, "count"); err != nil {
+			return err
+		}
+		if err := validateStaticLimitValue(p.config.TimeWindow, "time_window"); err != nil {
+			return err
+		}
 	}
 	if p.config.Key == "" {
 		p.config.Key = "remote_addr"
@@ -339,6 +399,43 @@ func (p *Plugin) PostInit() error {
 	if config.GlobalConfig != nil && config.GlobalConfig.GraphQL.MaxSize > 0 {
 		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
 	}
+	if p.metadata == (Metadata{}) {
+		p.metadata = loadMetadata()
+	}
+	return nil
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
+	p.routeID = route.ID
+}
+
+func (p *Plugin) counterNamespace() string {
+	if p.config.Group != "" {
+		return "group:" + p.config.Group
+	}
+	if p.routeID != "" {
+		return "route:" + p.routeID
+	}
+	return "route:unknown"
+}
+
+func validateRules(rules []Rule) error {
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		if rule.Key == "" {
+			return fmt.Errorf("graphql-limit-count rule key is required")
+		}
+		if _, ok := seen[rule.Key]; ok {
+			return fmt.Errorf("duplicate key %q in rules", rule.Key)
+		}
+		seen[rule.Key] = struct{}{}
+		if err := validateStaticLimitValue(rule.Count, "rule count"); err != nil {
+			return err
+		}
+		if err := validateStaticLimitValue(rule.TimeWindow, "rule time_window"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -355,32 +452,155 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		remaining, reset, allowed, err := p.incoming(r, p.resolveKey(r), int64(depth))
+		if len(p.config.Rules) > 0 {
+			applied := 0
+			for i, rule := range p.config.Rules {
+				key, ok := resolveRuleKey(r, rule)
+				if !ok {
+					continue
+				}
+				count, err := resolveLimitValue(r, rule.Count, "rule count")
+				if err != nil {
+					continue
+				}
+				timeWindow, err := resolveLimitValue(r, rule.TimeWindow, "rule time_window")
+				if err != nil {
+					continue
+				}
+				applied++
+				if !p.applyLimit(
+					w,
+					r,
+					fmt.Sprintf("rule:%d:%s", i, key),
+					int64(depth),
+					count,
+					timeWindow,
+					ruleQuotaHeaders(rule, i),
+				) {
+					return
+				}
+			}
+			if applied == 0 && !*p.config.AllowDegradation {
+				http.Error(w, "failed to resolve graphql limit count rules", http.StatusInternalServerError)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		count, err := resolveLimitValue(r, p.config.Count, "count")
 		if err != nil {
 			if *p.config.AllowDegradation {
 				next.ServeHTTP(w, r)
 				return
 			}
-			http.Error(w, "failed to limit graphql count", http.StatusInternalServerError)
+			http.Error(w, "failed to resolve graphql limit count", http.StatusInternalServerError)
 			return
 		}
-		if *p.config.ShowLimitQuotaHeader {
-			w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(p.config.Count, 10))
-			w.Header().Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
-		}
-		if !allowed {
-			rejectedMsg := "Limit exceeded"
-			if p.config.RejectedMsg != "" {
-				rejectedMsg = p.config.RejectedMsg
+		timeWindow, err := resolveLimitValue(r, p.config.TimeWindow, "time_window")
+		if err != nil {
+			if *p.config.AllowDegradation {
+				next.ServeHTTP(w, r)
+				return
 			}
-			http.Error(w, rejectedMsg, p.config.RejectedCode)
+			http.Error(w, "failed to resolve graphql limit count", http.StatusInternalServerError)
 			return
 		}
-
+		if !p.applyLimit(
+			w,
+			r,
+			p.resolveKey(r),
+			int64(depth),
+			count,
+			timeWindow,
+			defaultQuotaHeaders(p.metadata),
+		) {
+			return
+		}
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type quotaHeaders struct {
+	limit     string
+	remaining string
+	reset     string
+}
+
+func defaultQuotaHeaders(metadata Metadata) quotaHeaders {
+	if metadata.LimitHeader == "" {
+		metadata.LimitHeader = "X-RateLimit-Limit"
+	}
+	if metadata.RemainingHeader == "" {
+		metadata.RemainingHeader = "X-RateLimit-Remaining"
+	}
+	if metadata.ResetHeader == "" {
+		metadata.ResetHeader = "X-RateLimit-Reset"
+	}
+	return quotaHeaders{
+		limit:     metadata.LimitHeader,
+		remaining: metadata.RemainingHeader,
+		reset:     metadata.ResetHeader,
+	}
+}
+
+func loadMetadata() (metadata Metadata) {
+	defer func() {
+		if recover() != nil {
+			metadata = Metadata{}
+		}
+	}()
+	if err := store.GetPluginMetadata("limit-count", &metadata); err != nil {
+		return Metadata{}
+	}
+	return metadata
+}
+
+func ruleQuotaHeaders(rule Rule, index int) quotaHeaders {
+	prefix := rule.HeaderPrefix
+	if prefix == "" {
+		prefix = strconv.Itoa(index + 1)
+	}
+	return quotaHeaders{
+		limit:     "X-" + prefix + "-RateLimit-Limit",
+		remaining: "X-" + prefix + "-RateLimit-Remaining",
+		reset:     "X-" + prefix + "-RateLimit-Reset",
+	}
+}
+
+func (p *Plugin) applyLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	key string,
+	cost int64,
+	count int64,
+	timeWindow int64,
+	headers quotaHeaders,
+) bool {
+	remaining, reset, allowed, err := p.incoming(r, key, cost, count, timeWindow)
+	if err != nil {
+		if *p.config.AllowDegradation {
+			return true
+		}
+		http.Error(w, "failed to limit graphql count", http.StatusInternalServerError)
+		return false
+	}
+	if *p.config.ShowLimitQuotaHeader {
+		w.Header().Set(headers.limit, strconv.FormatInt(count, 10))
+		w.Header().Set(headers.remaining, strconv.FormatInt(remaining, 10))
+		w.Header().Set(headers.reset, strconv.FormatInt(reset, 10))
+	}
+	if allowed {
+		return true
+	}
+
+	rejectedMsg := "Limit exceeded"
+	if p.config.RejectedMsg != "" {
+		rejectedMsg = p.config.RejectedMsg
+	}
+	http.Error(w, rejectedMsg, p.config.RejectedCode)
+	return false
 }
 
 func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -417,40 +637,64 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 	return "", false
 }
 
-func (p *Plugin) incoming(r *http.Request, key string, cost int64) (int64, int64, bool, error) {
+func (p *Plugin) incoming(
+	r *http.Request,
+	key string,
+	cost int64,
+	count int64,
+	timeWindow int64,
+) (int64, int64, bool, error) {
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		return p.redisLimiter.incoming(r, key, cost)
+		return p.redisLimiter.incoming(r, key, cost, count, timeWindow)
+	}
+	if p.config.Group != "" {
+		groupCounters.Lock()
+		defer groupCounters.Unlock()
+		return incomingLocal(
+			groupCounters.entries,
+			p.counterNamespace()+":"+key,
+			cost,
+			count,
+			timeWindow,
+			p.now(),
+		)
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return incomingLocal(p.counters, key, cost, count, timeWindow, p.now())
+}
 
-	now := p.now()
-	c, ok := p.counters[key]
+func incomingLocal(
+	counters map[string]*counter,
+	key string,
+	cost int64,
+	count int64,
+	timeWindow int64,
+	now time.Time,
+) (int64, int64, bool, error) {
+	counterKey := fmt.Sprintf("%d:%d:%s", count, timeWindow, key)
+	c, ok := counters[counterKey]
 	if !ok || !now.Before(c.resetAt) {
-		c = &counter{resetAt: now.Add(time.Duration(p.config.TimeWindow) * time.Second)}
-		p.counters[key] = c
+		c = &counter{resetAt: now.Add(time.Duration(timeWindow) * time.Second)}
+		counters[counterKey] = c
 	}
 
-	reset := int64(time.Until(c.resetAt).Seconds())
-	if p.now != nil {
-		reset = int64(c.resetAt.Sub(now).Seconds())
-	}
+	reset := int64(c.resetAt.Sub(now).Seconds())
 	if reset < 0 {
 		reset = 0
 	}
 
-	if c.used+cost > p.config.Count {
+	if c.used+cost > count {
 		return 0, reset, false, nil
 	}
 	c.used += cost
-	return p.config.Count - c.used, reset, true, nil
+	return count - c.used, reset, true, nil
 }
 
 type redisCountLimiter struct {
-	client     redis.UniversalClient
-	count      int64
-	timeWindow int64
+	client    redis.UniversalClient
+	namespace string
 }
 
 func (p *Plugin) newRedisLimiter() countLimiter {
@@ -486,7 +730,7 @@ func (p *Plugin) newRedisLimiter() countLimiter {
 	}
 
 	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(redis.UniversalClient)
-	return &redisCountLimiter{client: client, count: p.config.Count, timeWindow: p.config.TimeWindow}
+	return &redisCountLimiter{client: client, namespace: p.counterNamespace()}
 }
 
 func (p *Plugin) newRedisClusterLimiter() countLimiter {
@@ -518,17 +762,23 @@ func (p *Plugin) newRedisClusterLimiter() countLimiter {
 	}
 
 	client := shared.LoadOrStoreClient(name, configUID, redis.NewClusterClient(options)).(redis.UniversalClient)
-	return &redisCountLimiter{client: client, count: p.config.Count, timeWindow: p.config.TimeWindow}
+	return &redisCountLimiter{client: client, namespace: p.counterNamespace()}
 }
 
-func (l *redisCountLimiter) incoming(r *http.Request, key string, cost int64) (int64, int64, bool, error) {
+func (l *redisCountLimiter) incoming(
+	r *http.Request,
+	key string,
+	cost int64,
+	count int64,
+	timeWindow int64,
+) (int64, int64, bool, error) {
 	result, err := l.client.Eval(
 		r.Context(),
 		redisLimitCountScript,
-		[]string{"plugin-graphql-limit-count:" + key},
+		[]string{"plugin-graphql-limit-count:" + l.namespace + ":" + key},
 		cost,
-		l.count,
-		l.timeWindow,
+		count,
+		timeWindow,
 	).Result()
 	if err != nil {
 		return 0, 0, false, err
@@ -568,6 +818,72 @@ func redisInt(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func validateStaticLimitValue(value any, name string) error {
+	if value == nil {
+		return fmt.Errorf("%s is required", name)
+	}
+	if expression, ok := value.(string); ok {
+		if strings.Contains(expression, "$") {
+			return nil
+		}
+		parsed, err := strconv.ParseInt(expression, 10, 64)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("%s must be a positive integer", name)
+		}
+		return nil
+	}
+	_, err := numericLimitValue(value, name)
+	return err
+}
+
+func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
+	if expression, ok := value.(string); ok {
+		for _, variableName := range templateVariables(expression) {
+			resolved := requestVar(r, variableName)
+			expression = strings.ReplaceAll(expression, "${"+variableName+"}", resolved)
+			expression = strings.ReplaceAll(expression, "$"+variableName, resolved)
+		}
+		parsed, err := strconv.ParseInt(expression, 10, 64)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("%s must resolve to a positive integer", name)
+		}
+		return parsed, nil
+	}
+	return numericLimitValue(value, name)
+}
+
+func numericLimitValue(value any, name string) (int64, error) {
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return int64(typed), nil
+		}
+	case int64:
+		if typed > 0 {
+			return typed, nil
+		}
+	case float64:
+		if typed > 0 && math.Trunc(typed) == typed {
+			return int64(typed), nil
+		}
+	}
+	return 0, fmt.Errorf("%s must be a positive integer", name)
+}
+
+func resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
+	key := rule.Key
+	resolved := 0
+	for _, variableName := range templateVariables(key) {
+		value := requestVar(r, variableName)
+		if value != "" {
+			resolved++
+		}
+		key = strings.ReplaceAll(key, "${"+variableName+"}", value)
+		key = strings.ReplaceAll(key, "$"+variableName, value)
+	}
+	return key, resolved > 0 && key != ""
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {

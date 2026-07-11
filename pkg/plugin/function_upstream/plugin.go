@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -87,7 +89,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		defer res.Body.Close()
 
-		writeResponse(w, res)
+		writeResponse(w, res, r.ProtoMajor >= 2)
 	})
 }
 
@@ -103,6 +105,9 @@ func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
+	if extension := chi.URLParam(r, "ext"); extension != "" {
+		target.Path = appendExtensionPath(target.Path, extension)
+	}
 	target.RawQuery = r.URL.RawQuery
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
@@ -115,7 +120,28 @@ func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {
 	return upstreamReq, nil
 }
 
-func writeResponse(w http.ResponseWriter, res *http.Response) {
+func appendExtensionPath(basePath string, extension string) string {
+	if basePath == "" {
+		basePath = "/"
+	}
+	if strings.HasSuffix(basePath, "/") || strings.HasPrefix(extension, "/") {
+		return basePath + extension
+	}
+	return basePath + "/" + extension
+}
+
+func writeResponse(w http.ResponseWriter, res *http.Response, http2 bool) {
+	if http2 {
+		for _, field := range []string{
+			"Connection",
+			"Keep-Alive",
+			"Proxy-Connection",
+			"Upgrade",
+			"Transfer-Encoding",
+		} {
+			res.Header.Del(field)
+		}
+	}
 	for field, values := range res.Header {
 		for _, value := range values {
 			w.Header().Add(field, value)

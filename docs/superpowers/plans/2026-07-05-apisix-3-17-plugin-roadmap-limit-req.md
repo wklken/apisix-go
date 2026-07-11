@@ -7809,3 +7809,34 @@ Run: `go test -race ./pkg/plugin/redirect -count=1 -timeout=60s`, `go test -race
 - [x] **Step 5: Verify repository**
 
 Run: `go test ./...`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 237: Complete Function Upstream Edge Parity
+
+**Files:**
+- Modify: `pkg/plugin/function_upstream`
+- Modify: `pkg/plugin/azure_functions`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: generic serverless `function_uri`, matched `:ext` route parameters, downstream HTTP version, and Azure plugin metadata.
+- Produces: shared extension-path forwarding, HTTP/2-safe response headers, and Azure metadata authorization fallback.
+
+- [x] **Step 1: Implement shared path forwarding**
+
+Appended the Chi `ext` route parameter to the configured function path while preserving query forwarding and slash behavior.
+
+- [x] **Step 2: Filter HTTP/2 response headers**
+
+Removed `Connection`, `Keep-Alive`, `Proxy-Connection`, `Upgrade`, and `Transfer-Encoding` when relaying function responses to HTTP/2 clients.
+
+- [x] **Step 3: Add Azure metadata fallback**
+
+Loaded `master_apikey` and `master_clientid` plugin metadata only when client headers and route authorization are absent.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run: `go test -race ./pkg/plugin/function_upstream ./pkg/plugin/azure_functions ./pkg/plugin/openfunction -count=1 -timeout=60s`.
+
+- [x] **Step 5: Verify repository**
+
+Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

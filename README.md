@@ -67,12 +67,10 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [serverless-post-function](https://apisix.apache.org/zh/docs/apisix/plugins/serverless/) 45%
   - support official plugin name, priority, schema, Lua chunks that return functions, request-phase execution, response capture for `header_filter` / `body_filter` / `log`, response header/status/body mutation, and the documented JSON body-filter rewrite pattern
   - not support the full OpenResty/APISIX Lua runtime, shared-dict/lrucache semantics, custom variable registration effects, streaming body chunks, or exact phase lifecycle fidelity
-- [x] [azure-functions](https://apisix.apache.org/zh/docs/apisix/plugins/azure-functions/) 65%
-  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, Azure `x-functions-key` / `x-functions-clientid` injection without overwriting client headers, relaying function status/body/headers, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
-  - not support plugin metadata master-key fallback, wildcard `:ext` path forwarding, or HTTP/2 connection-header filtering
-- [x] [openfunction](https://apisix.apache.org/zh/docs/apisix/plugins/openfunction/) 65%
-  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, Basic authorization from `authorization.service_token`, relaying function status/body/headers, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
-  - not support wildcard `:ext` path forwarding or HTTP/2 connection-header filtering
+- [x] [azure-functions](https://apisix.apache.org/zh/docs/apisix/plugins/azure-functions/) 92%
+  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers and wildcard `:ext` paths to `function_uri`, Azure client/route/metadata authorization precedence, relaying function status/body/headers, HTTP/2 connection-header filtering, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
+- [x] [openfunction](https://apisix.apache.org/zh/docs/apisix/plugins/openfunction/) 90%
+  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers and wildcard `:ext` paths to `function_uri`, Basic authorization from `authorization.service_token`, relaying function status/body/headers, HTTP/2 connection-header filtering, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
 - [x] [openwhisk](https://apisix.apache.org/zh/docs/apisix/plugins/openwhisk/) 75%
   - support official plugin name, priority, schema, OpenWhisk action endpoint construction with optional package, POST body forwarding, Basic authorization from `service_token`, default `blocking` / `result` / `timeout` query parameters, JSON result `statusCode` / `headers` / `body`, invalid result fallback to 503, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
   - not support OpenResty response-header behavior or every OpenWhisk result body type edge case

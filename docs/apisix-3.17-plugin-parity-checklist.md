@@ -115,9 +115,9 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `inspect` | no | unsupported: lua feature | not-required-native |
 | `example-plugin` | yes | 60% | implement |
 | `aws-lambda` | yes | 70% | monitor |
-| `azure-functions` | yes | 65% | implement |
+| `azure-functions` | yes | 92% | monitor |
 | `openwhisk` | yes | 75% | monitor |
-| `openfunction` | yes | 65% | implement |
+| `openfunction` | yes | 90% | monitor |
 | `serverless-post-function` | yes | 45% | not-required-native |
 | `ext-plugin-post-req` | no | unsupported: No need | not-required-native |
 | `ext-plugin-post-resp` | no | unsupported: No need | not-required-native |

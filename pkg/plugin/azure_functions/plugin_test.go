@@ -114,6 +114,30 @@ func TestHandlerDoesNotOverwriteClientAzureAuthorization(t *testing.T) {
 	}
 }
 
+func TestHandlerFallsBackToAzureMetadataAuthorization(t *testing.T) {
+	var gotKey, gotClientID string
+	function := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-Functions-Key")
+		gotClientID = r.Header.Get("X-Functions-Clientid")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer function.Close()
+
+	p := newTestPlugin(t, Config{FunctionURI: function.URL})
+	p.metadata = Metadata{
+		MasterAPIKey:   "master-key",
+		MasterClientID: "master-client",
+	}
+	res := performRequest(p, http.MethodGet, "/azure", "", nil)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+	if gotKey != "master-key" || gotClientID != "master-client" {
+		t.Fatalf("metadata authorization = key:%q client:%q, want master values", gotKey, gotClientID)
+	}
+}
+
 func performRequest(
 	p *Plugin,
 	method string,

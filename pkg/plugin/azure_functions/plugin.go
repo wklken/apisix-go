@@ -4,11 +4,13 @@ import (
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/function_upstream"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
 	function_upstream.Plugin
-	config Config
+	config   Config
+	metadata Metadata
 }
 
 const (
@@ -77,6 +79,11 @@ type Authorization struct {
 	ClientID string `json:"clientid,omitempty"`
 }
 
+type Metadata struct {
+	MasterAPIKey   string `json:"master_apikey,omitempty"`
+	MasterClientID string `json:"master_clientid,omitempty"`
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -87,6 +94,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.loadMetadata()
 	p.Plugin.Config = function_upstream.Config{
 		FunctionURI:      p.config.FunctionURI,
 		Timeout:          p.config.Timeout,
@@ -107,6 +115,12 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 		return
 	}
 	if p.config.Authorization == nil {
+		if p.metadata.MasterAPIKey != "" {
+			r.Header.Set("X-Functions-Key", p.metadata.MasterAPIKey)
+		}
+		if p.metadata.MasterClientID != "" {
+			r.Header.Set("X-Functions-Clientid", p.metadata.MasterClientID)
+		}
 		return
 	}
 
@@ -116,4 +130,20 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 	if p.config.Authorization.ClientID != "" {
 		r.Header.Set("X-Functions-Clientid", p.config.Authorization.ClientID)
 	}
+}
+
+func (p *Plugin) loadMetadata() {
+	var metadata Metadata
+	if err := safeGetPluginMetadata(name, &metadata); err == nil {
+		p.metadata = metadata
+	}
+}
+
+func safeGetPluginMetadata(id string, target any) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = store.ErrNotFound
+		}
+	}()
+	return store.GetPluginMetadata(id, target)
 }

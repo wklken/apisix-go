@@ -252,9 +252,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 80%
   - support weighted inline upstream selection, `upstream_id`, and bounded `match.vars` with `==` / `!=` / numeric comparison / regex match operators for common request variables
   - not support APISIX upstream balancer fidelity for all upstream algorithms, health checks, retries, or full `lua-resty-expr` syntax
-- [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 63%
-  - support first-match rules, `set_headers`, weighted actions, `==` / `!=` / numeric comparison / regex match operators, `$`-prefixed variables, `arg_*`, `http_*`, `uri`, `request_uri`, `method` / `request_method`, `host`, `scheme`, and `remote_addr`
-  - not support full `lua-resty-expr` syntax or full APISIX variable resolution
+- [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 96%
+  - support schema-validated first-match rules, match-all rules, string/numeric `set_headers` with variable resolution, weighted actions, config-time expression validation, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
+  - not support exact OpenResty cached round-robin behavior, the complete NGINX variable catalog, or exact access-phase timing
 - [x] [request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 85%
   - support custom header names, response header opt-out, incoming request ID preservation, `uuid`, `nanoid`, `range_id`, and local numeric `snowflake` generation
   - not support APISIX plugin-attr `snowflake` configuration or etcd-backed distributed data-machine leasing

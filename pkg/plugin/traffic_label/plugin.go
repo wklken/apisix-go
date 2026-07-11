@@ -2,14 +2,13 @@ package traffic_label
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 )
 
 type Plugin struct {
@@ -37,7 +36,14 @@ const schema = `
         "type": "object",
         "properties": {
           "match": {
-            "type": "array"
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "anyOf": [
+                {"type": "array"},
+                {"type": "string"}
+              ]
+            }
           },
           "actions": {
             "type": "array",
@@ -47,14 +53,24 @@ const schema = `
               "properties": {
                 "set_headers": {
                   "type": "object",
-                  "minProperties": 1
+                  "minProperties": 1,
+                  "patternProperties": {
+                    "^[^:]+$": {
+                      "oneOf": [
+                        {"type": "string"},
+                        {"type": "number"}
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
                 },
                 "weight": {
                   "type": "integer",
                   "default": 1,
                   "minimum": 1
                 }
-              }
+              },
+              "additionalProperties": false
             }
           }
         },
@@ -73,11 +89,12 @@ type Config struct {
 type Rule struct {
 	Match   []any    `json:"match,omitempty"`
 	Actions []Action `json:"actions,omitempty"`
+	expr    *pluginexpr.Expression
 }
 
 type Action struct {
-	SetHeaders map[string]string `json:"set_headers,omitempty"`
-	Weight     int               `json:"weight,omitempty"`
+	SetHeaders map[string]interface{} `json:"set_headers,omitempty"`
+	Weight     int                    `json:"weight,omitempty"`
 }
 
 var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
@@ -98,6 +115,11 @@ func (p *Plugin) PostInit() error {
 	p.actionCursors = make([]int, len(p.config.Rules))
 
 	for ruleIndex, rule := range p.config.Rules {
+		expr, err := pluginexpr.Compile(rule.Match)
+		if err != nil {
+			return fmt.Errorf("traffic-label rule %d match validation failed: %w", ruleIndex, err)
+		}
+		p.config.Rules[ruleIndex].expr = expr
 		for actionIndex, action := range rule.Actions {
 			weight := action.Weight
 			if weight == 0 {
@@ -115,7 +137,9 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		for ruleIndex, rule := range p.config.Rules {
-			if !matchRule(r, rule.Match) {
+			if !rule.expr.Eval(func(name string) any {
+				return pluginexpr.RequestValue(r, name)
+			}) {
 				continue
 			}
 
@@ -152,130 +176,16 @@ func (p *Plugin) nextAction(ruleIndex int) *Action {
 
 func applyAction(r *http.Request, action Action) {
 	for name, value := range action.SetHeaders {
-		r.Header.Set(name, resolveValue(r, value))
-	}
-}
-
-func matchRule(r *http.Request, conditions []any) bool {
-	if len(conditions) == 0 {
-		return true
-	}
-
-	pendingOp := "AND"
-	hasResult := false
-	result := true
-	for _, condition := range conditions {
-		if op, ok := condition.(string); ok {
-			switch strings.ToUpper(op) {
-			case "AND", "OR":
-				pendingOp = strings.ToUpper(op)
-			default:
-				return false
-			}
-			continue
+		resolved := fmt.Sprint(value)
+		if stringValue, ok := value.(string); ok {
+			resolved = resolveValue(r, stringValue)
 		}
-
-		matched := matchCondition(r, condition)
-		if !hasResult {
-			result = matched
-			hasResult = true
-			continue
-		}
-
-		if pendingOp == "OR" {
-			result = result || matched
-		} else {
-			result = result && matched
-		}
-		pendingOp = "AND"
+		r.Header.Set(name, resolved)
 	}
-	return hasResult && result
-}
-
-func matchCondition(r *http.Request, condition any) bool {
-	parts, ok := condition.([]any)
-	if !ok || len(parts) != 3 {
-		return false
-	}
-
-	left := fmt.Sprint(parts[0])
-	op := fmt.Sprint(parts[1])
-	right := fmt.Sprint(parts[2])
-	actual := requestVar(r, left)
-
-	switch op {
-	case "==":
-		return actual == right
-	case "!=":
-		return actual != right
-	case ">":
-		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
-	case ">=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
-	case "<":
-		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
-	case "<=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
-	case "~":
-		matched, _ := regexp.MatchString(right, actual)
-		return matched
-	case "!~":
-		matched, _ := regexp.MatchString(right, actual)
-		return !matched
-	default:
-		return false
-	}
-}
-
-func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
-	l, err := strconv.ParseFloat(left, 64)
-	if err != nil {
-		return false
-	}
-	r, err := strconv.ParseFloat(right, 64)
-	if err != nil {
-		return false
-	}
-	return compare(l, r)
 }
 
 func resolveValue(r *http.Request, value string) string {
 	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return requestVar(r, strings.TrimPrefix(variable, "$"))
+		return pluginexpr.String(pluginexpr.RequestValue(r, strings.TrimPrefix(variable, "$")))
 	})
-}
-
-func requestVar(r *http.Request, name string) string {
-	name = strings.TrimPrefix(name, "$")
-	switch {
-	case name == "uri":
-		return r.URL.Path
-	case name == "request_uri":
-		return r.URL.RequestURI()
-	case name == "method", name == "request_method":
-		return r.Method
-	case name == "host":
-		return r.Host
-	case name == "scheme":
-		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
-			return scheme
-		}
-		if r.TLS != nil {
-			return "https"
-		}
-		return "http"
-	case name == "remote_addr":
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
-	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
-	case strings.HasPrefix(name, "http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return r.Header.Get(header)
-	default:
-		return ""
-	}
 }

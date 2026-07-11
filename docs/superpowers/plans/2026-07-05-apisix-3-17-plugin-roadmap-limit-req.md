@@ -8121,3 +8121,26 @@ Extracted the response-rewrite expression compiler/evaluator, preserved its beha
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=30s`, `go test -race ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 249: Complete Traffic Label Expression And Schema Parity
+
+**Files:**
+- Modify: `pkg/plugin/traffic_label`
+- Reuse: `pkg/plugin/expr`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 traffic-label match trees, string/numeric `set_headers`, weighted actions, and common request/APISIX variables.
+- Produces: config-time expression/schema rejection, typed header serialization, nested expression matching, and weighted first-match header actions.
+
+- [x] **Step 1: Pin official schema and match behavior**
+
+Added focused failures for nested/list/IP/negation operators, APISIX array variables, numeric headers, malformed matches, empty explicit matches, unsupported actions, and invalid header values.
+
+- [x] **Step 2: Apply the shared evaluator and official action schema**
+
+Compiled every rule during initialization, replaced the reduced local matcher and variable resolver, accepted string/numeric header values, and rejected unsupported action shapes through the plugin schema.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/traffic_label ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=30s`, `go test -race ./pkg/plugin/traffic_label ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

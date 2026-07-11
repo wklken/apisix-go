@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -26,12 +29,12 @@ func TestHandlerSetsHeadersForFirstMatchingRule(t *testing.T) {
 			{
 				Match: []any{[]any{"arg_version", "==", "v1"}},
 				Actions: []Action{
-					{SetHeaders: map[string]string{"X-Server-Id": "100", "X-Version": "$arg_version"}},
+					{SetHeaders: map[string]interface{}{"X-Server-Id": "100", "X-Version": "$arg_version"}},
 				},
 			},
 			{
 				Actions: []Action{
-					{SetHeaders: map[string]string{"X-Server-Id": "fallback"}},
+					{SetHeaders: map[string]interface{}{"X-Server-Id": "fallback"}},
 				},
 			},
 		},
@@ -61,7 +64,7 @@ func TestHandlerSkipsWhenNoRuleMatches(t *testing.T) {
 			{
 				Match: []any{[]any{"arg_version", "==", "v1"}},
 				Actions: []Action{
-					{SetHeaders: map[string]string{"X-Server-Id": "100"}},
+					{SetHeaders: map[string]interface{}{"X-Server-Id": "100"}},
 				},
 			},
 		},
@@ -88,8 +91,8 @@ func TestHandlerUsesWeightedActions(t *testing.T) {
 			{
 				Match: []any{[]any{"uri", "==", "/anything"}},
 				Actions: []Action{
-					{SetHeaders: map[string]string{"X-Bucket": "blue"}, Weight: 2},
-					{SetHeaders: map[string]string{"X-Bucket": "green"}, Weight: 1},
+					{SetHeaders: map[string]interface{}{"X-Bucket": "blue"}, Weight: 2},
+					{SetHeaders: map[string]interface{}{"X-Bucket": "green"}, Weight: 1},
 					{Weight: 1},
 				},
 			},
@@ -131,7 +134,7 @@ func TestMatchSupportsRequestHeaderAndNotEquals(t *testing.T) {
 					[]any{"arg_skip", "!=", "true"},
 				},
 				Actions: []Action{
-					{SetHeaders: map[string]string{"X-Traffic-Label": "$http_x_region"}},
+					{SetHeaders: map[string]interface{}{"X-Traffic-Label": "$http_x_region"}},
 				},
 			},
 		},
@@ -164,7 +167,7 @@ func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
 					[]any{"uri", "!~", "/internal"},
 				},
 				Actions: []Action{
-					{SetHeaders: map[string]string{"X-Traffic-Label": "$arg_score-$http_x_region"}},
+					{SetHeaders: map[string]interface{}{"X-Traffic-Label": "$arg_score-$http_x_region"}},
 				},
 			},
 		},
@@ -183,5 +186,104 @@ func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerSupportsNestedRestyExpressionAndApisixVariables(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []any{
+					"AND",
+					[]any{"request_method", "in", []any{"GET", "HEAD"}},
+					[]any{"remote_addr", "ipmatch", []any{"192.0.2.0/24"}},
+					[]any{"http_x_env", "~*", "^prod$"},
+					[]any{"graphql_root_fields", "has", "owner"},
+					[]any{"arg_skip", "!", "==", "yes"},
+				},
+				Actions: []Action{{SetHeaders: map[string]interface{}{"X-Traffic-Label": "$graphql_root_fields"}}},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/anything?skip=no", nil)
+	req.RemoteAddr = "192.0.2.40:12345"
+	req.Header.Set("X-Env", "PrOd")
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.RegisterRequestVar(req, "$graphql_root_fields", []string{"viewer", "owner"})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Traffic-Label"); got != "viewer,owner" {
+			t.Fatalf("X-Traffic-Label = %q, want viewer,owner", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+}
+
+func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{
+		Match:   []any{[]any{"uri", "bogus", "/anything"}},
+		Actions: []Action{{SetHeaders: map[string]interface{}{"X-Traffic-Label": "bad"}}},
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid match rejected")
+	}
+}
+
+func TestConfigAcceptsNumericSetHeaderValues(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"actions": []any{map[string]any{
+				"set_headers": map[string]any{"X-Server-Id": 100},
+			}},
+		}},
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() numeric set_headers error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Server-Id"); got != "100" {
+			t.Fatalf("X-Server-Id = %q, want 100", got)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func TestSchemaValidatesOfficialTrafficLabelShape(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	valid := map[string]any{
+		"rules": []any{map[string]any{
+			"match": []any{[]any{"uri", "==", "/anything"}},
+			"actions": []any{map[string]any{
+				"set_headers": map[string]any{"X-Server-Id": 100},
+			}},
+		}},
+	}
+	if err := util.Validate(valid, p.GetSchema()); err != nil {
+		t.Fatalf("Validate(valid) error = %v", err)
+	}
+
+	invalid := []map[string]any{
+		{"rules": []any{map[string]any{"match": []any{}, "actions": []any{map[string]any{"weight": 1}}}}},
+		{"rules": []any{map[string]any{"actions": []any{map[string]any{"add_headers": map[string]any{"X": "y"}}}}}},
+		{"rules": []any{map[string]any{"actions": []any{map[string]any{"set_headers": map[string]any{"X": true}}}}}},
+	}
+	for _, config := range invalid {
+		if err := util.Validate(config, p.GetSchema()); err == nil {
+			t.Fatalf("Validate(%v) error = nil, want invalid config rejected", config)
+		}
 	}
 }

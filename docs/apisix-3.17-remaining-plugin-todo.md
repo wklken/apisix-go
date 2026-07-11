@@ -121,7 +121,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `graphql-limit-count` | Only deeper GraphQL parser parity and exact group-configuration mismatch validation remain. Rules, string expressions, groups, metadata headers, Redis Cluster, and `graphql.max_size` are implemented. |
 | `api-breaker` | Only shared-dict and log-phase exactness remain, which are native; add user-visible breaker-window parity only if practical. |
 | `traffic-split` | Improve upstream balancer parity, health checks, retries, and bounded `lua-resty-expr` syntax where practical. |
-| `traffic-label` | Add more variable/expression support and label propagation parity. |
+| `traffic-label` | No normal Go TODO remains. Exact OpenResty cached round-robin behavior, the complete NGINX variable catalog, and access-phase timing remain deferred runtime details. |
 | `request-id` | Add plugin-attr snowflake config and etcd-backed machine leasing if local config/store patterns make it practical. |
 | `oas-validator` | Add external `$ref`, metadata TTL refresh, more OpenAPI parameter styles, non-JSON body schemas, and response validation. |
 | `mcp-bridge` | Deferred native/runtime items: cross-worker shared-dict session recovery and exact `ngx.pipe` timeout/worker-exit semantics. Official ping, SSE/message flow, cancellation-aware backpressure, and subprocess cleanup are implemented. |

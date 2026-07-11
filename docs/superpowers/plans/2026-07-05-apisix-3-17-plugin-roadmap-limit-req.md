@@ -7932,3 +7932,29 @@ Run: `go test ./pkg/plugin/graphql_proxy_cache ./pkg/route -count=1 -timeout=30s
 - [x] **Step 5: Verify repository**
 
 Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 241: Add GraphQL Limit Count Size And Redis Cluster Parity
+
+**Files:**
+- Modify: `pkg/plugin/graphql_limit_count`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: global `graphql.max_size` and official flat Redis Cluster configuration.
+- Produces: bounded GraphQL body reads and atomic depth-cost quotas shared through Redis Cluster.
+
+- [x] **Step 1: Enforce GraphQL request size**
+
+Applied the global GraphQL maximum through a bounded request-body reader before JSON or GraphQL parsing.
+
+- [x] **Step 2: Add Redis Cluster schema/runtime support**
+
+Accepted and validated cluster nodes/name/TLS/pool fields, created a shared `go-redis` cluster client, and reused the atomic depth-cost Lua script.
+
+- [x] **Step 3: Verify focused behavior**
+
+Run: `go test ./pkg/plugin/graphql_limit_count -count=1 -timeout=30s` and `go test -race ./pkg/plugin/graphql_limit_count -count=1 -timeout=60s`.
+
+- [x] **Step 4: Verify repository**
+
+Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

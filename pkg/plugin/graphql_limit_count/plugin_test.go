@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -42,6 +43,9 @@ func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
 	}
 	if p.config.RedisTimeout != 1000 {
 		t.Fatalf("RedisTimeout = %d, want 1000", p.config.RedisTimeout)
+	}
+	if p.config.RedisKeepaliveTimeout != 10000 {
+		t.Fatalf("RedisKeepaliveTimeout = %d, want 10000", p.config.RedisKeepaliveTimeout)
 	}
 	if p.config.RedisSSL == nil || *p.config.RedisSSL {
 		t.Fatalf("RedisSSL = %v, want false", p.config.RedisSSL)
@@ -93,6 +97,60 @@ func TestSchemaAcceptsRedisPolicyFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected redis policy fields: %v", err)
+	}
+}
+
+func TestSchemaAndPostInitAcceptRedisClusterPolicy(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	clusterConfig := map[string]any{
+		"count":                    5,
+		"time_window":              60,
+		"key":                      "remote_addr",
+		"policy":                   "redis-cluster",
+		"redis_cluster_nodes":      []any{"127.0.0.1:5000", "127.0.0.1:5001"},
+		"redis_password":           "secret",
+		"redis_timeout":            1500,
+		"redis_cluster_name":       "cluster-1",
+		"redis_cluster_ssl":        true,
+		"redis_cluster_ssl_verify": false,
+		"redis_keepalive_timeout":  12000,
+		"redis_keepalive_pool":     80,
+	}
+	if err := util.Validate(clusterConfig, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected redis-cluster policy fields: %v", err)
+	}
+	delete(clusterConfig, "redis_cluster_nodes")
+	if err := util.Validate(clusterConfig, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted redis-cluster policy without redis_cluster_nodes")
+	}
+
+	ssl := true
+	sslVerify := false
+	initialized := newTestPlugin(t, Config{
+		Count:                 5,
+		TimeWindow:            60,
+		Policy:                "redis-cluster",
+		RedisClusterNodes:     []string{"127.0.0.1:5000", "127.0.0.1:5001"},
+		RedisPassword:         "secret",
+		RedisTimeout:          1500,
+		RedisClusterName:      "cluster-1",
+		RedisClusterSSL:       &ssl,
+		RedisClusterSSLVerify: &sslVerify,
+		RedisKeepaliveTimeout: 12000,
+		RedisKeepalivePool:    80,
+	})
+	if initialized.redisLimiter == nil {
+		t.Fatal("redisLimiter = nil, want initialized cluster limiter")
+	}
+	if initialized.config.RedisKeepaliveTimeout != 12000 || initialized.config.RedisKeepalivePool != 80 {
+		t.Fatalf(
+			"cluster keepalive = %d/%d, want 12000/80",
+			initialized.config.RedisKeepaliveTimeout,
+			initialized.config.RedisKeepalivePool,
+		)
 	}
 }
 
@@ -308,6 +366,28 @@ func TestHandlerRejectsInvalidGraphQLRequests(t *testing.T) {
 				t.Fatalf("response code = %d, want %d", rr.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestHandlerEnforcesGlobalGraphQLMaxSize(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{GraphQL: config.GraphQL{MaxSize: 50}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{Count: 100, TimeWindow: 60})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/graphql",
+		strings.NewReader(`{"query":"query { viewer { id name email address phone } }"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for oversized GraphQL bodies")
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusBadRequest)
 	}
 }
 

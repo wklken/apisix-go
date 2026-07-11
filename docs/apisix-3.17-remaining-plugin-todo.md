@@ -121,7 +121,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `request-validation` | Add missing schema edge cases around headers/forms and improve APISIX-style rejection details. |
 | `proxy-mirror` | Add gRPC mirroring and APISIX DNS resolver behavior only if the Go proxy layer exposes enough hooks. |
 | `workflow` | Add more delegated actions for implemented plugins and better condition expression coverage. |
-| `graphql-limit-count` | Add Redis Cluster, `graphql.max_size`, and deeper GraphQL parsing parity. |
+| `graphql-limit-count` | Add limit-count multi-rule/string-expression behavior and deeper GraphQL parsing parity. Redis Cluster and `graphql.max_size` are implemented. |
 | `api-breaker` | Only shared-dict and log-phase exactness remain, which are native; add user-visible breaker-window parity only if practical. |
 | `traffic-split` | Improve upstream balancer parity, health checks, retries, and bounded `lua-resty-expr` syntax where practical. |
 | `traffic-label` | Add more variable/expression support and label propagation parity. |

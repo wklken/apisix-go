@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -100,6 +102,51 @@ func TestHandlerReturnsServiceUnavailableForInvalidOpenWhiskJSON(t *testing.T) {
 
 	if res.Code != http.StatusServiceUnavailable {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHandlerRelaysScalarAndListResultHeaders(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"headers":{"X-Rate-Limit":7,"X-Values":["one","two"]},"body":{"ok":true}}`))
+	}))
+	defer api.Close()
+
+	p := newTestPlugin(t, Config{
+		APIHost:      api.URL,
+		ServiceToken: "user:pass",
+		Namespace:    "guest",
+		Action:       "hello",
+	})
+	res := performRequest(p, "")
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusOK)
+	}
+	if got := res.Header().Get("X-Rate-Limit"); got != "7" {
+		t.Fatalf("X-Rate-Limit = %q, want 7", got)
+	}
+	if got := res.Header().Values("X-Values"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("X-Values = %#v, want [one two]", got)
+	}
+	if got := res.Body.String(); got != `{"ok":true}` {
+		t.Fatalf("response body = %q, want JSON object", got)
+	}
+}
+
+func TestSchemaRejectsInvalidOpenWhiskNames(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"api_host":      "https://openwhisk.example",
+		"service_token": "user:pass",
+		"namespace":     "bad/name",
+		"action":        "hello",
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want invalid namespace rejected")
 	}
 }
 

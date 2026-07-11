@@ -43,15 +43,18 @@ const schema = `
     },
     "namespace": {
       "type": "string",
-      "maxLength": 256
+      "maxLength": 256,
+      "pattern": "^([\\w]|[\\w][\\w@ .-]*[\\w@.-]+)$"
     },
     "package": {
       "type": "string",
-      "maxLength": 256
+      "maxLength": 256,
+      "pattern": "^([\\w]|[\\w][\\w@ .-]*[\\w@.-]+)$"
     },
     "action": {
       "type": "string",
-      "maxLength": 256
+      "maxLength": 256,
+      "pattern": "^([\\w]|[\\w][\\w@ .-]*[\\w@.-]+)$"
     },
     "result": {
       "type": "boolean",
@@ -97,9 +100,9 @@ type Config struct {
 }
 
 type actionResult struct {
-	StatusCode int               `json:"statusCode,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Body       any               `json:"body,omitempty"`
+	StatusCode int            `json:"statusCode,omitempty"`
+	Headers    map[string]any `json:"headers,omitempty"`
+	Body       any            `json:"body,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -228,7 +231,7 @@ func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response) 
 	}
 
 	for field, value := range result.Headers {
-		w.Header().Set(field, value)
+		setResultHeader(w.Header(), field, value)
 	}
 
 	status := res.StatusCode
@@ -237,6 +240,29 @@ func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response) 
 	}
 	w.WriteHeader(status)
 	w.Write(resultBody(result.Body, body))
+}
+
+func setResultHeader(header http.Header, field string, value any) {
+	if values, ok := value.([]any); ok {
+		for _, item := range values {
+			if encoded, ok := resultHeaderValue(item); ok {
+				header.Add(field, encoded)
+			}
+		}
+		return
+	}
+	if encoded, ok := resultHeaderValue(value); ok {
+		header.Set(field, encoded)
+	}
+}
+
+func resultHeaderValue(value any) (string, bool) {
+	switch value.(type) {
+	case string, float64, bool:
+		return fmt.Sprint(value), true
+	default:
+		return "", false
+	}
 }
 
 func resultBody(value any, fallback []byte) []byte {

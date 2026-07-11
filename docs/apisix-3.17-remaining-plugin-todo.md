@@ -91,10 +91,10 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `error-page` | Limit rewrites to APISIX-generated errors if the Go response pipeline can distinguish them; expose metadata schema if local plugin interfaces support it. |
 | `exit-transformer` | Support more documented non-Lua response transformations. Arbitrary Lua execution and `core.response.exit()` callback fidelity are out of scope. |
 | `attach-consumer-label` | Add non-string label serialization if APISIX source requires it and local consumer labels preserve types. |
-| `azure-functions` | No normal Go TODO remains. Client/route/metadata authorization precedence, wildcard `:ext` forwarding, and HTTP/2 response filtering are implemented. |
-| `openfunction` | No normal Go TODO remains. Wildcard `:ext` forwarding and HTTP/2 response filtering are implemented in the shared function upstream. |
-| `openwhisk` | Improve OpenWhisk result body edge cases; keep OpenResty response-header exactness out of scope. |
-| `aws-lambda` | No normal Go TODO remains. APISIX-compatible SigV4 path/query/header canonicalization and wildcard `:ext` forwarding are implemented. |
+| `azure-functions` | No normal Go TODO remains. Encrypted route/metadata keys, authorization precedence, wildcard `:ext` forwarding, and HTTP/2 response filtering are implemented. |
+| `openfunction` | No normal Go TODO remains. Encrypted service tokens, wildcard `:ext` forwarding, and HTTP/2 response filtering are implemented. |
+| `openwhisk` | No normal Go TODO remains. Encrypted service tokens, official name validation, and scalar/list result headers and body values are implemented. |
+| `aws-lambda` | No normal Go TODO remains. Encrypted API-key/IAM credentials, APISIX-compatible SigV4 canonicalization, and wildcard `:ext` forwarding are implemented. |
 | `response-rewrite` | Expand bounded `lua-resty-expr` variable/operator support and add deflate/brotli decode if practical. Streaming chunk body filters remain out of scope. |
 | `proxy-rewrite` | Only small URI safe-encoding parity/test gaps remain; avoid risky rewrites. |
 | `fault-injection` | Expand bounded `resty.expr` operator and APISIX variable support. |

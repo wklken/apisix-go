@@ -27,6 +27,42 @@ func TestParseConsumerDecryptsEncryptedAuthPluginFields(t *testing.T) {
 	}
 }
 
+func TestDecodePluginMetadataDecryptsAzureMasterAPIKey(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	var metadata struct {
+		MasterAPIKey   string `json:"master_apikey"`
+		MasterClientID string `json:"master_clientid"`
+	}
+	err := decodePluginMetadata([]byte(`{
+        "master_apikey":"`+encryptForTest(t, key, "master-key")+`",
+        "master_clientid":"master-client"
+    }`), "azure-functions", &metadata)
+	if err != nil {
+		t.Fatalf("decodePluginMetadata() error = %v", err)
+	}
+	if metadata.MasterAPIKey != "master-key" || metadata.MasterClientID != "master-client" {
+		t.Fatalf("metadata = %#v, want decrypted master key", metadata)
+	}
+}
+
+func TestDecodePluginMetadataPreservesUnregisteredLargeIntegers(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	var metadata struct {
+		Sequence int64 `json:"sequence"`
+	}
+	if err := decodePluginMetadata([]byte(`{"sequence":9007199254740993}`), "example-plugin", &metadata); err != nil {
+		t.Fatalf("decodePluginMetadata() error = %v", err)
+	}
+	if metadata.Sequence != 9007199254740993 {
+		t.Fatalf("sequence = %d, want exact large integer", metadata.Sequence)
+	}
+}
+
 func encryptForTest(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize

@@ -114,10 +114,10 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `tencent-cloud-cls` | yes | 76% | monitor |
 | `inspect` | no | unsupported: lua feature | not-required-native |
 | `example-plugin` | yes | 60% | implement |
-| `aws-lambda` | yes | 92% | monitor |
-| `azure-functions` | yes | 92% | monitor |
-| `openwhisk` | yes | 75% | monitor |
-| `openfunction` | yes | 90% | monitor |
+| `aws-lambda` | yes | 95% | monitor |
+| `azure-functions` | yes | 95% | monitor |
+| `openwhisk` | yes | 93% | monitor |
+| `openfunction` | yes | 94% | monitor |
 | `serverless-post-function` | yes | 45% | not-required-native |
 | `ext-plugin-post-req` | no | unsupported: No need | not-required-native |
 | `ext-plugin-post-resp` | no | unsupported: No need | not-required-native |

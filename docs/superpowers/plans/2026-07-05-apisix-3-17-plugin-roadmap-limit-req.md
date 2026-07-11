@@ -7870,3 +7870,34 @@ Run: `go test ./pkg/plugin/aws_lambda -count=1 -timeout=30s` and `go test -race 
 - [x] **Step 5: Verify repository**
 
 Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 239: Complete Serverless Secret And OpenWhisk Parity
+
+**Files:**
+- Modify: `pkg/data_encryption` and `pkg/store`
+- Modify: `pkg/plugin/openwhisk`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX encrypted serverless credentials, encrypted Azure plugin metadata, and OpenWhisk result envelopes.
+- Produces: decrypted runtime credentials, precision-safe metadata decoding, and scalar/list response headers.
+
+- [x] **Step 1: Register serverless encrypted fields**
+
+Added the official encrypted credential paths for AWS Lambda, Azure Functions, OpenFunction, and OpenWhisk.
+
+- [x] **Step 2: Decrypt Azure plugin metadata**
+
+Added typed metadata decoding for encrypted `master_apikey` while bypassing map conversion for unregistered metadata to preserve numeric precision.
+
+- [x] **Step 3: Close OpenWhisk response/schema gaps**
+
+Added official namespace/package/action patterns and scalar/list result-header serialization while retaining arbitrary JSON body relay.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run: `go test ./pkg/data_encryption ./pkg/store ./pkg/plugin/openwhisk -count=1 -timeout=30s` and `go test -race ./pkg/data_encryption ./pkg/store ./pkg/plugin/openwhisk -count=1 -timeout=60s`.
+
+- [x] **Step 5: Verify repository**
+
+Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

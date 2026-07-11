@@ -16,11 +16,26 @@ var ErrNotFound = fmt.Errorf("not found")
 
 func GetPluginMetadata(id string, v any) error {
 	config := s.GetFromBucket("plugin_metadata", []byte(id))
+	return decodePluginMetadata(config, id, v)
+}
 
-	// FIXME: add cache here? or unmarshal at sync? should not do unmarshal here
+func decodePluginMetadata(config []byte, id string, v any) error {
+	keyring, enabled := data_encryption.Keyring()
+	if !enabled || !data_encryption.HasEncryptedPluginMetadata(id) {
+		return json.Unmarshal(config, v)
+	}
 
-	err := json.Unmarshal(config, v)
-	return err
+	var metadata map[string]any
+	if err := json.Unmarshal(config, &metadata); err != nil {
+		return err
+	}
+	data_encryption.DecryptPluginMetadata(id, metadata, keyring)
+
+	decoded, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(decoded, v)
 }
 
 func GetUpstream(id string) (resource.Upstream, error) {

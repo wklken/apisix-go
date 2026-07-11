@@ -46,19 +46,31 @@ var pluginFields = map[string][]string{
 		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
 		"auth.aws.session_token",
 	},
-	"authz-keycloak": {"client_secret"},
-	"authz-casdoor":  {"client_secret"},
-	"basic-auth":     {"password"},
-	"cas-auth":       {"cookie.secret"},
-	"dingtalk-auth":  {"app_secret", "secret"},
-	"feishu-auth":    {"app_secret", "secret"},
-	"hmac-auth":      {"secret"},
-	"jwe-decrypt":    {"key", "secret"},
-	"jwt-auth":       {"secret", "private_key"},
-	"key-auth":       {"key"},
-	"ldap-auth":      {"user_dn"},
-	"openid-connect": {"client_secret", "client_rsa_private_key", "session.secret", "session.redis.password"},
-	"saml-auth":      {"sp_private_key", "secret"},
+	"authz-keycloak":  {"client_secret"},
+	"authz-casdoor":   {"client_secret"},
+	"aws-lambda":      {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
+	"azure-functions": {"authorization.apikey"},
+	"basic-auth":      {"password"},
+	"cas-auth":        {"cookie.secret"},
+	"dingtalk-auth":   {"app_secret", "secret"},
+	"feishu-auth":     {"app_secret", "secret"},
+	"hmac-auth":       {"secret"},
+	"jwe-decrypt":     {"key", "secret"},
+	"jwt-auth":        {"secret", "private_key"},
+	"key-auth":        {"key"},
+	"ldap-auth":       {"user_dn"},
+	"openid-connect":  {"client_secret", "client_rsa_private_key", "session.secret", "session.redis.password"},
+	"openfunction":    {"authorization.service_token"},
+	"openwhisk":       {"service_token"},
+	"saml-auth":       {"sp_private_key", "secret"},
+}
+
+var pluginMetadataFields = map[string][]string{
+	"azure-functions": {"master_apikey"},
+}
+
+func HasEncryptedPluginMetadata(name string) bool {
+	return len(pluginMetadataFields[name]) != 0
 }
 
 func DecryptPluginConfigs(configs map[string]any, keyring []string) {
@@ -73,6 +85,15 @@ func DecryptPluginConfigs(configs map[string]any, keyring []string) {
 		for _, field := range fields {
 			decryptField(config, field, keyring)
 		}
+	}
+}
+
+func DecryptPluginMetadata(name string, metadata map[string]any, keyring []string) {
+	if len(keyring) == 0 {
+		return
+	}
+	for _, field := range pluginMetadataFields[name] {
+		decryptField(metadata, field, keyring)
 	}
 }
 

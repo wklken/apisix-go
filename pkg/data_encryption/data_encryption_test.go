@@ -64,6 +64,48 @@ func TestDecryptPluginConfigsSupportsAIMapsAndInstanceArrays(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigsSupportsServerlessCredentials(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"aws-lambda": map[string]any{"authorization": map[string]any{
+			"apikey": encryptForTest(t, key, "aws-api-key"),
+			"iam": map[string]any{
+				"accesskey": encryptForTest(t, key, "aws-access-key"),
+				"secretkey": encryptForTest(t, key, "aws-secret-key"),
+			},
+		}},
+		"azure-functions": map[string]any{"authorization": map[string]any{
+			"apikey": encryptForTest(t, key, "azure-api-key"),
+		}},
+		"openfunction": map[string]any{"authorization": map[string]any{
+			"service_token": encryptForTest(t, key, "openfunction-token"),
+		}},
+		"openwhisk": map[string]any{
+			"service_token": encryptForTest(t, key, "openwhisk-token"),
+		},
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	aws := configs["aws-lambda"].(map[string]any)["authorization"].(map[string]any)
+	if aws["apikey"] != "aws-api-key" ||
+		aws["iam"].(map[string]any)["accesskey"] != "aws-access-key" ||
+		aws["iam"].(map[string]any)["secretkey"] != "aws-secret-key" {
+		t.Fatalf("aws-lambda authorization = %#v", aws)
+	}
+	azure := configs["azure-functions"].(map[string]any)["authorization"].(map[string]any)
+	if azure["apikey"] != "azure-api-key" {
+		t.Fatalf("azure-functions authorization = %#v", azure)
+	}
+	openFunction := configs["openfunction"].(map[string]any)["authorization"].(map[string]any)
+	if openFunction["service_token"] != "openfunction-token" {
+		t.Fatalf("openfunction authorization = %#v", openFunction)
+	}
+	openWhisk := configs["openwhisk"].(map[string]any)
+	if openWhisk["service_token"] != "openwhisk-token" {
+		t.Fatalf("openwhisk config = %#v", openWhisk)
+	}
+}
+
 func encryptForTest(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize

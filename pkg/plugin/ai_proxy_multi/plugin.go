@@ -2,28 +2,55 @@ package ai_proxy_multi
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"hash/fnv"
 	"io"
-	"math"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_stream"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config   Config
-	client   *http.Client
-	mu       sync.Mutex
-	nextSlot int
-	weighted []int
+	config    Config
+	client    *http.Client
+	mu        sync.Mutex
+	nextSlot  map[int]int
+	weighted  map[int][]int
+	priority  []int
+	now       func() time.Time
+	gcpTokens gcpTokenApplier
+	healthMu  sync.Mutex
+	health    map[int]*instanceHealthState
+	healthNow func() time.Time
+}
+
+type gcpTokenApplier interface {
+	Apply(context.Context, *http.Client, *http.Request, ai_auth.GCPConfig) error
+}
+
+type preparedInstanceRequest struct {
+	clientBody          []byte
+	providerBody        []byte
+	clientProtocol      ai_protocols.Protocol
+	providerProtocol    ai_protocols.Protocol
+	toolNameMap         map[string]string
+	anthropicConversion bool
+	cancel              context.CancelFunc
 }
 
 const (
@@ -224,6 +251,10 @@ const schema = `
       "minimum": 1,
       "default": 67108864
     },
+	"max_stream_duration_ms": {
+	  "type": "integer",
+	  "minimum": 1
+	},
     "max_response_bytes": {
       "type": "integer",
       "minimum": 1
@@ -242,6 +273,11 @@ const schema = `
       "minimum": 1,
       "default": 30
     },
+	"streaming_flush_interval_ms": {
+	  "type": "integer",
+	  "minimum": 0,
+	  "default": 10
+	},
     "ssl_verify": {
       "type": "boolean",
       "default": true
@@ -262,19 +298,21 @@ const schema = `
 `
 
 type Config struct {
-	Balancer               Balancer   `json:"balancer,omitempty"`
-	Instances              []Instance `json:"instances"`
-	Logging                Logging    `json:"logging,omitempty"`
-	FallbackStrategy       any        `json:"fallback_strategy,omitempty"`
-	MaxRetries             *int       `json:"max_retries,omitempty"`
-	RetryOnFailureWithinMS int        `json:"retry_on_failure_within_ms,omitempty"`
-	Timeout                int        `json:"timeout,omitempty"`
-	MaxReqBodySize         int64      `json:"max_req_body_size,omitempty"`
-	MaxResponseBytes       int64      `json:"max_response_bytes,omitempty"`
-	Keepalive              *bool      `json:"keepalive,omitempty"`
-	KeepaliveTimeout       int        `json:"keepalive_timeout,omitempty"`
-	KeepalivePool          int        `json:"keepalive_pool,omitempty"`
-	SSLVerify              *bool      `json:"ssl_verify,omitempty"`
+	Balancer                 Balancer   `json:"balancer,omitempty"`
+	Instances                []Instance `json:"instances"`
+	Logging                  Logging    `json:"logging,omitempty"`
+	FallbackStrategy         any        `json:"fallback_strategy,omitempty"`
+	MaxRetries               *int       `json:"max_retries,omitempty"`
+	RetryOnFailureWithinMS   int        `json:"retry_on_failure_within_ms,omitempty"`
+	Timeout                  int        `json:"timeout,omitempty"`
+	MaxReqBodySize           int64      `json:"max_req_body_size,omitempty"`
+	MaxStreamDurationMS      int        `json:"max_stream_duration_ms,omitempty"`
+	MaxResponseBytes         int64      `json:"max_response_bytes,omitempty"`
+	Keepalive                *bool      `json:"keepalive,omitempty"`
+	KeepaliveTimeout         int        `json:"keepalive_timeout,omitempty"`
+	KeepalivePool            int        `json:"keepalive_pool,omitempty"`
+	StreamingFlushIntervalMS *int       `json:"streaming_flush_interval_ms,omitempty"`
+	SSLVerify                *bool      `json:"ssl_verify,omitempty"`
 }
 
 type Balancer struct {
@@ -292,12 +330,14 @@ type Instance struct {
 	Auth         Auth           `json:"auth"`
 	Options      map[string]any `json:"options,omitempty"`
 	Override     Override       `json:"override,omitempty"`
-	Checks       map[string]any `json:"checks,omitempty"`
+	Checks       *HealthChecks  `json:"checks,omitempty"`
 }
 
 type Auth struct {
-	Header map[string]string `json:"header,omitempty"`
-	Query  map[string]string `json:"query,omitempty"`
+	Header map[string]string  `json:"header,omitempty"`
+	Query  map[string]string  `json:"query,omitempty"`
+	AWS    *ai_auth.AWSConfig `json:"aws,omitempty"`
+	GCP    *ai_auth.GCPConfig `json:"gcp,omitempty"`
 }
 
 type Override struct {
@@ -358,12 +398,18 @@ func (p *Plugin) PostInit() error {
 	if p.config.KeepalivePool == 0 {
 		p.config.KeepalivePool = 30
 	}
+	if p.config.StreamingFlushIntervalMS == nil {
+		flushInterval := 10
+		p.config.StreamingFlushIntervalMS = &flushInterval
+	}
 	if p.config.SSLVerify == nil {
 		sslVerify := true
 		p.config.SSLVerify = &sslVerify
 	}
 
-	p.weighted = p.weighted[:0]
+	p.weighted = make(map[int][]int)
+	p.priority = p.priority[:0]
+	p.nextSlot = make(map[int]int)
 	for i := range p.config.Instances {
 		instance := &p.config.Instances[i]
 		if instance.Weight == 0 {
@@ -377,24 +423,56 @@ func (p *Plugin) PostInit() error {
 				instance.Provider,
 			)
 		}
+		if instance.Provider == "bedrock" {
+			if region, _ := instance.ProviderConf["region"].(string); region == "" {
+				return fmt.Errorf("instance %q: bedrock requires provider_conf.region", instance.Name)
+			}
+			if instance.Auth.AWS == nil {
+				return fmt.Errorf("instance %q: bedrock requires auth.aws", instance.Name)
+			}
+		}
+		if instance.Provider == "vertex-ai" && instance.Override.Endpoint == "" {
+			projectID, _ := instance.ProviderConf["project_id"].(string)
+			region, _ := instance.ProviderConf["region"].(string)
+			if projectID == "" || region == "" {
+				return fmt.Errorf(
+					"instance %q: vertex-ai requires provider_conf project_id and region or override.endpoint",
+					instance.Name,
+				)
+			}
+		}
+		if _, ok := p.weighted[instance.Priority]; !ok {
+			p.priority = append(p.priority, instance.Priority)
+		}
 		for range instance.Weight {
-			p.weighted = append(p.weighted, i)
+			p.weighted[instance.Priority] = append(p.weighted[instance.Priority], i)
 		}
 	}
-	if len(p.weighted) == 0 {
+	if len(p.priority) == 0 {
 		return fmt.Errorf("at least one instance must have weight greater than 0")
 	}
+	sort.Sort(sort.Reverse(sort.IntSlice(p.priority)))
 
 	p.client = &http.Client{
 		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
 		Transport: p.transport(),
 	}
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.gcpTokens == nil {
+		p.gcpTokens = ai_auth.NewGCPTokenSource()
+	}
+	if p.healthNow == nil {
+		p.healthNow = time.Now
+	}
+	p.initHealthStates()
 	return nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := p.readJSONBody(r)
+		body, protocol, err := p.readJSONBody(r)
 		if err != nil {
 			status := http.StatusBadRequest
 			if strings.Contains(err.Error(), "max_req_body_size") {
@@ -403,99 +481,226 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writeJSONMessage(w, status, err.Error())
 			return
 		}
-
-		tried := make(map[int]bool, len(p.config.Instances))
-		retries := 0
-		for {
-			index, ok := p.pickInstance(r, tried)
+		p.refreshHealth(r.Context())
+		firstIndex, ok := p.pickInstance(r, nil)
+		if !ok {
+			writeJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+			return
+		}
+		tried := map[int]bool{firstIndex: true}
+		var state *ai_runtime.State
+		r = ai_runtime.WithExecution(r, p.config.Instances[firstIndex].Name, func(
+			w http.ResponseWriter,
+			r *http.Request,
+		) {
+			index, ok := p.instanceIndex(state.InstanceName())
 			if !ok {
 				writeJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
 				return
 			}
+			p.executeInstanceRequest(w, r, body, protocol, index, tried)
+		})
+		state = ai_runtime.FromRequest(r)
+		state.SetStreaming(p.instanceIsStreaming(body, protocol, p.config.Instances[firstIndex]))
+		state.ConfigureRateLimitFallback(rateLimitFallbackEnabled(p.config.FallbackStrategy), func() bool {
+			index, ok := p.pickInstance(r, tried)
+			if !ok {
+				return false
+			}
 			tried[index] = true
-			instance := p.config.Instances[index]
-
-			start := time.Now()
-			resp, err := p.requestInstance(r, body, instance)
-			if err != nil {
-				if p.canRetry(http.StatusServiceUnavailable, time.Since(start), retries) {
-					retries++
-					continue
-				}
-				writeJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
-				return
-			}
-
-			if p.canRetry(resp.StatusCode, time.Since(start), retries) && len(tried) < len(p.config.Instances) {
-				retries++
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-				continue
-			}
-
-			defer resp.Body.Close()
-			p.writeProviderResponse(w, r, body, resp)
+			state.SetInstanceName(p.config.Instances[index].Name)
+			state.SetStreaming(p.instanceIsStreaming(body, protocol, p.config.Instances[index]))
+			return true
+		})
+		if ai_runtime.TerminalEnabled(r) {
+			next.ServeHTTP(w, r)
 			return
 		}
+		ai_runtime.FromRequest(r).Execute(w, r)
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) readJSONBody(r *http.Request) ([]byte, error) {
+func (p *Plugin) instanceIsStreaming(
+	body []byte,
+	protocol ai_protocols.Protocol,
+	instance Instance,
+) bool {
+	providerBody, err := p.providerBody(body, protocol, instance)
+	return err == nil && requestIsStreaming(providerBody, protocol)
+}
+
+func (p *Plugin) executeInstanceRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	protocol ai_protocols.Protocol,
+	firstIndex int,
+	tried map[int]bool,
+) {
+	retries := 0
+	index := firstIndex
+	for {
+		tried[index] = true
+		instance := p.config.Instances[index]
+		p.registerRequestIdentity(r, body, protocol, instance)
+		started := ai_runtime.StartLLMRequest(r)
+		doneMetric := metrics.BeginLLMRequest(r)
+
+		start := time.Now()
+		resp, prepared, err := p.requestInstance(r, body, protocol, instance)
+		if err != nil {
+			doneMetric()
+			if prepared.cancel != nil {
+				prepared.cancel()
+			}
+			ai_runtime.MarkLLMRequestDone(r, started)
+			if p.canRetry(http.StatusServiceUnavailable, time.Since(start), retries) {
+				retries++
+				var ok bool
+				index, ok = p.pickInstance(r, tried)
+				if !ok {
+					writeJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+					return
+				}
+				ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[index].Name)
+				continue
+			}
+			writeJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
+			return
+		}
+
+		if p.canRetry(resp.StatusCode, time.Since(start), retries) && len(tried) < len(p.config.Instances) {
+			doneMetric()
+			ai_runtime.MarkLLMRequestDone(r, started)
+			retries++
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if prepared.cancel != nil {
+				prepared.cancel()
+			}
+			var ok bool
+			index, ok = p.pickInstance(r, tried)
+			if !ok {
+				writeJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+				return
+			}
+			ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[index].Name)
+			continue
+		}
+
+		defer resp.Body.Close()
+		p.writeProviderResponse(w, r, prepared, instanceModel(instance, body), instance, started, resp)
+		doneMetric()
+		if prepared.cancel != nil {
+			prepared.cancel()
+		}
+		ai_runtime.MarkLLMRequestDone(r, started)
+		return
+	}
+}
+
+func (p *Plugin) registerRequestIdentity(
+	r *http.Request,
+	body []byte,
+	protocol ai_protocols.Protocol,
+	instance Instance,
+) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	requestType := protocol.RequestType
+	if requestIsStreaming(body, protocol) {
+		requestType = "ai_stream"
+	}
+	apisixctx.RegisterRequestVar(r, "$request_type", requestType)
+	if model := instanceModel(instance, body); model != "" {
+		apisixctx.RegisterRequestVar(r, "$request_llm_model", model)
+		apisixctx.RegisterRequestVar(r, "$llm_model", model)
+	}
+}
+
+func (p *Plugin) instanceIndex(name string) (int, bool) {
+	for i := range p.config.Instances {
+		if p.config.Instances[i].Name == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, error) {
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
-		return nil, fmt.Errorf("unsupported content-type: %s, only application/json is supported", contentType)
+		return nil, ai_protocols.Protocol{}, fmt.Errorf(
+			"unsupported content-type: %s, only application/json is supported",
+			contentType,
+		)
 	}
 	if r.ContentLength > p.config.MaxReqBodySize {
-		return nil, fmt.Errorf("request body exceeds max_req_body_size")
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("request body exceeds max_req_body_size")
 	}
 
 	reader := io.LimitReader(r.Body, p.config.MaxReqBodySize+1)
 	body, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("could not get body: %w", err)
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("could not get body: %w", err)
 	}
 	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("could not get body: %w", err)
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("could not get body: %w", err)
 	}
 	if int64(len(body)) > p.config.MaxReqBodySize {
-		return nil, fmt.Errorf("request body exceeds max_req_body_size")
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("request body exceeds max_req_body_size")
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, fmt.Errorf("missing request body")
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("missing request body")
 	}
 
 	var bodyTab map[string]any
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
-		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("could not parse JSON request body: %w", err)
+	}
+	protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
+	if err != nil {
+		return nil, ai_protocols.Protocol{}, err
 	}
 
 	rewritten, err := json.Marshal(bodyTab)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode provider request body: %w", err)
+		return nil, ai_protocols.Protocol{}, fmt.Errorf("failed to encode provider request body: %w", err)
 	}
-	return rewritten, nil
+	return rewritten, protocol, nil
 }
 
-func (p *Plugin) requestInstance(r *http.Request, body []byte, instance Instance) (*http.Response, error) {
-	providerBody, err := p.providerBody(body, instance)
+func (p *Plugin) requestInstance(
+	r *http.Request,
+	body []byte,
+	protocol ai_protocols.Protocol,
+	instance Instance,
+) (*http.Response, preparedInstanceRequest, error) {
+	prepared, err := p.prepareInstanceRequest(body, protocol, instance)
 	if err != nil {
-		return nil, err
+		return nil, prepared, err
 	}
-	registerLLMRequestVars(r, providerBody, nil)
+	registerLLMRequestVars(r, prepared.clientBody, prepared.clientProtocol, nil)
 
-	endpoint, err := p.endpoint(instance)
+	endpoint, err := p.endpoint(instance, prepared.providerProtocol, prepared.clientBody)
 	if err != nil {
-		return nil, err
+		return nil, prepared, err
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(providerBody))
+	req, err := http.NewRequestWithContext(
+		r.Context(),
+		http.MethodPost,
+		endpoint,
+		bytes.NewReader(prepared.providerBody),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create LLM request: %w", err)
+		return nil, prepared, fmt.Errorf("failed to create LLM request: %w", err)
 	}
 	copyForwardHeaders(req.Header, r.Header)
 	req.Header.Set("Content-Type", "application/json")
@@ -507,31 +712,130 @@ func (p *Plugin) requestInstance(r *http.Request, body []byte, instance Instance
 		query.Set(key, value)
 	}
 	req.URL.RawQuery = query.Encode()
+	if instance.Auth.GCP != nil {
+		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *instance.Auth.GCP); err != nil {
+			return nil, prepared, fmt.Errorf("authenticate GCP request: %w", err)
+		}
+	}
+	if instance.Provider == "bedrock" {
+		region, _ := instance.ProviderConf["region"].(string)
+		if err := ai_auth.SignAWSRequest(
+			req,
+			prepared.providerBody,
+			*instance.Auth.AWS,
+			region,
+			"bedrock",
+			p.now(),
+		); err != nil {
+			return nil, prepared, fmt.Errorf("sign Bedrock request: %w", err)
+		}
+	}
+	if prepared.anthropicConversion {
+		ai_protocols.ConvertAnthropicHeadersToOpenAI(req.Header)
+	}
+	if requestIsStreaming(prepared.clientBody, prepared.clientProtocol) && p.config.MaxStreamDurationMS > 0 {
+		deadlineContext, cancel := context.WithTimeout(
+			req.Context(),
+			time.Duration(p.config.MaxStreamDurationMS)*time.Millisecond,
+		)
+		prepared.cancel = cancel
+		req = req.WithContext(deadlineContext)
+	}
 
-	return p.client.Do(req)
+	resp, err := p.client.Do(req)
+	return resp, prepared, err
 }
 
-func (p *Plugin) providerBody(body []byte, instance Instance) ([]byte, error) {
+func (p *Plugin) prepareInstanceRequest(
+	body []byte,
+	protocol ai_protocols.Protocol,
+	instance Instance,
+) (preparedInstanceRequest, error) {
+	prepared := preparedInstanceRequest{
+		clientBody: body, clientProtocol: protocol, providerProtocol: protocol,
+	}
+	if protocol != ai_protocols.AnthropicMessages || !instanceUsesOpenAIChat(instance.Provider) {
+		providerBody, err := p.providerBody(body, protocol, instance)
+		prepared.providerBody = providerBody
+		return prepared, err
+	}
+	var clientBody map[string]any
+	if err := json.Unmarshal(body, &clientBody); err != nil {
+		return prepared, fmt.Errorf("could not parse JSON request body: %w", err)
+	}
+	for key, value := range instance.Options {
+		clientBody[key] = value
+	}
+	clientJSON, err := json.Marshal(clientBody)
+	if err != nil {
+		return prepared, fmt.Errorf("encode Anthropic request body: %w", err)
+	}
+	converted, toolNameMap, err := ai_protocols.ConvertAnthropicMessagesToOpenAI(clientJSON)
+	if err != nil {
+		return prepared, fmt.Errorf("convert Anthropic request to OpenAI Chat: %w", err)
+	}
+	var convertedBody map[string]any
+	if err := json.Unmarshal(converted, &convertedBody); err != nil {
+		return prepared, fmt.Errorf("decode converted OpenAI Chat request: %w", err)
+	}
+	p.applyLLMOptions(convertedBody, ai_protocols.OpenAIChat, instance)
+	p.applyRequestBodyOverride(convertedBody, ai_protocols.OpenAIChat, instance)
+	p.applyProviderBodyRules(convertedBody, instance)
+	if ai_protocols.IsStreaming(ai_protocols.OpenAIChat, convertedBody) {
+		convertedBody["stream_options"] = map[string]any{"include_usage": true}
+	}
+	converted, err = json.Marshal(convertedBody)
+	if err != nil {
+		return prepared, fmt.Errorf("encode converted OpenAI Chat request: %w", err)
+	}
+	prepared.providerBody = converted
+	prepared.providerProtocol = ai_protocols.OpenAIChat
+	prepared.toolNameMap = toolNameMap
+	prepared.anthropicConversion = true
+	return prepared, nil
+}
+
+func instanceUsesOpenAIChat(provider string) bool {
+	switch provider {
+	case "openai", "deepseek", "aimlapi", "openai-compatible", "azure-openai", "openrouter", "gemini",
+		"vertex-ai":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, instance Instance) ([]byte, error) {
 	var bodyTab map[string]any
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
-	p.applyRequestBodyOverride(bodyTab, instance)
 	for key, value := range instance.Options {
 		bodyTab[key] = value
 	}
-	p.applyLLMOptions(bodyTab, instance)
+	p.applyLLMOptions(bodyTab, protocol, instance)
+	p.applyRequestBodyOverride(bodyTab, protocol, instance)
 	p.applyProviderBodyRules(bodyTab, instance)
+	if ai_protocols.IsStreaming(protocol, bodyTab) && protocol == ai_protocols.OpenAIChat {
+		bodyTab["stream_options"] = map[string]any{"include_usage": true}
+	}
 
 	rewritten, err := json.Marshal(bodyTab)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode provider request body: %w", err)
 	}
+	if instance.Provider == "vertex-ai" && protocol == ai_protocols.OpenAIEmbeddings {
+		return ai_protocols.ConvertOpenAIEmbeddingsToVertex(rewritten)
+	}
 	return rewritten, nil
 }
 
-func (p *Plugin) applyRequestBodyOverride(body map[string]any, instance Instance) {
-	override := requestBodyOverride(instance.Override.RequestBody)
+func (p *Plugin) applyRequestBodyOverride(
+	body map[string]any,
+	protocol ai_protocols.Protocol,
+	instance Instance,
+) {
+	override := requestBodyOverride(instance.Override.RequestBody, protocol)
 	if len(override) == 0 {
 		return
 	}
@@ -539,14 +843,17 @@ func (p *Plugin) applyRequestBodyOverride(body map[string]any, instance Instance
 	mergeBodyMap(body, override, force)
 }
 
-func requestBodyOverride(values map[string]any) map[string]any {
+func requestBodyOverride(values map[string]any, protocol ai_protocols.Protocol) map[string]any {
 	if len(values) == 0 {
 		return nil
 	}
-	if override, ok := asAnyMap(values["openai-chat"]); ok {
+	if override, ok := asAnyMap(values[protocol.OverrideKey]); ok {
 		return override
 	}
 	if hasProtocolRequestBodyOverride(values) {
+		return nil
+	}
+	if protocol != ai_protocols.OpenAIChat {
 		return nil
 	}
 	return values
@@ -603,51 +910,87 @@ func cloneJSONValue(value any) any {
 }
 
 func (p *Plugin) applyProviderBodyRules(body map[string]any, instance Instance) {
-	if instance.Provider == "azure-openai" {
+	if instance.Provider == "azure-openai" || instance.Provider == "bedrock" {
 		delete(body, "model")
+	}
+	if instance.Provider == "bedrock" {
+		delete(body, "stream")
 	}
 }
 
-func (p *Plugin) applyLLMOptions(body map[string]any, instance Instance) {
+func (p *Plugin) applyLLMOptions(body map[string]any, protocol ai_protocols.Protocol, instance Instance) {
 	if instance.Override.LLMOptions.MaxTokens == 0 {
+		return
+	}
+	if protocol == ai_protocols.OpenAIEmbeddings {
 		return
 	}
 	switch instance.Provider {
 	case "openai":
-		body["max_completion_tokens"] = instance.Override.LLMOptions.MaxTokens
-		delete(body, "max_tokens")
+		switch protocol {
+		case ai_protocols.OpenAIChat:
+			body["max_completion_tokens"] = instance.Override.LLMOptions.MaxTokens
+			delete(body, "max_tokens")
+		case ai_protocols.OpenAIResponses:
+			body["max_output_tokens"] = instance.Override.LLMOptions.MaxTokens
+		}
+	case "gemini", "vertex-ai":
+		if protocol == ai_protocols.OpenAIChat {
+			body["max_completion_tokens"] = instance.Override.LLMOptions.MaxTokens
+		}
+	case "bedrock":
+		if protocol == ai_protocols.BedrockConverse {
+			inferenceConfig, _ := body["inferenceConfig"].(map[string]any)
+			if inferenceConfig == nil {
+				inferenceConfig = make(map[string]any)
+				body["inferenceConfig"] = inferenceConfig
+			}
+			inferenceConfig["maxTokens"] = instance.Override.LLMOptions.MaxTokens
+		}
 	default:
-		body["max_tokens"] = instance.Override.LLMOptions.MaxTokens
+		if protocol == ai_protocols.OpenAIChat {
+			body["max_tokens"] = instance.Override.LLMOptions.MaxTokens
+		}
 	}
 }
 
 func (p *Plugin) pickInstance(r *http.Request, tried map[int]bool) (int, bool) {
-	if len(p.weighted) == 0 {
+	if len(p.priority) == 0 {
 		return 0, false
 	}
 
-	start := p.nextWeightedSlot(r)
-	for offset := range len(p.weighted) {
-		index := p.weighted[(start+offset)%len(p.weighted)]
-		if !tried[index] {
-			return index, true
+	starts := make(map[int]int, len(p.priority))
+	for _, priority := range p.priority {
+		weighted := p.weighted[priority]
+		starts[priority] = p.nextWeightedSlot(r, priority, len(weighted))
+	}
+	for _, requireHealthy := range []bool{true, false} {
+		for _, priority := range p.priority {
+			weighted := p.weighted[priority]
+			start := starts[priority]
+			for offset := range len(weighted) {
+				index := weighted[(start+offset)%len(weighted)]
+				if !tried[index] && (!requireHealthy || p.instanceHealthy(index)) {
+					return index, true
+				}
+			}
 		}
 	}
 	return 0, false
 }
 
-func (p *Plugin) nextWeightedSlot(r *http.Request) int {
+func (p *Plugin) nextWeightedSlot(r *http.Request, priority int, size int) int {
 	if p.config.Balancer.Algorithm == "chash" {
 		key := p.hashKey(r)
 		hasher := fnv.New32a()
 		_, _ = hasher.Write([]byte(key))
-		return int(hasher.Sum32() % uint32(len(p.weighted)))
+		return int(hasher.Sum32() % uint32(size))
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	slot := p.nextSlot % len(p.weighted)
-	p.nextSlot++
+	slot := p.nextSlot[priority] % size
+	p.nextSlot[priority]++
 	return slot
 }
 
@@ -711,6 +1054,10 @@ func fallbackStrategyHas(strategy any, name string) bool {
 	return false
 }
 
+func rateLimitFallbackEnabled(strategy any) bool {
+	return strategy == "instance_health_and_rate_limiting" || fallbackStrategyHas(strategy, "rate_limiting")
+}
+
 func copyForwardHeaders(dst, src http.Header) {
 	for field, values := range src {
 		switch strings.ToLower(field) {
@@ -723,14 +1070,28 @@ func copyForwardHeaders(dst, src http.Header) {
 	}
 }
 
-func (p *Plugin) endpoint(instance Instance) (string, error) {
+func (p *Plugin) endpoint(
+	instance Instance,
+	protocol ai_protocols.Protocol,
+	originalBody []byte,
+) (string, error) {
 	if instance.Override.Endpoint != "" {
+		if instance.Provider == "openai-compatible" {
+			return appendProtocolEndpoint(instance.Override.Endpoint, protocol)
+		}
+		if instance.Provider == "bedrock" {
+			return appendBedrockEndpoint(
+				instance.Override.Endpoint,
+				instanceModel(instance, originalBody),
+				requestIsStreaming(originalBody, protocol),
+			)
+		}
 		return instance.Override.Endpoint, nil
 	}
 
 	switch instance.Provider {
 	case "openai":
-		return "https://api.openai.com/v1/chat/completions", nil
+		return "https://api.openai.com" + protocol.Endpoint, nil
 	case "deepseek":
 		return "https://api.deepseek.com/chat/completions", nil
 	case "aimlapi":
@@ -739,17 +1100,131 @@ func (p *Plugin) endpoint(instance Instance) (string, error) {
 		return "https://openrouter.ai/api/v1/chat/completions", nil
 	case "gemini":
 		return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", nil
+	case "anthropic":
+		return "https://api.anthropic.com" + protocol.Endpoint, nil
+	case "bedrock":
+		region, _ := instance.ProviderConf["region"].(string)
+		return appendBedrockEndpoint(
+			"https://bedrock-runtime."+region+".amazonaws.com",
+			instanceModel(instance, originalBody),
+			requestIsStreaming(originalBody, protocol),
+		)
+	case "vertex-ai":
+		return vertexEndpoint(instance, protocol, originalBody)
 	default:
 		return "", fmt.Errorf("provider %q requires override.endpoint in apisix-go", instance.Provider)
 	}
 }
 
+func vertexEndpoint(instance Instance, protocol ai_protocols.Protocol, body []byte) (string, error) {
+	projectID, _ := instance.ProviderConf["project_id"].(string)
+	region, _ := instance.ProviderConf["region"].(string)
+	if protocol != ai_protocols.OpenAIEmbeddings {
+		return fmt.Sprintf(
+			"https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
+			region,
+			url.PathEscape(projectID),
+			url.PathEscape(region),
+		), nil
+	}
+	model := instanceModel(instance, body)
+	if model == "" {
+		return "", fmt.Errorf("vertex-ai embeddings requires options.model or request body model")
+	}
+	return fmt.Sprintf(
+		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
+		region,
+		url.PathEscape(projectID),
+		url.PathEscape(region),
+		url.PathEscape(model),
+	), nil
+}
+
+func instanceModel(instance Instance, body []byte) string {
+	if model, _ := instance.Options["model"].(string); model != "" {
+		return model
+	}
+	return modelFromBody(body)
+}
+
+func appendBedrockEndpoint(endpoint string, model string, streaming bool) (string, error) {
+	if model == "" {
+		return "", fmt.Errorf("bedrock requires options.model or request body model")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse Bedrock endpoint: %w", err)
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return endpoint, nil
+	}
+	suffix := "/converse"
+	if streaming {
+		suffix = "/converse-stream"
+	}
+	parsed.Path = "/model/" + model + suffix
+	return parsed.String(), nil
+}
+
+func appendProtocolEndpoint(endpoint string, protocol ai_protocols.Protocol) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse OpenAI-compatible endpoint: %w", err)
+	}
+	switch strings.TrimRight(parsed.Path, "/") {
+	case "", "/v1":
+		parsed.Path = protocol.Endpoint
+	default:
+		return endpoint, nil
+	}
+	return parsed.String(), nil
+}
+
 func (p *Plugin) writeProviderResponse(
 	w http.ResponseWriter,
 	r *http.Request,
-	requestBody []byte,
+	prepared preparedInstanceRequest,
+	requestModel string,
+	instance Instance,
+	started time.Time,
 	resp *http.Response,
 ) {
+	if requestIsStreaming(prepared.clientBody, prepared.clientProtocol) {
+		for field, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(field, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond
+		streamWriter := ai_stream.NewFlushWriter(w, flushInterval, func() {
+			ai_runtime.MarkFirstToken(r, started)
+		})
+		var usage ai_stream.Usage
+		var err error
+		if prepared.providerProtocol == ai_protocols.BedrockConverse {
+			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, resp.Body, p.config.MaxResponseBytes)
+		} else if prepared.anthropicConversion {
+			usage, err = ai_stream.ForwardOpenAIAsAnthropicSSE(
+				streamWriter,
+				resp.Body,
+				p.config.MaxResponseBytes,
+				prepared.toolNameMap,
+			)
+		} else {
+			usage, err = ai_stream.ForwardSSE(
+				streamWriter,
+				resp.Body,
+				prepared.providerProtocol,
+				p.config.MaxResponseBytes,
+			)
+		}
+		streamWriter.Close()
+		if err == nil {
+			registerStreamingLLMRequestVars(r, prepared.clientBody, usage)
+		}
+		return
+	}
 	bodyReader := io.Reader(resp.Body)
 	if p.config.MaxResponseBytes > 0 {
 		bodyReader = io.LimitReader(resp.Body, p.config.MaxResponseBytes+1)
@@ -763,9 +1238,34 @@ func (p *Plugin) writeProviderResponse(
 		writeJSONMessage(w, http.StatusBadGateway, "max_response_bytes exceeded")
 		return
 	}
-	registerLLMRequestVars(r, requestBody, body)
+	ai_runtime.MarkFirstToken(r, started)
+	convertedResponse := false
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices &&
+		instance.Provider == "vertex-ai" && prepared.clientProtocol == ai_protocols.OpenAIEmbeddings {
+		body, err = ai_protocols.ConvertVertexEmbeddingsToOpenAI(body, requestModel)
+		if err != nil {
+			writeJSONMessage(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		convertedResponse = true
+	}
+	if prepared.anthropicConversion {
+		body, err = ai_protocols.ConvertOpenAIChatToAnthropic(body, "", prepared.toolNameMap)
+		if err != nil {
+			writeJSONMessage(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		convertedResponse = true
+	}
+	registerLLMRequestVars(r, prepared.clientBody, prepared.clientProtocol, body)
+	if requestModel != "" && apisixctx.GetRequestVars(r) != nil {
+		apisixctx.RegisterRequestVar(r, "$request_llm_model", requestModel)
+	}
 
 	for field, values := range resp.Header {
+		if convertedResponse && strings.EqualFold(field, "Content-Length") {
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(field, value)
 		}
@@ -774,27 +1274,85 @@ func (p *Plugin) writeProviderResponse(
 	_, _ = w.Write(body)
 }
 
-func registerLLMRequestVars(r *http.Request, requestBody []byte, responseBody []byte) {
+func requestIsStreaming(body []byte, protocol ai_protocols.Protocol) bool {
+	var decoded map[string]any
+	return json.Unmarshal(body, &decoded) == nil && ai_protocols.IsStreaming(protocol, decoded)
+}
+
+func registerStreamingLLMRequestVars(r *http.Request, requestBody []byte, usage ai_stream.Usage) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$request_type", "ai_stream")
+	if model := modelFromBody(requestBody); model != "" {
+		apisixctx.RegisterRequestVar(r, "$request_llm_model", model)
+	}
+	if usage.Model != "" {
+		apisixctx.RegisterRequestVar(r, "$llm_model", usage.Model)
+	}
+	if usage.PromptTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_prompt_tokens", usage.PromptTokens)
+	}
+	if usage.CompletionTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", usage.CompletionTokens)
+	}
+	if len(usage.Raw) > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_raw_usage", usage.Raw)
+	}
+	if usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
+			"prompt_tokens":     usage.PromptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
+		})
+	}
+}
+
+func registerLLMRequestVars(
+	r *http.Request,
+	requestBody []byte,
+	protocol ai_protocols.Protocol,
+	responseBody []byte,
+) {
 	if apisixctx.GetRequestVars(r) == nil {
 		return
 	}
 
 	requestModel := modelFromBody(requestBody)
-	responseModel, promptTokens, completionTokens := llmResponseInfo(responseBody)
+	metadata := ai_protocols.ExtractResponseMetadata(protocol, responseBody)
 
-	apisixctx.RegisterRequestVar(r, "$request_type", "ai_chat")
+	apisixctx.RegisterRequestVar(r, "$request_type", protocol.RequestType)
 	if requestModel != "" {
 		apisixctx.RegisterRequestVar(r, "$request_llm_model", requestModel)
 	}
-	if responseModel != "" {
-		apisixctx.RegisterRequestVar(r, "$llm_model", responseModel)
+	if metadata.Model != "" {
+		apisixctx.RegisterRequestVar(r, "$llm_model", metadata.Model)
 	}
-	if promptTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_prompt_tokens", promptTokens)
+	if metadata.PromptTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_prompt_tokens", metadata.PromptTokens)
 	}
-	if completionTokens >= 0 {
-		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", completionTokens)
+	if metadata.CompletionTokens >= 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", metadata.CompletionTokens)
 	}
+	registerUsageContextVars(r, responseBody, metadata.PromptTokens, metadata.CompletionTokens)
+}
+
+func registerUsageContextVars(r *http.Request, responseBody []byte, promptTokens, completionTokens int64) {
+	var decoded struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(responseBody, &decoded); err != nil || decoded.Usage == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$llm_raw_usage", decoded.Usage)
+	if promptTokens < 0 || completionTokens < 0 {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": completionTokens,
+		"total_tokens":      promptTokens + completionTokens,
+	})
 }
 
 func modelFromBody(body []byte) string {
@@ -805,30 +1363,6 @@ func modelFromBody(body []byte) string {
 		return ""
 	}
 	return decoded.Model
-}
-
-func llmResponseInfo(body []byte) (string, int64, int64) {
-	var decoded struct {
-		Model string         `json:"model"`
-		Usage map[string]any `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return "", -1, -1
-	}
-	return decoded.Model, numericUsage(decoded.Usage["prompt_tokens"]), numericUsage(decoded.Usage["completion_tokens"])
-}
-
-func numericUsage(value any) int64 {
-	switch typed := value.(type) {
-	case float64:
-		return int64(math.Round(typed))
-	case int64:
-		return typed
-	case int:
-		return int64(typed)
-	default:
-		return -1
-	}
 }
 
 func (p *Plugin) transport() http.RoundTripper {

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -384,6 +385,9 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 }
 
 func (p *Plugin) attachUserInfo(r *http.Request, userinfo map[string]any) {
+	if vars := apisixctx.GetApisixVars(r); vars != nil {
+		vars["$external_user"] = userinfo
+	}
 	if p.config.SetUserInfoHeader != nil && !*p.config.SetUserInfoHeader {
 		return
 	}

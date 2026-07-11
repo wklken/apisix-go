@@ -2,22 +2,31 @@ package ai_request_rewrite
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
+	config    Config
+	client    *http.Client
+	now       func() time.Time
+	gcpTokens gcpTokenApplier
+}
+
+type gcpTokenApplier interface {
+	Apply(context.Context, *http.Client, *http.Request, ai_auth.GCPConfig) error
 }
 
 const (
@@ -55,9 +64,33 @@ const schema = `
         },
         "query": {
           "$ref": "#/$defs/auth_items"
-        }
+        },
+		"aws": {
+		  "type": "object",
+		  "properties": {
+		    "access_key_id": {"type": "string", "minLength": 1},
+		    "secret_access_key": {"type": "string", "minLength": 1},
+		    "session_token": {"type": "string", "minLength": 1}
+		  },
+		  "required": ["access_key_id", "secret_access_key"]
+		},
+		"gcp": {
+		  "type": "object",
+		  "properties": {
+		    "service_account_json": {"type": "string"},
+		    "max_ttl": {"type": "integer", "minimum": 1},
+		    "expire_early_secs": {"type": "integer", "minimum": 0}
+		  }
+		}
       },
       "additionalProperties": false
+    },
+    "provider_conf": {
+      "type": "object",
+      "properties": {
+        "project_id": {"type": "string"},
+        "region": {"type": "string", "minLength": 1}
+      }
     },
     "options": {
       "type": "object",
@@ -118,6 +151,7 @@ const schema = `
 type Config struct {
 	Prompt           string         `json:"prompt"`
 	Provider         string         `json:"provider"`
+	ProviderConf     map[string]any `json:"provider_conf,omitempty"`
 	Auth             Auth           `json:"auth"`
 	Options          map[string]any `json:"options,omitempty"`
 	Timeout          int            `json:"timeout,omitempty"`
@@ -129,8 +163,10 @@ type Config struct {
 }
 
 type Auth struct {
-	Header map[string]string `json:"header,omitempty"`
-	Query  map[string]string `json:"query,omitempty"`
+	Header map[string]string  `json:"header,omitempty"`
+	Query  map[string]string  `json:"query,omitempty"`
+	AWS    *ai_auth.AWSConfig `json:"aws,omitempty"`
+	GCP    *ai_auth.GCPConfig `json:"gcp,omitempty"`
 }
 
 type Override struct {
@@ -153,6 +189,21 @@ func (p *Plugin) PostInit() error {
 		p.config.Override.Endpoint == "" {
 		return fmt.Errorf("override.endpoint is required for %s provider", p.config.Provider)
 	}
+	if p.config.Provider == "bedrock" {
+		if region, _ := p.config.ProviderConf["region"].(string); region == "" {
+			return fmt.Errorf("bedrock requires provider_conf.region")
+		}
+		if p.config.Auth.AWS == nil {
+			return fmt.Errorf("bedrock requires auth.aws")
+		}
+	}
+	if p.config.Provider == "vertex-ai" && p.config.Override.Endpoint == "" {
+		projectID, _ := p.config.ProviderConf["project_id"].(string)
+		region, _ := p.config.ProviderConf["region"].(string)
+		if projectID == "" || region == "" {
+			return fmt.Errorf("vertex-ai requires provider_conf project_id and region or override.endpoint")
+		}
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 30000
 	}
@@ -174,6 +225,12 @@ func (p *Plugin) PostInit() error {
 	p.client = &http.Client{
 		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
 		Transport: p.transport(),
+	}
+	if p.now == nil {
+		p.now = time.Now
+	}
+	if p.gcpTokens == nil {
+		p.gcpTokens = ai_auth.NewGCPTokenSource()
 	}
 	return nil
 }
@@ -209,12 +266,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error) {
-	endpoint, err := p.endpoint()
+	protocol := preferredProtocol(p.config.Provider)
+	endpoint, err := p.endpoint(protocol)
 	if err != nil {
 		return nil, err
 	}
 
-	llmRequest := buildOpenAIChatRequest(p.config.Prompt, originalBody, p.config.Options)
+	llmRequest := ai_protocols.BuildSimpleRequest(protocol, p.config.Prompt, originalBody, p.config.Options)
 	p.applyProviderBodyRules(llmRequest)
 	registerLLMRewriteRequestVars(r, llmRequest)
 
@@ -236,6 +294,17 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 		query.Set(key, value)
 	}
 	req.URL.RawQuery = query.Encode()
+	if p.config.Auth.GCP != nil {
+		if err := p.gcpTokens.Apply(r.Context(), p.client, req, *p.config.Auth.GCP); err != nil {
+			return nil, fmt.Errorf("authenticate GCP request: %w", err)
+		}
+	}
+	if p.config.Provider == "bedrock" {
+		region, _ := p.config.ProviderConf["region"].(string)
+		if err := ai_auth.SignAWSRequest(req, llmBody, *p.config.Auth.AWS, region, "bedrock", p.now()); err != nil {
+			return nil, fmt.Errorf("sign Bedrock request: %w", err)
+		}
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -251,9 +320,13 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 		return nil, fmt.Errorf("LLM service returned error status: %d", resp.StatusCode)
 	}
 
-	rewritten, err := extractOpenAIChatContent(rawBody)
-	if err != nil {
-		return nil, err
+	var responseBody map[string]any
+	if err := json.Unmarshal(rawBody, &responseBody); err != nil {
+		return nil, fmt.Errorf("failed to decode LLM response: %w", err)
+	}
+	rewritten := ai_protocols.ExtractResponseText(protocol, responseBody)
+	if rewritten == "" {
+		return nil, fmt.Errorf("failed to extract text from LLM response")
 	}
 	return []byte(rewritten), nil
 }
@@ -274,21 +347,87 @@ func (p *Plugin) applyProviderBodyRules(body map[string]any) {
 	}
 }
 
-func (p *Plugin) endpoint() (string, error) {
+func (p *Plugin) endpoint(protocol ai_protocols.Protocol) (string, error) {
 	if p.config.Override.Endpoint != "" {
-		return p.config.Override.Endpoint, nil
+		return appendProviderPath(p.config.Override.Endpoint, p.providerPath(protocol))
 	}
 
 	switch p.config.Provider {
 	case "openai":
 		return "https://api.openai.com/v1/chat/completions", nil
+	case "deepseek":
+		return "https://api.deepseek.com/chat/completions", nil
 	case "aimlapi":
-		return "https://api.aimlapi.com/v1/chat/completions", nil
+		return "https://api.aimlapi.com/chat/completions", nil
+	case "anthropic":
+		return "https://api.anthropic.com" + protocol.Endpoint, nil
 	case "openrouter":
 		return "https://openrouter.ai/api/v1/chat/completions", nil
+	case "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", nil
+	case "vertex-ai", "bedrock":
+		path := p.providerPath(protocol)
+		if path == "" {
+			return "", fmt.Errorf("provider %q requires provider_conf and options.model", p.config.Provider)
+		}
+		return p.providerBaseURL() + path, nil
 	default:
 		return "", fmt.Errorf("provider %q requires override.endpoint in apisix-go", p.config.Provider)
 	}
+}
+
+func preferredProtocol(provider string) ai_protocols.Protocol {
+	if provider == "bedrock" {
+		return ai_protocols.BedrockConverse
+	}
+	return ai_protocols.OpenAIChat
+}
+
+func (p *Plugin) providerBaseURL() string {
+	region, _ := p.config.ProviderConf["region"].(string)
+	switch p.config.Provider {
+	case "vertex-ai":
+		return "https://" + region + "-aiplatform.googleapis.com"
+	case "bedrock":
+		return "https://bedrock-runtime." + region + ".amazonaws.com"
+	default:
+		return ""
+	}
+}
+
+func (p *Plugin) providerPath(protocol ai_protocols.Protocol) string {
+	model, _ := p.config.Options["model"].(string)
+	region, _ := p.config.ProviderConf["region"].(string)
+	projectID, _ := p.config.ProviderConf["project_id"].(string)
+	switch p.config.Provider {
+	case "vertex-ai":
+		if projectID == "" || region == "" {
+			return ""
+		}
+		return fmt.Sprintf(
+			"/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
+			url.PathEscape(projectID),
+			url.PathEscape(region),
+		)
+	case "bedrock":
+		if region == "" || model == "" {
+			return ""
+		}
+		return "/model/" + url.PathEscape(model) + "/converse"
+	default:
+		return protocol.Endpoint
+	}
+}
+
+func appendProviderPath(endpoint string, providerPath string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse provider endpoint: %w", err)
+	}
+	if (parsed.Path == "" || parsed.Path == "/") && providerPath != "" {
+		parsed.Path = providerPath
+	}
+	return parsed.String(), nil
 }
 
 func (p *Plugin) transport() http.RoundTripper {
@@ -302,52 +441,6 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
-}
-
-func buildOpenAIChatRequest(prompt string, originalBody string, options map[string]any) map[string]any {
-	body := map[string]any{
-		"messages": []map[string]string{
-			{"role": "system", "content": prompt},
-			{"role": "user", "content": originalBody},
-		},
-		"stream": false,
-	}
-	for key, value := range options {
-		body[key] = value
-	}
-	return body
-}
-
-func extractOpenAIChatContent(rawBody []byte) (string, error) {
-	var decoded map[string]any
-	if err := json.Unmarshal(rawBody, &decoded); err != nil {
-		return "", fmt.Errorf("failed to decode LLM response: %w", err)
-	}
-
-	choices, ok := decoded["choices"].([]any)
-	if !ok || len(choices) == 0 {
-		return "", fmt.Errorf("failed to extract text from LLM response")
-	}
-
-	parts := make([]string, 0, len(choices))
-	for _, choiceValue := range choices {
-		choice, ok := choiceValue.(map[string]any)
-		if !ok {
-			continue
-		}
-		message, ok := choice["message"].(map[string]any)
-		if !ok {
-			continue
-		}
-		content, ok := message["content"].(string)
-		if ok {
-			parts = append(parts, content)
-		}
-	}
-	if len(parts) == 0 {
-		return "", fmt.Errorf("failed to extract text from LLM response")
-	}
-	return strings.Join(parts, " "), nil
 }
 
 func readBody(r *http.Request) ([]byte, error) {

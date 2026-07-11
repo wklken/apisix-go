@@ -1,9 +1,11 @@
 package openid_connect
 
 import (
+	"context"
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -16,16 +18,20 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	_ "crypto/sha512"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -33,7 +39,12 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	client *http.Client
+	client              *http.Client
+	clientRSAPrivateKey *rsa.PrivateKey
+	sessionStore        sessionStore
+	httpProxy           *url.URL
+	httpsProxy          *url.URL
+	noProxy             []string
 
 	mu              sync.Mutex
 	discovery       discoveryData
@@ -84,6 +95,16 @@ const schema = `
       "type": "string",
       "default": "client_secret_basic"
     },
+    "client_rsa_private_key": {
+      "type": "string"
+    },
+    "client_rsa_private_key_id": {
+      "type": "string"
+    },
+    "client_jwt_assertion_expires_in": {
+      "type": "integer",
+      "default": 60
+    },
     "bearer_only": {
       "type": "boolean",
       "default": false
@@ -102,7 +123,35 @@ const schema = `
         "rolling_timeout": {"type": "integer"},
         "absolute_timeout": {"type": "integer"},
         "cookie": {"type": "object", "properties": {"lifetime": {"type": "integer"}}},
-        "storage": {"type": "string", "enum": ["cookie", "redis"]}
+        "storage": {"type": "string", "enum": ["cookie", "redis"]},
+        "redis": {
+          "type": "object",
+          "properties": {
+            "host": {"type": "string", "minLength": 2},
+            "port": {"type": "integer", "minimum": 1},
+            "username": {"type": "string", "minLength": 1},
+            "password": {"type": "string"},
+            "database": {"type": "integer", "minimum": 0},
+            "prefix": {"type": "string"},
+            "ssl": {"type": "boolean"},
+            "ssl_verify": {"type": "boolean"},
+            "server_name": {"type": "string"},
+            "connect_timeout": {"type": "integer", "minimum": 1},
+            "send_timeout": {"type": "integer", "minimum": 1},
+            "read_timeout": {"type": "integer", "minimum": 1},
+            "keepalive_timeout": {"type": "integer", "minimum": 1000}
+          }
+        }
+      }
+    },
+    "proxy_opts": {
+      "type": "object",
+      "properties": {
+        "http_proxy": {"type": "string"},
+        "https_proxy": {"type": "string"},
+        "http_proxy_authorization": {"type": "string"},
+        "https_proxy_authorization": {"type": "string"},
+        "no_proxy": {"type": "string"}
       }
     },
     "realm": {
@@ -144,6 +193,13 @@ const schema = `
       "type": "boolean",
       "default": false
     },
+    "authorization_params": {
+      "type": "object"
+    },
+    "force_reauthorize": {
+      "type": "boolean",
+      "default": false
+    },
     "set_access_token_header": {
       "type": "boolean",
       "default": true
@@ -161,6 +217,24 @@ const schema = `
       "default": true
     },
     "set_refresh_token_header": {
+      "type": "boolean",
+      "default": false
+    },
+    "renew_access_token_on_expiry": {
+      "type": "boolean",
+      "default": true
+    },
+    "access_token_expires_in": {
+      "type": "integer"
+    },
+    "access_token_expires_leeway": {
+      "type": "integer",
+      "default": 0
+    },
+    "refresh_session_interval": {
+      "type": "integer"
+    },
+    "revoke_tokens_on_logout": {
       "type": "boolean",
       "default": false
     },
@@ -192,8 +266,12 @@ type Config struct {
 	IntrospectionEndpoint            string         `json:"introspection_endpoint,omitempty"`
 	IntrospectionEndpointAuthMethod  string         `json:"introspection_endpoint_auth_method,omitempty"`
 	TokenEndpointAuthMethod          string         `json:"token_endpoint_auth_method,omitempty"`
+	ClientRSAPrivateKey              string         `json:"client_rsa_private_key,omitempty"`
+	ClientRSAPrivateKeyID            string         `json:"client_rsa_private_key_id,omitempty"`
+	ClientJWTAssertionExpiresIn      int            `json:"client_jwt_assertion_expires_in,omitempty"`
 	BearerOnly                       bool           `json:"bearer_only,omitempty"`
 	Session                          SessionConfig  `json:"session,omitempty"`
+	ProxyOpts                        *ProxyOptions  `json:"proxy_opts,omitempty"`
 	Realm                            string         `json:"realm,omitempty"`
 	RequiredScopes                   []string       `json:"required_scopes,omitempty"`
 	LogoutPath                       string         `json:"logout_path,omitempty"`
@@ -204,14 +282,29 @@ type Config struct {
 	UseJWKS                          bool           `json:"use_jwks,omitempty"`
 	TokenSigningAlgValuesExpected    string         `json:"token_signing_alg_values_expected,omitempty"`
 	UsePKCE                          bool           `json:"use_pkce,omitempty"`
+	AuthorizationParams              map[string]any `json:"authorization_params,omitempty"`
+	ForceReauthorize                 bool           `json:"force_reauthorize,omitempty"`
 	SetAccessTokenHeader             *bool          `json:"set_access_token_header,omitempty"`
 	AccessTokenInAuthorizationHeader bool           `json:"access_token_in_authorization_header,omitempty"`
 	SetIDTokenHeader                 *bool          `json:"set_id_token_header,omitempty"`
 	SetUserinfoHeader                *bool          `json:"set_userinfo_header,omitempty"`
 	SetRefreshTokenHeader            *bool          `json:"set_refresh_token_header,omitempty"`
+	RenewAccessTokenOnExpiry         *bool          `json:"renew_access_token_on_expiry,omitempty"`
+	AccessTokenExpiresIn             int            `json:"access_token_expires_in,omitempty"`
+	AccessTokenExpiresLeeway         int            `json:"access_token_expires_leeway,omitempty"`
+	RefreshSessionInterval           *int           `json:"refresh_session_interval,omitempty"`
+	RevokeTokensOnLogout             bool           `json:"revoke_tokens_on_logout,omitempty"`
 	IntrospectionAddonHeaders        []string       `json:"introspection_addon_headers,omitempty"`
 	ClaimValidator                   map[string]any `json:"claim_validator,omitempty"`
 	ClaimSchema                      map[string]any `json:"claim_schema,omitempty"`
+}
+
+type ProxyOptions struct {
+	HTTPProxy               string `json:"http_proxy,omitempty"`
+	HTTPSProxy              string `json:"https_proxy,omitempty"`
+	HTTPProxyAuthorization  string `json:"http_proxy_authorization,omitempty"`
+	HTTPSProxyAuthorization string `json:"https_proxy_authorization,omitempty"`
+	NoProxy                 string `json:"no_proxy,omitempty"`
 }
 
 type SessionConfig struct {
@@ -227,10 +320,27 @@ type SessionConfig struct {
 	AbsoluteTimeout int                  `json:"absolute_timeout,omitempty"`
 	Cookie          *SessionCookieConfig `json:"cookie,omitempty"`
 	Storage         string               `json:"storage,omitempty"`
+	Redis           *SessionRedisConfig  `json:"redis,omitempty"`
 }
 
 type SessionCookieConfig struct {
 	Lifetime int `json:"lifetime,omitempty"`
+}
+
+type SessionRedisConfig struct {
+	Host             string `json:"host,omitempty"`
+	Port             int    `json:"port,omitempty"`
+	Username         string `json:"username,omitempty"`
+	Password         string `json:"password,omitempty"`
+	Database         int    `json:"database,omitempty"`
+	Prefix           string `json:"prefix,omitempty"`
+	SSL              bool   `json:"ssl,omitempty"`
+	SSLVerify        *bool  `json:"ssl_verify,omitempty"`
+	ServerName       string `json:"server_name,omitempty"`
+	ConnectTimeout   int    `json:"connect_timeout,omitempty"`
+	SendTimeout      int    `json:"send_timeout,omitempty"`
+	ReadTimeout      int    `json:"read_timeout,omitempty"`
+	KeepaliveTimeout int    `json:"keepalive_timeout,omitempty"`
 }
 
 type discoveryData struct {
@@ -245,17 +355,47 @@ type discoveryData struct {
 }
 
 type sessionData struct {
-	CreatedAt     int64  `json:"created_at"`
-	UpdatedAt     int64  `json:"updated_at"`
-	FlowState     string `json:"flow_state,omitempty"`
-	FlowExpiresAt int64  `json:"flow_expires_at,omitempty"`
-	OriginalURI   string `json:"original_uri,omitempty"`
-	CodeVerifier  string `json:"code_verifier,omitempty"`
-	AccessToken   string `json:"access_token,omitempty"`
-	IDToken       string `json:"id_token,omitempty"`
-	RefreshToken  string `json:"refresh_token,omitempty"`
-	Userinfo      string `json:"userinfo,omitempty"`
-	ExpiresAt     int64  `json:"expires_at,omitempty"`
+	RedisID           string `json:"-"`
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
+	LastAuthenticated int64  `json:"last_authenticated,omitempty"`
+	FlowState         string `json:"flow_state,omitempty"`
+	FlowExpiresAt     int64  `json:"flow_expires_at,omitempty"`
+	OriginalURI       string `json:"original_uri,omitempty"`
+	CodeVerifier      string `json:"code_verifier,omitempty"`
+	AccessToken       string `json:"access_token,omitempty"`
+	IDToken           string `json:"id_token,omitempty"`
+	RefreshToken      string `json:"refresh_token,omitempty"`
+	Userinfo          string `json:"userinfo,omitempty"`
+	ExpiresAt         int64  `json:"expires_at,omitempty"`
+}
+
+var errSessionNotFound = errors.New("openid-connect session not found")
+
+type sessionStore interface {
+	Get(context.Context, string) (string, error)
+	Set(context.Context, string, string, time.Duration) error
+	Delete(context.Context, string) error
+}
+
+type redisSessionStore struct {
+	client *redis.Client
+}
+
+func (s *redisSessionStore) Get(ctx context.Context, key string) (string, error) {
+	value, err := s.client.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", errSessionNotFound
+	}
+	return value, err
+}
+
+func (s *redisSessionStore) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
+	return s.client.Set(ctx, key, value, ttl).Err()
+}
+
+func (s *redisSessionStore) Delete(ctx context.Context, key string) error {
+	return s.client.Del(ctx, key).Err()
 }
 
 type tokenResponse struct {
@@ -297,9 +437,26 @@ func (p *Plugin) PostInit() error {
 	if p.config.TokenEndpointAuthMethod == "" {
 		p.config.TokenEndpointAuthMethod = "client_secret_basic"
 	}
-	if p.config.TokenEndpointAuthMethod != "client_secret_basic" &&
-		p.config.TokenEndpointAuthMethod != "client_secret_post" {
+	if !validClientAuthMethod(p.config.TokenEndpointAuthMethod) {
 		return fmt.Errorf("unsupported token_endpoint_auth_method %q", p.config.TokenEndpointAuthMethod)
+	}
+	if !validClientAuthMethod(p.config.IntrospectionEndpointAuthMethod) {
+		return fmt.Errorf("unsupported introspection_endpoint_auth_method %q", p.config.IntrospectionEndpointAuthMethod)
+	}
+	if p.config.ClientJWTAssertionExpiresIn == 0 {
+		p.config.ClientJWTAssertionExpiresIn = 60
+	}
+	if p.config.TokenEndpointAuthMethod == "private_key_jwt" ||
+		p.config.IntrospectionEndpointAuthMethod == "private_key_jwt" {
+		privateKey, err := parseRSAPrivateKey([]byte(p.config.ClientRSAPrivateKey))
+		if err != nil {
+			return fmt.Errorf("invalid client_rsa_private_key: %w", err)
+		}
+		p.clientRSAPrivateKey = privateKey
+	}
+	if (p.config.TokenEndpointAuthMethod == "client_secret_jwt" ||
+		p.config.IntrospectionEndpointAuthMethod == "client_secret_jwt") && p.config.ClientSecret == "" {
+		return errors.New("client_secret is required for client_secret_jwt")
 	}
 	if p.config.Realm == "" {
 		p.config.Realm = "apisix"
@@ -317,8 +474,13 @@ func (p *Plugin) PostInit() error {
 		if p.config.Session.Storage == "" {
 			p.config.Session.Storage = "cookie"
 		}
-		if p.config.Session.Storage != "cookie" {
+		if p.config.Session.Storage != "cookie" && p.config.Session.Storage != "redis" {
 			return fmt.Errorf("openid-connect session storage %q is not supported", p.config.Session.Storage)
+		}
+		if p.config.Session.Storage == "redis" {
+			if err := p.configureRedisSessionStore(); err != nil {
+				return err
+			}
 		}
 		if p.config.Session.CookieName == "" {
 			p.config.Session.CookieName = "session"
@@ -357,10 +519,87 @@ func (p *Plugin) PostInit() error {
 		b := false
 		p.config.SetRefreshTokenHeader = &b
 	}
+	if p.config.RenewAccessTokenOnExpiry == nil {
+		b := true
+		p.config.RenewAccessTokenOnExpiry = &b
+	}
+	if err := p.configureProxy(); err != nil {
+		return err
+	}
 
 	p.client = &http.Client{
 		Timeout:   time.Duration(p.config.Timeout) * time.Second,
 		Transport: p.transport(),
+	}
+
+	return nil
+}
+
+func (p *Plugin) configureRedisSessionStore() error {
+	if p.config.Session.Redis == nil {
+		return errors.New("openid-connect session.redis is required when session.storage is redis")
+	}
+
+	redisConfig := p.config.Session.Redis
+	if redisConfig.Host == "" {
+		redisConfig.Host = "127.0.0.1"
+	}
+	if redisConfig.Port == 0 {
+		redisConfig.Port = 6379
+	}
+	if redisConfig.Prefix == "" {
+		redisConfig.Prefix = "sessions"
+	}
+	if redisConfig.SSLVerify == nil {
+		verify := true
+		redisConfig.SSLVerify = &verify
+	}
+	if redisConfig.ConnectTimeout == 0 {
+		redisConfig.ConnectTimeout = 1000
+	}
+	if redisConfig.SendTimeout == 0 {
+		redisConfig.SendTimeout = 1000
+	}
+	if redisConfig.ReadTimeout == 0 {
+		redisConfig.ReadTimeout = 1000
+	}
+	if redisConfig.KeepaliveTimeout == 0 {
+		redisConfig.KeepaliveTimeout = 10000
+	}
+
+	configUID := shared.NewConfigUID()
+	configUID.Add(redisConfig.Host)
+	configUID.Add(redisConfig.Port)
+	configUID.Add(redisConfig.Username)
+	configUID.Add(redisConfig.Password)
+	configUID.Add(redisConfig.Database)
+	configUID.Add(redisConfig.SSL)
+	configUID.Add(*redisConfig.SSLVerify)
+	configUID.Add(redisConfig.ServerName)
+	configUID.Add(redisConfig.ConnectTimeout)
+	configUID.Add(redisConfig.SendTimeout)
+	configUID.Add(redisConfig.ReadTimeout)
+	configUID.Add(redisConfig.KeepaliveTimeout)
+
+	options := &redis.Options{
+		Addr:            net.JoinHostPort(redisConfig.Host, strconv.Itoa(redisConfig.Port)),
+		Username:        redisConfig.Username,
+		Password:        redisConfig.Password,
+		DB:              redisConfig.Database,
+		DialTimeout:     time.Duration(redisConfig.ConnectTimeout) * time.Millisecond,
+		WriteTimeout:    time.Duration(redisConfig.SendTimeout) * time.Millisecond,
+		ReadTimeout:     time.Duration(redisConfig.ReadTimeout) * time.Millisecond,
+		ConnMaxIdleTime: time.Duration(redisConfig.KeepaliveTimeout) * time.Millisecond,
+	}
+	if redisConfig.SSL {
+		options.TLSConfig = &tls.Config{
+			ServerName:         redisConfig.ServerName,
+			InsecureSkipVerify: !*redisConfig.SSLVerify,
+		}
+	}
+	client := redis.NewClient(options)
+	p.sessionStore = &redisSessionStore{
+		client: shared.LoadOrStoreClient(name+"-session", configUID, client).(*redis.Client),
 	}
 
 	return nil
@@ -456,10 +695,19 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 		p.handleCodeCallback(w, r, redirectURI)
 		return
 	}
+	if p.config.ForceReauthorize {
+		p.beginAuthorization(w, r, redirectURI, nil, "")
+		return
+	}
 
 	session, err := p.readSession(r)
-	if err == nil && session != nil && p.sessionValid(*session, time.Now()) {
-		session.UpdatedAt = time.Now().Unix()
+	now := time.Now()
+	if err == nil && session != nil && p.sessionValid(*session, now) {
+		if p.refreshSessionDue(*session, now) {
+			p.beginAuthorization(w, r, redirectURI, session, "none")
+			return
+		}
+		session.UpdatedAt = now.Unix()
 		if p.config.Session.RollingTimeout > 0 || p.config.Session.IdlingTimeout > 0 {
 			if err := p.writeSession(w, *session); err != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -470,11 +718,38 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 		next.ServeHTTP(w, r)
 		return
 	}
+	if err == nil && session != nil && *p.config.RenewAccessTokenOnExpiry && p.sessionRefreshable(*session, now) {
+		tokens, err := p.refreshAccessToken(r, session.RefreshToken)
+		if err == nil {
+			session.UpdatedAt = now.Unix()
+			session.AccessToken = tokens.AccessToken
+			if tokens.IDToken != "" {
+				session.IDToken = tokens.IDToken
+			}
+			if tokens.RefreshToken != "" {
+				session.RefreshToken = tokens.RefreshToken
+			}
+			session.ExpiresAt = p.tokenExpiresAt(now, tokens.ExpiresIn)
+			if err := p.writeSession(w, *session); err != nil {
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+			p.setSessionHeaders(r, *session)
+			next.ServeHTTP(w, r)
+			return
+		}
+	}
 
-	p.beginAuthorization(w, r, redirectURI)
+	p.beginAuthorization(w, r, redirectURI, nil, "")
 }
 
-func (p *Plugin) beginAuthorization(w http.ResponseWriter, r *http.Request, redirectURI string) {
+func (p *Plugin) beginAuthorization(
+	w http.ResponseWriter,
+	r *http.Request,
+	redirectURI string,
+	previous *sessionData,
+	prompt string,
+) {
 	discovery, err := p.discoveryDoc()
 	if err != nil || discovery.AuthorizationEndpoint == "" {
 		http.Error(w, "openid discovery document has no authorization_endpoint", http.StatusBadGateway)
@@ -494,6 +769,10 @@ func (p *Plugin) beginAuthorization(w http.ResponseWriter, r *http.Request, redi
 		FlowExpiresAt: p.flowExpiry(now).Unix(),
 		OriginalURI:   r.URL.RequestURI(),
 	}
+	if previous != nil {
+		session.CreatedAt = previous.CreatedAt
+		session.RedisID = previous.RedisID
+	}
 
 	parameters := url.Values{}
 	parameters.Set("client_id", p.config.ClientID)
@@ -501,6 +780,14 @@ func (p *Plugin) beginAuthorization(w http.ResponseWriter, r *http.Request, redi
 	parameters.Set("response_type", "code")
 	parameters.Set("redirect_uri", redirectURI)
 	parameters.Set("state", state)
+	for key, value := range p.config.AuthorizationParams {
+		if value != nil {
+			parameters.Set(key, fmt.Sprint(value))
+		}
+	}
+	if prompt != "" {
+		parameters.Set("prompt", prompt)
+	}
 	if p.config.UsePKCE {
 		verifier, err := randomURLValue(32)
 		if err != nil {
@@ -552,20 +839,24 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 	}
 	now := time.Now()
 	newSession := sessionData{
-		CreatedAt:    now.Unix(),
-		UpdatedAt:    now.Unix(),
-		AccessToken:  tokens.AccessToken,
-		IDToken:      tokens.IDToken,
-		RefreshToken: tokens.RefreshToken,
+		RedisID:           session.RedisID,
+		CreatedAt:         session.CreatedAt,
+		UpdatedAt:         now.Unix(),
+		LastAuthenticated: now.Unix(),
+		AccessToken:       tokens.AccessToken,
+		IDToken:           tokens.IDToken,
+		RefreshToken:      tokens.RefreshToken,
 	}
-	if tokens.ExpiresIn > 0 {
-		newSession.ExpiresAt = now.Add(time.Duration(tokens.ExpiresIn) * time.Second).Unix()
-	}
+	newSession.ExpiresAt = p.tokenExpiresAt(now, tokens.ExpiresIn)
 	if userinfo, err := p.userinfo(r, tokens.AccessToken); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	} else {
 		newSession.Userinfo = userinfo
+	}
+	if err := p.validateSessionClaimSchema(tokens, newSession.Userinfo); err != nil {
+		p.writeInvalidToken(w, err.Error())
+		return
 	}
 	if err := p.writeSession(w, newSession); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -580,14 +871,6 @@ func (p *Plugin) handleCodeCallback(w http.ResponseWriter, r *http.Request, redi
 }
 
 func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier string) (tokenResponse, error) {
-	discovery, err := p.discoveryDoc()
-	if err != nil {
-		return tokenResponse{}, err
-	}
-	if discovery.TokenEndpoint == "" {
-		return tokenResponse{}, errors.New("openid discovery document has no token_endpoint")
-	}
-
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
@@ -598,24 +881,26 @@ func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier strin
 		}
 		form.Set("code_verifier", verifier)
 	}
-	if p.config.TokenEndpointAuthMethod == "client_secret_post" {
-		form.Set("client_id", p.config.ClientID)
-		form.Set("client_secret", p.config.ClientSecret)
-	}
-	req, err := http.NewRequestWithContext(
-		r.Context(),
-		http.MethodPost,
-		discovery.TokenEndpoint,
-		strings.NewReader(form.Encode()),
-	)
+	return p.requestTokens(r, form)
+}
+
+func (p *Plugin) refreshAccessToken(r *http.Request, refreshToken string) (tokenResponse, error) {
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("scope", p.config.Scope)
+	return p.requestTokens(r, form)
+}
+
+func (p *Plugin) requestTokens(r *http.Request, form url.Values) (tokenResponse, error) {
+	discovery, err := p.discoveryDoc()
 	if err != nil {
 		return tokenResponse{}, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if p.config.TokenEndpointAuthMethod == "client_secret_basic" {
-		req.SetBasicAuth(p.config.ClientID, p.config.ClientSecret)
+	if discovery.TokenEndpoint == "" {
+		return tokenResponse{}, errors.New("openid discovery document has no token_endpoint")
 	}
-	resp, err := p.client.Do(req)
+	resp, err := p.postTokenForm(r, discovery.TokenEndpoint, form)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -632,6 +917,119 @@ func (p *Plugin) exchangeCode(r *http.Request, code, redirectURI, verifier strin
 		return tokenResponse{}, errors.New("token response has no access_token")
 	}
 	return tokens, nil
+}
+
+func (p *Plugin) postTokenForm(r *http.Request, endpoint string, form url.Values) (*http.Response, error) {
+	req, err := p.authenticatedFormRequest(r, endpoint, form, p.config.TokenEndpointAuthMethod)
+	if err != nil {
+		return nil, err
+	}
+	return p.client.Do(req)
+}
+
+func (p *Plugin) authenticatedFormRequest(
+	r *http.Request,
+	endpoint string,
+	form url.Values,
+	authMethod string,
+) (*http.Request, error) {
+	switch authMethod {
+	case "client_secret_post":
+		form.Set("client_id", p.config.ClientID)
+		form.Set("client_secret", p.config.ClientSecret)
+	case "private_key_jwt", "client_secret_jwt":
+		assertion, err := p.clientAssertion(endpoint, authMethod)
+		if err != nil {
+			return nil, err
+		}
+		form.Set("client_id", p.config.ClientID)
+		form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+		form.Set("client_assertion", assertion)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if authMethod == "client_secret_basic" {
+		req.SetBasicAuth(p.config.ClientID, p.config.ClientSecret)
+	}
+	return req, nil
+}
+
+func (p *Plugin) clientAssertion(audience, authMethod string) (string, error) {
+	jti, err := randomURLValue(16)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().Unix()
+	header := map[string]any{"typ": "JWT"}
+	claims := map[string]any{
+		"iss": p.config.ClientID,
+		"sub": p.config.ClientID,
+		"aud": audience,
+		"jti": jti,
+		"iat": now,
+		"exp": now + int64(p.config.ClientJWTAssertionExpiresIn),
+	}
+	if authMethod == "private_key_jwt" {
+		header["alg"] = "RS256"
+		if p.config.ClientRSAPrivateKeyID != "" {
+			header["kid"] = p.config.ClientRSAPrivateKeyID
+		}
+	} else {
+		header["alg"] = "HS256"
+	}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	var signature []byte
+	if authMethod == "private_key_jwt" {
+		if p.clientRSAPrivateKey == nil {
+			return "", errors.New("client_rsa_private_key is required for private_key_jwt")
+		}
+		digest := sha256.Sum256([]byte(unsigned))
+		signature, err = rsa.SignPKCS1v15(rand.Reader, p.clientRSAPrivateKey, crypto.SHA256, digest[:])
+		if err != nil {
+			return "", err
+		}
+	} else {
+		mac := hmac.New(sha256.New, []byte(p.config.ClientSecret))
+		_, _ = mac.Write([]byte(unsigned))
+		signature = mac.Sum(nil)
+	}
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func validClientAuthMethod(method string) bool {
+	return method == "client_secret_basic" || method == "client_secret_post" ||
+		method == "private_key_jwt" || method == "client_secret_jwt"
+}
+
+func parseRSAPrivateKey(privateKeyBytes []byte) (*rsa.PrivateKey, error) {
+	if block, _ := pem.Decode(privateKeyBytes); block != nil {
+		privateKeyBytes = block.Bytes
+	}
+	if privateKey, err := x509.ParsePKCS1PrivateKey(privateKeyBytes); err == nil {
+		return privateKey, nil
+	}
+	privateKey, err := x509.ParsePKCS8PrivateKey(privateKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	rsaPrivateKey, ok := privateKey.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("private key is not RSA")
+	}
+	return rsaPrivateKey, nil
 }
 
 func (p *Plugin) userinfo(r *http.Request, accessToken string) (string, error) {
@@ -664,7 +1062,11 @@ func (p *Plugin) userinfo(r *http.Request, accessToken string) (string, error) {
 }
 
 func (p *Plugin) handleLogout(w http.ResponseWriter, r *http.Request) {
-	p.clearSession(w)
+	session, _ := p.readSession(r)
+	p.clearSession(w, session)
+	if p.config.RevokeTokensOnLogout && session != nil {
+		p.revokeTokens(r, *session)
+	}
 	discovery, err := p.discoveryDoc()
 	if err == nil && discovery.EndSessionEndpoint != "" {
 		logoutURL, parseErr := url.Parse(discovery.EndSessionEndpoint)
@@ -685,6 +1087,34 @@ func (p *Plugin) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (p *Plugin) revokeTokens(r *http.Request, session sessionData) {
+	discovery, err := p.discoveryDoc()
+	if err != nil || discovery.RevocationEndpoint == "" {
+		return
+	}
+	if session.RefreshToken != "" {
+		_ = p.revokeToken(r, discovery.RevocationEndpoint, "refresh_token", session.RefreshToken)
+	}
+	if session.AccessToken != "" {
+		_ = p.revokeToken(r, discovery.RevocationEndpoint, "access_token", session.AccessToken)
+	}
+}
+
+func (p *Plugin) revokeToken(r *http.Request, endpoint, tokenTypeHint, token string) error {
+	form := url.Values{}
+	form.Set("token", token)
+	form.Set("token_type_hint", tokenTypeHint)
+	resp, err := p.postTokenForm(r, endpoint, form)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("revocation endpoint returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (p *Plugin) redirectURI(r *http.Request) string {
@@ -741,6 +1171,29 @@ func (p *Plugin) readSession(r *http.Request) (*sessionData, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.config.Session.Storage == "redis" {
+		if p.sessionStore == nil {
+			return nil, errors.New("openid-connect Redis session store is not configured")
+		}
+		redisID := string(payload)
+		if redisID == "" {
+			return nil, errSessionNotFound
+		}
+		payloadValue, err := p.sessionStore.Get(r.Context(), p.redisSessionKey(redisID))
+		if err != nil {
+			return nil, err
+		}
+		payload, err = p.openSession(payloadValue)
+		if err != nil {
+			return nil, err
+		}
+		var session sessionData
+		if err := json.Unmarshal(payload, &session); err != nil {
+			return nil, err
+		}
+		session.RedisID = redisID
+		return &session, nil
+	}
 	var session sessionData
 	if err := json.Unmarshal(payload, &session); err != nil {
 		return nil, err
@@ -756,6 +1209,25 @@ func (p *Plugin) writeSession(w http.ResponseWriter, session sessionData) error 
 	value, err := p.sealSession(payload)
 	if err != nil {
 		return err
+	}
+	if p.config.Session.Storage == "redis" {
+		if p.sessionStore == nil {
+			return errors.New("openid-connect Redis session store is not configured")
+		}
+		redisID := session.RedisID
+		if redisID == "" {
+			redisID, err = randomURLValue(32)
+			if err != nil {
+				return err
+			}
+		}
+		if err := p.sessionStore.Set(context.Background(), p.redisSessionKey(redisID), value, p.sessionStorageTTL(session)); err != nil {
+			return err
+		}
+		value, err = p.sealSession([]byte(redisID))
+		if err != nil {
+			return err
+		}
 	}
 	cookie := &http.Cookie{
 		Name:     p.config.Session.CookieName,
@@ -780,7 +1252,10 @@ func (p *Plugin) writeSession(w http.ResponseWriter, session sessionData) error 
 	return nil
 }
 
-func (p *Plugin) clearSession(w http.ResponseWriter) {
+func (p *Plugin) clearSession(w http.ResponseWriter, session *sessionData) {
+	if p.config.Session.Storage == "redis" && session != nil && session.RedisID != "" && p.sessionStore != nil {
+		_ = p.sessionStore.Delete(context.Background(), p.redisSessionKey(session.RedisID))
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     p.config.Session.CookieName,
 		Value:    "",
@@ -794,11 +1269,42 @@ func (p *Plugin) clearSession(w http.ResponseWriter) {
 	})
 }
 
+func (p *Plugin) redisSessionKey(redisID string) string {
+	return p.config.Session.Redis.Prefix + ":" + redisID
+}
+
+func (p *Plugin) sessionStorageTTL(session sessionData) time.Duration {
+	now := time.Now()
+	var expiresAt time.Time
+	if p.config.Session.AbsoluteTimeout > 0 {
+		expiresAt = time.Unix(session.CreatedAt, 0).Add(time.Duration(p.config.Session.AbsoluteTimeout) * time.Second)
+	}
+	if p.config.Session.RollingTimeout > 0 {
+		rollingExpiry := now.Add(time.Duration(p.config.Session.RollingTimeout) * time.Second)
+		if expiresAt.IsZero() || rollingExpiry.Before(expiresAt) {
+			expiresAt = rollingExpiry
+		}
+	}
+	if p.config.Session.IdlingTimeout > 0 {
+		idlingExpiry := now.Add(time.Duration(p.config.Session.IdlingTimeout) * time.Second)
+		if expiresAt.IsZero() || idlingExpiry.Before(expiresAt) {
+			expiresAt = idlingExpiry
+		}
+	}
+	if expiresAt.IsZero() {
+		return 0
+	}
+	if ttl := time.Until(expiresAt); ttl > 0 {
+		return ttl
+	}
+	return time.Second
+}
+
 func (p *Plugin) sessionValid(session sessionData, now time.Time) bool {
 	if session.AccessToken == "" {
 		return false
 	}
-	if session.ExpiresAt > 0 && session.ExpiresAt <= now.Unix() {
+	if session.ExpiresAt > 0 && session.ExpiresAt <= now.Unix()+int64(p.config.AccessTokenExpiresLeeway) {
 		return false
 	}
 	if p.config.Session.AbsoluteTimeout > 0 &&
@@ -810,6 +1316,39 @@ func (p *Plugin) sessionValid(session sessionData, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func (p *Plugin) sessionRefreshable(session sessionData, now time.Time) bool {
+	if session.RefreshToken == "" || session.ExpiresAt == 0 {
+		return false
+	}
+	if session.ExpiresAt > now.Unix()+int64(p.config.AccessTokenExpiresLeeway) {
+		return false
+	}
+	if p.config.Session.AbsoluteTimeout > 0 &&
+		session.CreatedAt+int64(p.config.Session.AbsoluteTimeout) <= now.Unix() {
+		return false
+	}
+	if p.config.Session.IdlingTimeout > 0 &&
+		session.UpdatedAt+int64(p.config.Session.IdlingTimeout) <= now.Unix() {
+		return false
+	}
+	return true
+}
+
+func (p *Plugin) refreshSessionDue(session sessionData, now time.Time) bool {
+	return p.config.RefreshSessionInterval != nil &&
+		(session.LastAuthenticated == 0 || session.LastAuthenticated+int64(*p.config.RefreshSessionInterval) < now.Unix())
+}
+
+func (p *Plugin) tokenExpiresAt(now time.Time, expiresIn int64) int64 {
+	if expiresIn <= 0 {
+		expiresIn = int64(p.config.AccessTokenExpiresIn)
+	}
+	if expiresIn <= 0 {
+		return 0
+	}
+	return now.Add(time.Duration(expiresIn) * time.Second).Unix()
 }
 
 func (p *Plugin) setSessionHeaders(r *http.Request, session sessionData) {
@@ -949,6 +1488,33 @@ func audienceMatchesClientID(value any, clientID string) bool {
 }
 
 func (p *Plugin) validateClaimSchema(claims map[string]any) error {
+	return p.validateSchema(claims)
+}
+
+func (p *Plugin) validateSessionClaimSchema(tokens tokenResponse, userinfo string) error {
+	if len(p.config.ClaimSchema) == 0 {
+		return nil
+	}
+	var user any
+	if userinfo != "" {
+		if err := json.Unmarshal([]byte(userinfo), &user); err != nil {
+			return fmt.Errorf("invalid userinfo response")
+		}
+	}
+	var idToken any = tokens.IDToken
+	if tokens.IDToken != "" {
+		if token, err := parseJWT(tokens.IDToken); err == nil {
+			idToken = token.payload
+		}
+	}
+	return p.validateSchema(map[string]any{
+		"user":         user,
+		"access_token": tokens.AccessToken,
+		"id_token":     idToken,
+	})
+}
+
+func (p *Plugin) validateSchema(value any) error {
 	if len(p.config.ClaimSchema) == 0 {
 		return nil
 	}
@@ -957,7 +1523,7 @@ func (p *Plugin) validateClaimSchema(claims map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode claim schema")
 	}
-	if err := util.Validate(claims, string(encoded)); err != nil {
+	if err := util.Validate(value, string(encoded)); err != nil {
 		return err
 	}
 	return nil
@@ -1235,18 +1801,9 @@ func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, erro
 
 	form := url.Values{}
 	form.Set("token", token)
-	if p.config.IntrospectionEndpointAuthMethod == "client_secret_post" {
-		form.Set("client_id", p.config.ClientID)
-		form.Set("client_secret", p.config.ClientSecret)
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	req, err := p.authenticatedFormRequest(r, endpoint, form, p.config.IntrospectionEndpointAuthMethod)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if p.config.IntrospectionEndpointAuthMethod == "client_secret_basic" {
-		req.SetBasicAuth(p.config.ClientID, p.config.ClientSecret)
 	}
 	for _, name := range p.config.IntrospectionAddonHeaders {
 		if value := r.Header.Get(name); value != "" {
@@ -1348,7 +1905,75 @@ func (p *Plugin) transport() http.RoundTripper {
 	if p.config.SSLVerify != nil && !*p.config.SSLVerify {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
+	if p.httpProxy != nil || p.httpsProxy != nil {
+		transport.Proxy = p.proxyForRequest
+	}
 	return transport
+}
+
+func (p *Plugin) configureProxy() error {
+	if p.config.ProxyOpts == nil {
+		return nil
+	}
+
+	var err error
+	p.httpProxy, err = parseProxyURL(p.config.ProxyOpts.HTTPProxy, p.config.ProxyOpts.HTTPProxyAuthorization)
+	if err != nil {
+		return fmt.Errorf("invalid proxy_opts.http_proxy: %w", err)
+	}
+	p.httpsProxy, err = parseProxyURL(p.config.ProxyOpts.HTTPSProxy, p.config.ProxyOpts.HTTPSProxyAuthorization)
+	if err != nil {
+		return fmt.Errorf("invalid proxy_opts.https_proxy: %w", err)
+	}
+	for _, host := range strings.Split(p.config.ProxyOpts.NoProxy, ",") {
+		if host = strings.TrimSpace(strings.ToLower(host)); host != "" {
+			p.noProxy = append(p.noProxy, strings.TrimPrefix(host, "."))
+		}
+	}
+	return nil
+}
+
+func parseProxyURL(rawURL, authorization string) (*url.URL, error) {
+	if rawURL == "" {
+		return nil, nil
+	}
+	proxyURL, err := url.Parse(rawURL)
+	if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+		if err == nil {
+			err = errors.New("proxy URL must include scheme and host")
+		}
+		return nil, err
+	}
+	if authorization == "" {
+		return proxyURL, nil
+	}
+	parts := strings.SplitN(authorization, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Basic") {
+		return nil, errors.New("proxy authorization must use Basic credentials")
+	}
+	credentials, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("decode proxy authorization: %w", err)
+	}
+	username, password, found := strings.Cut(string(credentials), ":")
+	if !found {
+		return nil, errors.New("proxy authorization must contain username and password")
+	}
+	proxyURL.User = url.UserPassword(username, password)
+	return proxyURL, nil
+}
+
+func (p *Plugin) proxyForRequest(request *http.Request) (*url.URL, error) {
+	host := strings.ToLower(request.URL.Hostname())
+	for _, bypassHost := range p.noProxy {
+		if bypassHost == "*" || host == bypassHost || strings.HasSuffix(host, "."+bypassHost) {
+			return nil, nil
+		}
+	}
+	if request.URL.Scheme == "https" {
+		return p.httpsProxy, nil
+	}
+	return p.httpProxy, nil
 }
 
 func clearOutputHeaders(r *http.Request) {

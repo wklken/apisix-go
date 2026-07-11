@@ -82,6 +82,37 @@ func TestHandlerCallsComprehendAndPreservesRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerSignsSessionToken(t *testing.T) {
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Amz-Security-Token"); got != "temporary-token" {
+			t.Fatalf("X-Amz-Security-Token = %q, want temporary-token", got)
+		}
+		if got := r.Header.Get("Authorization"); !strings.Contains(got, "x-amz-security-token") {
+			t.Fatalf("Authorization = %q, want session token in SignedHeaders", got)
+		}
+		_, _ = w.Write([]byte(`{"ResultList":[{"Toxicity":0,"Labels":[]}]}`))
+	}))
+	defer moderation.Close()
+
+	p := newTestPlugin(t, Config{Comprehend: Comprehend{
+		AccessKeyID:     "test-access",
+		SecretAccessKey: "test-secret",
+		SessionToken:    "temporary-token",
+		Region:          "us-east-1",
+		Endpoint:        moderation.URL,
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"prompt":"hello"}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerRejectsToxicityAboveThreshold(t *testing.T) {
 	moderation := moderationServer(t, `{"ResultList":[{"Toxicity":0.9,"Labels":[]}]}`, http.StatusOK)
 	defer moderation.Close()

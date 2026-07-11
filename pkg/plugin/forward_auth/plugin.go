@@ -232,6 +232,9 @@ func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
 	}
 
 	p.setForwardedHeaders(authReq, r)
+	if p.config.RequestMethod == http.MethodPost {
+		p.copyRequestBodyHeaders(authReq, r)
+	}
 	for _, header := range p.config.RequestHeaders {
 		if value := r.Header.Get(header); value != "" {
 			authReq.Header.Set(header, value)
@@ -242,6 +245,17 @@ func (p *Plugin) authorize(r *http.Request) (*http.Response, error) {
 	}
 
 	return p.client.Do(authReq)
+}
+
+func (p *Plugin) copyRequestBodyHeaders(authReq *http.Request, r *http.Request) {
+	for _, name := range []string{"Expect", "Transfer-Encoding", "Content-Encoding"} {
+		if values := r.Header.Values(name); len(values) > 0 {
+			authReq.Header[name] = append([]string(nil), values...)
+		}
+	}
+	if len(r.TransferEncoding) > 0 {
+		authReq.TransferEncoding = append([]string(nil), r.TransferEncoding...)
+	}
 }
 
 func (p *Plugin) setForwardedHeaders(authReq *http.Request, r *http.Request) {

@@ -37,39 +37,39 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `uri-blocker` | yes | 95% | monitor |
 | `request-validation` | yes | 85% | monitor |
 | `chaitin-waf` | yes | 55% | implement |
-| `multi-auth` | yes | 60% | implement |
-| `openid-connect` | yes | 78% | monitor |
-| `saml-auth` | yes | 55% | implement |
-| `cas-auth` | yes | 60% | implement |
-| `authz-casbin` | yes | 70% | monitor |
-| `authz-casdoor` | yes | 60% | implement |
-| `wolf-rbac` | yes | 65% | implement |
-| `ldap-auth` | yes | 65% | implement |
+| `multi-auth` | yes | 85% | monitor |
+| `openid-connect` | yes | 98% | monitor |
+| `saml-auth` | yes | 85% | monitor |
+| `cas-auth` | yes | 85% | monitor |
+| `authz-casbin` | yes | 85% | monitor |
+| `authz-casdoor` | yes | 85% | monitor |
+| `wolf-rbac` | yes | 75% | implement |
+| `ldap-auth` | yes | 75% | monitor |
 | `hmac-auth` | yes | 82% | monitor |
 | `basic-auth` | yes | 70% | monitor |
 | `jwt-auth` | yes | 85% | monitor |
-| `jwe-decrypt` | yes | 65% | implement |
+| `jwe-decrypt` | yes | 90% | monitor |
 | `key-auth` | yes | 75% | monitor |
-| `dingtalk-auth` | yes | 60% | implement |
-| `feishu-auth` | yes | 60% | implement |
+| `dingtalk-auth` | yes | 65% | implement |
+| `feishu-auth` | yes | 65% | implement |
 | `acl` | yes | 70% | monitor |
 | `consumer-restriction` | yes | 80% | monitor |
 | `attach-consumer-label` | yes | 70% | monitor |
-| `forward-auth` | yes | 86% | monitor |
-| `opa` | yes | 70% | monitor |
-| `authz-keycloak` | yes | 60% | implement |
+| `forward-auth` | yes | 90% | monitor |
+| `opa` | yes | 90% | monitor |
+| `authz-keycloak` | yes | 85% | monitor |
 | `data-mask` | yes | 65% | implement |
 | `proxy-cache` | yes | 78% | monitor |
 | `body-transformer` | yes | 55% | implement |
-| `ai-prompt-template` | yes | 55% | implement |
-| `ai-prompt-decorator` | yes | 55% | implement |
-| `ai-prompt-guard` | yes | 60% | implement |
-| `ai-rag` | yes | 55% | implement |
-| `ai-rate-limiting` | yes | 50% | implement |
-| `ai-proxy-multi` | yes | 58% | implement |
-| `ai-proxy` | yes | 58% | implement |
-| `ai-aws-content-moderation` | yes | 55% | implement |
-| `ai-aliyun-content-moderation` | yes | 50% | implement |
+| `ai-prompt-template` | yes | 78% | implement |
+| `ai-prompt-decorator` | yes | 90% | monitor |
+| `ai-prompt-guard` | yes | 88% | monitor |
+| `ai-rag` | yes | 92% | monitor |
+| `ai-rate-limiting` | yes | 90% | monitor |
+| `ai-proxy-multi` | yes | 90% | implement |
+| `ai-proxy` | yes | 94% | monitor |
+| `ai-aws-content-moderation` | yes | 92% | monitor |
+| `ai-aliyun-content-moderation` | yes | 72% | implement |
 | `proxy-mirror` | yes | 73% | monitor |
 | `graphql-proxy-cache` | yes | 55% | implement |
 | `proxy-rewrite` | yes | 98% | monitor |
@@ -121,11 +121,11 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `serverless-post-function` | yes | 45% | not-required-native |
 | `ext-plugin-post-req` | no | unsupported: No need | not-required-native |
 | `ext-plugin-post-resp` | no | unsupported: No need | not-required-native |
-| `ai-request-rewrite` | yes | 50% | implement |
+| `ai-request-rewrite` | yes | 90% | monitor |
 
 ## Next Priority Lanes
 
 1. Raise high-value auth parity: `key-auth`, `jwt-auth`, `hmac-auth`, then `openid-connect`.
 2. Raise traffic parity where Go-native support is practical: Redis policies for `limit-*`, and additional `workflow` delegated plugin actions.
-3. Build the AI protocol abstraction and apply it to `ai-proxy`, `ai-proxy-multi`, and prompt plugins.
+3. Finish the remaining AI provider conversions, Bedrock EventStream, and multi-instance health/DNS behavior.
 4. Keep OpenResty/NGINX/Lua-runtime-native plugins out of normal parity work: `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, `inspect`, `serverless-pre-function`, and `serverless-post-function`.

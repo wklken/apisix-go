@@ -36,40 +36,40 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 
 | Plugin | What needs to be done |
 |---|---|
-| `openid-connect` | Add authorization-code/session flow, PKCE, logout/revocation, token renewal, more client assertion auth, session-flow claim schema behavior, and proxy options where practical. |
-| `key-auth` | Only remaining parity is encrypted consumer-field support after a project-level secret design exists; current API-key, hide-credentials, and anonymous-consumer behavior should stay stable. |
-| `jwt-auth` | Only remaining parity is encrypted consumer-field support after a project-level secret design exists; keep asymmetric algorithms and anonymous-consumer coverage aligned with APISIX 3.17. |
-| `basic-auth` | Only remaining parity is encrypted consumer-field support after a project-level secret design exists; keep Basic extraction, validation, consumer attachment, and `hide_credentials` stable. |
-| `hmac-auth` | Only remaining parity is encrypted consumer-field support after a project-level secret design exists; keep digest, body, `hide_credentials`, and anonymous-consumer behavior stable. |
-| `saml-auth` | Add IdP metadata loading, IdP-initiated SSO/SLO gaps, richer logout semantics, and more metadata/userinfo forwarding. Defer artifact binding unless it can be bounded cleanly. |
-| `cas-auth` | Add IdP single logout XML session deletion, better service/session parity, and richer user metadata propagation. Keep OpenResty shared-dict clustering out of scope. |
-| `authz-casdoor` | Forward Casdoor user/access-token metadata upstream, reuse token/session state, and improve logout/session behavior. |
-| `authz-keycloak` | Add shared token/resource cache approximation, request decorators, richer resource metadata handling, and refresh-token reuse where practical. |
-| `wolf-rbac` | Add public APIs for login/change password/user info, retry/backoff, and fuller consumer plugin metadata behavior. |
-| `ldap-auth` | Add LDAP search filters, StartTLS fallback discovery, and richer DN/user matching. Do not add `anonymous_consumer`; APISIX 3.17 `ldap-auth` does not define it. |
-| `jwe-decrypt` | Add additional JWE algorithms, AAD/header authentication, and encrypted consumer-field handling only after a safe local secret pattern exists. |
-| `multi-auth` | Add more APISIX auth plugin types and preserve useful per-plugin failure details in the final response. |
-| `dingtalk-auth` | Store/reuse access tokens in session, attach `ctx.external_user` equivalent metadata, improve error logging, and document encrypted-storage gaps. |
-| `feishu-auth` | Store/reuse Feishu access tokens in session, attach `ctx.external_user` equivalent metadata, improve error logging, and document encrypted-storage gaps. |
-| `authz-casbin` | Add plugin metadata fallback if local metadata lookup supports it cleanly. |
-| `opa` | Add fuller APISIX `with_route` and `with_service` payloads from local route/service context where available. |
-| `forward-auth` | Audit remaining official fields and response-header edge behavior; keep current method/header/upstream forwarding behavior stable. |
+| `openid-connect` | No normal Go Auth TODO remains. Cookie/Redis sessions, encrypted configuration fields, and `refresh_session_interval` are implemented; exact `lua-resty-session` runtime behavior remains out of scope. |
+| `key-auth` | No normal Go Auth TODO remains; encrypted consumer fields, API-key extraction, hide-credentials, and anonymous-consumer behavior are implemented. |
+| `jwt-auth` | No normal Go Auth TODO remains; encrypted consumer fields, asymmetric algorithms, and anonymous-consumer behavior are implemented. |
+| `basic-auth` | No normal Go Auth TODO remains; encrypted consumer fields, Basic extraction, consumer attachment, and `hide_credentials` are implemented. |
+| `hmac-auth` | No normal Go Auth TODO remains; encrypted consumer fields, digest/body validation, `hide_credentials`, and anonymous-consumer behavior are implemented. |
+| `saml-auth` | No normal Go Auth TODO remains; encrypted `sp_private_key` / `secret` fields are implemented. Exact `lua-resty-saml` session/runtime behavior remains out of scope. |
+| `cas-auth` | No normal Go Auth TODO remains; encrypted `cookie.secret` is implemented. OpenResty shared-dict clustering is out of scope; user metadata forwarding is not an APISIX 3.17 plugin behavior. |
+| `authz-casdoor` | No normal Go Auth TODO remains; encrypted `client_secret` is implemented. Distributed/exact `resty.session` behavior is out of scope; user/access-token forwarding is not an APISIX 3.17 plugin behavior. |
+| `authz-keycloak` | No normal Go Auth TODO remains. Encrypted `client_secret`, discovery/service-account token caches, and `cache_ttl_seconds` are implemented; Lua `http_request_decorator` functions and cross-process shared-dict fidelity are out of scope. |
+| `wolf-rbac` | No normal Go Auth TODO remains. Public login/change-password/user-info APIs, TLS verification, transient 5xx retry/backoff, and consumer configuration are implemented; cross-process OpenResty consumer-cache fidelity is out of scope. |
+| `ldap-auth` | No normal Go Auth TODO remains; encrypted consumer `user_dn` is implemented. Do not add LDAP search filters, StartTLS, or `anonymous_consumer`; APISIX 3.17 does not define them. |
+| `jwe-decrypt` | No normal Go Auth TODO remains; encrypted consumer fields are implemented. Do not add alternate algorithms or AAD/header authentication; APISIX 3.17 uses direct AES-256-GCM with the same bounded behavior. |
+| `multi-auth` | All APISIX 3.17 `type = auth` plugins are supported. Preserve APISIX's generic final denial response; per-plugin diagnostics are logging detail. |
+| `dingtalk-auth` | No normal Go Auth TODO remains. Encrypted configuration fields, `$external_user`, and the local access-token cache are implemented; exact OpenResty logging/session/cache behavior is out of scope. |
+| `feishu-auth` | No normal Go Auth TODO remains. Encrypted configuration fields and `$external_user` are implemented; exact OpenResty logging/session behavior is out of scope. |
+| `authz-casbin` | No normal Go Auth TODO remains; plugin-metadata model/policy fallback and metadata reload are implemented. |
+| `opa` | No normal Go Auth TODO remains. `with_route` / `with_service` emit full route/service resource documents from the route builder, with bounded direct-plugin fallback context. |
+| `forward-auth` | No normal Go Auth TODO remains. APISIX 3.17's schema accepts string `extra_headers` values; its defensive numeric runtime fallback is not a normal configurable feature. |
 
 ## AI
 
 | Plugin | What needs to be done |
 |---|---|
 | `ai` | Keep deferred unless a Go-native equivalent is explicitly requested; most APISIX behavior replaces runtime/router/balancer internals. |
-| `ai-proxy` | Add AI protocol detection/conversion registry, OpenAI Responses/Embeddings routing, provider-native request construction, AWS SigV4/GCP auth, streaming SSE/EventStream, streaming log variables, and active connection metrics. |
-| `ai-proxy-multi` | Add health checks, DNS node resolution, host/SNI preservation, priority balancer parity, AI rate-limiting fallback integration, and the same provider/protocol/streaming gaps as `ai-proxy`. |
-| `ai-request-rewrite` | Add AI protocol registry/conversion, Anthropic/Gemini/Vertex/Bedrock request construction, provider response filters, and fallback/error-response policy integration. |
-| `ai-rate-limiting` | Add Redis/shared policy, `rules`, bounded `cost_expr`/expression support, string variable limits, streaming token usage, and automatic `ai-proxy`/`ai-proxy-multi` instance selection. |
-| `ai-rag` | Add providers beyond Azure OpenAI/Azure AI Search, protocol append registry, broader Azure options, APISIX ctx/log variables, and streaming/body-filter behavior where practical. |
-| `ai-prompt-template` | Add nested variable lookup, XML/form/multipart inputs, Anthropic/Responses-native outputs, and template cache behavior. |
-| `ai-prompt-decorator` | Add Anthropic Messages, Bedrock Converse, OpenAI Embeddings, passthrough protocol decoration, and streaming-specific behavior. |
-| `ai-prompt-guard` | Add full protocol extraction beyond OpenAI Chat/Responses, OpenAI Embeddings, passthrough detection, and AI-provider deny response shaping. |
-| `ai-aws-content-moderation` | Add AWS credential provider/session token support, response-body moderation, streaming moderation, AI protocol content extraction, and log variables. |
-| `ai-aliyun-content-moderation` | Add response-body moderation, streaming moderation, provider-compatible deny response shaping, SSE annotation, and APISIX log variables. |
+| `ai-proxy` | No major normal config gap remains. Exact OpenResty transport, phase, and log lifecycle remains runtime fidelity work. |
+| `ai-proxy-multi` | Add explicit APISIX-style DNS node snapshots if the standard Go resolver behavior is insufficient. Active health checks, all-unhealthy fallback, stream controls/metrics, protocol conversion, priority/rate fallback, and provider auth are implemented. |
+| `ai-request-rewrite` | Only exact APISIX error/log lifecycle and any future provider converters remain. Native AWS/GCP auth and current APISIX 3.17 provider request/response shapes are implemented. |
+| `ai-rate-limiting` | No major normal config gap remains. Global/instance/rule quotas, string variables, bounded expressions, two-phase proxy integration, instance fallback, and streaming usage charging are implemented. Cross-process shared-state and exact OpenResty log-phase timing remain runtime fidelity work. |
+| `ai-rag` | Only APISIX-specific context/log variables remain a normal gap. APISIX 3.17 itself supports only Azure OpenAI embeddings and Azure AI Search; protocol append and encrypted API keys are implemented. |
+| `ai-prompt-template` | Add XML/form/multipart body-transformer inputs and exact template cache/runtime behavior. Nested and bounded indexed JSON lookup is implemented. |
+| `ai-prompt-decorator` | No major normal protocol gap remains; all six APISIX 3.17 protocol handlers are shared with the proxy layer. Embeddings and passthrough decoration are intentionally no-ops, matching upstream. |
+| `ai-prompt-guard` | No major normal protocol gap remains; all six APISIX 3.17 protocol handlers are shared with the proxy layer. Exact OpenResty regex behavior remains native-runtime fidelity. |
+| `ai-aws-content-moderation` | Only environment/default AWS credential-provider fidelity remains. Static/session credentials, SigV4, encrypted secrets, and all official request moderation controls are implemented. |
+| `ai-aliyun-content-moderation` | Only exact incremental body-filter timing, `stream_check_interval` scheduling, and APISIX log-variable lifecycle remain. Response-body moderation, buffered realtime/final-packet decisions, risk-level SSE annotation, native deny responses, Unicode-safe chunking, and encrypted secrets are implemented. |
 
 ## Observability
 

@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -192,6 +193,9 @@ func decryptJWE(token jweToken, rawConfig any) ([]byte, error) {
 			return nil, err
 		}
 		secret = decoded
+	}
+	if len(secret) != 32 {
+		return nil, errors.New("JWE consumer secret must be 32 bytes")
 	}
 
 	block, err := aes.NewCipher(secret)

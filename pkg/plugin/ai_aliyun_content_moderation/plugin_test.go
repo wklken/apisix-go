@@ -150,6 +150,106 @@ func TestHandlerUsesConfiguredDenyMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesAnthropicExtractionAndDenyShape(t *testing.T) {
+	var moderatedContent string
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read moderation body: %v", err)
+		}
+		form, err := url.ParseQuery(string(formBody))
+		if err != nil {
+			t.Fatalf("parse moderation form: %v", err)
+		}
+		var parameters map[string]any
+		if err := json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters); err != nil {
+			t.Fatalf("decode service parameters: %v", err)
+		}
+		moderatedContent, _ = parameters["content"].(string)
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`))
+	}))
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+	  "model":"claude-client",
+	  "system":"system text",
+	  "messages":[{"role":"user","content":[{"type":"text","text":"user text"}]}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for denied Anthropic request")
+	})).ServeHTTP(rr, req)
+
+	if moderatedContent != "system text user text" {
+		t.Fatalf("moderated content = %q", moderatedContent)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode Anthropic deny response: %v", err)
+	}
+	if response["type"] != "message" || response["model"] != "claude-client" ||
+		response["content"].([]any)[0].(map[string]any)["text"] != "blocked" {
+		t.Fatalf("Anthropic deny response = %#v", response)
+	}
+}
+
+func TestHandlerSplitsModerationContentByCharacters(t *testing.T) {
+	contents := make([]string, 0)
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		contents = append(contents, parameters["content"].(string))
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+	}))
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		RequestCheckLengthLimit: 2,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"input":"你好世界"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if len(contents) != 2 || contents[0] != "你好" || contents[1] != "世界" {
+		t.Fatalf("moderated chunks = %#v", contents)
+	}
+}
+
+func TestHandlerReturnsStreamingDenyForStreamingChat(t *testing.T) {
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked"}]}}`, http.StatusOK)
+	defer moderation.Close()
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"bad"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming deny")
+	})).ServeHTTP(rr, req)
+
+	if rr.Header().Get("Content-Type") != "text/event-stream" ||
+		!strings.Contains(rr.Body.String(), `"object":"chat.completion.chunk"`) ||
+		!strings.Contains(rr.Body.String(), "data: [DONE]") {
+		t.Fatalf("streaming deny response = (%q, %q)", rr.Header().Get("Content-Type"), rr.Body.String())
+	}
+}
+
 func TestHandlerSkipsWhenCheckRequestDisabled(t *testing.T) {
 	moderationCalled := false
 	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +303,164 @@ func TestHandlerPassesThroughOnModerationServiceError(t *testing.T) {
 
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("response code = %d, want 202", rr.Code)
+	}
+}
+
+func TestHandlerModeratesAndPreservesSafeResponse(t *testing.T) {
+	var services []string
+	var contents []string
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		services = append(services, form.Get("Service"))
+		contents = append(contents, parameters["content"].(string))
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+	}))
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt","messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"safe answer"}}]}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated || rr.Body.String() != `{"choices":[{"message":{"content":"safe answer"}}]}` {
+		t.Fatalf("response = (%d, %q), want preserved upstream response", rr.Code, rr.Body.String())
+	}
+	if len(services) != 1 || services[0] != "llm_response_moderation" || contents[0] != "safe answer" {
+		t.Fatalf("response moderation calls = services %#v, contents %#v", services, contents)
+	}
+}
+
+func TestHandlerReplacesRiskyResponseWithProtocolDeny(t *testing.T) {
+	moderation := aliyunServer(
+		t,
+		`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"blocked response"}]}}`,
+		http.StatusOK,
+	)
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, DenyCode: http.StatusUnavailableForLegalReasons,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+	  "model":"claude","messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","content":[{"type":"text","text":"unsafe answer"}]}`))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnavailableForLegalReasons || !strings.Contains(rr.Body.String(), "blocked response") ||
+		!strings.Contains(rr.Body.String(), `"type":"message"`) {
+		t.Fatalf("denied response = (%d, %q)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerSkipsResponseModerationForUpstreamError(t *testing.T) {
+	moderationCalled := false
+	moderation := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		moderationCalled = true
+	}))
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true,
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("upstream failed"))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway || rr.Body.String() != "upstream failed" || moderationCalled {
+		t.Fatalf("error response = (%d, %q), moderationCalled = %t", rr.Code, rr.Body.String(), moderationCalled)
+	}
+}
+
+func TestHandlerAddsRiskLevelToFinalStreamingPacket(t *testing.T) {
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"medium"}}`, http.StatusOK)
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "final_packet", RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})).ServeHTTP(rr, req)
+
+	if rr.Header().Get("Content-Type") != "text/event-stream" ||
+		!strings.Contains(rr.Body.String(), `"risk_level":"medium"`) ||
+		!strings.HasSuffix(rr.Body.String(), "data: [DONE]\n\n") {
+		t.Fatalf("moderated stream = (%q, %q)", rr.Header().Get("Content-Type"), rr.Body.String())
+	}
+}
+
+func TestHandlerReplacesRiskyRealtimeStream(t *testing.T) {
+	moderation := aliyunServer(t, `{"Data":{"RiskLevel":"max","Advice":[{"Answer":"stop stream"}]}}`, http.StatusOK)
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime", RiskLevelBar: "high",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"unsafe answer\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "stop stream") ||
+		strings.Contains(
+			rr.Body.String(),
+			"unsafe answer",
+		) || !strings.HasSuffix(rr.Body.String(), "data: [DONE]\n\n") {
+		t.Fatalf("realtime moderated stream = (%d, %q)", rr.Code, rr.Body.String())
 	}
 }
 

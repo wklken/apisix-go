@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -95,6 +96,105 @@ func TestHandlerDecoratesOpenAIResponsesRequest(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("response code = %d, want 202", rr.Code)
 	}
+}
+
+func TestHandlerDecoratesAnthropicRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Prepend: []Message{{Role: "system", Content: "policy"}},
+		Append:  []Message{{Role: "user", Content: "footer"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+      "system":"existing",
+      "messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]
+    }`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		if err := json.Unmarshal(readTestBody(t, r), &got); err != nil {
+			t.Fatalf("decode rewritten body: %v", err)
+		}
+		messages := got["messages"].([]any)
+		if got["system"] != "existing" || messages[0].(map[string]any)["role"] != "system" ||
+			messages[2].(map[string]any)["content"] != "footer" {
+			t.Fatalf("anthropic body = %#v", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerDecoratesBedrockConverseRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Prepend: []Message{{Role: "system", Content: "policy"}},
+		Append:  []Message{{Role: "user", Content: "footer"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/model/x/converse", strings.NewReader(`{
+      "system":[{"text":"existing"}],
+      "messages":[{"role":"user","content":[{"text":"hello"}]}]
+    }`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		if err := json.Unmarshal(readTestBody(t, r), &got); err != nil {
+			t.Fatalf("decode rewritten body: %v", err)
+		}
+		system := got["system"].([]any)
+		messages := got["messages"].([]any)
+		if system[0].(map[string]any)["text"] != "policy" ||
+			messages[1].(map[string]any)["content"].([]any)[0].(map[string]any)["text"] != "footer" {
+			t.Fatalf("bedrock body = %#v", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerLeavesEmbeddingsAndPassthroughRequestsUnchanged(t *testing.T) {
+	p := newTestPlugin(t, Config{Prepend: []Message{{Role: "system", Content: "policy"}}})
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "embeddings", path: "/v1/embeddings", body: `{"input":"hello"}`},
+		{name: "passthrough", path: "/anything", body: `{"prompt":"hello"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var got map[string]any
+				if err := json.Unmarshal(readTestBody(t, r), &got); err != nil {
+					t.Fatalf("decode rewritten body: %v", err)
+				}
+				var want map[string]any
+				if err := json.Unmarshal([]byte(tt.body), &want); err != nil {
+					t.Fatalf("decode expected body: %v", err)
+				}
+				if !mapsEqual(got, want) {
+					t.Fatalf("rewritten body = %#v, want %#v", got, want)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("response code = %d, want 204", rr.Code)
+			}
+		})
+	}
+}
+
+func mapsEqual(got, want map[string]any) bool {
+	return reflect.DeepEqual(got, want)
 }
 
 func TestHandlerRejectsInvalidJSONBody(t *testing.T) {

@@ -2,15 +2,21 @@ package ai_rate_limiting
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/casbin/govaluate"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -21,6 +27,7 @@ type Plugin struct {
 	mu       sync.Mutex
 	counters map[string]*counter
 	now      func() time.Time
+	costExpr *govaluate.EvaluableExpression
 }
 
 const (
@@ -28,17 +35,25 @@ const (
 	name     = "ai-rate-limiting"
 )
 
+var variablePattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+
+var errNoUsableRules = errors.New("no usable rate limit rules")
+
 const schema = `
 {
   "type": "object",
   "properties": {
     "limit": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "oneOf": [
+        {"type": "integer", "exclusiveMinimum": 0},
+        {"type": "string"}
+      ]
     },
     "time_window": {
-      "type": "integer",
-      "exclusiveMinimum": 0
+      "oneOf": [
+        {"type": "integer", "exclusiveMinimum": 0},
+        {"type": "string"}
+      ]
     },
     "show_limit_quota_header": {
       "type": "boolean",
@@ -63,12 +78,16 @@ const schema = `
             "type": "string"
           },
           "limit": {
-            "type": "integer",
-            "minimum": 1
+            "oneOf": [
+              {"type": "integer", "minimum": 1},
+              {"type": "string"}
+            ]
           },
           "time_window": {
-            "type": "integer",
-            "minimum": 1
+            "oneOf": [
+              {"type": "integer", "minimum": 1},
+              {"type": "string"}
+            ]
           }
         },
         "required": ["name", "limit", "time_window"]
@@ -91,12 +110,16 @@ const schema = `
         "type": "object",
         "properties": {
           "count": {
-            "type": "integer",
-            "exclusiveMinimum": 0
+            "oneOf": [
+              {"type": "integer", "exclusiveMinimum": 0},
+              {"type": "string"}
+            ]
           },
           "time_window": {
-            "type": "integer",
-            "exclusiveMinimum": 0
+            "oneOf": [
+              {"type": "integer", "exclusiveMinimum": 0},
+              {"type": "string"}
+            ]
           },
           "key": {
             "type": "string"
@@ -132,8 +155,8 @@ const schema = `
 `
 
 type Config struct {
-	Limit                int64           `json:"limit,omitempty"`
-	TimeWindow           int64           `json:"time_window,omitempty"`
+	Limit                any             `json:"limit,omitempty"`
+	TimeWindow           any             `json:"time_window,omitempty"`
 	ShowLimitQuotaHeader *bool           `json:"show_limit_quota_header,omitempty"`
 	LimitStrategy        string          `json:"limit_strategy,omitempty"`
 	CostExpr             string          `json:"cost_expr,omitempty"`
@@ -145,22 +168,23 @@ type Config struct {
 
 type InstanceLimit struct {
 	Name       string `json:"name"`
-	Limit      int64  `json:"limit"`
-	TimeWindow int64  `json:"time_window"`
+	Limit      any    `json:"limit"`
+	TimeWindow any    `json:"time_window"`
 }
 
 type Rule struct {
-	Count        int64  `json:"count"`
-	TimeWindow   int64  `json:"time_window"`
+	Count        any    `json:"count"`
+	TimeWindow   any    `json:"time_window"`
 	Key          string `json:"key"`
 	HeaderPrefix string `json:"header_prefix,omitempty"`
 }
 
 type quota struct {
-	key        string
-	headerName string
-	limit      int64
-	window     time.Duration
+	key          string
+	headerName   string
+	headerPrefix string
+	limit        int64
+	window       time.Duration
 }
 
 type counter struct {
@@ -175,15 +199,12 @@ type responseRecorder struct {
 	wroteHeader bool
 }
 
-type pickedInstanceKey struct{}
-
 func WithPickedAIInstanceName(r *http.Request, name string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), pickedInstanceKey{}, name))
+	return ai_runtime.WithSelectedInstanceName(r, name)
 }
 
 func PickedAIInstanceName(r *http.Request) (string, bool) {
-	name, ok := r.Context().Value(pickedInstanceKey{}).(string)
-	return name, ok && name != ""
+	return ai_runtime.SelectedInstanceName(r)
 }
 
 func (p *Plugin) Config() interface{} {
@@ -206,10 +227,28 @@ func (p *Plugin) PostInit() error {
 		p.config.LimitStrategy = "total_tokens"
 	}
 	if p.config.LimitStrategy == "expression" {
-		return fmt.Errorf("limit_strategy expression is not supported")
+		if p.config.CostExpr == "" {
+			return fmt.Errorf("cost_expr is required when limit_strategy is expression")
+		}
+		costExpr, err := govaluate.NewEvaluableExpressionWithFunctions(
+			strings.ReplaceAll(p.config.CostExpr, "math.", ""),
+			costExpressionFunctions(),
+		)
+		if err != nil {
+			return fmt.Errorf("invalid cost_expr: %w", err)
+		}
+		p.costExpr = costExpr
 	}
-	if len(p.config.Rules) > 0 {
-		return fmt.Errorf("rules are not supported")
+	for i, rule := range p.config.Rules {
+		if rule.Key == "" {
+			return fmt.Errorf("rule %d key is required", i+1)
+		}
+		if _, err := staticQuotaValue(rule.Count, fmt.Sprintf("rule %d count", i+1)); err != nil {
+			return err
+		}
+		if _, err := staticQuotaValue(rule.TimeWindow, fmt.Sprintf("rule %d time_window", i+1)); err != nil {
+			return err
+		}
 	}
 	if p.config.RejectedCode == 0 {
 		p.config.RejectedCode = http.StatusServiceUnavailable
@@ -217,15 +256,23 @@ func (p *Plugin) PostInit() error {
 	if p.config.RejectedCode < 200 || p.config.RejectedCode > 599 {
 		return fmt.Errorf("rejected_code must be between 200 and 599")
 	}
-	if len(p.config.Instances) == 0 && (p.config.Limit <= 0 || p.config.TimeWindow <= 0) {
-		return fmt.Errorf("limit and time_window must be greater than 0")
+	if len(p.config.Rules) == 0 && len(p.config.Instances) == 0 {
+		if _, err := staticQuotaValue(p.config.Limit, "limit"); err != nil {
+			return err
+		}
+		if _, err := staticQuotaValue(p.config.TimeWindow, "time_window"); err != nil {
+			return err
+		}
 	}
 	for _, instance := range p.config.Instances {
 		if instance.Name == "" {
 			return fmt.Errorf("instance name is required")
 		}
-		if instance.Limit <= 0 || instance.TimeWindow <= 0 {
-			return fmt.Errorf("instance %s limit and time_window must be greater than 0", instance.Name)
+		if _, err := staticQuotaValue(instance.Limit, "instance "+instance.Name+" limit"); err != nil {
+			return err
+		}
+		if _, err := staticQuotaValue(instance.TimeWindow, "instance "+instance.Name+" time_window"); err != nil {
+			return err
 		}
 	}
 
@@ -240,63 +287,283 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		q, ok := p.quotaForRequest(r)
-		if !ok {
-			next.ServeHTTP(w, r)
+		var quotas []quota
+		for {
+			var ok bool
+			var err error
+			quotas, ok, err = p.quotasForRequest(r)
+			if err != nil {
+				http.Error(w, "failed to get rate limit rules", http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			rejectedIndex := p.firstRejectedQuota(quotas)
+			if rejectedIndex < 0 {
+				break
+			}
+			state := ai_runtime.FromRequest(r)
+			if len(p.config.Rules) == 0 && state != nil && state.RateLimitFallbackEnabled() &&
+				state.AdvanceRateLimitTarget() {
+				continue
+			}
+			for _, headerQuota := range quotas[:rejectedIndex+1] {
+				p.writeQuotaHeaders(w.Header(), headerQuota)
+			}
+			p.reject(w)
 			return
 		}
-
-		if !p.allowed(q) {
-			p.writeQuotaHeaders(w.Header(), q)
-			p.reject(w)
+		if state := ai_runtime.FromRequest(r); state != nil && state.Streaming() {
+			for _, q := range quotas {
+				p.writeQuotaHeaders(w.Header(), q)
+			}
+			next.ServeHTTP(w, r)
+			if len(p.config.Rules) == 0 {
+				if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
+					quotas = finalQuotas
+				} else if err == nil {
+					quotas = nil
+				}
+			}
+			if usedTokens := p.responseTokenCostForRequest(r, nil); usedTokens > 0 {
+				for _, q := range quotas {
+					p.charge(q, usedTokens)
+				}
+			}
 			return
 		}
 
 		recorder := newResponseRecorder()
 		next.ServeHTTP(recorder, r)
-		usedTokens := p.responseTokenCost(recorder.body.Bytes())
-		if usedTokens > 0 {
-			p.charge(q, usedTokens)
+		if len(p.config.Rules) == 0 {
+			if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
+				quotas = finalQuotas
+			} else if err == nil {
+				quotas = nil
+			}
 		}
-		p.writeQuotaHeaders(recorder.header, q)
+		usedTokens := p.responseTokenCostForRequest(r, recorder.body.Bytes())
+		if usedTokens > 0 {
+			for _, q := range quotas {
+				p.charge(q, usedTokens)
+			}
+		}
+		for _, q := range quotas {
+			p.writeQuotaHeaders(recorder.header, q)
+		}
 		recorder.writeTo(w)
 	}
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool) {
+func (p *Plugin) firstRejectedQuota(quotas []quota) int {
+	for i, q := range quotas {
+		if !p.allowed(q) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
+	if len(p.config.Rules) > 0 {
+		quotas := make([]quota, 0, len(p.config.Rules))
+		for i, rule := range p.config.Rules {
+			key, ok := resolveRuleKey(r, rule.Key)
+			if !ok {
+				continue
+			}
+			limit, err := resolveQuotaValue(r, rule.Count, fmt.Sprintf("rule %d count", i+1))
+			if err != nil {
+				continue
+			}
+			window, err := resolveQuotaValue(r, rule.TimeWindow, fmt.Sprintf("rule %d time_window", i+1))
+			if err != nil {
+				continue
+			}
+			windowDuration, err := quotaWindow(window, fmt.Sprintf("rule %d time_window", i+1))
+			if err != nil {
+				continue
+			}
+			headerPrefix := rule.HeaderPrefix
+			if headerPrefix == "" {
+				headerPrefix = strconv.Itoa(i + 1)
+			}
+			quotas = append(quotas, quota{
+				key:          "rule:" + strconv.Itoa(i) + ":" + key,
+				headerPrefix: headerPrefix,
+				limit:        limit,
+				window:       windowDuration,
+			})
+		}
+		if len(quotas) == 0 {
+			return nil, false, errNoUsableRules
+		}
+		return quotas, true, nil
+	}
+
+	q, ok, err := p.quotaForRequest(r)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return []quota{q}, true, nil
+}
+
+func resolveRuleKey(r *http.Request, key string) (string, bool) {
+	resolved := 0
+	key = variablePattern.ReplaceAllStringFunc(key, func(match string) string {
+		variableName := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$"), "}")
+		value := requestVariable(r, variableName)
+		if value != "" {
+			resolved++
+		}
+		return value
+	})
+	return key, resolved > 0 && key != ""
+}
+
+func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 	instanceName, hasInstance := PickedAIInstanceName(r)
 	if hasInstance {
 		for _, instance := range p.config.Instances {
 			if instance.Name == instanceName {
+				limit, err := resolveQuotaValue(r, instance.Limit, "instance "+instance.Name+" limit")
+				if err != nil {
+					return quota{}, false, err
+				}
+				window, err := resolveQuotaValue(r, instance.TimeWindow, "instance "+instance.Name+" time_window")
+				if err != nil {
+					return quota{}, false, err
+				}
+				windowDuration, err := quotaWindow(window, "instance "+instance.Name+" time_window")
+				if err != nil {
+					return quota{}, false, err
+				}
 				return quota{
 					key:        "instance:" + instance.Name,
 					headerName: instance.Name,
-					limit:      instance.Limit,
-					window:     time.Duration(instance.TimeWindow) * time.Second,
-				}, true
+					limit:      limit,
+					window:     windowDuration,
+				}, true, nil
 			}
 		}
 		if len(p.config.Instances) > 0 {
-			return quota{}, false
+			return quota{}, false, nil
+		}
+		limit, err := resolveQuotaValue(r, p.config.Limit, "limit")
+		if err != nil {
+			return quota{}, false, err
+		}
+		window, err := resolveQuotaValue(r, p.config.TimeWindow, "time_window")
+		if err != nil {
+			return quota{}, false, err
+		}
+		windowDuration, err := quotaWindow(window, "time_window")
+		if err != nil {
+			return quota{}, false, err
 		}
 		return quota{
 			key:        "global",
 			headerName: instanceName,
-			limit:      p.config.Limit,
-			window:     time.Duration(p.config.TimeWindow) * time.Second,
-		}, true
+			limit:      limit,
+			window:     windowDuration,
+		}, true, nil
 	}
 
 	if len(p.config.Instances) > 0 {
-		return quota{}, false
+		return quota{}, false, nil
+	}
+	limit, err := resolveQuotaValue(r, p.config.Limit, "limit")
+	if err != nil {
+		return quota{}, false, err
+	}
+	window, err := resolveQuotaValue(r, p.config.TimeWindow, "time_window")
+	if err != nil {
+		return quota{}, false, err
+	}
+	windowDuration, err := quotaWindow(window, "time_window")
+	if err != nil {
+		return quota{}, false, err
 	}
 	return quota{
 		key:        "global",
 		headerName: "global",
-		limit:      p.config.Limit,
-		window:     time.Duration(p.config.TimeWindow) * time.Second,
-	}, true
+		limit:      limit,
+		window:     windowDuration,
+	}, true, nil
+}
+
+func quotaWindow(seconds int64, name string) (time.Duration, error) {
+	const maxSeconds = int64((1<<63 - 1) / int64(time.Second))
+	if seconds > maxSeconds {
+		return 0, fmt.Errorf("%s exceeds the maximum supported duration", name)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
+func staticQuotaValue(value any, name string) (int64, error) {
+	if text, ok := value.(string); ok && strings.Contains(text, "$") {
+		return 1, nil
+	}
+	return numericQuotaValue(value, name)
+}
+
+func resolveQuotaValue(r *http.Request, value any, name string) (int64, error) {
+	if text, ok := value.(string); ok {
+		value = variablePattern.ReplaceAllStringFunc(text, func(match string) string {
+			variableName := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$"), "}")
+			return requestVariable(r, variableName)
+		})
+	}
+	return numericQuotaValue(value, name)
+}
+
+func numericQuotaValue(value any, name string) (int64, error) {
+	switch typed := value.(type) {
+	case int:
+		return positiveQuotaValue(int64(typed), name)
+	case int64:
+		return positiveQuotaValue(typed, name)
+	case float64:
+		if math.Trunc(typed) != typed {
+			return 0, fmt.Errorf("%s must be a positive integer", name)
+		}
+		return positiveQuotaValue(int64(typed), name)
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must resolve to a positive integer: %w", name, err)
+		}
+		return positiveQuotaValue(parsed, name)
+	default:
+		return 0, fmt.Errorf("%s must be a positive integer or string", name)
+	}
+}
+
+func positiveQuotaValue(value int64, name string) (int64, error) {
+	if value <= 0 {
+		return 0, fmt.Errorf("%s must be greater than 0", name)
+	}
+	return value, nil
+}
+
+func requestVariable(r *http.Request, key string) string {
+	key = strings.TrimPrefix(key, "$")
+	if strings.HasPrefix(key, "http_") {
+		return r.Header.Get(strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-"))
+	}
+
+	variableName := "$" + key
+	if _, ok := v.RequestVars[variableName]; ok {
+		return fmt.Sprint(v.GetRequestVar(r, variableName))
+	}
+	if _, ok := v.ApisixVars[variableName]; ok {
+		return fmt.Sprint(v.GetApisixVar(r, variableName))
+	}
+	return v.GetNginxVar(r, variableName)
 }
 
 func (p *Plugin) allowed(q quota) bool {
@@ -333,11 +600,68 @@ func (p *Plugin) responseTokenCost(body []byte) int64 {
 		return 0
 	}
 
+	if p.config.LimitStrategy == "expression" {
+		return p.expressionCost(decoded.Usage)
+	}
+
 	value := numericUsage(decoded.Usage[p.config.LimitStrategy])
 	if value < 0 {
 		return 0
 	}
 	return value
+}
+
+func (p *Plugin) responseTokenCostForRequest(r *http.Request, body []byte) int64 {
+	if p.config.LimitStrategy == "expression" {
+		if rawUsage, ok := apisixctx.GetRequestVar(r, "$llm_raw_usage").(map[string]any); ok {
+			return p.expressionCost(rawUsage)
+		}
+	}
+	if usage, ok := apisixctx.GetRequestVar(r, "$ai_token_usage").(map[string]any); ok {
+		if value := numericUsage(usage[p.config.LimitStrategy]); value > 0 {
+			return value
+		}
+	}
+	return p.responseTokenCost(body)
+}
+
+func (p *Plugin) expressionCost(usage map[string]any) int64 {
+	if p.costExpr == nil {
+		return 0
+	}
+	value, err := p.costExpr.Eval(expressionParameters(usage))
+	if err != nil {
+		return 0
+	}
+	result, ok := value.(float64)
+	if !ok || math.IsNaN(result) || math.IsInf(result, 0) || result >= float64(1<<63-1) {
+		return 0
+	}
+	if result < 0 {
+		return 0
+	}
+	return int64(math.Floor(result + 0.5))
+}
+
+type expressionParameters map[string]any
+
+func (p expressionParameters) Get(name string) (any, error) {
+	return numericExpressionValue(p[name]), nil
+}
+
+func numericExpressionValue(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	default:
+		return 0
+	}
 }
 
 func numericUsage(value any) int64 {
@@ -353,6 +677,100 @@ func numericUsage(value any) int64 {
 	}
 }
 
+func costExpressionFunctions() map[string]govaluate.ExpressionFunction {
+	return map[string]govaluate.ExpressionFunction{
+		"abs": func(arguments ...any) (any, error) {
+			values, err := numericArguments(arguments, 1)
+			if err != nil {
+				return nil, err
+			}
+			return math.Abs(values[0]), nil
+		},
+		"ceil": func(arguments ...any) (any, error) {
+			values, err := numericArguments(arguments, 1)
+			if err != nil {
+				return nil, err
+			}
+			return math.Ceil(values[0]), nil
+		},
+		"floor": func(arguments ...any) (any, error) {
+			values, err := numericArguments(arguments, 1)
+			if err != nil {
+				return nil, err
+			}
+			return math.Floor(values[0]), nil
+		},
+		"sqrt": unaryMathFunction(math.Sqrt),
+		"exp":  unaryMathFunction(math.Exp),
+		"log":  unaryMathFunction(math.Log),
+		"sin":  unaryMathFunction(math.Sin),
+		"cos":  unaryMathFunction(math.Cos),
+		"tan":  unaryMathFunction(math.Tan),
+		"asin": unaryMathFunction(math.Asin),
+		"acos": unaryMathFunction(math.Acos),
+		"atan": unaryMathFunction(math.Atan),
+		"pow": func(arguments ...any) (any, error) {
+			values, err := numericArguments(arguments, 2)
+			if err != nil || len(values) != 2 {
+				return nil, fmt.Errorf("pow expects exactly 2 numeric arguments")
+			}
+			return math.Pow(values[0], values[1]), nil
+		},
+		"max": func(arguments ...any) (any, error) {
+			values, err := numericArguments(arguments, 1)
+			if err != nil {
+				return nil, err
+			}
+			result := values[0]
+			for _, value := range values[1:] {
+				if value > result {
+					result = value
+				}
+			}
+			return result, nil
+		},
+		"min": func(arguments ...any) (any, error) {
+			values, err := numericArguments(arguments, 1)
+			if err != nil {
+				return nil, err
+			}
+			result := values[0]
+			for _, value := range values[1:] {
+				if value < result {
+					result = value
+				}
+			}
+			return result, nil
+		},
+	}
+}
+
+func unaryMathFunction(fn func(float64) float64) govaluate.ExpressionFunction {
+	return func(arguments ...any) (any, error) {
+		values, err := numericArguments(arguments, 1)
+		if err != nil || len(values) != 1 {
+			return nil, fmt.Errorf("expected exactly 1 numeric argument")
+		}
+		return fn(values[0]), nil
+	}
+}
+
+func numericArguments(arguments []any, minimum int) ([]float64, error) {
+	if len(arguments) < minimum {
+		return nil, fmt.Errorf("expected at least %d numeric arguments", minimum)
+	}
+
+	values := make([]float64, len(arguments))
+	for i, argument := range arguments {
+		value, ok := argument.(float64)
+		if !ok {
+			return nil, fmt.Errorf("argument %d must be numeric", i+1)
+		}
+		values[i] = value
+	}
+	return values, nil
+}
+
 func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 	if p.config.ShowLimitQuotaHeader != nil && !*p.config.ShowLimitQuotaHeader {
 		return
@@ -362,6 +780,12 @@ func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 	remaining := q.limit - used
 	if remaining < 0 {
 		remaining = 0
+	}
+	if q.headerPrefix != "" {
+		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Limit", strconv.FormatInt(q.limit, 10))
+		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
+		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		return
 	}
 	header.Set("X-AI-RateLimit-Limit-"+q.headerName, strconv.FormatInt(q.limit, 10))
 	header.Set("X-AI-RateLimit-Remaining-"+q.headerName, strconv.FormatInt(remaining, 10))

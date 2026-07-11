@@ -137,6 +137,69 @@ func TestHandlerChecksResponsesInputWithoutLastMessageFiltering(t *testing.T) {
 	}
 }
 
+func TestHandlerDeniesExtractableProtocolsWithAPISIXMessage(t *testing.T) {
+	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "chat",
+			path: "/v1/chat/completions",
+			body: `{"model":"gpt-4","messages":[{"role":"user","content":"secret"}]}`,
+		},
+		{
+			name: "anthropic",
+			path: "/v1/messages",
+			body: `{"model":"claude","messages":[{"role":"user","content":[{"type":"text","text":"secret"}]}]}`,
+		},
+		{
+			name: "bedrock",
+			path: "/model/x/converse",
+			body: `{"messages":[{"role":"user","content":[{"text":"secret"}]}]}`,
+		},
+		{
+			name: "embeddings",
+			path: "/v1/embeddings",
+			body: `{"input":"secret"}`,
+		},
+		{
+			name: "responses",
+			path: "/v1/responses",
+			body: `{"model":"gpt-4.1","instructions":"safe","input":["secret", "safe"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler was called for denied prompt")
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("response code = %d, want 400", rr.Code)
+			}
+			if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Request contains prohibited content"}` {
+				t.Fatalf("response body = %q, want APISIX message body", got)
+			}
+		})
+	}
+}
+
+func TestHandlerLeavesPassthroughRequestUnchecked(t *testing.T) {
+	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"prompt":"secret"}`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerRejectsInvalidJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
 

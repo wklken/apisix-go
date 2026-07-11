@@ -1,6 +1,7 @@
 package wolf_rbac
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	projectjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -27,6 +29,13 @@ type Plugin struct {
 const (
 	priority = 2555
 	name     = "wolf-rbac"
+
+	wolfRetryMax      = 3
+	wolfRetryInterval = 100 * time.Millisecond
+
+	WolfLoginURI          = "/apisix/plugin/wolf-rbac/login"
+	WolfChangePasswordURI = "/apisix/plugin/wolf-rbac/change_pwd"
+	WolfUserInfoURI       = "/apisix/plugin/wolf-rbac/user_info"
 )
 
 const schema = `
@@ -102,6 +111,9 @@ func (p *Plugin) PostInit() error {
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Second}
 	}
+	public_api.Register(http.MethodPost, WolfLoginURI, http.HandlerFunc(p.handleLogin))
+	public_api.Register(http.MethodPut, WolfChangePasswordURI, http.HandlerFunc(p.handleChangePassword))
+	public_api.Register(http.MethodGet, WolfUserInfoURI, http.HandlerFunc(p.handleUserInfo))
 
 	return nil
 }
@@ -214,9 +226,26 @@ func (p *Plugin) checkPermission(
 	req.Header.Set("X-Rbac-Token", token.WolfToken)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return 0, "", nil, fmt.Errorf("request to wolf-server failed, err:%w", err)
+	client := p.clientForConfig(cfg)
+	var resp *http.Response
+	for attempt := 0; attempt < wolfRetryMax; attempt++ {
+		response, err := client.Do(req)
+		if err != nil {
+			return 0, "", nil, fmt.Errorf("request to wolf-server failed, err:%w", err)
+		}
+		if response.StatusCode < http.StatusInternalServerError {
+			resp = response
+			break
+		}
+		response.Body.Close()
+		if attempt+1 == wolfRetryMax {
+			return http.StatusInternalServerError,
+				fmt.Sprintf("request to wolf-server failed, status:%d", response.StatusCode), nil, nil
+		}
+		time.Sleep(wolfRetryInterval)
+	}
+	if resp == nil {
+		return http.StatusInternalServerError, "request to wolf-server failed", nil, nil
 	}
 	defer resp.Body.Close()
 
@@ -225,6 +254,28 @@ func (p *Plugin) checkPermission(
 		return resp.StatusCode, "check permission failed! parse response json failed!", nil, nil
 	}
 	return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
+}
+
+func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
+	if cfg.SSLVerify != nil && *cfg.SSLVerify {
+		return p.client
+	}
+
+	client := *p.client
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		transport = http.DefaultTransport.(*http.Transport)
+	}
+	transport = transport.Clone()
+	if transport.TLSClientConfig != nil {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	} else {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
+	client.Transport = transport
+
+	return &client
 }
 
 func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix string, userInfo map[string]any) {
@@ -298,4 +349,157 @@ func writeJSONError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = projectjson.NewEncoder(w).Encode(map[string]any{"message": message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = projectjson.NewEncoder(w).Encode(value)
+}
+
+func (p *Plugin) handleLogin(w http.ResponseWriter, r *http.Request) {
+	args, err := requestArguments(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	appid, _ := args["appid"].(string)
+	if appid == "" {
+		writeJSONError(w, http.StatusBadRequest, "appid is missing")
+		return
+	}
+	_, cfg, err := p.consumerByAppID(appid)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "appid not found")
+		return
+	}
+	response, err := p.requestWolf(r, cfg, http.MethodPost, "/wolf/rbac/login.rest", "", args)
+	if err != nil || !response.OK {
+		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rbac_token": "V1#" + appid + "#" + response.Data.Token,
+		"user_info":  response.Data.UserInfo,
+	})
+}
+
+func (p *Plugin) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	args, err := requestArguments(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	_, cfg, token, ok := p.publicAPIToken(w, r)
+	if !ok {
+		return
+	}
+	response, err := p.requestWolf(r, cfg, http.MethodPost, "/wolf/rbac/change_pwd", token.WolfToken, args)
+	if err != nil || !response.OK {
+		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "success to change password"})
+}
+
+func (p *Plugin) handleUserInfo(w http.ResponseWriter, r *http.Request) {
+	_, cfg, token, ok := p.publicAPIToken(w, r)
+	if !ok {
+		return
+	}
+	response, err := p.requestWolf(r, cfg, http.MethodGet, "/wolf/rbac/user_info", token.WolfToken, map[string]any{})
+	if err != nil || !response.OK {
+		writeJSONError(w, http.StatusInternalServerError, "request to wolf-server failed!")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_info": response.Data.UserInfo})
+}
+
+func (p *Plugin) publicAPIToken(
+	w http.ResponseWriter,
+	r *http.Request,
+) (resource.Consumer, consumerConfig, rbacToken, bool) {
+	rawToken := fetchRBACToken(r)
+	if rawToken == "" {
+		writeJSONError(w, http.StatusUnauthorized, "Missing rbac token in request")
+		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
+	}
+	token, err := parseRBACToken(rawToken)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
+		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
+	}
+	consumer, cfg, err := p.consumerByAppID(token.AppID)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "appid not found")
+		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
+	}
+	return consumer, cfg, token, true
+}
+
+type wolfPublicResponse struct {
+	OK   bool `json:"ok"`
+	Data struct {
+		Token    string         `json:"token"`
+		UserInfo map[string]any `json:"userInfo"`
+	} `json:"data"`
+}
+
+func (p *Plugin) requestWolf(
+	r *http.Request,
+	cfg consumerConfig,
+	method string,
+	path string,
+	wolfToken string,
+	body map[string]any,
+) (wolfPublicResponse, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return wolfPublicResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(
+		r.Context(), method, strings.TrimRight(cfg.server(), "/")+path, strings.NewReader(string(encoded)),
+	)
+	if err != nil {
+		return wolfPublicResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	if wolfToken != "" {
+		req.Header.Set("X-Rbac-Token", wolfToken)
+	}
+	client := *p.clientForConfig(cfg)
+	client.Timeout = 5 * time.Second
+	resp, err := client.Do(req)
+	if err != nil {
+		return wolfPublicResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return wolfPublicResponse{}, fmt.Errorf("wolf server returned %d", resp.StatusCode)
+	}
+	var result wolfPublicResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return wolfPublicResponse{}, err
+	}
+	return result, nil
+}
+
+func requestArguments(r *http.Request) (map[string]any, error) {
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var args map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
+			return nil, err
+		}
+		return args, nil
+	}
+	if err := r.ParseForm(); err != nil {
+		return nil, err
+	}
+	args := make(map[string]any, len(r.PostForm))
+	for key, values := range r.PostForm {
+		if len(values) > 0 {
+			args[key] = values[0]
+		}
+	}
+	return args, nil
 }

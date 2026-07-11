@@ -1,14 +1,19 @@
 package ai_proxy_multi
 
 import (
+	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -105,6 +110,390 @@ func TestHandlerRetriesHTTP5xxFallback(t *testing.T) {
 	}
 	if !strings.Contains(body, `"instance":"two"`) {
 		t.Fatalf("response body = %q, want second instance response", body)
+	}
+}
+
+func TestHandlerStreamsFallbackResponseAndRegistersUsage(t *testing.T) {
+	var failedCalls atomic.Int64
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		failedCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failed.Close()
+
+	var streamCalls atomic.Int64
+	streamBody := "data: {\"id\":\"one\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"model\":\"gpt-stream\",\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
+	streaming := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		streamCalls.Add(1)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode streaming request: %v", err)
+		}
+		streamOptions, _ := body["stream_options"].(map[string]any)
+		if streamOptions["include_usage"] != true {
+			t.Fatalf("stream_options = %#v, want include_usage", body["stream_options"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(streamBody))
+	}))
+	defer streaming.Close()
+
+	p := newTestPlugin(t, Config{
+		FallbackStrategy: "http_5xx",
+		MaxRetries:       intPtr(1),
+		Instances: []Instance{
+			{
+				Name: "failed", Provider: "openai-compatible", Priority: 10, Weight: 1,
+				Override: Override{Endpoint: failed.URL + "/v1/chat/completions"},
+			},
+			{
+				Name: "streaming", Provider: "openai-compatible", Priority: 0, Weight: 1,
+				Override: Override{Endpoint: streaming.URL + "/v1/chat/completions"},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt-request",
+	  "messages":[{"role":"user","content":"hello"}],
+	  "stream":true
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for multi proxy stream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || rr.Body.String() != streamBody {
+		t.Fatalf("response = (%d, %q), want exact stream", rr.Code, rr.Body.String())
+	}
+	if failedCalls.Load() != 1 || streamCalls.Load() != 1 {
+		t.Fatalf("provider calls = (%d, %d), want one each", failedCalls.Load(), streamCalls.Load())
+	}
+	assertLLMRequestVar(t, req, "$request_type", "ai_stream")
+	assertLLMRequestVar(t, req, "$request_llm_model", "gpt-request")
+	assertLLMRequestVar(t, req, "$llm_model", "gpt-stream")
+	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(4))
+	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(2))
+	assertUsageRequestVars(t, req, float64(4), int64(6))
+}
+
+func TestHandlerConvertsAnthropicRequestForSuccessfulFallbackInstance(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failed.Close()
+	converted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode converted OpenAI request: %v", err)
+		}
+		if body["max_completion_tokens"] != float64(32) {
+			t.Fatalf("converted request = %#v", body)
+		}
+		_, _ = w.Write([]byte(`{
+		  "id":"chat-1","model":"provider-model",
+		  "choices":[{"finish_reason":"stop","message":{"content":"hello"}}],
+		  "usage":{"prompt_tokens":3,"completion_tokens":1}
+		}`))
+	}))
+	defer converted.Close()
+
+	p := newTestPlugin(t, Config{
+		FallbackStrategy: "http_5xx",
+		MaxRetries:       intPtr(1),
+		Instances: []Instance{
+			{
+				Name: "failed", Provider: "openai-compatible", Priority: 10, Weight: 1,
+				Override: Override{Endpoint: failed.URL + "/v1/chat/completions"},
+			},
+			{
+				Name: "converted", Provider: "openai-compatible", Priority: 0, Weight: 1,
+				Override: Override{Endpoint: converted.URL + "/v1/chat/completions"},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+	  "model":"client-model",
+	  "max_tokens":32,
+	  "messages":[{"role":"user","content":"hello"}]
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for converted Anthropic fallback")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode Anthropic response: %v", err)
+	}
+	content := response["content"].([]any)[0].(map[string]any)
+	if response["type"] != "message" || response["model"] != "provider-model" || content["text"] != "hello" {
+		t.Fatalf("converted Anthropic response = %#v", response)
+	}
+	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
+	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(1))
+}
+
+func TestHandlerConvertsAnthropicStreamForFallbackInstance(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failed.Close()
+	streaming := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"id\":\"chat-1\",\"model\":\"gpt-stream\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer streaming.Close()
+
+	p := newTestPlugin(t, Config{
+		FallbackStrategy: "http_5xx",
+		MaxRetries:       intPtr(1),
+		Instances: []Instance{
+			{
+				Name: "failed", Provider: "openai-compatible", Priority: 10, Weight: 1,
+				Override: Override{Endpoint: failed.URL + "/v1/chat/completions"},
+			},
+			{
+				Name: "streaming", Provider: "openai-compatible", Priority: 0, Weight: 1,
+				Override: Override{Endpoint: streaming.URL + "/v1/chat/completions"},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+	  "model":"client-model","max_tokens":32,"stream":true,
+	  "messages":[{"role":"user","content":"hello"}]
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for converted Anthropic fallback stream")
+	})).ServeHTTP(rr, req)
+
+	output := rr.Body.String()
+	for _, expected := range []string{"event: message_start", `"type":"text_delta"`, "event: message_stop"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("converted stream missing %q:\n%s", expected, output)
+		}
+	}
+	if strings.Contains(output, `"choices"`) || strings.Contains(output, "data: [DONE]") {
+		t.Fatalf("OpenAI stream leaked through multi proxy:\n%s", output)
+	}
+	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(2))
+	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(1))
+}
+
+func TestHandlerEnforcesStreamDurationForSelectedInstance(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	flushInterval := 0
+	p := newTestPlugin(t, Config{
+		MaxStreamDurationMS:      25,
+		StreamingFlushIntervalMS: &flushInterval,
+		Instances: []Instance{{
+			Name: "bounded", Provider: "openai-compatible", Weight: 1,
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[{"role":"user","content":"hello"}],"stream":true
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	started := time.Now()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for bounded multi stream")
+	})).ServeHTTP(rr, req)
+
+	if time.Since(started) > time.Second || !rr.Flushed || !strings.Contains(rr.Body.String(), "first") {
+		t.Fatalf(
+			"bounded stream = (duration %s, flushed %v, body %q)",
+			time.Since(started),
+			rr.Flushed,
+			rr.Body.String(),
+		)
+	}
+	if apisixctx.GetRequestVar(req, "$llm_time_to_first_token") == nil ||
+		apisixctx.GetRequestVar(req, "$llm_request_done") != true {
+		t.Fatalf("timing vars = %#v", apisixctx.GetRequestVars(req))
+	}
+}
+
+func TestHandlerExhaustsHigherPriorityBeforeFallback(t *testing.T) {
+	var highCalls atomic.Int64
+	var lowCalls atomic.Int64
+	high := newLLMServer(t, "high", "Bearer high", &highCalls, http.StatusInternalServerError)
+	defer high.Close()
+	low := newLLMServer(t, "low", "Bearer low", &lowCalls, http.StatusOK)
+	defer low.Close()
+
+	p := newTestPlugin(t, Config{
+		FallbackStrategy: "http_5xx",
+		MaxRetries:       intPtr(1),
+		Instances: []Instance{
+			{
+				Name: "low", Provider: "openai-compatible", Priority: 0, Weight: 100,
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer low"}},
+				Override: Override{Endpoint: low.URL + "/v1/chat/completions"},
+			},
+			{
+				Name: "high", Provider: "openai-compatible", Priority: 10, Weight: 1,
+				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer high"}},
+				Override: Override{Endpoint: high.URL + "/v1/chat/completions"},
+			},
+		},
+	})
+
+	body := serveChat(t, p, "")
+
+	if highCalls.Load() != 1 || lowCalls.Load() != 1 {
+		t.Fatalf("provider calls = (%d, %d), want high then low once", highCalls.Load(), lowCalls.Load())
+	}
+	if !strings.Contains(body, `"instance":"low"`) {
+		t.Fatalf("response body = %q, want low-priority fallback response", body)
+	}
+}
+
+func TestHandlerKeepsLowerPriorityIdleWhileHigherPriorityIsHealthy(t *testing.T) {
+	var highCalls atomic.Int64
+	var lowCalls atomic.Int64
+	high := newLLMServer(t, "high", "Bearer high", &highCalls, http.StatusOK)
+	defer high.Close()
+	low := newLLMServer(t, "low", "Bearer low", &lowCalls, http.StatusOK)
+	defer low.Close()
+
+	p := newTestPlugin(t, Config{Instances: []Instance{
+		{
+			Name: "low", Provider: "openai-compatible", Priority: 0, Weight: 100,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer low"}},
+			Override: Override{Endpoint: low.URL + "/v1/chat/completions"},
+		},
+		{
+			Name: "high", Provider: "openai-compatible", Priority: 10, Weight: 1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer high"}},
+			Override: Override{Endpoint: high.URL + "/v1/chat/completions"},
+		},
+	}})
+
+	for range 3 {
+		serveChat(t, p, "")
+	}
+	if highCalls.Load() != 3 || lowCalls.Load() != 0 {
+		t.Fatalf("provider calls = (%d, %d), want (3, 0)", highCalls.Load(), lowCalls.Load())
+	}
+}
+
+func TestHandlerSkipsActivelyUnhealthyHigherPriorityInstance(t *testing.T) {
+	var highProviderCalls atomic.Int64
+	high := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			if r.Header.Get("Authorization") != "Bearer high" || r.Header.Get("X-Health") != "probe" ||
+				r.URL.Query().Get("api-key") != "query-secret" {
+				t.Fatalf("health request = (%#v, %q)", r.Header, r.URL.RawQuery)
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		highProviderCalls.Add(1)
+		_, _ = w.Write([]byte(`{"instance":"high"}`))
+	}))
+	defer high.Close()
+	var lowProviderCalls atomic.Int64
+	low := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		lowProviderCalls.Add(1)
+		_, _ = w.Write([]byte(`{"instance":"low"}`))
+	}))
+	defer low.Close()
+
+	p := newTestPlugin(t, Config{Instances: []Instance{
+		{
+			Name: "high", Provider: "openai-compatible", Priority: 10, Weight: 1,
+			Auth: Auth{
+				Header: map[string]string{"Authorization": "Bearer high"},
+				Query:  map[string]string{"api-key": "query-secret"},
+			},
+			Override: Override{Endpoint: high.URL + "/v1/chat/completions"},
+			Checks: &HealthChecks{Active: ActiveHealthCheck{
+				HTTPPath: "/health", ReqHeaders: []string{"X-Health: probe"},
+				Unhealthy: UnhealthyCheckPolicy{HTTPStatuses: []int{500}, HTTPFailures: 1},
+			}},
+		},
+		{
+			Name: "low", Provider: "openai-compatible", Priority: 0, Weight: 1,
+			Override: Override{Endpoint: low.URL + "/v1/chat/completions"},
+		},
+	}})
+
+	body := serveChat(t, p, "")
+	if highProviderCalls.Load() != 0 || lowProviderCalls.Load() != 1 || !strings.Contains(body, `"instance":"low"`) {
+		t.Fatalf(
+			"provider calls = (%d, %d), body = %q",
+			highProviderCalls.Load(),
+			lowProviderCalls.Load(),
+			body,
+		)
+	}
+}
+
+func TestHandlerUsesDefaultPriorityWhenAllHealthChecksFail(t *testing.T) {
+	newServer := func(name string, calls *atomic.Int64) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			calls.Add(1)
+			_, _ = w.Write([]byte(`{"instance":"` + name + `"}`))
+		}))
+	}
+	var highCalls atomic.Int64
+	var lowCalls atomic.Int64
+	high := newServer("high", &highCalls)
+	defer high.Close()
+	low := newServer("low", &lowCalls)
+	defer low.Close()
+	checks := func() *HealthChecks {
+		return &HealthChecks{Active: ActiveHealthCheck{
+			HTTPPath: "/health", Unhealthy: UnhealthyCheckPolicy{HTTPStatuses: []int{500}, HTTPFailures: 1},
+		}}
+	}
+	p := newTestPlugin(t, Config{Instances: []Instance{
+		{
+			Name: "high", Provider: "openai-compatible", Priority: 10, Weight: 1,
+			Override: Override{Endpoint: high.URL + "/v1/chat/completions"}, Checks: checks(),
+		},
+		{
+			Name: "low", Provider: "openai-compatible", Priority: 0, Weight: 1,
+			Override: Override{Endpoint: low.URL + "/v1/chat/completions"}, Checks: checks(),
+		},
+	}})
+
+	body := serveChat(t, p, "")
+	if highCalls.Load() != 1 || lowCalls.Load() != 0 || !strings.Contains(body, `"instance":"high"`) {
+		t.Fatalf("provider calls = (%d, %d), body = %q", highCalls.Load(), lowCalls.Load(), body)
 	}
 }
 
@@ -334,9 +723,191 @@ func TestHandlerRegistersNonStreamingLLMRequestVars(t *testing.T) {
 	assertLLMRequestVar(t, req, "$llm_model", "gpt-4-0613")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(23))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(8))
+	assertUsageRequestVars(t, req, float64(23), int64(31))
 	if calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls.Load())
 	}
+}
+
+func TestHandlerConvertsSelectedVertexEmbeddingsInstance(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Vertex request: %v", err)
+		}
+		instances := body["instances"].([]any)
+		if len(body) != 1 || instances[0].(map[string]any)["content"] != "hello" {
+			t.Fatalf("Vertex request = %#v", body)
+		}
+		_, _ = w.Write([]byte(`{
+		  "predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":3}}}]
+		}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestPlugin(t, Config{Instances: []Instance{{
+		Name:     "vertex-embeddings",
+		Provider: "vertex-ai",
+		Weight:   1,
+		Options:  map[string]any{"model": "text-embedding-005"},
+		Override: Override{Endpoint: upstream.URL + "/predict"},
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{
+	  "input":"hello"
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for Vertex embeddings")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode OpenAI embeddings response: %v", err)
+	}
+	if response["object"] != "list" || response["model"] != "text-embedding-005" {
+		t.Fatalf("OpenAI embeddings response = %#v", response)
+	}
+	assertLLMRequestVar(t, req, "$request_type", "ai_embeddings")
+	assertLLMRequestVar(t, req, "$request_llm_model", "text-embedding-005")
+	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
+}
+
+func TestHandlerBuildsAndSignsBedrockConverseInstance(t *testing.T) {
+	var upstreamBody map[string]any
+	var authorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/model/claude/converse" {
+			t.Fatalf("upstream path = %q", got)
+		}
+		authorization = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"usage":{"inputTokens":2,"outputTokens":1,"totalTokens":3}}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{Instances: []Instance{{
+		Name:         "bedrock-a",
+		Provider:     "bedrock",
+		ProviderConf: map[string]any{"region": "us-east-1"},
+		Weight:       1,
+		Auth: Auth{AWS: &ai_auth.AWSConfig{
+			AccessKeyID: "key", SecretAccessKey: "secret", SessionToken: "session",
+		}},
+		Options:  map[string]any{"model": "claude"},
+		Override: Override{Endpoint: upstream.URL, LLMOptions: LLMOptions{MaxTokens: 64}},
+	}}})
+	p.now = func() time.Time { return time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC) }
+	req := httptest.NewRequest(http.MethodPost, "/model/claude/converse", strings.NewReader(`{
+	  "model":"caller-model",
+	  "messages":[{"role":"user","content":[{"text":"hello"}]}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for Bedrock multi proxy")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || !strings.HasPrefix(authorization, "AWS4-HMAC-SHA256 Credential=key/") {
+		t.Fatalf("response code = %d, authorization = %q", rr.Code, authorization)
+	}
+	if _, ok := upstreamBody["model"]; ok {
+		t.Fatalf("upstream model = %#v, want omitted", upstreamBody["model"])
+	}
+	if got := upstreamBody["inferenceConfig"].(map[string]any)["maxTokens"]; got != float64(64) {
+		t.Fatalf("inferenceConfig.maxTokens = %#v, want 64", got)
+	}
+}
+
+func TestHandlerForwardsSelectedBedrockEventStreamInstance(t *testing.T) {
+	metadata := testAWSEventStreamFrame(map[string]string{
+		":message-type": "event", ":event-type": "metadata",
+	}, `{"usage":{"inputTokens":3,"outputTokens":1,"totalTokens":4}}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/model/claude/converse-stream" {
+			t.Fatalf("upstream path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		_, _ = w.Write(metadata)
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{Instances: []Instance{{
+		Name:         "bedrock-stream",
+		Provider:     "bedrock",
+		ProviderConf: map[string]any{"region": "us-east-1"},
+		Weight:       1,
+		Auth: Auth{AWS: &ai_auth.AWSConfig{
+			AccessKeyID: "key", SecretAccessKey: "secret",
+		}},
+		Options:  map[string]any{"model": "claude"},
+		Override: Override{Endpoint: upstream.URL},
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "/model/claude/converse", strings.NewReader(`{
+	  "messages":[{"role":"user","content":[{"text":"hello"}]}],
+	  "stream":true
+	}`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for multi Bedrock stream")
+	})).ServeHTTP(rr, req)
+
+	if string(rr.Body.Bytes()) != string(metadata) || !rr.Flushed {
+		t.Fatal("multi Bedrock EventStream was not preserved and flushed")
+	}
+	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
+	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(1))
+}
+
+func TestHandlerAppliesGCPAccessTokenForSelectedInstance(t *testing.T) {
+	var authorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{Instances: []Instance{{
+		Name:     "vertex-a",
+		Provider: "vertex-ai",
+		Weight:   1,
+		Auth:     Auth{GCP: &ai_auth.GCPConfig{ServiceAccountJSON: "test"}},
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	}}})
+	p.gcpTokens = fakeGCPTokenApplier{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for Vertex multi proxy")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK || authorization != "Bearer gcp-token" {
+		t.Fatalf("response code = %d, authorization = %q", rr.Code, authorization)
+	}
+}
+
+type fakeGCPTokenApplier struct{}
+
+func (fakeGCPTokenApplier) Apply(
+	_ context.Context,
+	_ *http.Client,
+	req *http.Request,
+	_ ai_auth.GCPConfig,
+) error {
+	req.Header.Set("Authorization", "Bearer gcp-token")
+	return nil
 }
 
 func TestHandlerRejectsOversizedBodyBeforeProxy(t *testing.T) {
@@ -476,10 +1047,45 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+func testAWSEventStreamFrame(headers map[string]string, payload string) []byte {
+	headerBytes := make([]byte, 0)
+	for name, value := range headers {
+		headerBytes = append(headerBytes, byte(len(name)))
+		headerBytes = append(headerBytes, name...)
+		headerBytes = append(headerBytes, 7)
+		length := make([]byte, 2)
+		binary.BigEndian.PutUint16(length, uint16(len(value)))
+		headerBytes = append(headerBytes, length...)
+		headerBytes = append(headerBytes, value...)
+	}
+	totalLength := 16 + len(headerBytes) + len(payload)
+	frame := make([]byte, 12, totalLength)
+	binary.BigEndian.PutUint32(frame[:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(len(headerBytes)))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	frame = append(frame, headerBytes...)
+	frame = append(frame, payload...)
+	crc := make([]byte, 4)
+	binary.BigEndian.PutUint32(crc, crc32.ChecksumIEEE(frame))
+	return append(frame, crc...)
+}
+
 func assertLLMRequestVar(t *testing.T, req *http.Request, key string, want any) {
 	t.Helper()
 
 	if got := apisixctx.GetRequestVar(req, key); got != want {
 		t.Fatalf("%s = %#v, want %#v", key, got, want)
+	}
+}
+
+func assertUsageRequestVars(t *testing.T, req *http.Request, wantRawPrompt float64, wantNormalizedTotal int64) {
+	t.Helper()
+	raw, ok := apisixctx.GetRequestVar(req, "$llm_raw_usage").(map[string]any)
+	if !ok || raw["prompt_tokens"] != wantRawPrompt {
+		t.Fatalf("$llm_raw_usage = %#v, want prompt_tokens %v", raw, wantRawPrompt)
+	}
+	normalized, ok := apisixctx.GetRequestVar(req, "$ai_token_usage").(map[string]any)
+	if !ok || normalized["total_tokens"] != wantNormalizedTotal {
+		t.Fatalf("$ai_token_usage = %#v, want total_tokens %d", normalized, wantNormalizedTotal)
 	}
 }

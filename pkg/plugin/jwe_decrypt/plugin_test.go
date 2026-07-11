@@ -178,6 +178,20 @@ func TestHandlerRejectsUnknownKid(t *testing.T) {
 	}
 }
 
+func TestDecryptJWERejectsConsumerSecretThatIsNot32Bytes(t *testing.T) {
+	secret := []byte("1234567890123456")
+	token := makeCompactJWE(t, "kid-short-secret", secret, "Bearer upstream-token")
+	parsed, err := parseCompactJWE(token)
+	if err != nil {
+		t.Fatalf("parseCompactJWE() error = %v", err)
+	}
+
+	_, err = decryptJWE(parsed, map[string]any{"secret": string(secret)})
+	if err == nil {
+		t.Fatal("decryptJWE() error = nil, want 32-byte secret validation error")
+	}
+}
+
 func makeCompactJWE(t *testing.T, kid string, secret []byte, plaintext string) string {
 	t.Helper()
 

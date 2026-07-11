@@ -193,6 +193,38 @@ func TestHandlerRejectsMissingRelatedConsumer(t *testing.T) {
 	}
 }
 
+func TestLDAPDialURLUsesLDAPSForHostAddressWhenTLSIsEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "plain host",
+			cfg:  Config{LDAPURI: "ldap.example.com:1389"},
+			want: "ldap://ldap.example.com:1389",
+		},
+		{
+			name: "TLS host",
+			cfg:  Config{LDAPURI: "ldap.example.com:636", UseTLS: true},
+			want: "ldaps://ldap.example.com:636",
+		},
+		{
+			name: "explicit LDAP URL honors TLS setting",
+			cfg:  Config{LDAPURI: "ldap://ldap.example.com:1389", UseTLS: true},
+			want: "ldaps://ldap.example.com:1389",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ldapDialURL(tt.cfg); got != tt.want {
+				t.Fatalf("ldapDialURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func ldapRequest(username, password string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})

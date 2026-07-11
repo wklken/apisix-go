@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -112,6 +113,7 @@ func ParseRoute(config []byte) (resource.Route, error) {
 	if err != nil {
 		return r, err
 	}
+	decryptPluginConfigs(r.Plugins)
 	return r, nil
 }
 
@@ -121,6 +123,7 @@ func ParseService(config []byte) (resource.Service, error) {
 	if err != nil {
 		return s, err
 	}
+	decryptPluginConfigs(s.Plugins)
 	return s, nil
 }
 
@@ -139,6 +142,7 @@ func ParseConsumer(config []byte) (resource.Consumer, error) {
 	if err != nil {
 		return c, err
 	}
+	decryptPluginConfigs(c.Plugins)
 	return c, nil
 }
 
@@ -148,6 +152,7 @@ func ParseConsumerGroup(config []byte) (resource.ConsumerGroup, error) {
 	if err != nil {
 		return c, err
 	}
+	decryptPluginConfigs(c.Plugins)
 	return c, nil
 }
 
@@ -157,6 +162,7 @@ func ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
 	if err != nil {
 		return s, err
 	}
+	decryptPluginConfigs(s.Plugins)
 	return s, nil
 }
 
@@ -166,7 +172,20 @@ func ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
 	if err != nil {
 		return s, err
 	}
+	decryptPluginConfigs(s.Plugins)
 	return s, nil
+}
+
+func decryptPluginConfigs(configs map[string]resource.PluginConfig) {
+	keyring, enabled := data_encryption.Keyring()
+	if !enabled {
+		return
+	}
+	values := make(map[string]any, len(configs))
+	for name, value := range configs {
+		values[name] = value
+	}
+	data_encryption.DecryptPluginConfigs(values, keyring)
 }
 
 func ParseProto(config []byte) (resource.Proto, error) {

@@ -1,10 +1,13 @@
 package metrics
 
 import (
+	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cast"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 )
 
@@ -17,16 +20,17 @@ var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 
 // FIXME: how to set etcd reachable?
 
 var (
-	Connections         *prometheus.GaugeVec
-	Requests            prometheus.Gauge
-	EtcdReachable       prometheus.Gauge
-	HostInfo            *prometheus.GaugeVec
-	EtcdModifyIndexed   *prometheus.GaugeVec
-	UpstreamStatus      *prometheus.GaugeVec
-	HttpStatus          *prometheus.CounterVec
-	HttpLatency         *prometheus.HistogramVec
-	Bandwidth           *prometheus.CounterVec
-	BatchProcessEntries *prometheus.GaugeVec
+	Connections          *prometheus.GaugeVec
+	Requests             prometheus.Gauge
+	EtcdReachable        prometheus.Gauge
+	HostInfo             *prometheus.GaugeVec
+	EtcdModifyIndexed    *prometheus.GaugeVec
+	UpstreamStatus       *prometheus.GaugeVec
+	HttpStatus           *prometheus.CounterVec
+	HttpLatency          *prometheus.HistogramVec
+	Bandwidth            *prometheus.CounterVec
+	BatchProcessEntries  *prometheus.GaugeVec
+	LLMActiveConnections *prometheus.GaugeVec
 )
 
 func Init() {
@@ -144,6 +148,16 @@ func Init() {
 		},
 	)
 
+	LLMActiveConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: metricConfig.MetricPrefix + "llm_active_connections",
+			Help: "Number of active connections to LLM service",
+		}, []string{
+			"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
+			"request_type", "request_llm_model", "llm_model",
+		},
+	)
+
 	hostName := "unknown"
 	hostName, _ = os.Hostname()
 	HostInfo.WithLabelValues(hostName).Set(1)
@@ -159,7 +173,38 @@ func Init() {
 		HttpLatency,
 		Bandwidth,
 		BatchProcessEntries,
+		LLMActiveConnections,
 	)
+}
+
+func BeginLLMRequest(r *http.Request) func() {
+	if LLMActiveConnections == nil {
+		return func() {}
+	}
+	labels := []string{
+		requestVarString(r, "$route_name"),
+		requestVarString(r, "$route_id"),
+		requestVarString(r, "$matched_uri"),
+		requestVarString(r, "$host"),
+		requestVarString(r, "$service_name"),
+		requestVarString(r, "$service_id"),
+		requestVarString(r, "$consumer_name"),
+		requestVarString(r, "$balancer_ip"),
+		requestVarString(r, "$request_type"),
+		requestVarString(r, "$request_llm_model"),
+		requestVarString(r, "$llm_model"),
+	}
+	gauge := LLMActiveConnections.WithLabelValues(labels...)
+	gauge.Inc()
+	return gauge.Dec
+}
+
+func requestVarString(r *http.Request, key string) string {
+	value := apisixctx.GetRequestVar(r, key)
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }
 
 func SetBatchProcessEntries(name string, routeID string, serverAddr string, count int) {

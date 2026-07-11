@@ -120,57 +120,55 @@ This project is still under development and NOT READY FOR PRODUCTION!
 > 18/18
 
 - [x] [key-auth](https://apisix.apache.org/zh/docs/apisix/plugins/key-auth/) 75%
-  - support header/query API key lookup, APISIX-style missing/invalid key errors, consumer attachment, `hide_credentials` removal from headers or query strings, and `anonymous_consumer` fallback
-  - not support encrypted consumer fields
+  - support encrypted consumer fields, header/query API key lookup, APISIX-style missing/invalid key errors, consumer attachment, `hide_credentials` removal from headers or query strings, and `anonymous_consumer` fallback
 - [x] [jwt-auth](https://apisix.apache.org/zh/docs/apisix/plugins/jwt-auth/) 85%
   - support `HS*`, `RS*`, `ES*`, `PS*`, and `EdDSA` signature verification, header/query/cookie token lookup, claim verification for `exp`/`nbf`, `base64_secret`, `hide_credentials`, `store_in_ctx`, and `anonymous_consumer` fallback
-  - not support encrypted consumer fields
-- [x] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/) 65%
-  - support compact JWE parsing, `Bearer` token extraction, `kid` consumer lookup, AES-256-GCM decrypt, base64url consumer secrets, and forwarding plaintext to `forward_header`
-  - not support alternate JWE algorithms, AAD/header authentication, encrypted consumer field handling, or anonymous consumer behavior
+  - support encrypted consumer fields through `apisix.data_encryption`
+- [x] [jwe-decrypt](https://apisix.apache.org/zh/docs/apisix/plugins/jwe-decrypt/) 90%
+  - support compact direct AES-256-GCM JWE parsing, `Bearer` token extraction, `kid` consumer lookup, required 32-byte plain/base64url consumer secrets, and forwarding plaintext to `forward_header`
+  - support encrypted consumer fields; alternate JWE algorithms, AAD/header authentication, and anonymous-consumer behavior are not APISIX 3.17 plugin configurations
 - [x] [basic-auth](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/) 70%
   - support Basic credential extraction, APISIX-style credential whitespace normalization, consumer attachment, password validation, missing/malformed authorization errors, and `hide_credentials`
-  - not support encrypted consumer fields
-- [x] [authz-keycloak](https://apisix.apache.org/zh/docs/apisix/plugins/authz-keycloak/) 60%
-  - support explicit `token_endpoint`, discovery, static `permissions`, lazy path resource lookup, UMA decision requests, `http_method_as_scope`, `ENFORCING` access-denied behavior, `access_denied_redirect_uri`, `ssl_verify`, `timeout`, and password-grant token generation URI
-  - not support shared-dict caches, refresh-token reuse, proxy options, request decorators, full Keycloak resource metadata handling, or all keepalive tuning semantics
-- [x] [authz-casdoor](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casdoor/) 60%
+  - support encrypted consumer fields through `apisix.data_encryption`
+- [x] [authz-keycloak](https://apisix.apache.org/zh/docs/apisix/plugins/authz-keycloak/) 85%
+  - support explicit `token_endpoint`, discovery, static `permissions`, lazy path resource lookup, UMA decision requests, `http_method_as_scope`, `ENFORCING` access-denied behavior, `access_denied_redirect_uri`, `ssl_verify`, timeout, keepalive settings, password-grant token generation URI, and process-shared discovery/service-account-token caching with `cache_ttl_seconds`, refresh-token reuse, and expiry leeway
+  - not support cross-process OpenResty shared-dict fidelity or Lua `http_request_decorator` functions
+- [x] [authz-casdoor](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casdoor/) 85%
   - support OAuth authorize redirect, per-`client_id` session cookie, callback state validation, access token exchange against `/api/login/oauth/access_token`, and authenticated session pass-through
-  - not support encrypted `resty.session` cookies, distributed sessions, HTTPS config warnings, or forwarding Casdoor user/access token metadata upstream
-- [x] [dingtalk-auth](https://apisix.apache.org/docs/apisix/plugins/dingtalk-auth/) 60%
-  - support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, DingTalk access token POST, access token caching, DingTalk userinfo POST, signed `dingtalk_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, and Base64 JSON `X-Userinfo` forwarding
-  - not support encrypted `resty.session` cookie parity, distributed session state, APISIX `ctx.external_user` compatibility for downstream Lua plugins, encrypted storage for `app_secret` / `secret`, exact DingTalk error logging, or OpenResty worker-shared token cache semantics
-- [x] [feishu-auth](https://apisix.apache.org/docs/apisix/plugins/feishu-auth/) 60%
-  - support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, Feishu OAuth token POST with `auth_redirect_uri`, Feishu userinfo GET with Bearer token, signed `feishu_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, and Base64 JSON `X-Userinfo` forwarding
-  - not support encrypted `resty.session` cookie parity, storing/reusing Feishu access tokens in the session, distributed session state, APISIX `ctx.external_user` compatibility for downstream Lua plugins, encrypted storage for `app_secret` / `secret`, exact Feishu error logging, or OpenResty worker/session semantics
-- [x] [saml-auth](https://apisix.apache.org/docs/apisix/plugins/saml-auth/) 55%
+  - not support distributed/exact `resty.session` runtime behavior; upstream Casdoor user/access-token forwarding is not an APISIX 3.17 plugin behavior
+- [x] [dingtalk-auth](https://apisix.apache.org/docs/apisix/plugins/dingtalk-auth/) 65%
+  - support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, DingTalk access token POST, access token caching, DingTalk userinfo POST, signed `dingtalk_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, Base64 JSON `X-Userinfo` forwarding, and `$external_user` request-context propagation
+  - not support encrypted `resty.session` cookie parity, distributed session state, exact DingTalk error logging, or OpenResty worker-shared token cache semantics
+- [x] [feishu-auth](https://apisix.apache.org/docs/apisix/plugins/feishu-auth/) 65%
+  - support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, Feishu OAuth token POST with `auth_redirect_uri`, Feishu userinfo GET with Bearer token, signed `feishu_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, Base64 JSON `X-Userinfo` forwarding, and `$external_user` request-context propagation
+  - not support encrypted `resty.session` cookie parity, distributed session state, exact Feishu error logging, or OpenResty worker/session semantics
+- [x] [saml-auth](https://apisix.apache.org/docs/apisix/plugins/saml-auth/) 85%
   - support official plugin name, priority, schema, HTTP-Redirect and HTTP-POST authentication requests, SP-signed SAML requests, ACS `SAMLResponse` parsing and signature/condition validation through `github.com/crewjam/saml`, signed local SAML session cookies, `secret_fallbacks` verification, SP-initiated logout redirect, logout callback cleanup, `X-Userinfo` forwarding, and local `$external_user` request context attachment when APISIX vars exist
-  - not support encrypted `resty.session` cookie parity, IdP metadata documents beyond configured `idp_uri` / `idp_cert`, SAML artifact binding, complete IdP-initiated SSO/SLO semantics, distributed session state, APISIX Lua `ctx.external_user` parity for downstream Lua plugins, encrypted storage for `sp_private_key` / `secret`, or exact `lua-resty-saml` behavior
-- [x] [wolf-rbac](https://apisix.apache.org/zh/docs/apisix/plugins/wolf-rbac/) 65%
-  - support `V1#appid#wolf_token` parsing, token extraction from query/header/cookie, consumer lookup by `appid`, Wolf `/wolf/rbac/access_check`, user info header injection, and consumer attachment
-  - not support built-in `/apisix/plugin/wolf-rbac/*` public APIs for login/change password/user info, retry backoff, or full APISIX consumer plugin metadata behavior
-- [x] [openid-connect](https://apisix.apache.org/zh/docs/apisix/plugins/openid-connect/) 78%
-  - support Bearer token extraction from `Authorization` and `X-Access-Token`, discovery fallback for `introspection_endpoint`, token introspection, `client_secret_basic` / `client_secret_post`, `public_key` and `use_jwks` RSA JWT verification, `token_signing_alg_values_expected`, `required_scopes`, `claim_validator.audience` required/client-id matching, bearer `claim_schema` validation, `realm`, `unauth_action = pass`, output header clearing, `X-Access-Token`, `X-Userinfo`, `ssl_verify`, `timeout`, and `introspection_addon_headers`; authorization-code cookie sessions with encrypted standard-library AES-GCM cookies, state validation, PKCE S256, configured/automatic redirect URIs, token exchange, optional userinfo forwarding, and end-session logout redirects
-  - not support Redis sessions, token renewal, revocation, private-key JWT or other client assertion auth, session-flow claim schema validation, proxy options, non-RSA JWKS keys, or exact `lua-resty-session`/OpenResty behavior
-- [x] [cas-auth](https://apisix.apache.org/zh/docs/apisix/plugins/cas-auth/) 60%
-  - support CAS login redirect, absolute/relative `cas_callback_uri`, ticket `serviceValidate`, HMAC-signed initiation cookie, per-config session cookie, local session refresh, and logout redirect
-  - not support OpenResty shared-dict clustering, IdP single logout XML session deletion, or attaching authenticated CAS user metadata upstream
+  - not support exact `lua-resty-saml` session/runtime behavior, which remains OpenResty-specific
+- [x] [wolf-rbac](https://apisix.apache.org/zh/docs/apisix/plugins/wolf-rbac/) 75%
+  - support `V1#appid#wolf_token` parsing, token extraction from query/header/cookie, consumer lookup by `appid`, Wolf `/wolf/rbac/access_check`, configured TLS verification, APISIX-style transient 5xx retry/backoff, user info header injection, consumer attachment, and public login/change-password/user-info APIs at `/apisix/plugin/wolf-rbac/*`
+  - not support cross-process OpenResty consumer-cache fidelity
+- [x] [openid-connect](https://apisix.apache.org/zh/docs/apisix/plugins/openid-connect/) 98%
+  - support Bearer token extraction from `Authorization` and `X-Access-Token`, discovery fallback for `introspection_endpoint`, token introspection, `client_secret_basic` / `client_secret_post` / `private_key_jwt` / `client_secret_jwt` client authentication, `public_key` and `use_jwks` RSA JWT verification, `token_signing_alg_values_expected`, `required_scopes`, `claim_validator.audience` required/client-id matching, bearer and session-flow `claim_schema` validation, `realm`, `unauth_action = pass`, output header clearing, `X-Access-Token`, `X-Userinfo`, `ssl_verify`, `timeout`, `introspection_addon_headers`, and `proxy_opts` HTTP/HTTPS proxy selection, Basic proxy credentials, and `no_proxy` host/domain bypasses; authorization-code cookie and Redis sessions with encrypted AES-GCM state, opaque encrypted Redis cookie IDs, Redis TLS/auth/database/prefix/timeouts, state validation, PKCE S256, configured/automatic redirect URIs, `authorization_params`, `force_reauthorize`, token exchange, access-token renewal via `renew_access_token_on_expiry`, `access_token_expires_in`, and `access_token_expires_leeway`, silent `refresh_session_interval` reauthentication, optional userinfo forwarding, end-session logout redirects, and `revoke_tokens_on_logout` refresh/access-token revocation
+  - not support exact `lua-resty-session`/OpenResty behavior
+- [x] [cas-auth](https://apisix.apache.org/zh/docs/apisix/plugins/cas-auth/) 85%
+  - support CAS login redirect, absolute/relative `cas_callback_uri`, ticket `serviceValidate`, HMAC-signed initiation cookie, per-config session cookie, local session refresh, logout redirect, and IdP single-logout XML `SessionIndex` session deletion
+  - not support OpenResty shared-dict clustering; upstream CAS user metadata forwarding is not an APISIX 3.17 plugin behavior
 - [x] [hmac-auth](https://apisix.apache.org/zh/docs/apisix/plugins/hmac-auth/) 82%
   - support `hmac-sha1`, `hmac-sha256`, `hmac-sha512`, `signed_headers`, `clock_skew`, request body digest validation, `hide_credentials`, and `anonymous_consumer` fallback
-- [x] [authz-casbin](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casbin/) 70%
-  - support Casbin `model` / `policy` text config, `model_path` / `policy_path` file config, configured username header, and anonymous fallback
-  - not support plugin metadata fallback
-- [x] [ldap-auth](https://apisix.apache.org/zh/docs/apisix/plugins/ldap-auth/) 65%
-  - support HTTP Basic credential extraction, LDAP bind using configured `base_dn`, `ldap_uri`, `uid`, `use_tls`, and `tls_verify`, matching consumers by `ldap-auth.user_dn`, and attaching the consumer context
-  - not support LDAP search filters, StartTLS fallback discovery, or anonymous consumer behavior
-- [x] [opa](https://apisix.apache.org/zh/docs/apisix/plugins/opa/) 70%
-  - support OPA HTTP decision calls, custom deny status/body/headers, and `send_headers_upstream`
-  - not support full APISIX `with_route` / `with_service` payloads
-- [x] [forward-auth](https://apisix.apache.org/zh/docs/apisix/plugins/forward-auth/) 86%
-  - support `GET` / `POST`, `request_headers`, `extra_headers`, APISIX-style variable resolution in `extra_headers`, `upstream_headers`, `client_headers`, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
-- [x] [multi-auth](https://apisix.apache.org/zh/docs/apisix/plugins/multi-auth/) 60%
-  - support ordered fallback across configured `basic-auth`, `key-auth`, `jwt-auth`, and `hmac-auth`; request passes when any configured auth plugin succeeds
-  - not support every APISIX auth plugin type yet or preserving per-plugin failure details in the final response
+- [x] [authz-casbin](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casbin/) 85%
+  - support Casbin `model` / `policy` text config, `model_path` / `policy_path` file config, APISIX plugin-metadata `model` / `policy` fallback with reload on metadata updates, configured username header, and anonymous fallback
+- [x] [ldap-auth](https://apisix.apache.org/zh/docs/apisix/plugins/ldap-auth/) 75%
+  - support HTTP Basic credential extraction, LDAP bind using configured `base_dn`, host/URL `ldap_uri`, `uid`, direct-LDAPS `use_tls`, and `tls_verify`, matching consumers by `ldap-auth.user_dn`, and attaching the consumer context
+  - LDAP search filters, StartTLS, and anonymous-consumer behavior are not APISIX 3.17 plugin configurations
+- [x] [opa](https://apisix.apache.org/zh/docs/apisix/plugins/opa/) 78%
+  - support OPA HTTP decision calls, custom deny status/body/headers, `send_headers_upstream`, `with_consumer`, and `with_route` / `with_service` full resource documents from the route builder, with ID/name/matched-URI fallback for direct plugin use
+- [x] [forward-auth](https://apisix.apache.org/zh/docs/apisix/plugins/forward-auth/) 90%
+  - support `GET` / `POST`, POST body and transport metadata forwarding, `request_headers`, `extra_headers`, APISIX-style variable resolution in `extra_headers`, `upstream_headers`, `client_headers`, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
+  - APISIX 3.17's schema requires string `extra_headers` values; its numeric runtime fallback is not a normal configurable feature
+- [x] [multi-auth](https://apisix.apache.org/zh/docs/apisix/plugins/multi-auth/) 85%
+  - support ordered fallback across every APISIX 3.17 plugin marked `type = auth`: `basic-auth`, `key-auth`, `jwt-auth`, `hmac-auth`, `ldap-auth`, `jwe-decrypt`, and `wolf-rbac`; request passes when any configured auth plugin succeeds
+  - retain APISIX's generic final denial response; per-plugin failure diagnostics remain runtime logging detail
 
 ### Security
 
@@ -378,36 +376,36 @@ Loggers:
 - [x] [ai](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/ai.lua) 20%
   - support official plugin name, priority, empty schema, and pass-through compatibility registration
   - not support APISIX global-scope router matching cache replacement, upstream handler replacement, balancer phase replacement, route feature analysis, OpenResty keepalive pool behavior, event hook registration, or any runtime acceleration behavior from the Lua implementation
-- [x] [ai-aliyun-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aliyun-content-moderation/) 50%
-  - support official plugin name, priority, schema, Aliyun `TextModerationPlus` request checks, HMAC-SHA1 request signing, `endpoint`, `region_id`, `access_key_id`, `access_key_secret`, `check_request`, `request_check_service`, `request_check_length_limit`, `risk_level_bar`, `deny_code`, `deny_message`, timeout, keepalive, `ssl_verify`, basic OpenAI Chat/Responses-style content extraction, original request body replay, pass-through on moderation service errors, and rejection when risk level reaches the configured bar
-  - not support APISIX `ai-proxy` / `ai-proxy-multi` picked-instance enforcement, full APISIX AI protocol registry extraction, response body moderation, streaming `realtime` or `final_packet` moderation, provider-compatible AI deny response shaping, response risk-level SSE annotation, APISIX log variables, or encrypted storage for `access_key_secret`
-- [x] [ai-aws-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aws-content-moderation/) 55%
-  - support official plugin name, priority, schema, AWS Comprehend `DetectToxicContent` request checks, SigV4 signing, `comprehend.access_key_id`, `comprehend.secret_access_key`, `comprehend.region`, optional `comprehend.endpoint`, `comprehend.ssl_verify`, `moderation_categories`, `moderation_threshold`, original request body replay, and rejection on toxicity/category thresholds
-  - not support APISIX/OpenResty AWS SDK credential provider behavior, `session_token`, response body moderation, streaming moderation, provider-compatible AI deny response shaping, AI protocol content extraction, APISIX log variables, or encrypted storage for `comprehend.secret_access_key`
-- [x] [ai-rag](https://apisix.apache.org/docs/apisix/plugins/ai-rag/) 55%
-  - support official plugin name, priority, schema, Azure OpenAI embeddings, Azure AI Search vector search, `ssl_verify`, `ai_rag.embeddings.input`, `ai_rag.vector_search.fields`, provider status/body propagation, `ai_rag` request-body removal, OpenAI Chat message append, OpenAI Responses input append, and request body replay
-  - not support providers beyond Azure OpenAI/Azure AI Search, full APISIX AI protocol append registry, every Azure embedding/search request option beyond passthrough embedding body and vector fields, encrypted storage, APISIX ctx variables/logging, streaming/body-filter behavior, or phase-perfect interaction with `ai-proxy`
-- [x] [ai-prompt-decorator](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-decorator/) 55%
-  - support official plugin name, priority, schema, JSON body rewrite, OpenAI Chat `messages` prepend/append, OpenAI Responses `instructions` prepend and `input` append, request body replay, and JSON error responses for empty/invalid bodies
-  - not support Anthropic Messages, Bedrock Converse, OpenAI Embeddings, passthrough protocol decoration, APISIX AI protocol conversion registry, streaming-specific behavior, or integration with a real `ai-proxy` provider transport
-- [x] [ai-prompt-guard](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-guard/) 60%
-  - support official plugin name, priority, schema, regex validation, `allow_patterns` before `deny_patterns`, default last-user-message checking, `match_all_roles`, `match_all_conversation_history`, OpenAI Chat `messages`, OpenAI Responses `instructions` / `input`, and JSON rejection bodies
-  - not support APISIX/OpenResty regex flags exactly, full Anthropic Messages or Bedrock Converse protocol extraction, OpenAI Embeddings, passthrough protocol detection, streaming-specific behavior, or AI-provider deny response shaping
-- [x] [ai-prompt-template](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-template/) 55%
-  - support official plugin name, priority, schema, multiple named templates, `template_name` selection from JSON request bodies, `{{field}}` substitution from top-level request fields, OpenAI Chat-style `model` and `messages` output, request body replay, and official missing/unknown template errors
-  - not support full APISIX `body-transformer` / `lua-resty-template` expression syntax, nested variable lookup, XML/form/multipart inputs, Anthropic or Responses-native template output, template LRU cache behavior, or integration with a real `ai-proxy` provider transport
-- [x] [ai-request-rewrite](https://apisix.apache.org/docs/apisix/plugins/ai-request-rewrite/) 50%
-  - support official plugin name, priority, schema, OpenAI Chat-compatible sidecar LLM requests, `prompt`, `provider`, `auth.header`, `auth.query`, `options`, `override.endpoint`, Azure OpenAI model omission, timeout, keepalive, `ssl_verify`, non-streaming `choices[].message.content` extraction, request body replacement, request body replay, and logger-visible LLM rewrite request markers
-  - not support APISIX AI provider/protocol registry, protocol conversion, streaming LLM responses, Anthropic/Gemini/Vertex/Bedrock-native request construction, token usage variables, provider response filters, or fallback/error-response policy integration
-- [x] [ai-rate-limiting](https://apisix.apache.org/docs/apisix/plugins/ai-rate-limiting/) 50%
-  - support official plugin name, priority, schema, local token quota windows, global `limit` / `time_window`, per-instance `instances`, `show_limit_quota_header`, `limit_strategy` for `total_tokens`, `prompt_tokens`, and `completion_tokens`, `rejected_code`, `rejected_msg`, non-streaming JSON `usage` accounting, and context helpers for future `ai-proxy-multi` instance selection
-  - not support APISIX `limit-count` policy sharing, `rules`, Lua `cost_expr` / `expression`, string variable limits, Redis or Redis Cluster storage, exact log-phase accounting, streaming token usage, automatic `ai-proxy` / `ai-proxy-multi` instance selection, or fallback-to-next-instance behavior
-- [x] [ai-proxy](https://apisix.apache.org/docs/apisix/plugins/ai-proxy/) 58%
-  - support official plugin name, priority, schema, direct non-streaming OpenAI Chat-compatible proxying, `provider`, `auth.header`, `auth.query`, `options`, `override.endpoint`, `override.llm_options.max_tokens`, OpenAI Chat `override.request_body` deep merge and force override, Azure OpenAI model omission, logger-resolvable non-streaming AI request variables for request type, request/response model, and prompt/completion tokens, timeout, `max_req_body_size`, `max_response_bytes`, keepalive, `ssl_verify`, JSON content-type checks, provider response status/header/body forwarding, and default endpoints for OpenAI-compatible providers
-  - not support APISIX AI protocol detection/conversion registry, OpenAI Responses or Embeddings routing, Anthropic/Gemini/Vertex/Bedrock-native request construction, AWS SigV4 or GCP token auth, streaming SSE/EventStream parsing and flushing, `override.request_body` for non-OpenAI-Chat target protocols, streaming timing/log variables, active connection metrics, `ai-proxy-multi` fallback, or phase-perfect wrapping by lower-priority plugins such as `ai-rate-limiting`
-- [x] [ai-proxy-multi](https://apisix.apache.org/docs/apisix/plugins/ai-proxy-multi/) 58%
-  - support official plugin name, priority, schema, multiple weighted instances, `balancer.algorithm` for `roundrobin` and header/cookie/basic-var `chash`, `fallback_strategy` for `http_429` and `http_5xx`, `max_retries`, `retry_on_failure_within_ms`, direct non-streaming OpenAI Chat-compatible proxying, per-instance `provider`, `auth.header`, `auth.query`, `options`, `override.endpoint`, `override.llm_options.max_tokens`, OpenAI Chat `override.request_body` deep merge and force override, Azure OpenAI model omission, logger-resolvable non-streaming AI request variables for request type, request/response model, and prompt/completion tokens, timeout, `max_req_body_size`, `max_response_bytes`, keepalive, `ssl_verify`, JSON content-type checks, and provider response status/header/body forwarding
-  - not support APISIX health checks, DNS node resolution and host header/SNI preservation, priority balancer parity, `ai-rate-limiting` instance-health fallback integration, AI protocol detection/conversion registry, OpenAI Responses or Embeddings routing, Anthropic/Gemini/Vertex/Bedrock-native request construction, AWS SigV4 or GCP token auth, streaming SSE/EventStream parsing and flushing, `override.request_body` for non-OpenAI-Chat target protocols, streaming timing/log variables, active connection metrics, or phase-perfect wrapping by lower-priority plugins
+- [x] [ai-aliyun-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aliyun-content-moderation/) 90%
+  - support official request/response checks, signing/config, shared six-protocol extraction, provider-native JSON/SSE deny responses, Unicode-safe length chunks, realtime/final-packet stream decisions, final-packet risk-level annotation, request replay, fail-open provider errors, and encrypted `access_key_secret`
+  - response-checked streams are buffered before delivery; exact APISIX incremental body-filter timing, `stream_check_interval` scheduling, and log-variable lifecycle remain out of scope
+- [x] [ai-aws-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aws-content-moderation/) 92%
+  - support official AWS Comprehend request checks, SigV4 with static/session credentials, encrypted secrets, endpoint/TLS controls, category/toxicity thresholds, request replay, and rejection behavior
+  - not support environment/default AWS credential-provider and cross-process SDK-cache fidelity
+- [x] [ai-rag](https://apisix.apache.org/docs/apisix/plugins/ai-rag/) 92%
+  - support the official Azure OpenAI embeddings and Azure AI Search providers, request options, provider status propagation, request replay, and protocol-native result append for OpenAI Chat/Responses, Anthropic Messages, and Bedrock Converse
+  - not support exact APISIX context/log-variable lifecycle; Azure API keys are handled by the shared encrypted-field pipeline
+- [x] [ai-prompt-decorator](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-decorator/) 90%
+  - support the shared APISIX 3.17 protocol registry for OpenAI Chat/Responses/Embeddings, Anthropic Messages, Bedrock Converse, and passthrough, including protocol-native prepend/append and request replay
+  - embeddings and passthrough decoration are no-ops as upstream defines; exact OpenResty phase/runtime behavior remains out of scope
+- [x] [ai-prompt-guard](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-guard/) 88%
+  - support regex policy evaluation and shared extraction across all six APISIX 3.17 AI protocols, including nested content blocks and official generic rejection responses
+  - not support exact OpenResty regex-engine flags or phase/runtime fidelity
+- [x] [ai-prompt-template](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-template/) 78%
+  - support named templates, JSON body selection, nested dotted and bounded indexed lookup, request replay, and official missing/unknown-template errors
+  - not support full body-transformer syntax, XML/form/multipart inputs, or exact OpenResty template LRU behavior
+- [x] [ai-request-rewrite](https://apisix.apache.org/docs/apisix/plugins/ai-request-rewrite/) 90%
+  - support shared protocol-native simple requests/response extraction, Anthropic/Bedrock-native shapes, AWS SigV4, GCP token caching, provider paths, encrypted auth, request replacement/replay, transport controls, and rewrite markers
+  - not support streaming sidecar responses or exact APISIX error/log lifecycle
+- [x] [ai-rate-limiting](https://apisix.apache.org/docs/apisix/plugins/ai-rate-limiting/) 90%
+  - support official global, per-instance, and rule quotas; string variables; quota headers; all four token strategies; bounded `cost_expr`; two-phase proxy execution; rate-aware multi-instance fallback; and non-buffering streaming usage charging
+  - not support cross-process shared counter state or exact OpenResty log-phase timing
+- [x] [ai-proxy](https://apisix.apache.org/docs/apisix/plugins/ai-proxy/) 98%
+  - support six-protocol detection, Anthropic-to-OpenAI request/response/SSE conversion with tools, OpenAI Responses/Embeddings, Vertex embeddings conversion, provider auth/endpoints, protocol overrides, SSE, CRC-validated Bedrock EventStream, usage/timing variables, response/stream-duration limits, scheduled flush intervals, active connection metrics, and two-phase rate limiting
+  - exact OpenResty transport, phase, and log lifecycle remains out of scope
+- [x] [ai-proxy-multi](https://apisix.apache.org/docs/apisix/plugins/ai-proxy-multi/) 96%
+  - support weighted priorities, round-robin/chash, HTTP/rate fallback, retries, active health checks with threshold/interval policy and all-unhealthy fallback, shared protocol conversion, provider auth, Vertex embeddings, Anthropic SSE conversion, Bedrock EventStream, stream-duration/flush controls, timing/active metrics, and two-phase rate limiting
+  - not support explicit APISIX DNS node snapshots; standard Go HTTP preserves hostname/SNI during DNS resolution
 - [x] [mcp-bridge](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/mcp-bridge.lua) 55%
   - support official plugin name, priority, schema, configurable `base_uri`, stdio subprocess launch with `command` / `args`, `GET {base_uri}/sse` SSE endpoint, initial `endpoint` event advertising `{base_uri}/message?sessionId=...`, `POST {base_uri}/message` JSON-RPC body forwarding to subprocess stdin, stdout line forwarding as SSE `message` events, stderr line forwarding as `notifications/stderr`, and subprocess cleanup on SSE disconnect
   - not support APISIX shared-dict cross-worker session recovery, ping keepalive events, OpenResty coroutine/process semantics, partial-line buffering parity, process timeouts, worker-exit hooks, distributed session state, backpressure controls, or full MCP protocol validation

@@ -149,6 +149,51 @@ func TestHandlerAppendsSearchResultToResponsesInput(t *testing.T) {
 	}
 }
 
+func TestAppendSearchResultUsesNativeMessageProtocol(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body map[string]any
+		want func(*testing.T, map[string]any)
+	}{
+		{
+			name: "anthropic messages",
+			path: "/v1/messages",
+			body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "question"}}},
+			want: func(t *testing.T, body map[string]any) {
+				messages := body["messages"].([]any)
+				appended := messages[1].(map[string]any)
+				if appended["role"] != "user" || appended["content"] != "search result" {
+					t.Fatalf("appended Anthropic message = %#v", appended)
+				}
+			},
+		},
+		{
+			name: "bedrock converse",
+			path: "/model/claude/converse",
+			body: map[string]any{"messages": []any{map[string]any{
+				"role": "user", "content": []any{map[string]any{"text": "question"}},
+			}}},
+			want: func(t *testing.T, body map[string]any) {
+				messages := body["messages"].([]any)
+				appended := messages[1].(map[string]any)
+				content := appended["content"].([]any)[0].(map[string]any)
+				if appended["role"] != "user" || content["text"] != "search result" {
+					t.Fatalf("appended Bedrock message = %#v", appended)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, test.path, nil)
+			appendSearchResult(req, test.body, "search result")
+			test.want(t, test.body)
+		})
+	}
+}
+
 func TestHandlerRejectsMissingAIRag(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: "http://127.0.0.1", APIKey: "k"}},

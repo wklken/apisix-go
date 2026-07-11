@@ -79,6 +79,35 @@ func TestHandlerRendersSelectedPromptTemplate(t *testing.T) {
 	}
 }
 
+func TestHandlerRendersNestedAndIndexedJSONValues(t *testing.T) {
+	p := newTestPlugin(t, Config{Templates: []NamedTemplate{{
+		Name: "nested",
+		Template: Template{Messages: []Message{{
+			Role:    "user",
+			Content: "Hello {{user.profile.name}}, your second item is {{items[1].name}}.",
+		}}},
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "/openai-chat", strings.NewReader(`{
+      "template_name":"nested",
+      "user":{"profile":{"name":"Ada"}},
+      "items":[{"name":"first"},{"name":"second"}]
+    }`))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got Template
+		if err := json.Unmarshal(readTestBody(t, r), &got); err != nil {
+			t.Fatalf("decode rendered template: %v", err)
+		}
+		if got.Messages[0].Content != "Hello Ada, your second item is second." {
+			t.Fatalf("content = %q", got.Messages[0].Content)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
 func TestHandlerRejectsMissingTemplateName(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Templates: []NamedTemplate{

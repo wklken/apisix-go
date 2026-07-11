@@ -196,6 +196,38 @@ func TestHandlerPostForwardsBodyAndRestoresRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerPostForwardsRequestBodyTransportHeaders(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Content-Encoding"); got != "gzip" {
+			t.Fatalf("Content-Encoding = %q, want gzip", got)
+		}
+		if got := r.Header.Get("Expect"); got != "100-continue" {
+			t.Fatalf("Expect = %q, want 100-continue", got)
+		}
+		if got := r.Header.Get("Content-Length"); got != "7" {
+			t.Fatalf("Content-Length = %q, want 7", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:           auth.URL,
+		RequestMethod: http.MethodPost,
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", strings.NewReader("payload"))
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Expect", "100-continue")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	auth := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

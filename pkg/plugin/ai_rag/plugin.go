@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -286,34 +286,11 @@ func (p *Plugin) postAzureJSON(
 }
 
 func appendSearchResult(r *http.Request, body map[string]any, searchResult string) {
-	if isOpenAIResponses(r, body) {
-		switch input := body["input"].(type) {
-		case string:
-			body["input"] = input + "\n" + searchResult
-		case []any:
-			body["input"] = append(input, map[string]any{
-				"type":    "message",
-				"role":    "user",
-				"content": searchResult,
-			})
-		default:
-			body["input"] = searchResult
-		}
+	protocol, err := ai_protocols.Detect(r.URL.Path, body)
+	if err != nil {
 		return
 	}
-
-	messages, _ := body["messages"].([]any)
-	body["messages"] = append(messages, map[string]any{
-		"role":    "user",
-		"content": searchResult,
-	})
-}
-
-func isOpenAIResponses(r *http.Request, body map[string]any) bool {
-	if _, ok := body["input"]; !ok {
-		return false
-	}
-	return strings.HasSuffix(r.URL.Path, "/v1/responses")
+	ai_protocols.AppendMessages(protocol, body, []ai_protocols.Message{{Role: "user", Content: searchResult}})
 }
 
 func (p *Plugin) transport() http.RoundTripper {

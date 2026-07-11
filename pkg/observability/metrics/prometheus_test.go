@@ -1,8 +1,14 @@
 package metrics
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func TestPrometheusMetricConfigDefaults(t *testing.T) {
@@ -14,6 +20,37 @@ func TestPrometheusMetricConfigDefaults(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Buckets, defaultLatencyBuckets) {
 		t.Fatalf("Buckets = %v, want %v", cfg.Buckets, defaultLatencyBuckets)
 	}
+}
+
+func TestBeginLLMRequestUsesStableLabelsForIncrementAndDecrement(t *testing.T) {
+	LLMActiveConnections = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_llm_active"}, []string{
+		"route", "route_id", "matched_uri", "matched_host", "service", "service_id", "consumer", "node",
+		"request_type", "request_llm_model", "llm_model",
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/", nil))
+	apisixctx.RegisterRequestVar(req, "$request_type", "ai_chat")
+	apisixctx.RegisterRequestVar(req, "$request_llm_model", "request-model")
+	done := BeginLLMRequest(req)
+	gauge := LLMActiveConnections.WithLabelValues(
+		"", "", "", "", "", "", "", "", "ai_chat", "request-model", "",
+	)
+	if got := gaugeValue(t, gauge); got != 1 {
+		t.Fatalf("active gauge = %v, want 1", got)
+	}
+	apisixctx.RegisterRequestVar(req, "$llm_model", "response-model")
+	done()
+	if got := gaugeValue(t, gauge); got != 0 {
+		t.Fatalf("active gauge = %v, want 0", got)
+	}
+}
+
+func gaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := gauge.Write(metric); err != nil {
+		t.Fatalf("write gauge metric: %v", err)
+	}
+	return metric.GetGauge().GetValue()
 }
 
 func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {

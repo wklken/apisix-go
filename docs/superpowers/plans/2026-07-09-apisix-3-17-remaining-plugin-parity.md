@@ -79,37 +79,45 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 
 | Plugin | Current | What remains |
 |---|---:|---|
-| `openid-connect` | 78% | Redis sessions, revocation, token renewal, client assertion auth, session-flow claim schema behavior, proxy options, and exact OpenResty session semantics. |
+| `openid-connect` | 98% | Encrypted private-key storage and exact OpenResty session semantics. Encrypted cookie/Redis session storage and `refresh_session_interval` are implemented. |
 | `key-auth` | 75% | Encrypted consumer-field parity only if a project-level encrypted-secret design exists; otherwise keep current API-key, hide-credentials, and anonymous-consumer behavior. |
 | `jwt-auth` | 85% | Encrypted consumer-field parity only if a project-level encrypted-secret design exists; otherwise verify asymmetric algorithm and anonymous-consumer coverage stays aligned with APISIX 3.17. |
-| `saml-auth` | 55% | IdP metadata loading, IdP-initiated SSO/SLO gaps, artifact binding if practical, richer logout semantics, more metadata/userinfo forwarding. Do not implement encrypted `resty.session` parity. |
-| `cas-auth` | 60% | IdP single logout XML session deletion, better service/session parity, more user metadata propagation. Do not implement OpenResty shared-dict clustering. |
+| `saml-auth` | 85% | Encrypted `sp_private_key` / `secret` storage after a project-level secret design exists. Exact `lua-resty-saml` session/runtime behavior remains out of scope. |
+| `cas-auth` | 85% | Encrypted `cookie.secret` storage after a project-level secret design exists. IdP single logout XML deletion is implemented; user metadata forwarding is not an APISIX 3.17 behavior and shared-dict clustering is out of scope. |
 | `basic-auth` | 70% | Encrypted consumer-field parity only if a project-level encrypted-secret design exists; keep current Basic extraction, validation, consumer attachment, and `hide_credentials` behavior. |
-| `authz-casdoor` | 60% | Forward Casdoor user/access token metadata upstream, token/session reuse, better logout/session handling. Do not implement encrypted `resty.session` cookies. |
-| `authz-keycloak` | 60% | Shared token/resource cache approximation, request decorators, richer resource metadata handling, refresh-token reuse where practical. |
-| `wolf-rbac` | 65% | Public APIs for login/change password/user info, retry/backoff, fuller consumer plugin metadata behavior. |
-| `ldap-auth` | 65% | LDAP search filters, StartTLS fallback discovery, richer DN/user matching. Do not add `anonymous_consumer`; APISIX 3.17 `ldap-auth` does not define it. |
-| `jwe-decrypt` | 65% | Additional JWE algorithms, AAD/header authentication, encrypted consumer-field handling if a safe local pattern exists. |
+| `authz-casdoor` | 85% | Encrypted `client_secret` storage after a project-level secret design exists. User/access-token forwarding is not an APISIX 3.17 behavior; exact `resty.session` runtime behavior is out of scope. |
+| `authz-keycloak` | 85% | Encrypted `client_secret` storage after a project-level secret design exists. Process-shared discovery/service-account token caching, refresh-token reuse, expiry leeway, TLS verification, and keepalive settings are implemented. Lua request decorators and cross-process OpenResty shared-dict fidelity are out of scope. |
+| `wolf-rbac` | 85% | Fuller consumer plugin metadata behavior. Public login/change-password/user-info APIs, TLS verification, and transient 5xx retry/backoff are implemented. |
+| `ldap-auth` | 75% | Encrypted consumer `user_dn` support after a project-level secret design exists. Host-style LDAP addresses and direct-LDAPS `use_tls` behavior are implemented; do not add LDAP search filters, StartTLS, or `anonymous_consumer`, which APISIX 3.17 does not define. |
+| `jwe-decrypt` | 90% | Encrypted consumer-field handling if a safe local pattern exists. Direct AES-256-GCM with 32-byte plain/base64url secrets is implemented; alternate algorithms and AAD/header authentication are not APISIX 3.17 plugin configurations. |
 | `hmac-auth` | 82% | Encrypted consumer-field parity only if a project-level encrypted-secret design exists; otherwise keep current digest, body, `hide_credentials`, and anonymous-consumer behavior. |
-| `authz-casbin` | 70% | Add plugin metadata fallback if local metadata lookup supports it cleanly. |
-| `opa` | 70% | Add fuller APISIX `with_route` / `with_service` payloads from local route/service context where available. |
-| `forward-auth` | 86% | Audit remaining official fields and edge response-header behavior; keep current method/header/upstream forwarding behavior stable. |
-| `dingtalk-auth` | 60% | Store/reuse access tokens in session, `ctx.external_user` equivalent, better error logging, encrypted storage notes. |
-| `feishu-auth` | 60% | Store/reuse Feishu access tokens in session, `ctx.external_user` equivalent, better error logging, encrypted storage notes. |
-| `multi-auth` | 60% | Add more APISIX auth plugin types and preserve per-plugin failure details in final response. |
+| `authz-casbin` | 85% | No normal Go Auth TODO remains; plugin-metadata model/policy fallback and metadata reload are implemented. |
+| `opa` | 90% | `with_route` / `with_service` emit full route/service resource documents from the route builder, with local ID/name/matched-URI fallback for direct plugin use. |
+| `forward-auth` | 90% | POST body transport metadata forwarding is implemented. No normal TODO remains: APISIX 3.17's schema accepts string `extra_headers` values, while its numeric fallback is defensive runtime compatibility. |
+| `dingtalk-auth` | 65% | Better error logging and encrypted storage notes. `$external_user` request-context metadata and local access-token caching are implemented. |
+| `feishu-auth` | 65% | Keep access-token/session reuse aligned with the bounded official flow, improve error logging, encrypted storage notes. `$external_user` request-context metadata is implemented. |
+| `multi-auth` | 85% | All APISIX 3.17 `type = auth` plugins are supported. Preserve APISIX's generic final denial response; per-plugin diagnostics are logging detail. |
 
 ### Auth Execution Tasks
 
 - [ ] **Task A1: Continue `openid-connect` with PKCE or code flow**
   - [x] A1a: authorization-code cookie session flow, encrypted cookie storage, state validation, PKCE S256, token exchange, downstream token headers, and end-session logout redirect.
-  - [ ] Later slices: token renewal, revocation, private-key JWT/client assertion auth, session-flow claim validation, and proxy options.
+  - [x] A1b: renew expired cookie-session access tokens with a refresh token, including `renew_access_token_on_expiry`, `access_token_expires_in`, and `access_token_expires_leeway`.
+  - [x] A1c: revoke refresh and access tokens on logout through the discovered RFC 7009 endpoint.
+  - [x] A1d: apply static `authorization_params` and force authorization before cached-session reuse with `force_reauthorize`.
+  - [x] A1e: support `private_key_jwt` and `client_secret_jwt` assertions for token and introspection endpoints.
+  - [x] A1f: support `proxy_opts` HTTP/HTTPS proxies, Basic proxy credentials, and `no_proxy` host/domain bypasses.
+  - [x] A1g: validate `{user, access_token, id_token}` against `claim_schema` before storing a code-flow session.
+  - [x] A1h: support encrypted Redis sessions with configured TLS/auth/database/prefix/timeouts and logout deletion.
+  - [x] A1i: silently reauthenticate valid sessions with `prompt=none` after `refresh_session_interval`.
 
-- [ ] **Task A2: Expand `multi-auth` plugin coverage**
-  - Add one auth plugin at a time, only if the target plugin already has stable handler tests.
-  - Tests: one plugin failure followed by next plugin success, final failure body preserves useful failure detail.
+- [x] **Task A2: Expand `multi-auth` plugin coverage**
+  - [x] Add `ldap-auth`, `jwe-decrypt`, and `wolf-rbac` after normal authentication failures.
+  - [x] Cover one plugin failure followed by a later plugin success. The final denial body remains the generic APISIX response.
 
 - [ ] **Task A3: Improve SSO-style auth plugins**
-  - Work one plugin per commit: `saml-auth`, `cas-auth`, `authz-casdoor`, `dingtalk-auth`, `feishu-auth`.
+  - [x] `cas-auth`: delete the matching local session on an IdP single-logout XML `SessionIndex` request.
+  - [ ] Work one plugin per commit: `saml-auth`, `authz-casdoor`, `dingtalk-auth`, `feishu-auth`.
   - Focus on metadata forwarding/session reuse before native encrypted-session parity.
 
 ## AI

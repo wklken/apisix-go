@@ -43,6 +43,9 @@ const schema = `
         "secret_access_key": {
           "type": "string"
         },
+		"session_token": {
+		  "type": "string"
+		},
         "region": {
           "type": "string"
         },
@@ -88,6 +91,7 @@ type Config struct {
 type Comprehend struct {
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key"`
+	SessionToken    string `json:"session_token,omitempty"`
 	Region          string `json:"region"`
 	Endpoint        string `json:"endpoint,omitempty"`
 	SSLVerify       *bool  `json:"ssl_verify,omitempty"`
@@ -256,6 +260,9 @@ func (p *Plugin) sign(req *http.Request, payload []byte) {
 	amzDate := t.Format("20060102T150405Z")
 	date := t.Format("20060102")
 	req.Header.Set("X-Amz-Date", amzDate)
+	if p.config.Comprehend.SessionToken != "" {
+		req.Header.Set("X-Amz-Security-Token", p.config.Comprehend.SessionToken)
+	}
 
 	payloadHash := hashHex(payload)
 	canonicalHeaders, signedHeaders := canonicalHeaders(req)
@@ -295,6 +302,10 @@ func canonicalHeaders(req *http.Request) (string, string) {
 		"host":         req.URL.Host,
 		"x-amz-date":   req.Header.Get("X-Amz-Date"),
 		"x-amz-target": req.Header.Get("X-Amz-Target"),
+	}
+	if token := req.Header.Get("X-Amz-Security-Token"); token != "" {
+		names = append(names, "x-amz-security-token")
+		values["x-amz-security-token"] = token
 	}
 	sort.Strings(names)
 

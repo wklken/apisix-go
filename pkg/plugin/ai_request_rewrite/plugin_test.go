@@ -1,6 +1,7 @@
 package ai_request_rewrite
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -145,6 +147,99 @@ func TestHandlerOmitsModelForAzureOpenAI(t *testing.T) {
 	if got := llmRequest["temperature"]; got != float64(0) {
 		t.Fatalf("LLM request temperature = %v, want 0", got)
 	}
+}
+
+func TestHandlerUsesBedrockConverseRequestAndResponse(t *testing.T) {
+	var llmRequest map[string]any
+	var authorization string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/model/claude/converse" {
+			t.Fatalf("LLM path = %q, want Bedrock Converse path", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&llmRequest); err != nil {
+			t.Fatalf("decode LLM request: %v", err)
+		}
+		authorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{
+		  "output":{"message":{"role":"assistant","content":[{"text":"{\"content\":\"redacted\"}"}]}},
+		  "stopReason":"end_turn"
+		}`))
+	}))
+	defer llm.Close()
+
+	p := newTestPlugin(t, Config{
+		Prompt:       "redact sensitive fields",
+		Provider:     "bedrock",
+		ProviderConf: map[string]any{"region": "us-east-1"},
+		Auth: Auth{AWS: &ai_auth.AWSConfig{
+			AccessKeyID: "key", SecretAccessKey: "secret", SessionToken: "session",
+		}},
+		Options:  map[string]any{"model": "claude", "max_tokens": 128},
+		Override: Override{Endpoint: llm.URL},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"content":"4111"}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := string(readTestBody(t, r)); got != `{"content":"redacted"}` {
+			t.Fatalf("rewritten body = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+	if _, ok := llmRequest["model"]; ok {
+		t.Fatalf("Bedrock body model = %#v, want omitted", llmRequest["model"])
+	}
+	if llmRequest["system"] == nil || llmRequest["messages"] == nil {
+		t.Fatalf("Bedrock body = %#v, want native system/messages", llmRequest)
+	}
+	if !strings.HasPrefix(authorization, "AWS4-HMAC-SHA256 Credential=key/") {
+		t.Fatalf("Authorization = %q, want SigV4", authorization)
+	}
+}
+
+func TestHandlerAppliesGCPTokenForVertexRewrite(t *testing.T) {
+	var authorization string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"rewritten\":true}"}}]}`))
+	}))
+	defer llm.Close()
+	p := newTestPlugin(t, Config{
+		Prompt:   "rewrite",
+		Provider: "vertex-ai",
+		Auth:     Auth{GCP: &ai_auth.GCPConfig{ServiceAccountJSON: "test"}},
+		Override: Override{Endpoint: llm.URL + "/v1/chat/completions"},
+	})
+	p.gcpTokens = fakeGCPTokenApplier{}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"input":true}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := string(readTestBody(t, r)); got != `{"rewritten":true}` {
+			t.Fatalf("rewritten body = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent || authorization != "Bearer gcp-token" {
+		t.Fatalf("response code = %d, Authorization = %q", rr.Code, authorization)
+	}
+}
+
+type fakeGCPTokenApplier struct{}
+
+func (fakeGCPTokenApplier) Apply(
+	_ context.Context,
+	_ *http.Client,
+	req *http.Request,
+	_ ai_auth.GCPConfig,
+) error {
+	req.Header.Set("Authorization", "Bearer gcp-token")
+	return nil
 }
 
 func TestHandlerRegistersLLMRewriteRequestVars(t *testing.T) {

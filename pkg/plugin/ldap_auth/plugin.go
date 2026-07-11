@@ -176,7 +176,7 @@ func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, message strin
 }
 
 func defaultLDAPAuthenticate(username, password string, cfg Config) error {
-	conn, err := ldap.DialURL(cfg.LDAPURI, ldap.DialWithTLSConfig(&tls.Config{
+	conn, err := ldap.DialURL(ldapDialURL(cfg), ldap.DialWithTLSConfig(&tls.Config{
 		InsecureSkipVerify: !cfg.TLSVerify,
 	}))
 	if err != nil {
@@ -184,12 +184,14 @@ func defaultLDAPAuthenticate(username, password string, cfg Config) error {
 	}
 	defer conn.Close()
 
-	if cfg.UseTLS {
-		if err := conn.StartTLS(&tls.Config{InsecureSkipVerify: !cfg.TLSVerify}); err != nil {
-			return err
-		}
-	}
-
 	userDN := cfg.UID + "=" + username + "," + cfg.BaseDN
 	return conn.Bind(userDN, password)
+}
+
+func ldapDialURL(cfg Config) string {
+	address := strings.TrimPrefix(strings.TrimPrefix(cfg.LDAPURI, "ldap://"), "ldaps://")
+	if cfg.UseTLS {
+		return "ldaps://" + address
+	}
+	return "ldap://" + address
 }

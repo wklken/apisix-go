@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -157,6 +158,37 @@ func TestHandlerUsesExistingSessionCookie(t *testing.T) {
 	if !called {
 		t.Fatal("next handler was not called for valid session")
 	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerStoresExternalUserInRequestContext(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AppID:           "app-id",
+		AppSecret:       "app-secret",
+		Secret:          "12345678",
+		AuthRedirectURI: "https://gateway.example.com/callback",
+		RedirectURI:     "https://login.feishu.cn/oauth",
+	})
+	cookie, err := p.sessionCookie(map[string]any{"open_id": "cached-user"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil)
+	req = apisixctx.WithApisixVars(req, nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := apisixctx.GetApisixVar(r, "$external_user").(map[string]any)
+		if !ok || user["open_id"] != "cached-user" {
+			t.Fatalf("$external_user = %#v, want cached Feishu user", user)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204", rr.Code)
 	}

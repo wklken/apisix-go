@@ -136,6 +136,90 @@ func TestHandlerAllowsBasicAuthWhenLaterPluginWouldFail(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsKeyAuthAfterLDAPAuthMissingCredentials(t *testing.T) {
+	addAuthConsumer(t, "ldap-fallback-key-user", map[string]any{
+		"key-auth": map[string]any{"key": "ldap-fallback-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "ldap-fallback-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"ldap-auth": {"base_dn": "dc=example,dc=org", "ldap_uri": "ldap://127.0.0.1:389"}},
+			{"key-auth": {"header": "apikey"}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "ldap-fallback-key")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "ldap-fallback-key-user" {
+			t.Fatalf("consumer_name = %v, want ldap-fallback-key-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerAllowsKeyAuthAfterJWEDecryptMissingToken(t *testing.T) {
+	addAuthConsumer(t, "jwe-fallback-key-user", map[string]any{
+		"key-auth": map[string]any{"key": "jwe-fallback-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "jwe-fallback-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"jwe-decrypt": {"header": "Authorization", "forward_header": "Authorization"}},
+			{"key-auth": {"header": "apikey"}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "jwe-fallback-key")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "jwe-fallback-key-user" {
+			t.Fatalf("consumer_name = %v, want jwe-fallback-key-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerAllowsKeyAuthAfterWolfRBACMissingToken(t *testing.T) {
+	addAuthConsumer(t, "wolf-fallback-key-user", map[string]any{
+		"key-auth": map[string]any{"key": "wolf-fallback-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "wolf-fallback-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"wolf-rbac": {}},
+			{"key-auth": {"header": "apikey"}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "wolf-fallback-key")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "wolf-fallback-key-user" {
+			t.Fatalf("consumer_name = %v, want wolf-fallback-key-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestHandlerRejectsWhenAllAuthPluginsFail(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		AuthPlugins: []AuthPluginConfig{

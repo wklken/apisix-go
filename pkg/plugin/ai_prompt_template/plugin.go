@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -143,7 +144,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		rendered := renderTemplate(template, flattenValues(bodyTab))
+		rendered := renderTemplate(template, bodyTab)
 		rewritten, err := json.Marshal(rendered)
 		if err != nil {
 			writeJSONMessage(
@@ -187,7 +188,7 @@ func readBody(r *http.Request) ([]byte, error) {
 	return body, err
 }
 
-func renderTemplate(template Template, values map[string]string) Template {
+func renderTemplate(template Template, values map[string]any) Template {
 	rendered := Template{
 		Model:    renderString(template.Model, values),
 		Messages: make([]Message, 0, len(template.Messages)),
@@ -201,31 +202,74 @@ func renderTemplate(template Template, values map[string]string) Template {
 	return rendered
 }
 
-func renderString(text string, values map[string]string) string {
+func renderString(text string, values map[string]any) string {
 	return templateExprPattern.ReplaceAllStringFunc(text, func(match string) string {
 		parts := templateExprPattern.FindStringSubmatch(match)
 		if len(parts) != 2 {
 			return match
 		}
 		key := strings.TrimSpace(parts[1])
-		if value, ok := values[key]; ok {
-			return value
+		if value, ok := lookupValue(values, key); ok {
+			return fmt.Sprint(value)
 		}
 		return ""
 	})
 }
 
-func flattenValues(data map[string]any) map[string]string {
-	values := map[string]string{}
-	for key, value := range data {
-		switch typed := value.(type) {
-		case string:
-			values[key] = typed
-		case float64, bool:
-			values[key] = fmt.Sprint(typed)
+func lookupValue(values map[string]any, expression string) (any, bool) {
+	var current any = values
+	for _, segment := range strings.Split(expression, ".") {
+		key, indexes, ok := parseSegment(segment)
+		if !ok {
+			return nil, false
+		}
+		if key != "" {
+			object, ok := current.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			current, ok = object[key]
+			if !ok {
+				return nil, false
+			}
+		}
+		for _, index := range indexes {
+			array, ok := current.([]any)
+			if !ok || index >= len(array) {
+				return nil, false
+			}
+			current = array[index]
 		}
 	}
-	return values
+	return current, true
+}
+
+func parseSegment(segment string) (string, []int, bool) {
+	if segment == "" {
+		return "", nil, false
+	}
+	keyEnd := strings.IndexByte(segment, '[')
+	if keyEnd == -1 {
+		return segment, nil, true
+	}
+	key := segment[:keyEnd]
+	indexes := make([]int, 0)
+	for rest := segment[keyEnd:]; rest != ""; {
+		if rest[0] != '[' {
+			return "", nil, false
+		}
+		end := strings.IndexByte(rest, ']')
+		if end <= 1 {
+			return "", nil, false
+		}
+		index, err := strconv.Atoi(rest[1:end])
+		if err != nil || index < 0 {
+			return "", nil, false
+		}
+		indexes = append(indexes, index)
+		rest = rest[end+1:]
+	}
+	return key, indexes, true
 }
 
 func writeJSONMessage(w http.ResponseWriter, status int, message string) {

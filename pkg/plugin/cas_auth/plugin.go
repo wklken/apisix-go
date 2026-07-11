@@ -1,6 +1,7 @@
 package cas_auth
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -153,6 +154,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if r.Method == http.MethodPost && r.URL.Path == callbackPath(p.config.CASCallbackURI) {
+			if p.handleIDPLogout(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			http.Error(
 				w,
 				util.BuildMessageResponse("invalid logout request from IdP, no ticket"),
@@ -163,6 +168,35 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		p.firstAccess(w, r)
 	})
+}
+
+func (p *Plugin) handleIDPLogout(r *http.Request) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	decoder := xml.NewDecoder(bytes.NewReader(body))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || localXMLName(start.Name) != "SessionIndex" {
+			continue
+		}
+
+		var sessionID string
+		if err := decoder.DecodeElement(&sessionID, &start); err != nil || sessionID == "" {
+			return false
+		}
+		p.mu.Lock()
+		delete(p.sessions, p.sessionKey(sessionID))
+		p.mu.Unlock()
+		return true
+	}
 }
 
 func (p *Plugin) firstAccess(w http.ResponseWriter, r *http.Request) {

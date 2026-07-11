@@ -1,7 +1,9 @@
 package openid_connect
 
 import (
+	"context"
 	"crypto"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -102,6 +104,124 @@ func TestHandlerIntrospectsBearerTokenFromDiscovery(t *testing.T) {
 	}
 	if got := <-authHeaders; got != "Basic "+base64.StdEncoding.EncodeToString([]byte("apisix:secret-a")) {
 		t.Fatalf("Authorization = %q, want client_secret_basic", got)
+	}
+}
+
+func TestHandlerIntrospectsBearerTokenWithPrivateKeyJWT(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	var idp *httptest.Server
+	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/introspect" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
+		if err != nil {
+			t.Fatalf("parse client assertion: %v", err)
+		}
+		if !verifyJWTSignature(assertion, "RS256", &privateKey.PublicKey) {
+			t.Fatal("client assertion signature did not verify")
+		}
+		if got := assertion.payload["aud"]; got != idp.URL+"/introspect" {
+			t.Fatalf("assertion aud = %v, want introspection endpoint", got)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:                        "apisix",
+		Discovery:                       idp.URL + "/.well-known/openid-configuration",
+		IntrospectionEndpoint:           idp.URL + "/introspect",
+		IntrospectionEndpointAuthMethod: "private_key_jwt",
+		ClientRSAPrivateKey: string(
+			pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}),
+		),
+		BearerOnly: true,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestDiscoveryUsesConfiguredHTTPProxy(t *testing.T) {
+	proxyRequests := make(chan struct {
+		path          string
+		proxyAuth     string
+		requestTarget string
+	}, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyRequests <- struct {
+			path          string
+			proxyAuth     string
+			requestTarget string
+		}{path: r.URL.Path, proxyAuth: r.Header.Get("Proxy-Authorization"), requestTarget: r.URL.String()}
+		json.NewEncoder(w).Encode(map[string]any{"issuer": "http://idp.example.test"})
+	}))
+	t.Cleanup(proxy.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  "http://idp.example.test/.well-known/openid-configuration",
+		BearerOnly: true,
+		ProxyOpts: &ProxyOptions{
+			HTTPProxy:              proxy.URL,
+			HTTPProxyAuthorization: "Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:proxy-password")),
+		},
+	})
+	if _, err := p.discoveryDoc(); err != nil {
+		t.Fatalf("discoveryDoc() error = %v", err)
+	}
+
+	select {
+	case request := <-proxyRequests:
+		if request.path != "/.well-known/openid-configuration" {
+			t.Fatalf("proxy request path = %q, want discovery path", request.path)
+		}
+		if request.requestTarget != "http://idp.example.test/.well-known/openid-configuration" {
+			t.Fatalf("proxy request target = %q, want absolute discovery URL", request.requestTarget)
+		}
+		if want := "Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:proxy-password")); request.proxyAuth != want {
+			t.Fatalf("Proxy-Authorization = %q, want %q", request.proxyAuth, want)
+		}
+	default:
+		t.Fatal("configured HTTP proxy did not receive the discovery request")
+	}
+}
+
+func TestDiscoveryNoProxyBypassesConfiguredHTTPProxy(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"issuer": "http://" + r.Host})
+	}))
+	t.Cleanup(idp.Close)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("proxy should not receive no_proxy discovery request")
+	}))
+	t.Cleanup(proxy.Close)
+
+	p := newTestPlugin(t, Config{
+		ClientID:   "apisix",
+		Discovery:  idp.URL + "/.well-known/openid-configuration",
+		BearerOnly: true,
+		ProxyOpts: &ProxyOptions{
+			HTTPProxy: proxy.URL,
+			NoProxy:   "127.0.0.1",
+		},
+	})
+	if _, err := p.discoveryDoc(); err != nil {
+		t.Fatalf("discoveryDoc() error = %v", err)
 	}
 }
 
@@ -708,6 +828,133 @@ func TestHandlerCodeFlowSupportsClientSecretPost(t *testing.T) {
 	}
 }
 
+func TestHandlerCodeFlowSupportsPrivateKeyJWT(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	var idp *httptest.Server
+	idp = newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want no basic auth", got)
+		}
+		if got := r.PostForm.Get("client_id"); got != "apisix" {
+			t.Fatalf("client_id = %q, want apisix", got)
+		}
+		if got := r.PostForm.Get("client_assertion_type"); got != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
+			t.Fatalf("client_assertion_type = %q, want JWT bearer type", got)
+		}
+		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
+		if err != nil {
+			t.Fatalf("parse client assertion: %v", err)
+		}
+		if got := assertion.header["alg"]; got != "RS256" {
+			t.Fatalf("assertion alg = %v, want RS256", got)
+		}
+		if got := assertion.header["kid"]; got != "key-1" {
+			t.Fatalf("assertion kid = %v, want key-1", got)
+		}
+		if !verifyJWTSignature(assertion, "RS256", &privateKey.PublicKey) {
+			t.Fatal("client assertion signature did not verify")
+		}
+		if got := assertion.payload["iss"]; got != "apisix" {
+			t.Fatalf("assertion iss = %v, want apisix", got)
+		}
+		if got := assertion.payload["sub"]; got != "apisix" {
+			t.Fatalf("assertion sub = %v, want apisix", got)
+		}
+		if got := assertion.payload["aud"]; got != idp.URL+"/token" {
+			t.Fatalf("assertion aud = %v, want token endpoint", got)
+		}
+		if got, ok := assertion.payload["jti"].(string); !ok || got == "" {
+			t.Fatalf("assertion jti = %v, want a random string", assertion.payload["jti"])
+		}
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
+	})
+	cfg := codeFlowConfig(idp.URL)
+	cfg.ClientSecret = ""
+	cfg.TokenEndpointAuthMethod = "private_key_jwt"
+	cfg.ClientRSAPrivateKey = string(
+		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}),
+	)
+	cfg.ClientRSAPrivateKeyID = "key-1"
+	p := newTestPlugin(t, cfg)
+
+	initial := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil))
+	authorizationURL, err := url.Parse(initial.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorization redirect: %v", err)
+	}
+	callback := httptest.NewRequest(
+		http.MethodGet,
+		"https://example.com/orders/.apisix/redirect?code=code-a&state="+url.QueryEscape(
+			authorizationURL.Query().Get("state"),
+		),
+		nil,
+	)
+	callback.AddCookie(initial.Result().Cookies()[0])
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for callback")
+	})).ServeHTTP(httptest.NewRecorder(), callback)
+}
+
+func TestHandlerCodeFlowSupportsClientSecretJWT(t *testing.T) {
+	var idp *httptest.Server
+	idp = newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want no basic auth", got)
+		}
+		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
+		if err != nil {
+			t.Fatalf("parse client assertion: %v", err)
+		}
+		if got := assertion.header["alg"]; got != "HS256" {
+			t.Fatalf("assertion alg = %v, want HS256", got)
+		}
+		mac := hmac.New(sha256.New, []byte("secret-a"))
+		_, _ = mac.Write([]byte(assertion.signing))
+		if !hmac.Equal(assertion.signature, mac.Sum(nil)) {
+			t.Fatal("client assertion signature did not verify")
+		}
+		if got := assertion.payload["aud"]; got != idp.URL+"/token" {
+			t.Fatalf("assertion aud = %v, want token endpoint", got)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token"})
+	})
+	cfg := codeFlowConfig(idp.URL)
+	cfg.TokenEndpointAuthMethod = "client_secret_jwt"
+	p := newTestPlugin(t, cfg)
+
+	initial := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil))
+	authorizationURL, err := url.Parse(initial.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorization redirect: %v", err)
+	}
+	callback := httptest.NewRequest(
+		http.MethodGet,
+		"https://example.com/orders/.apisix/redirect?code=code-a&state="+url.QueryEscape(
+			authorizationURL.Query().Get("state"),
+		),
+		nil,
+	)
+	callback.AddCookie(initial.Result().Cookies()[0])
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for callback")
+	})).ServeHTTP(httptest.NewRecorder(), callback)
+}
+
 func TestHandlerCodeFlowRejectsMismatchedStateWithoutTokenExchange(t *testing.T) {
 	tokenCalls := 0
 	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
@@ -807,6 +1054,215 @@ func TestHandlerCodeFlowCreatesEncryptedSessionAndUsesItDownstream(t *testing.T)
 	}
 }
 
+func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
+	var idp *httptest.Server
+	idp = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 "http://" + r.Host,
+				"authorization_endpoint": idp.URL + "/authorize",
+				"token_endpoint":         idp.URL + "/token",
+				"userinfo_endpoint":      idp.URL + "/userinfo",
+			})
+		case "/token":
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "access-token", "id_token": "id-token"})
+		case "/userinfo":
+			json.NewEncoder(w).Encode(map[string]any{"role": "viewer"})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(idp.Close)
+
+	cfg := codeFlowConfig(idp.URL)
+	cfg.ClaimSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"user": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"role": map[string]any{"type": "string", "pattern": "^admin$"},
+				},
+				"required": []string{"role"},
+			},
+		},
+		"required": []string{"user", "access_token", "id_token"},
+	}
+	p := newTestPlugin(t, cfg)
+
+	initial := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(initial, httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil))
+	authorizationURL, err := url.Parse(initial.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorization redirect: %v", err)
+	}
+	callback := httptest.NewRequest(
+		http.MethodGet,
+		"https://example.com/orders/.apisix/redirect?code=code-a&state="+url.QueryEscape(
+			authorizationURL.Query().Get("state"),
+		),
+		nil,
+	)
+	callback.AddCookie(initial.Result().Cookies()[0])
+	callbackRecorder := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(callbackRecorder, callback)
+
+	if callbackRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("callback status = %d, want 401; body=%s", callbackRecorder.Code, callbackRecorder.Body.String())
+	}
+	if got := callbackRecorder.Header().Get("WWW-Authenticate"); !strings.Contains(got, `error="invalid_token"`) {
+		t.Fatalf("WWW-Authenticate = %q, want invalid_token", got)
+	}
+}
+
+func TestHandlerForceReauthorizeAddsConfiguredAuthorizationParameters(t *testing.T) {
+	idp := newCodeFlowIDP(t, nil)
+	cfg := codeFlowConfig(idp.URL)
+	cfg.ForceReauthorize = true
+	cfg.AuthorizationParams = map[string]any{
+		"prompt":     "login",
+		"ui_locales": "en",
+	}
+	p := newTestPlugin(t, cfg)
+
+	cookieRecorder := httptest.NewRecorder()
+	if err := p.writeSession(cookieRecorder, sessionData{
+		CreatedAt:   time.Now().Unix(),
+		UpdatedAt:   time.Now().Unix(),
+		AccessToken: "active-access-token",
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.AddCookie(cookieRecorder.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if called {
+		t.Fatal("next handler was called despite force_reauthorize")
+	}
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body=%s", rr.Code, rr.Body.String())
+	}
+	authorizationURL, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorization redirect: %v", err)
+	}
+	if got := authorizationURL.Query().Get("prompt"); got != "login" {
+		t.Fatalf("prompt = %q, want login", got)
+	}
+	if got := authorizationURL.Query().Get("ui_locales"); got != "en" {
+		t.Fatalf("ui_locales = %q, want en", got)
+	}
+}
+
+func TestHandlerRenewsExpiredSessionAccessToken(t *testing.T) {
+	var tokenForm url.Values
+	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		tokenForm = r.PostForm
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "renewed-access-token",
+			"expires_in":   3600,
+		})
+	})
+	p := newTestPlugin(t, codeFlowConfig(idp.URL))
+
+	cookieRecorder := httptest.NewRecorder()
+	if err := p.writeSession(cookieRecorder, sessionData{
+		CreatedAt:    time.Now().Add(-time.Hour).Unix(),
+		UpdatedAt:    time.Now().Unix(),
+		AccessToken:  "expired-access-token",
+		IDToken:      "id-token",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.AddCookie(cookieRecorder.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := r.Header.Get("X-Access-Token"); got != "renewed-access-token" {
+			t.Fatalf("X-Access-Token = %q, want renewed access token", got)
+		}
+		if got := r.Header.Get("X-Refresh-Token"); got != "refresh-token" {
+			t.Fatalf("X-Refresh-Token = %q, want retained refresh token", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("next handler was not called after token renewal")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := tokenForm.Get("grant_type"); got != "refresh_token" {
+		t.Fatalf("grant_type = %q, want refresh_token", got)
+	}
+	if got := tokenForm.Get("refresh_token"); got != "refresh-token" {
+		t.Fatalf("refresh_token = %q, want retained session refresh token", got)
+	}
+	if cookies := rr.Result().Cookies(); len(cookies) != 1 ||
+		cookies[0].Value == cookieRecorder.Result().Cookies()[0].Value {
+		t.Fatalf("session cookie = %#v, want a renewed session cookie", cookies)
+	}
+}
+
+func TestHandlerRefreshSessionIntervalSilentlyReauthenticates(t *testing.T) {
+	idp := newCodeFlowIDP(t, nil)
+	cfg := codeFlowConfig(idp.URL)
+	cfg.RefreshSessionInterval = intPtr(60)
+	p := newTestPlugin(t, cfg)
+
+	cookieRecorder := httptest.NewRecorder()
+	if err := p.writeSession(cookieRecorder, sessionData{
+		CreatedAt:         time.Now().Add(-time.Hour).Unix(),
+		UpdatedAt:         time.Now().Unix(),
+		LastAuthenticated: time.Now().Add(-2 * time.Minute).Unix(),
+		AccessToken:       "active-access-token",
+		IDToken:           "id-token",
+		ExpiresAt:         time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.AddCookie(cookieRecorder.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called during silent reauthentication")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body=%s", rr.Code, rr.Body.String())
+	}
+	authorizationURL, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorization URL: %v", err)
+	}
+	if prompt := authorizationURL.Query().Get("prompt"); prompt != "none" {
+		t.Fatalf("prompt = %q, want none", prompt)
+	}
+}
+
 func TestHandlerRestartsAuthenticationForExpiredOrTamperedSession(t *testing.T) {
 	idp := newCodeFlowIDP(t, nil)
 	cfg := codeFlowConfig(idp.URL)
@@ -867,6 +1323,90 @@ func TestHandlerLogoutClearsSessionAndUsesEndSessionEndpoint(t *testing.T) {
 	}
 }
 
+func TestHandlerLogoutRevokesSessionAccessAndRefreshTokens(t *testing.T) {
+	type revocationRequest struct {
+		form     url.Values
+		username string
+		password string
+	}
+	revocations := make(chan revocationRequest, 2)
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			json.NewEncoder(w).Encode(map[string]any{
+				"issuer":               "http://" + r.Host,
+				"end_session_endpoint": "http://" + r.Host + "/logout",
+				"revocation_endpoint":  "http://" + r.Host + "/revoke",
+			})
+		case "/revoke":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			username, password, _ := r.BasicAuth()
+			revocations <- revocationRequest{form: r.PostForm, username: username, password: password}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(idp.Close)
+
+	cfg := codeFlowConfig(idp.URL)
+	cfg.RevokeTokensOnLogout = true
+	cfg.TokenEndpointAuthMethod = "client_secret_post"
+	p := newTestPlugin(t, cfg)
+	cookieRecorder := httptest.NewRecorder()
+	if err := p.writeSession(cookieRecorder, sessionData{
+		CreatedAt:    time.Now().Unix(),
+		UpdatedAt:    time.Now().Unix(),
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/logout", nil)
+	req.AddCookie(cookieRecorder.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(revocations) != 2 {
+		t.Fatalf("revocation requests = %d, want 2", len(revocations))
+	}
+	requests := map[string]revocationRequest{}
+	for range 2 {
+		request := <-revocations
+		requests[request.form.Get("token_type_hint")] = request
+	}
+	for hint, token := range map[string]string{"refresh_token": "refresh-token", "access_token": "access-token"} {
+		request, ok := requests[hint]
+		if !ok {
+			t.Fatalf("missing revocation request for %s", hint)
+		}
+		if got := request.form.Get("token"); got != token {
+			t.Fatalf("%s revocation token = %q, want %q", hint, got, token)
+		}
+		if request.username != "" || request.password != "" {
+			t.Fatalf(
+				"revocation basic credentials = %q:%q, want none for client_secret_post",
+				request.username,
+				request.password,
+			)
+		}
+		if got := request.form.Get("client_id"); got != "apisix" {
+			t.Fatalf("revocation client_id = %q, want apisix", got)
+		}
+		if got := request.form.Get("client_secret"); got != "secret-a" {
+			t.Fatalf("revocation client_secret = %q, want secret-a", got)
+		}
+	}
+}
+
 func TestHandlerLogoutFallsBackToPostLogoutRedirectURI(t *testing.T) {
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/openid-configuration" {
@@ -910,8 +1450,11 @@ func TestSessionCookieHonorsConfiguredAttributesAndAbsoluteTimeout(t *testing.T)
 	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil))
 
 	cookie := rr.Result().Cookies()[0]
-	if cookie.Name != cfg.Session.CookieName || cookie.Path != cfg.Session.CookiePath || cookie.Domain != cfg.Session.CookieDomain ||
-		!cookie.Secure || cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode ||
+	if cookie.Name != cfg.Session.CookieName || cookie.Path != cfg.Session.CookiePath ||
+		cookie.Domain != cfg.Session.CookieDomain ||
+		!cookie.Secure ||
+		cookie.HttpOnly ||
+		cookie.SameSite != http.SameSiteStrictMode ||
 		cookie.Expires.IsZero() {
 		t.Fatalf("session cookie attributes = %#v, want configured attributes and expiry", cookie)
 	}
@@ -936,8 +1479,111 @@ func TestPostInitMapsDeprecatedSessionLifetimeAndDefersRedis(t *testing.T) {
 		Session:   SessionConfig{Secret: "0123456789abcdef", Storage: "redis"},
 	}}
 	if err := p.PostInit(); err == nil {
-		t.Fatal("PostInit() error = nil, want redis storage deferral error")
+		t.Fatal("PostInit() error = nil, want missing redis config error")
 	}
+}
+
+func TestRedisSessionStoresEncryptedStateOutsideCookie(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:  "apisix",
+		Discovery: "http://idp.example.com/.well-known/openid-configuration",
+		Session: SessionConfig{
+			Secret:  "0123456789abcdef",
+			Storage: "redis",
+			Redis:   &SessionRedisConfig{Prefix: "oidc-sessions"},
+		},
+	})
+	store := &fakeSessionStore{values: make(map[string]string)}
+	p.sessionStore = store
+
+	writer := httptest.NewRecorder()
+	if err := p.writeSession(writer, sessionData{
+		CreatedAt:    time.Now().Unix(),
+		UpdatedAt:    time.Now().Unix(),
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+
+	cookie := writer.Result().Cookies()[0]
+	if strings.Contains(cookie.Value, "access-token") {
+		t.Fatalf("redis session cookie contains access token: %q", cookie.Value)
+	}
+	if len(store.values) != 1 {
+		t.Fatalf("stored session count = %d, want 1", len(store.values))
+	}
+	for key, value := range store.values {
+		if !strings.HasPrefix(key, "oidc-sessions:") {
+			t.Fatalf("redis key = %q, want configured prefix", key)
+		}
+		if strings.Contains(value, "access-token") {
+			t.Fatalf("stored session contains plaintext access token: %q", value)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.AddCookie(cookie)
+	session, err := p.readSession(req)
+	if err != nil {
+		t.Fatalf("readSession() error = %v", err)
+	}
+	if session == nil || session.AccessToken != "access-token" || session.RefreshToken != "refresh-token" {
+		t.Fatalf("session = %#v, want Redis-backed tokens", session)
+	}
+}
+
+func TestClearRedisSessionDeletesStoredState(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:  "apisix",
+		Discovery: "http://idp.example.com/.well-known/openid-configuration",
+		Session: SessionConfig{
+			Secret:  "0123456789abcdef",
+			Storage: "redis",
+			Redis:   &SessionRedisConfig{Prefix: "oidc-sessions"},
+		},
+	})
+	store := &fakeSessionStore{values: make(map[string]string)}
+	p.sessionStore = store
+
+	writer := httptest.NewRecorder()
+	if err := p.writeSession(writer, sessionData{CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix()}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/logout", nil)
+	req.AddCookie(writer.Result().Cookies()[0])
+	session, err := p.readSession(req)
+	if err != nil {
+		t.Fatalf("readSession() error = %v", err)
+	}
+
+	p.clearSession(httptest.NewRecorder(), session)
+	if len(store.values) != 0 {
+		t.Fatalf("stored session count = %d, want 0 after logout", len(store.values))
+	}
+}
+
+type fakeSessionStore struct {
+	values map[string]string
+}
+
+func (s *fakeSessionStore) Get(_ context.Context, key string) (string, error) {
+	value, ok := s.values[key]
+	if !ok {
+		return "", errSessionNotFound
+	}
+	return value, nil
+}
+
+func (s *fakeSessionStore) Set(_ context.Context, key string, value string, _ time.Duration) error {
+	s.values[key] = value
+	return nil
+}
+
+func (s *fakeSessionStore) Delete(_ context.Context, key string) error {
+	delete(s.values, key)
+	return nil
 }
 
 func codeFlowConfig(discovery string) Config {
@@ -974,6 +1620,10 @@ func newCodeFlowIDP(t *testing.T, tokenHandler http.HandlerFunc) *httptest.Serve
 }
 
 func boolPtr(value bool) *bool {
+	return &value
+}
+
+func intPtr(value int) *int {
 	return &value
 }
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -248,6 +249,12 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		checkRequest := p.config.CheckRequest == nil || *p.config.CheckRequest
+		if !checkRequest && !p.config.CheckResponse {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeJSONMessage(w, http.StatusBadRequest, err.Error())
@@ -262,27 +269,44 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return io.NopCloser(bytes.NewReader(body)), nil
 		}
 
-		if p.config.CheckRequest != nil && !*p.config.CheckRequest {
+		if checkRequest {
+			if err := validateJSONContentType(r); err != nil {
+				writeJSONMessage(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+
+		bodyTab, protocol, content, err := extractRequestContent(r.URL.Path, body)
+		if err != nil && checkRequest {
+			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if err := validateJSONContentType(r); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+
+		if checkRequest {
+			code, message, _ := p.moderateContent(
+				r,
+				content,
+				p.config.RequestCheckLengthLimit,
+				p.config.RequestCheckService,
+			)
+			if code != 0 {
+				writeProtocolDeny(w, code, protocol, bodyTab, message)
+				return
+			}
+		}
+
+		if !p.config.CheckResponse {
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		content, err := extractRequestContent(body)
-		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		code, message := p.moderateContent(r, content, p.config.RequestCheckLengthLimit, p.config.RequestCheckService)
-		if code != 0 {
-			writeJSONMessage(w, code, message)
-			return
-		}
-
-		next.ServeHTTP(w, r)
+		response := newCapturedResponse()
+		next.ServeHTTP(response, r)
+		p.writeModeratedResponse(w, r, response, protocol, bodyTab)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -295,24 +319,209 @@ func validateJSONContentType(r *http.Request) error {
 	return nil
 }
 
-func (p *Plugin) moderateContent(r *http.Request, content string, lengthLimit int, serviceName string) (int, string) {
-	if strings.TrimSpace(content) == "" {
-		return 0, ""
+type capturedResponse struct {
+	header      http.Header
+	body        bytes.Buffer
+	status      int
+	wroteHeader bool
+}
+
+func newCapturedResponse() *capturedResponse {
+	return &capturedResponse{header: make(http.Header), status: http.StatusOK}
+}
+
+func (w *capturedResponse) Header() http.Header {
+	return w.header
+}
+
+func (w *capturedResponse) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
 	}
+	w.status = status
+	w.wroteHeader = true
+}
+
+func (w *capturedResponse) Write(body []byte) (int, error) {
+	w.wroteHeader = true
+	return w.body.Write(body)
+}
+
+func (w *capturedResponse) Flush() {}
+
+func (p *Plugin) writeModeratedResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	response *capturedResponse,
+	protocol ai_protocols.Protocol,
+	requestBody map[string]any,
+) {
+	if response.status >= http.StatusBadRequest {
+		writeCapturedResponse(w, response, response.body.Bytes())
+		return
+	}
+
+	if ai_protocols.IsStreaming(protocol, requestBody) {
+		p.writeModeratedStream(w, r, response, protocol, requestBody)
+		return
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(response.body.Bytes(), &body); err != nil {
+		writeCapturedResponse(w, response, response.body.Bytes())
+		return
+	}
+	content := ai_protocols.ExtractResponseText(protocol, body)
+	code, message, _ := p.moderateContent(
+		r,
+		content,
+		p.config.ResponseCheckLengthLimit,
+		p.config.ResponseCheckService,
+	)
+	if code == 0 {
+		writeCapturedResponse(w, response, response.body.Bytes())
+		return
+	}
+
+	copyResponseHeaders(w.Header(), response.header)
+	w.Header().Del("Content-Length")
+	writeProtocolDeny(w, code, protocol, requestBody, message)
+}
+
+func (p *Plugin) writeModeratedStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	response *capturedResponse,
+	protocol ai_protocols.Protocol,
+	requestBody map[string]any,
+) {
+	content := extractSSEText(protocol, response.body.Bytes())
+	code, message, riskLevel := p.moderateContent(
+		r,
+		content,
+		p.config.ResponseCheckLengthLimit,
+		p.config.ResponseCheckService,
+	)
+	if p.config.StreamCheckMode == "realtime" && code != 0 {
+		copyResponseHeaders(w.Header(), response.header)
+		w.Header().Del("Content-Length")
+		writeProtocolDeny(w, code, protocol, requestBody, message)
+		return
+	}
+
+	body := response.body.Bytes()
+	if p.config.StreamCheckMode == "final_packet" && riskLevel != "" {
+		body = addRiskLevelToFinalSSEPacket(body, riskLevel)
+	}
+	writeCapturedResponse(w, response, body)
+}
+
+func extractSSEText(protocol ai_protocols.Protocol, body []byte) string {
+	parts := make([]string, 0)
+	for _, line := range strings.Split(string(body), "\n") {
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == line || data == "" || data == "[DONE]" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if content := extractSSEEventText(protocol, event); content != "" {
+			parts = append(parts, content)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func extractSSEEventText(protocol ai_protocols.Protocol, event map[string]any) string {
+	switch protocol {
+	case ai_protocols.OpenAIResponses:
+		text, _ := event["delta"].(string)
+		return text
+	case ai_protocols.AnthropicMessages:
+		delta, _ := event["delta"].(map[string]any)
+		text, _ := delta["text"].(string)
+		return text
+	default:
+		choices, _ := event["choices"].([]any)
+		if len(choices) == 0 {
+			return ""
+		}
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		text, _ := delta["content"].(string)
+		return text
+	}
+}
+
+func addRiskLevelToFinalSSEPacket(body []byte, riskLevel string) []byte {
+	lines := strings.Split(string(body), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		event["risk_level"] = riskLevel
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return body
+		}
+		lines[i] = "data: " + string(encoded)
+		return []byte(strings.Join(lines, "\n"))
+	}
+	return body
+}
+
+func writeCapturedResponse(w http.ResponseWriter, response *capturedResponse, body []byte) {
+	copyResponseHeaders(w.Header(), response.header)
+	if len(body) != response.body.Len() {
+		w.Header().Del("Content-Length")
+	}
+	w.WriteHeader(response.status)
+	_, _ = w.Write(body)
+}
+
+func copyResponseHeaders(destination, source http.Header) {
+	for field, values := range source {
+		destination[field] = append([]string(nil), values...)
+	}
+}
+
+func (p *Plugin) moderateContent(
+	r *http.Request,
+	content string,
+	lengthLimit int,
+	serviceName string,
+) (int, string, string) {
+	if strings.TrimSpace(content) == "" {
+		return 0, "", ""
+	}
+	runes := []rune(content)
 	if lengthLimit <= 0 {
-		lengthLimit = len(content)
+		lengthLimit = len(runes)
 	}
 
 	sessionID := p.nonce()
-	for start := 0; start < len(content); start += lengthLimit {
+	lastRiskLevel := ""
+	for start := 0; start < len(runes); start += lengthLimit {
 		end := start + lengthLimit
-		if end > len(content) {
-			end = len(content)
+		if end > len(runes) {
+			end = len(runes)
 		}
-		hit, message, err := p.checkSingleContent(r, sessionID, content[start:end], serviceName)
+		hit, message, riskLevel, err := p.checkSingleContent(r, sessionID, string(runes[start:end]), serviceName)
 		if err != nil {
-			return 0, ""
+			return 0, "", ""
 		}
+		lastRiskLevel = riskLevel
 		if hit {
 			if p.config.DenyMessage != "" {
 				message = p.config.DenyMessage
@@ -320,11 +529,11 @@ func (p *Plugin) moderateContent(r *http.Request, content string, lengthLimit in
 			if message == "" {
 				message = "Your request violate our content policy."
 			}
-			return p.config.DenyCode, message
+			return p.config.DenyCode, message, riskLevel
 		}
 	}
 
-	return 0, ""
+	return 0, "", lastRiskLevel
 }
 
 func (p *Plugin) checkSingleContent(
@@ -332,10 +541,10 @@ func (p *Plugin) checkSingleContent(
 	sessionID string,
 	content string,
 	serviceName string,
-) (bool, string, error) {
+) (bool, string, string, error) {
 	paramsBody, err := p.buildFormBody(sessionID, content, serviceName)
 	if err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
 
 	req, err := http.NewRequestWithContext(
@@ -345,22 +554,22 @@ func (p *Plugin) checkSingleContent(
 		strings.NewReader(paramsBody),
 	)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to create Aliyun moderation request: %w", err)
+		return false, "", "", fmt.Errorf("failed to create Aliyun moderation request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to request: %w", err)
+		return false, "", "", fmt.Errorf("failed to request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to read response body: %w", err)
+		return false, "", "", fmt.Errorf("failed to read response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, "", fmt.Errorf(
+		return false, "", "", fmt.Errorf(
 			"failed to request aliyun text moderation service, status: %d, body: %s",
 			resp.StatusCode,
 			rawBody,
@@ -369,19 +578,19 @@ func (p *Plugin) checkSingleContent(
 
 	var response aliyunResponse
 	if err := json.Unmarshal(rawBody, &response); err != nil {
-		return false, "", fmt.Errorf("failed to decode response: %w", err)
+		return false, "", "", fmt.Errorf("failed to decode response: %w", err)
 	}
 	if response.Data == nil || response.Data.RiskLevel == "" {
-		return false, "", fmt.Errorf("failed to get risk level: %s", rawBody)
+		return false, "", "", fmt.Errorf("failed to get risk level: %s", rawBody)
 	}
 	if riskLevelToInt(response.Data.RiskLevel) < riskLevelToInt(p.config.RiskLevelBar) {
-		return false, "", nil
+		return false, "", response.Data.RiskLevel, nil
 	}
 
 	if len(response.Data.Advice) > 0 {
-		return true, response.Data.Advice[0].Answer, nil
+		return true, response.Data.Advice[0].Answer, response.Data.RiskLevel, nil
 	}
-	return true, "", nil
+	return true, "", response.Data.RiskLevel, nil
 }
 
 func (p *Plugin) buildFormBody(sessionID string, content string, serviceName string) (string, error) {
@@ -443,55 +652,46 @@ func aliyunEscape(value string) string {
 	return escaped
 }
 
-func extractRequestContent(body []byte) (string, error) {
+func extractRequestContent(
+	requestPath string,
+	body []byte,
+) (map[string]any, ai_protocols.Protocol, string, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
-		return "", fmt.Errorf("missing request body")
+		return nil, ai_protocols.Protocol{}, "", fmt.Errorf("missing request body")
 	}
 
-	var data any
+	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
-		return "", fmt.Errorf("could not parse JSON request body: %w", err)
+		return nil, ai_protocols.Protocol{}, "", fmt.Errorf("could not parse JSON request body: %w", err)
 	}
-
-	contents := make([]string, 0)
-	collectAIContent(data, &contents)
-	if len(contents) == 0 {
-		return string(body), nil
+	protocol, err := ai_protocols.Detect(requestPath, data)
+	if err != nil {
+		return nil, ai_protocols.Protocol{}, "", err
 	}
-	return strings.Join(contents, " "), nil
+	return data, protocol, strings.Join(ai_protocols.ExtractRequestContent(protocol, data), " "), nil
 }
 
-func collectAIContent(value any, contents *[]string) {
-	switch v := value.(type) {
-	case map[string]any:
-		if messages, ok := v["messages"].([]any); ok {
-			for _, message := range messages {
-				messageMap, ok := message.(map[string]any)
-				if !ok {
-					continue
-				}
-				appendContent(messageMap["content"], contents)
-			}
-		}
-		appendContent(v["instructions"], contents)
-		appendContent(v["input"], contents)
-		appendContent(v["prompt"], contents)
+func writeProtocolDeny(
+	w http.ResponseWriter,
+	status int,
+	protocol ai_protocols.Protocol,
+	body map[string]any,
+	message string,
+) {
+	model, _ := body["model"].(string)
+	encoded, contentType, err := ai_protocols.BuildDenyWireResponse(
+		protocol,
+		model,
+		message,
+		ai_protocols.IsStreaming(protocol, body),
+	)
+	if err != nil {
+		writeJSONMessage(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-}
-
-func appendContent(value any, contents *[]string) {
-	switch v := value.(type) {
-	case string:
-		if strings.TrimSpace(v) != "" {
-			*contents = append(*contents, v)
-		}
-	case []any:
-		for _, item := range v {
-			appendContent(item, contents)
-		}
-	case map[string]any:
-		appendContent(v["text"], contents)
-	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = w.Write(encoded)
 }
 
 func riskLevelToInt(riskLevel string) int {

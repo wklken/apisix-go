@@ -154,6 +154,41 @@ func TestExistingSessionPassesRequest(t *testing.T) {
 	}
 }
 
+func TestIdPLogoutRequestDeletesMatchingCASSession(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IDPURI:         "https://cas.example.com",
+		CASCallbackURI: "/cas_callback",
+		LogoutURI:      "/logout",
+		Cookie: CookieConfig{
+			Secret: strings.Repeat("s", 32),
+			Secure: boolPtr(false),
+		},
+	})
+	p.storeSession("ST-1", "alice")
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/cas_callback",
+		strings.NewReader(`<samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:LogoutRequest>`),
+	)
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("next handler was not called after IdP logout request")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if _, ok := p.sessions[p.sessionKey("ST-1")]; ok {
+		t.Fatal("CAS session still exists after IdP logout request")
+	}
+}
+
 func TestLogoutDeletesSessionAndRedirectsToCASLogout(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		IDPURI:         "https://cas.example.com",

@@ -7,8 +7,11 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/jwe_decrypt"
 	"github.com/wklken/apisix-go/pkg/plugin/jwt_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/key_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/ldap_auth"
+	"github.com/wklken/apisix-go/pkg/plugin/wolf_rbac"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -139,6 +142,12 @@ func newAuthPlugin(name string) (authPlugin, error) {
 		return &jwt_auth.Plugin{}, nil
 	case "hmac-auth":
 		return &hmac_auth.Plugin{}, nil
+	case "jwe-decrypt":
+		return &jwe_decrypt.Plugin{}, nil
+	case "ldap-auth":
+		return &ldap_auth.Plugin{}, nil
+	case "wolf-rbac":
+		return &wolf_rbac.Plugin{}, nil
 	default:
 		return nil, fmt.Errorf("%s plugin is not supported", name)
 	}

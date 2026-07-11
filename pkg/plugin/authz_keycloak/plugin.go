@@ -26,6 +26,7 @@ type Plugin struct {
 
 	mu                  sync.Mutex
 	discovery           discoveryData
+	discoveryExpiresAt  time.Time
 	serviceAccountToken tokenCache
 }
 
@@ -215,13 +216,32 @@ type discoveryData struct {
 }
 
 type tokenEndpointResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int    `json:"expires_in"`
+	RefreshToken     string `json:"refresh_token"`
+	RefreshExpiresIn int    `json:"refresh_expires_in"`
 }
 
 type tokenCache struct {
-	value     string
+	value                 string
+	expiresAt             time.Time
+	refreshToken          string
+	refreshTokenExpiresAt time.Time
+	cacheExpiresAt        time.Time
+}
+
+type discoveryCacheEntry struct {
+	value     discoveryData
 	expiresAt time.Time
+}
+
+var sharedCache = struct {
+	sync.Mutex
+	discovery           map[string]discoveryCacheEntry
+	serviceAccountToken map[string]tokenCache
+}{
+	discovery:           make(map[string]discoveryCacheEntry),
+	serviceAccountToken: make(map[string]tokenCache),
 }
 
 func (p *Plugin) Init() error {
@@ -242,10 +262,13 @@ func (p *Plugin) PostInit() error {
 	configUID.Add(p.config.ClientID)
 	configUID.Add(p.config.Timeout)
 	configUID.Add(p.sslVerify())
+	configUID.Add(*p.config.Keepalive)
+	configUID.Add(p.config.KeepaliveTimeout)
+	configUID.Add(p.config.KeepalivePool)
 
 	client := resty.New()
 	client.SetTimeout(time.Duration(p.config.Timeout) * time.Millisecond)
-	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.sslVerify()})
+	client.SetTransport(p.transport())
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	return nil
@@ -323,6 +346,16 @@ func (p *Plugin) applyDefaults() {
 
 func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
+}
+
+func (p *Plugin) transport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = !*p.config.Keepalive
+	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
+	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: !p.sslVerify()}
+
+	return transport
 }
 
 func (p *Plugin) evaluatePermissions(r *http.Request, token string) (int, string, map[string]string) {
@@ -405,17 +438,44 @@ func (p *Plugin) permissionsForRequest(r *http.Request) ([]string, error) {
 }
 
 func (p *Plugin) serviceAccountAccessToken() (string, error) {
+	endpoint, err := p.tokenEndpoint()
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now()
 	p.mu.Lock()
-	if p.serviceAccountToken.value != "" && time.Now().Before(p.serviceAccountToken.expiresAt) {
+	if validTokenCache(p.serviceAccountToken, now) {
 		token := p.serviceAccountToken.value
 		p.mu.Unlock()
 		return token, nil
 	}
+	cachedToken := p.serviceAccountToken
 	p.mu.Unlock()
 
-	endpoint, err := p.tokenEndpoint()
-	if err != nil {
-		return "", err
+	if cached, ok := loadSharedServiceAccountToken(endpoint, p.config.ClientID, now); ok {
+		p.mu.Lock()
+		p.serviceAccountToken = cached
+		p.mu.Unlock()
+		return cached.value, nil
+	} else if cached.value != "" {
+		cachedToken = cached
+	}
+
+	if cachedToken.refreshToken != "" && now.Before(cachedToken.refreshTokenExpiresAt) {
+		form := url.Values{}
+		form.Set("grant_type", "refresh_token")
+		form.Set("client_id", p.config.ClientID)
+		form.Set("client_secret", p.config.ClientSecret)
+		form.Set("refresh_token", cachedToken.refreshToken)
+
+		refreshed, err := p.requestServiceAccountToken(endpoint, form)
+		if err != nil {
+			return "", err
+		}
+		if refreshed.AccessToken != "" {
+			return p.cacheServiceAccountToken(endpoint, refreshed, cachedToken), nil
+		}
 	}
 
 	form := url.Values{}
@@ -423,42 +483,98 @@ func (p *Plugin) serviceAccountAccessToken() (string, error) {
 	form.Set("client_id", p.config.ClientID)
 	form.Set("client_secret", p.config.ClientSecret)
 
+	response, err := p.requestServiceAccountToken(endpoint, form)
+	if err != nil {
+		return "", err
+	}
+	if response.AccessToken == "" {
+		return "", errors.New("response does not contain access_token field")
+	}
+
+	return p.cacheServiceAccountToken(endpoint, response, tokenCache{}), nil
+}
+
+func (p *Plugin) requestServiceAccountToken(endpoint string, form url.Values) (tokenEndpointResponse, error) {
 	resp, err := p.client.R().
 		SetHeader("Content-Type", "application/x-www-form-urlencoded").
 		SetBody(form.Encode()).
 		Post(endpoint)
 	if err != nil {
-		return "", err
+		return tokenEndpointResponse{}, err
 	}
 	if resp.StatusCode() != http.StatusOK {
-		return "", fmt.Errorf("token endpoint returned %d", resp.StatusCode())
+		return tokenEndpointResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode())
 	}
 
-	var token tokenEndpointResponse
-	if err := json.Unmarshal(resp.Body(), &token); err != nil {
-		return "", err
-	}
-	if token.AccessToken == "" {
-		return "", errors.New("response does not contain access_token field")
+	var response tokenEndpointResponse
+	if err := json.Unmarshal(resp.Body(), &response); err != nil {
+		return tokenEndpointResponse{}, err
 	}
 
-	expiresIn := token.ExpiresIn
+	return response, nil
+}
+
+func (p *Plugin) cacheServiceAccountToken(endpoint string, response tokenEndpointResponse, previous tokenCache) string {
+	now := time.Now()
+	expiresIn := response.ExpiresIn
 	if expiresIn == 0 {
 		expiresIn = p.config.AccessTokenExpiresIn
 	}
-	expiresIn = expiresIn - 1 - p.config.AccessTokenExpiresLeeway
+	expiresIn -= 1 + p.config.AccessTokenExpiresLeeway
 	if expiresIn <= 0 {
 		expiresIn = 1
 	}
 
-	p.mu.Lock()
-	p.serviceAccountToken = tokenCache{
-		value:     token.AccessToken,
-		expiresAt: time.Now().Add(time.Duration(expiresIn) * time.Second),
+	cache := tokenCache{
+		value:          response.AccessToken,
+		expiresAt:      now.Add(time.Duration(expiresIn) * time.Second),
+		cacheExpiresAt: now.Add(time.Duration(p.config.CacheTTLSeconds) * time.Second),
 	}
-	p.mu.Unlock()
+	if response.RefreshToken == "" && previous.refreshToken != "" {
+		cache.refreshToken = previous.refreshToken
+		cache.refreshTokenExpiresAt = previous.refreshTokenExpiresAt
+	} else if response.RefreshToken != "" {
+		refreshExpiresIn := response.RefreshExpiresIn
+		if refreshExpiresIn == 0 {
+			refreshExpiresIn = p.config.RefreshTokenExpiresIn
+		}
+		refreshExpiresIn -= 1 + p.config.RefreshTokenExpiresLeeway
+		if refreshExpiresIn <= 0 {
+			refreshExpiresIn = 1
+		}
+		cache.refreshToken = response.RefreshToken
+		cache.refreshTokenExpiresAt = now.Add(time.Duration(refreshExpiresIn) * time.Second)
+	}
 
-	return token.AccessToken, nil
+	p.mu.Lock()
+	p.serviceAccountToken = cache
+	p.mu.Unlock()
+	storeSharedServiceAccountToken(endpoint, p.config.ClientID, cache)
+
+	return response.AccessToken
+}
+
+func validTokenCache(cache tokenCache, now time.Time) bool {
+	return cache.value != "" && now.Before(cache.expiresAt) &&
+		(cache.cacheExpiresAt.IsZero() || now.Before(cache.cacheExpiresAt))
+}
+
+func serviceAccountCacheKey(endpoint string, clientID string) string {
+	return endpoint + ":" + clientID
+}
+
+func loadSharedServiceAccountToken(endpoint string, clientID string, now time.Time) (tokenCache, bool) {
+	sharedCache.Lock()
+	defer sharedCache.Unlock()
+
+	cache, ok := sharedCache.serviceAccountToken[serviceAccountCacheKey(endpoint, clientID)]
+	return cache, ok && validTokenCache(cache, now)
+}
+
+func storeSharedServiceAccountToken(endpoint string, clientID string, cache tokenCache) {
+	sharedCache.Lock()
+	sharedCache.serviceAccountToken[serviceAccountCacheKey(endpoint, clientID)] = cache
+	sharedCache.Unlock()
 }
 
 func (p *Plugin) tokenEndpoint() (string, error) {
@@ -490,8 +606,10 @@ func (p *Plugin) resourceRegistrationEndpoint() (string, error) {
 }
 
 func (p *Plugin) discover() (discoveryData, error) {
+	now := time.Now()
 	p.mu.Lock()
-	if p.discovery.TokenEndpoint != "" || p.discovery.ResourceRegistrationEndpoint != "" {
+	if (p.discovery.TokenEndpoint != "" || p.discovery.ResourceRegistrationEndpoint != "") &&
+		(p.discoveryExpiresAt.IsZero() || now.Before(p.discoveryExpiresAt)) {
 		discovery := p.discovery
 		p.mu.Unlock()
 		return discovery, nil
@@ -500,6 +618,13 @@ func (p *Plugin) discover() (discoveryData, error) {
 
 	if p.config.Discovery == "" {
 		return discoveryData{}, errors.New("discovery endpoint is not configured")
+	}
+	if discovery, ok := loadSharedDiscovery(p.config.Discovery, now); ok {
+		p.mu.Lock()
+		p.discovery = discovery
+		p.discoveryExpiresAt = now.Add(time.Duration(p.config.CacheTTLSeconds) * time.Second)
+		p.mu.Unlock()
+		return discovery, nil
 	}
 	resp, err := p.client.R().Get(p.config.Discovery)
 	if err != nil {
@@ -516,9 +641,28 @@ func (p *Plugin) discover() (discoveryData, error) {
 
 	p.mu.Lock()
 	p.discovery = discovery
+	p.discoveryExpiresAt = now.Add(time.Duration(p.config.CacheTTLSeconds) * time.Second)
 	p.mu.Unlock()
+	storeSharedDiscovery(p.config.Discovery, discovery, p.config.CacheTTLSeconds, now)
 
 	return discovery, nil
+}
+
+func loadSharedDiscovery(endpoint string, now time.Time) (discoveryData, bool) {
+	sharedCache.Lock()
+	defer sharedCache.Unlock()
+
+	cache, ok := sharedCache.discovery[endpoint]
+	return cache.value, ok && now.Before(cache.expiresAt)
+}
+
+func storeSharedDiscovery(endpoint string, discovery discoveryData, ttlSeconds int, now time.Time) {
+	sharedCache.Lock()
+	sharedCache.discovery[endpoint] = discoveryCacheEntry{
+		value:     discovery,
+		expiresAt: now.Add(time.Duration(ttlSeconds) * time.Second),
+	}
+	sharedCache.Unlock()
 }
 
 func (p *Plugin) isPasswordGrantRequest(r *http.Request) bool {

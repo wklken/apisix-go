@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -62,11 +63,6 @@ type Config struct {
 	denyPatterns  []*regexp.Regexp
 }
 
-type Message struct {
-	Role    string
-	Content string
-}
-
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }
@@ -109,8 +105,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		messages := messagesForRequest(r, bodyTab)
-		if !isOpenAIResponses(r, bodyTab) && !p.config.MatchAllConversationHistory {
+		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		messages := ai_protocols.ExtractMessages(protocol, bodyTab)
+		if protocol != ai_protocols.OpenAIResponses && !p.config.MatchAllConversationHistory {
 			messages = lastMessage(messages)
 		}
 		if !p.config.MatchAllRoles {
@@ -160,113 +162,15 @@ func readBody(r *http.Request) ([]byte, error) {
 	return body, err
 }
 
-func messagesForRequest(r *http.Request, body map[string]any) []Message {
-	if isOpenAIResponses(r, body) {
-		return responseMessages(body)
-	}
-	return chatMessages(body)
-}
-
-func isOpenAIResponses(r *http.Request, body map[string]any) bool {
-	if _, ok := body["input"]; !ok {
-		return false
-	}
-	return strings.HasSuffix(r.URL.Path, "/v1/responses")
-}
-
-func chatMessages(body map[string]any) []Message {
-	rawMessages, ok := body["messages"].([]any)
-	if !ok {
-		return nil
-	}
-
-	messages := make([]Message, 0, len(rawMessages))
-	for _, raw := range rawMessages {
-		msg, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		content := contentString(msg["content"])
-		if role != "" && content != "" {
-			messages = append(messages, Message{Role: role, Content: content})
-		}
-	}
-	return messages
-}
-
-func responseMessages(body map[string]any) []Message {
-	messages := []Message{}
-	if instructions, ok := body["instructions"].(string); ok && instructions != "" {
-		messages = append(messages, Message{Role: "system", Content: instructions})
-	}
-
-	switch input := body["input"].(type) {
-	case string:
-		if input != "" {
-			messages = append(messages, Message{Role: "user", Content: input})
-		}
-	case []any:
-		for _, item := range input {
-			switch typed := item.(type) {
-			case string:
-				if typed != "" {
-					messages = append(messages, Message{Role: "user", Content: typed})
-				}
-			case map[string]any:
-				role, _ := typed["role"].(string)
-				if role == "" {
-					role = "user"
-				}
-				content := contentString(firstNonNil(typed["content"], typed["text"]))
-				if content != "" {
-					messages = append(messages, Message{Role: role, Content: content})
-				}
-			}
-		}
-	}
-	return messages
-}
-
-func contentString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case []any:
-		parts := make([]string, 0, len(typed))
-		for _, part := range typed {
-			block, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			if text, ok := block["text"].(string); ok {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, " ")
-	default:
-		return ""
-	}
-}
-
-func firstNonNil(values ...any) any {
-	for _, value := range values {
-		if value != nil {
-			return value
-		}
-	}
-	return nil
-}
-
-func lastMessage(messages []Message) []Message {
+func lastMessage(messages []ai_protocols.Message) []ai_protocols.Message {
 	if len(messages) == 0 {
 		return nil
 	}
-	return []Message{messages[len(messages)-1]}
+	return []ai_protocols.Message{messages[len(messages)-1]}
 }
 
-func userMessages(messages []Message) []Message {
-	filtered := make([]Message, 0, len(messages))
+func userMessages(messages []ai_protocols.Message) []ai_protocols.Message {
+	filtered := make([]ai_protocols.Message, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Role == "user" {
 			filtered = append(filtered, msg)
@@ -275,7 +179,7 @@ func userMessages(messages []Message) []Message {
 	return filtered
 }
 
-func joinContent(messages []Message) string {
+func joinContent(messages []ai_protocols.Message) string {
 	parts := make([]string, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Content != "" {

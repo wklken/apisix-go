@@ -19,6 +19,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
@@ -243,6 +244,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	var chain alice.Chain
 
 	routeContext := b.pluginRouteContext(r)
+	routeContext.service = service
 	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
 	localPlugins = append(localPlugins, b.initPlugins(resourcePlugins, routeContext)...)
 	localPlugins = append(localPlugins, b.initPlugins(systemPlugins, routeContext)...)
@@ -268,7 +270,11 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		return nil
 	}
 
-	return chain.Then(handler)
+	return withAIExecutionTerminal(chain, handler)
+}
+
+func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
+	return ai_runtime.EnableTerminal(chain.Then(ai_runtime.TerminalHandler(fallback)))
 }
 
 func buildRequestContextConfig(
@@ -314,12 +320,15 @@ func prometheusPreferName(pluginConfigs map[string]resource.PluginConfig) bool {
 type pluginRouteContext struct {
 	routeID    string
 	serverAddr string
+	route      resource.Route
+	service    resource.Service
 }
 
 func (b *Builder) pluginRouteContext(r resource.Route) pluginRouteContext {
 	return pluginRouteContext{
 		routeID:    r.ID,
 		serverAddr: b.serverAddr,
+		route:      r,
 	}
 }
 
@@ -332,6 +341,10 @@ func normalizeServerAddr(serverAddr string) string {
 
 type pluginRouteContextSetter interface {
 	SetRouteContext(routeID string, serverAddr string)
+}
+
+type pluginResourceContextSetter interface {
+	SetResourceContext(route resource.Route, service resource.Service)
 }
 
 type pluginStopper interface {
@@ -365,6 +378,9 @@ func (b *Builder) initPlugins(
 
 		if setter, ok := p.(pluginRouteContextSetter); ok {
 			setter.SetRouteContext(routeContext.routeID, routeContext.serverAddr)
+		}
+		if setter, ok := p.(pluginResourceContextSetter); ok {
+			setter.SetResourceContext(routeContext.route, routeContext.service)
 		}
 
 		p.PostInit()

@@ -14,12 +14,15 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
+	config  Config
+	client  *http.Client
+	route   resource.Route
+	service resource.Service
 }
 
 const (
@@ -107,6 +110,8 @@ type opaInput struct {
 	Type     string         `json:"type"`
 	Request  opaHTTPRequest `json:"request"`
 	Vars     map[string]any `json:"var"`
+	Route    any            `json:"route,omitempty"`
+	Service  any            `json:"service,omitempty"`
 	Consumer any            `json:"consumer,omitempty"`
 }
 
@@ -168,6 +173,11 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() interface{} {
 	return &p.config
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
+	p.route = route
+	p.service = service
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -254,8 +264,65 @@ func (p *Plugin) buildOPARequest(r *http.Request) opaRequest {
 			input.Consumer = consumer
 		}
 	}
+	if p.config.WithRoute {
+		if route := p.opaRoute(r); route != nil {
+			input.Route = route
+		}
+	}
+	if p.config.WithService {
+		if service := p.opaService(r); service != nil {
+			input.Service = service
+		}
+	}
 
 	return opaRequest{Input: input}
+}
+
+func (p *Plugin) opaRoute(r *http.Request) any {
+	if p.route.ID != "" {
+		return p.route
+	}
+	if route := localRoute(r); len(route) > 0 {
+		return route
+	}
+	return nil
+}
+
+func (p *Plugin) opaService(r *http.Request) any {
+	if p.service.ID != "" {
+		return p.service
+	}
+	if service := localService(r); len(service) > 0 {
+		return service
+	}
+	return nil
+}
+
+func localRoute(r *http.Request) map[string]string {
+	route := map[string]string{}
+	for output, key := range map[string]string{
+		"id":   "$route_id",
+		"name": "$route_name",
+		"uri":  "$matched_uri",
+	} {
+		if value, ok := ctx.GetApisixVar(r, key).(string); ok && value != "" {
+			route[output] = value
+		}
+	}
+	return route
+}
+
+func localService(r *http.Request) map[string]string {
+	service := map[string]string{}
+	for output, key := range map[string]string{
+		"id":   "$service_id",
+		"name": "$service_name",
+	} {
+		if value, ok := ctx.GetApisixVar(r, key).(string); ok && value != "" {
+			service[output] = value
+		}
+	}
+	return service
 }
 
 func (p *Plugin) endpoint() string {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -73,10 +73,7 @@ type Config struct {
 	Append  []Message `json:"append,omitempty"`
 }
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+type Message = ai_protocols.Message
 
 func (p *Plugin) Config() interface{} {
 	return &p.config
@@ -111,11 +108,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if isOpenAIResponses(r, bodyTab) {
-			decorateResponses(bodyTab, p.config.Prepend, p.config.Append)
-		} else {
-			decorateChat(bodyTab, p.config.Prepend, p.config.Append)
+		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
+		if err != nil {
+			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			return
 		}
+		ai_protocols.PrependMessages(protocol, bodyTab, p.config.Prepend)
+		ai_protocols.AppendMessages(protocol, bodyTab, p.config.Append)
 
 		rewritten, err := json.Marshal(bodyTab)
 		if err != nil {
@@ -149,77 +148,6 @@ func readBody(r *http.Request) ([]byte, error) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return body, err
-}
-
-func decorateChat(body map[string]any, prepend []Message, appendMessages []Message) {
-	original := asMessages(body["messages"])
-	messages := make([]any, 0, len(prepend)+len(original)+len(appendMessages))
-	for _, msg := range prepend {
-		messages = append(messages, messageMap(msg))
-	}
-	messages = append(messages, original...)
-	for _, msg := range appendMessages {
-		messages = append(messages, messageMap(msg))
-	}
-	body["messages"] = messages
-}
-
-func decorateResponses(body map[string]any, prepend []Message, appendMessages []Message) {
-	if len(prepend) > 0 {
-		prependText := joinMessageContent(prepend)
-		if existing, ok := body["instructions"].(string); ok && existing != "" {
-			body["instructions"] = prependText + "\n" + existing
-		} else {
-			body["instructions"] = prependText
-		}
-	}
-
-	if len(appendMessages) == 0 {
-		return
-	}
-	appendText := joinMessageContent(appendMessages)
-	switch input := body["input"].(type) {
-	case string:
-		body["input"] = input + "\n" + appendText
-	case []any:
-		body["input"] = append(input, map[string]any{
-			"type":    "message",
-			"role":    "user",
-			"content": appendText,
-		})
-	default:
-		body["input"] = appendText
-	}
-}
-
-func isOpenAIResponses(r *http.Request, body map[string]any) bool {
-	if _, ok := body["input"]; !ok {
-		return false
-	}
-	return strings.HasSuffix(r.URL.Path, "/v1/responses")
-}
-
-func asMessages(value any) []any {
-	messages, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	return messages
-}
-
-func messageMap(msg Message) map[string]any {
-	return map[string]any{
-		"role":    msg.Role,
-		"content": msg.Content,
-	}
-}
-
-func joinMessageContent(messages []Message) string {
-	parts := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		parts = append(parts, msg.Content)
-	}
-	return strings.Join(parts, "\n")
 }
 
 func writeJSONMessage(w http.ResponseWriter, status int, message string) {

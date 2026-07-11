@@ -9,16 +9,21 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 
+	brotlidec "github.com/andybalholm/brotli"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
+	expr   *responseExpression
 }
 
 const (
@@ -32,7 +37,54 @@ const schema = `
   "properties": {
     "headers": {
       "type": "object",
-      "minProperties": 1
+      "minProperties": 1,
+      "anyOf": [
+        {
+          "patternProperties": {
+            "^[^:]+$": {
+              "oneOf": [
+                {"type": "string"},
+                {"type": "number"}
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "add": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^[^:]+:[^:]*[^/]$"
+              }
+            },
+            "set": {
+              "type": "object",
+              "minProperties": 1,
+              "patternProperties": {
+                "^[^:]+$": {
+                  "oneOf": [
+                    {"type": "string"},
+                    {"type": "number"}
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "remove": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^[^:]+$"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "body": {
       "type": "string"
@@ -113,22 +165,77 @@ type Headers struct {
 }
 
 func (h *Headers) UnmarshalJSON(data []byte) error {
-	type headerOperations Headers
-	var operations headerOperations
-	if err := jsonUnmarshal(data, &operations); err != nil {
+	var raw map[string]any
+	if err := jsonUnmarshal(data, &raw); err != nil {
 		return err
 	}
-	if len(operations.Add) > 0 || len(operations.Set) > 0 || len(operations.Remove) > 0 {
-		*h = Headers(operations)
+	_, addConfigured := raw["add"].([]any)
+	_, setConfigured := raw["set"].(map[string]any)
+	_, removeConfigured := raw["remove"].([]any)
+	if addConfigured || setConfigured || removeConfigured {
+		var err error
+		h.Add, err = stringValues(raw["add"], "headers.add")
+		if err != nil {
+			return err
+		}
+		h.Set, err = headerValues(raw["set"], "headers.set")
+		if err != nil {
+			return err
+		}
+		h.Remove, err = stringValues(raw["remove"], "headers.remove")
+		if err != nil {
+			return err
+		}
 		return nil
 	}
 
-	var legacy map[string]string
-	if err := jsonUnmarshal(data, &legacy); err != nil {
+	legacy, err := headerValues(raw, "headers")
+	if err != nil {
 		return err
 	}
 	h.LegacySet = legacy
 	return nil
+}
+
+func stringValues(value any, name string) ([]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", name)
+	}
+	values := make([]string, len(items))
+	for i, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s item %d must be a string", name, i)
+		}
+		values[i] = text
+	}
+	return values, nil
+}
+
+func headerValues(value any, name string) (map[string]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	items, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an object", name)
+	}
+	values := make(map[string]string, len(items))
+	for field, value := range items {
+		switch typed := value.(type) {
+		case string:
+			values[field] = typed
+		case float64:
+			values[field] = strconv.FormatFloat(typed, 'f', -1, 64)
+		default:
+			return nil, fmt.Errorf("%s.%s must be a string or number", name, field)
+		}
+	}
+	return values, nil
 }
 
 func (p *Plugin) Init() error {
@@ -146,6 +253,21 @@ func (p *Plugin) PostInit() error {
 	}
 	if p.config.Body != nil && len(p.config.Filters) > 0 {
 		return fmt.Errorf("response-rewrite body and filters cannot be configured together")
+	}
+	if *p.config.BodyBase64 {
+		if p.config.Body == nil || *p.config.Body == "" {
+			return fmt.Errorf("response-rewrite body_base64 requires a non-empty body")
+		}
+		if _, err := base64.StdEncoding.DecodeString(*p.config.Body); err != nil {
+			return fmt.Errorf("response-rewrite body is not valid base64: %w", err)
+		}
+	}
+	if len(p.config.Vars) > 0 {
+		expr, err := compileResponseExpression(p.config.Vars)
+		if err != nil {
+			return fmt.Errorf("response-rewrite vars validation failed: %w", err)
+		}
+		p.expr = expr
 	}
 	for i := range p.config.Filters {
 		if p.config.Filters[i].Scope == "" {
@@ -203,57 +325,37 @@ func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
 
 	if len(p.config.Filters) > 0 {
 		body := resp.body
-		if decoded, ok := decodeFilterBody(resp); ok {
-			body = decoded
-			resp.header.Del("Content-Encoding")
-		}
-		for _, filter := range p.config.Filters {
-			if filter.Scope == "global" {
-				body = []byte(filter.pattern.ReplaceAllString(string(body), filter.Replace))
-				continue
+		canFilter := true
+		if resp.header.Get("Content-Encoding") != "" {
+			decoded, ok := decodeFilterBody(resp)
+			if !ok {
+				canFilter = false
+			} else {
+				body = decoded
+				resp.header.Del("Content-Encoding")
 			}
-			body = []byte(replaceFirstString(filter.pattern, string(body), filter.Replace))
 		}
-		resp.body = body
-		resp.header.Del("Content-Length")
+		if canFilter {
+			for _, filter := range p.config.Filters {
+				if filter.Scope == "global" {
+					body = []byte(filter.pattern.ReplaceAllString(string(body), filter.Replace))
+					continue
+				}
+				body = []byte(replaceFirstString(filter.pattern, string(body), filter.Replace))
+			}
+			resp.body = body
+			resp.header.Del("Content-Length")
+		}
 	}
 
 	p.config.Headers.apply(r, resp)
 }
 
 func (p *Plugin) varsMatched(r *http.Request, resp *responseRecorder) bool {
-	if len(p.config.Vars) == 0 {
+	if p.expr == nil {
 		return true
 	}
-
-	pendingOp := "AND"
-	hasResult := false
-	result := true
-	for _, condition := range p.config.Vars {
-		if op, ok := condition.(string); ok {
-			switch strings.ToUpper(op) {
-			case "AND", "OR":
-				pendingOp = strings.ToUpper(op)
-			default:
-				return false
-			}
-			continue
-		}
-
-		matched := matchCondition(r, resp, condition)
-		if !hasResult {
-			result = matched
-			hasResult = true
-			continue
-		}
-		if pendingOp == "OR" {
-			result = result || matched
-		} else {
-			result = result && matched
-		}
-		pendingOp = "AND"
-	}
-	return hasResult && result
+	return p.expr.eval(r, resp)
 }
 
 func (h Headers) apply(r *http.Request, resp *responseRecorder) {
@@ -314,56 +416,303 @@ func decodeFilterBody(resp *responseRecorder) ([]byte, bool) {
 			return nil, false
 		}
 		return decoded, true
+	case "br":
+		decoded, err := io.ReadAll(brotlidec.NewReader(bytes.NewReader(resp.body)))
+		if err != nil {
+			return nil, false
+		}
+		return decoded, true
 	default:
 		return nil, false
 	}
 }
 
-func matchCondition(r *http.Request, resp *responseRecorder, condition any) bool {
-	parts, ok := condition.([]any)
-	if !ok || len(parts) != 3 {
-		return false
+type responseExpression struct {
+	logic     string
+	children  []*responseExpression
+	condition *responseCondition
+}
+
+type responseCondition struct {
+	variable string
+	operator string
+	right    any
+	reverse  bool
+	pattern  *regexp.Regexp
+	prefixes []netip.Prefix
+}
+
+func compileResponseExpression(value any) (*responseExpression, error) {
+	rules, ok := value.([]any)
+	if !ok || len(rules) == 0 {
+		return nil, fmt.Errorf("expression must be a non-empty array")
 	}
 
-	left := fmt.Sprint(parts[0])
-	op := fmt.Sprint(parts[1])
-	right := fmt.Sprint(parts[2])
-	actual := responseVar(r, resp, left)
+	if logic, ok := rules[0].(string); ok && isLogicOperator(logic) {
+		if len(rules) < 3 {
+			return nil, fmt.Errorf("logical expression %s requires at least two operands", logic)
+		}
+		children := make([]*responseExpression, 0, len(rules)-1)
+		for _, child := range rules[1:] {
+			compiled, err := compileResponseExpression(child)
+			if err != nil {
+				return nil, err
+			}
+			children = append(children, compiled)
+		}
+		return &responseExpression{logic: strings.ToUpper(logic), children: children}, nil
+	}
 
-	switch op {
-	case "==":
-		return actual == right
-	case "!=":
-		return actual != right
-	case ">":
-		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
-	case ">=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
-	case "<":
-		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
-	case "<=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
-	case "~":
-		matched, _ := regexp.MatchString(right, actual)
-		return matched
-	case "!~":
-		matched, _ := regexp.MatchString(right, actual)
-		return !matched
+	if len(rules) == 3 || len(rules) == 4 {
+		if _, ok := rules[0].(string); ok {
+			return compileResponseCondition(rules)
+		}
+	}
+
+	if _, ok := rules[0].([]any); !ok {
+		return nil, fmt.Errorf("expression must contain conditions or a logical operator")
+	}
+	current, err := compileResponseExpression(rules[0])
+	if err != nil {
+		return nil, err
+	}
+	pending := "AND"
+	wantsCondition := false
+	for _, item := range rules[1:] {
+		if logic, ok := item.(string); ok {
+			logic = strings.ToUpper(logic)
+			if logic != "AND" && logic != "OR" {
+				return nil, fmt.Errorf("invalid infix logical operator %q", logic)
+			}
+			if wantsCondition {
+				return nil, fmt.Errorf("logical operator %q requires a following condition", pending)
+			}
+			pending = logic
+			wantsCondition = true
+			continue
+		}
+		child, err := compileResponseExpression(item)
+		if err != nil {
+			return nil, err
+		}
+		current = &responseExpression{logic: pending, children: []*responseExpression{current, child}}
+		pending = "AND"
+		wantsCondition = false
+	}
+	if wantsCondition {
+		return nil, fmt.Errorf("logical operator %q requires a following condition", pending)
+	}
+	return current, nil
+}
+
+func isLogicOperator(operator string) bool {
+	switch strings.ToUpper(operator) {
+	case "AND", "OR", "!AND", "!OR":
+		return true
 	default:
 		return false
 	}
 }
 
-func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
-	l, err := strconv.ParseFloat(left, 64)
-	if err != nil {
-		return false
+func compileResponseCondition(parts []any) (*responseExpression, error) {
+	condition := &responseCondition{variable: fmt.Sprint(parts[0])}
+	if len(parts) == 4 {
+		if fmt.Sprint(parts[1]) != "!" {
+			return nil, fmt.Errorf("invalid negated condition")
+		}
+		condition.reverse = true
+		condition.operator = strings.ToLower(fmt.Sprint(parts[2]))
+		condition.right = parts[3]
+	} else {
+		condition.operator = strings.ToLower(fmt.Sprint(parts[1]))
+		condition.right = parts[2]
 	}
-	r, err := strconv.ParseFloat(right, 64)
-	if err != nil {
-		return false
+	switch condition.operator {
+	case "!=":
+		condition.operator = "~="
+	case "~":
+		condition.operator = "~~"
+	case "!~":
+		condition.operator = "~~"
+		condition.reverse = !condition.reverse
 	}
-	return compare(l, r)
+
+	switch condition.operator {
+	case "==", "~=", ">", ">=", "<", "<=", "has":
+	case "in":
+		if _, ok := expressionValues(condition.right); !ok {
+			return nil, fmt.Errorf("in operator requires an array")
+		}
+	case "~~", "~*":
+		options := ""
+		if condition.operator == "~*" {
+			options = "(?i)"
+		}
+		pattern, err := regexp.Compile(options + fmt.Sprint(condition.right))
+		if err != nil {
+			return nil, fmt.Errorf("invalid expression regex: %w", err)
+		}
+		condition.pattern = pattern
+	case "ipmatch":
+		values, ok := expressionValues(condition.right)
+		if !ok {
+			values = []any{condition.right}
+		}
+		for _, value := range values {
+			prefix, err := parseIPPrefix(fmt.Sprint(value))
+			if err != nil {
+				return nil, err
+			}
+			condition.prefixes = append(condition.prefixes, prefix)
+		}
+	default:
+		return nil, fmt.Errorf("invalid operator %q", condition.operator)
+	}
+	return &responseExpression{condition: condition}, nil
+}
+
+func parseIPPrefix(value string) (netip.Prefix, error) {
+	if prefix, err := netip.ParsePrefix(value); err == nil {
+		return prefix, nil
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("invalid ipmatch value %q", value)
+	}
+	return netip.PrefixFrom(address, address.BitLen()), nil
+}
+
+func (e *responseExpression) eval(r *http.Request, resp *responseRecorder) bool {
+	if e.condition != nil {
+		matched := e.condition.eval(r, resp)
+		if e.condition.reverse {
+			return !matched
+		}
+		return matched
+	}
+
+	matched := e.logic == "AND" || e.logic == "!AND"
+	if e.logic == "OR" || e.logic == "!OR" {
+		matched = false
+	}
+	for _, child := range e.children {
+		if e.logic == "AND" || e.logic == "!AND" {
+			matched = matched && child.eval(r, resp)
+			if !matched {
+				break
+			}
+		} else {
+			matched = matched || child.eval(r, resp)
+			if matched {
+				break
+			}
+		}
+	}
+	if e.logic == "!AND" || e.logic == "!OR" {
+		return !matched
+	}
+	return matched
+}
+
+func (c *responseCondition) eval(r *http.Request, resp *responseRecorder) bool {
+	actual := responseValue(r, resp, c.variable)
+	switch c.operator {
+	case "==":
+		return expressionEqual(actual, c.right)
+	case "~=":
+		return !expressionEqual(actual, c.right)
+	case ">", ">=", "<", "<=":
+		left, leftErr := strconv.ParseFloat(expressionString(actual), 64)
+		right, rightErr := strconv.ParseFloat(expressionString(c.right), 64)
+		if leftErr != nil || rightErr != nil {
+			return false
+		}
+		switch c.operator {
+		case ">":
+			return left > right
+		case ">=":
+			return left >= right
+		case "<":
+			return left < right
+		default:
+			return left <= right
+		}
+	case "~~", "~*":
+		return c.pattern.MatchString(expressionString(actual))
+	case "in":
+		values, _ := expressionValues(c.right)
+		for _, value := range values {
+			if expressionEqual(actual, value) {
+				return true
+			}
+		}
+		return false
+	case "has":
+		values, ok := expressionValues(actual)
+		if !ok {
+			return false
+		}
+		for _, value := range values {
+			if expressionEqual(value, c.right) {
+				return true
+			}
+		}
+		return false
+	case "ipmatch":
+		address, err := netip.ParseAddr(expressionString(actual))
+		if err != nil {
+			return false
+		}
+		for _, prefix := range c.prefixes {
+			if prefix.Contains(address) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func expressionEqual(left any, right any) bool {
+	switch right.(type) {
+	case float64, float32, int, int64, json.Number:
+		leftNumber, leftErr := strconv.ParseFloat(expressionString(left), 64)
+		rightNumber, rightErr := strconv.ParseFloat(expressionString(right), 64)
+		return leftErr == nil && rightErr == nil && leftNumber == rightNumber
+	default:
+		return expressionString(left) == expressionString(right)
+	}
+}
+
+func expressionString(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case []string:
+		return strings.Join(typed, ",")
+	case []any:
+		parts := make([]string, len(typed))
+		for i, item := range typed {
+			parts[i] = fmt.Sprint(item)
+		}
+		return strings.Join(parts, ",")
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+func expressionValues(value any) ([]any, bool) {
+	switch typed := value.(type) {
+	case []any:
+		return typed, true
+	case []string:
+		values := make([]any, len(typed))
+		for i, value := range typed {
+			values[i] = value
+		}
+		return values, true
+	default:
+		return nil, false
+	}
 }
 
 var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
@@ -375,17 +724,32 @@ func resolveValue(r *http.Request, resp *responseRecorder, value string) string 
 }
 
 func responseVar(r *http.Request, resp *responseRecorder, name string) string {
+	return expressionString(responseValue(r, resp, name))
+}
+
+func responseValue(r *http.Request, resp *responseRecorder, name string) any {
 	name = strings.TrimPrefix(name, "$")
 	switch {
-	case name == "status", name == "status_code":
-		return strconv.Itoa(resp.statusCode)
-	case strings.HasPrefix(name, "sent_http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "sent_http_"), "_", "-")
-		return resp.header.Get(header)
+	case name == "status", name == "status_code", name == "upstream_status":
+		return resp.statusCode
+	case strings.HasPrefix(name, "sent_http_"), strings.HasPrefix(name, "upstream_http_"):
+		prefix := "sent_http_"
+		if strings.HasPrefix(name, "upstream_http_") {
+			prefix = "upstream_http_"
+		}
+		header := strings.ReplaceAll(strings.TrimPrefix(name, prefix), "_", "-")
+		return headerValue(resp.header, header)
 	case name == "uri":
 		return r.URL.Path
 	case name == "request_uri":
 		return r.URL.RequestURI()
+	case name == "query_string" || name == "args":
+		return r.URL.RawQuery
+	case name == "is_args":
+		if r.URL.RawQuery != "" {
+			return "?"
+		}
+		return ""
 	case name == "method", name == "request_method":
 		return r.Method
 	case name == "host":
@@ -399,19 +763,57 @@ func responseVar(r *http.Request, resp *responseRecorder, name string) string {
 		}
 		return "http"
 	case name == "remote_addr":
+		if value := apisixctx.GetString(r.Context(), "remote_addr"); value != "" {
+			return value
+		}
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err == nil {
 			return host
 		}
 		return r.RemoteAddr
+	case name == "remote_port":
+		if value := apisixctx.GetString(r.Context(), "remote_port"); value != "" {
+			return value
+		}
+		_, port, _ := net.SplitHostPort(r.RemoteAddr)
+		return port
+	case name == "body_bytes_sent" || name == "bytes_sent":
+		return len(resp.body)
 	case strings.HasPrefix(name, "arg_"):
 		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "cookie_"):
+		cookie, err := r.Cookie(strings.TrimPrefix(name, "cookie_"))
+		if err == nil {
+			return cookie.Value
+		}
+		return ""
 	case strings.HasPrefix(name, "http_"):
 		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return r.Header.Get(header)
-	default:
+		return headerValue(r.Header, header)
+	}
+
+	key := "$" + name
+	if value := apisixvar.GetNginxVar(r, key); value != "" {
+		return value
+	}
+	if value := apisixctx.GetApisixVar(r, key); value != nil {
+		return value
+	}
+	if value := apisixctx.GetRequestVar(r, key); value != nil {
+		return value
+	}
+	return ""
+}
+
+func headerValue(header http.Header, name string) any {
+	values := header.Values(name)
+	if len(values) == 0 {
 		return ""
 	}
+	if len(values) == 1 {
+		return values[0]
+	}
+	return values
 }
 
 type responseRecorder struct {

@@ -83,7 +83,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `traffic-label` | yes | 63% | implement |
 | `traffic-split` | yes | 80% | monitor |
 | `redirect` | yes | 95% | monitor |
-| `response-rewrite` | yes | 84% | monitor |
+| `response-rewrite` | yes | 96% | monitor |
 | `oas-validator` | yes | 62% | implement |
 | `mcp-bridge` | yes | 75% | defer-native |
 | `degraphql` | yes | 65% | implement |

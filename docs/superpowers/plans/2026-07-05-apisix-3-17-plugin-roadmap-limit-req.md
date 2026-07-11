@@ -8076,3 +8076,25 @@ Measured downstream latency after intentional delay, adapted the local and Redis
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/limit_conn -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_conn -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 247: Complete Response Rewrite Expression And Body Parity
+
+**Files:**
+- Modify: `pkg/plugin/response_rewrite`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 response variables, nested `lua-resty-expr` rules, numeric response headers, base64 bodies, and gzip/Brotli upstream bodies.
+- Produces: validated expression trees, typed request/response variables, decoded filter input, and schema-compatible header values.
+
+- [x] **Step 1: Pin official expression and schema behavior**
+
+Added focused failures for nested logic, comparison/regex/list/IP operators, multi-value response headers, numeric header values, invalid expressions, and invalid base64 bodies.
+
+- [x] **Step 2: Implement expression, header, and decoder parity**
+
+Compiled and validated bounded `lua-resty-expr` trees, resolved common NGINX/APISIX/request/response variables, preserved multi-value headers for `has`, accepted string/numeric legacy and set headers, validated base64 during initialization, and decoded Brotli bodies before regex filters.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/response_rewrite -count=1 -timeout=30s`, `go test -race ./pkg/plugin/response_rewrite -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

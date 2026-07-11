@@ -85,9 +85,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 8/8
 
-- [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 84%
-  - support `status_code`, `body`, `body_base64`, header `add` / `set` / `remove`, bounded `vars`, header value variable resolution, response body `filters`, and gzip response decoding before filters
-  - not support full `lua-resty-expr` parity, deflate/brotli response-body decoding before filters, or streaming chunk-level body filters
+- [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 96%
+  - support `status_code`, validated plain/base64 `body`, legacy and `add` / `set` / `remove` headers with string or numeric values, response/request header variables, nested `lua-resty-expr` logical groups, comparison/regex/list/IP operators, response body `filters`, and gzip/Brotli response decoding before filters
+  - not support APISIX secret-reference resolution for `body`, exact OpenResty PCRE semantics, or streaming chunk-level body filters
 - [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 98%
   - support `uri`, `regex_uri`, `use_real_request_uri_unsafe`, `method`, `host`, `scheme`, request header `add` / `set` / `remove`, legacy header set config, bounded header value variable resolution, and `regex_uri` capture resolution in header values
   - not support exact OpenResty URI safe-encoding parity

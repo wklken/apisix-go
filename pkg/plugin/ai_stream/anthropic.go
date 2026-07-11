@@ -132,6 +132,7 @@ func (s *anthropicStreamState) convertChunk(
 		}))
 	}
 	if text := stringValue(delta["content"]); text != "" {
+		s.usage.Text += text
 		events = append(events, s.ensureBlock("text", map[string]any{"type": "text", "text": ""})...)
 		events = append(events, newAnthropicSSEEvent("content_block_delta", map[string]any{
 			"type": "content_block_delta", "index": s.currentBlock,

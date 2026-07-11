@@ -125,33 +125,33 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | Plugin | Current | What remains |
 |---|---:|---|
 | `ai` | 20% | Decide whether any Go-native equivalent is valuable; most APISIX behavior is runtime/router/balancer replacement and should stay deferred unless requested. |
-| `ai-proxy` | 58% | AI protocol detection/conversion registry, OpenAI Responses/Embeddings routing, provider-native request construction, AWS SigV4/GCP auth, streaming SSE/EventStream, streaming log variables, active connection metrics. |
-| `ai-proxy-multi` | 58% | Health checks, DNS node resolution, host/SNI preservation, priority balancer parity, AI rate-limiting fallback integration, same protocol/provider/streaming gaps as `ai-proxy`. |
-| `ai-request-rewrite` | 50% | AI protocol registry/conversion, Anthropic/Gemini/Vertex/Bedrock request construction, provider response filters, fallback/error-response policy integration. |
-| `ai-rate-limiting` | 50% | Redis/shared policy, `rules`, Lua `cost_expr`/expression, string variable limits, streaming token usage, automatic `ai-proxy`/`ai-proxy-multi` instance selection. |
-| `ai-rag` | 55% | More providers beyond Azure OpenAI/Azure AI Search, protocol append registry, broader Azure options, APISIX ctx/log variables, streaming/body-filter behavior. |
-| `ai-prompt-template` | 55% | Nested variable lookup, XML/form/multipart inputs, Anthropic/Responses-native outputs, template cache behavior. |
-| `ai-prompt-decorator` | 55% | Anthropic Messages, Bedrock Converse, OpenAI Embeddings, passthrough protocol decoration, streaming-specific behavior. |
-| `ai-prompt-guard` | 60% | Full protocol extraction beyond OpenAI Chat/Responses, OpenAI Embeddings, passthrough detection, AI-provider deny response shaping. |
-| `ai-aws-content-moderation` | 55% | AWS credential provider/session token support, response body moderation, streaming moderation, AI protocol content extraction, log variables. |
-| `ai-aliyun-content-moderation` | 50% | Response body moderation, streaming moderation, provider-compatible deny response shaping, SSE annotation, APISIX log variables. |
+| `ai-proxy` | 99% | Normal APISIX 3.17 config/behavior complete; exact OpenResty transport and phase lifecycle deferred. |
+| `ai-proxy-multi` | 98% | Normal config, chash sources, health checks, fallback, logging, protocols, and stream controls complete; explicit per-address DNS snapshots deferred. |
+| `ai-request-rewrite` | 90% | Current APISIX 3.17 provider protocols/auth complete; exact error/log phase lifecycle deferred. |
+| `ai-rate-limiting` | 90% | Global/instance/rule quotas, expressions, variable limits, fallback, and streaming charging complete; cross-process shared state deferred. |
+| `ai-rag` | 98% | Official Azure OpenAI/Azure AI Search behavior and six-protocol append complete; exact OpenResty HTTP lifecycle deferred. |
+| `ai-prompt-template` | 95% | Official JSON template behavior plus nested/indexed lookup complete; exact OpenResty LRU behavior deferred. |
+| `ai-prompt-decorator` | 90% | All six official protocol handlers complete; embeddings/passthrough no-op matches upstream. |
+| `ai-prompt-guard` | 88% | All six official protocol handlers complete; exact OpenResty PCRE engine behavior deferred. |
+| `ai-aws-content-moderation` | 98% | Official explicit credentials, SigV4, thresholds, encryption, and request moderation complete. |
+| `ai-aliyun-content-moderation` | 96% | Request/response/realtime/final-packet moderation, session reuse, SSE annotation, and risk variables complete; exact body-filter timing deferred. |
 
 ### AI Execution Tasks
 
-- [ ] **Task AI1: Build a minimal AI protocol abstraction**
+- [x] **Task AI1: Build a minimal AI protocol abstraction**
   - Define bounded request/response structs for OpenAI Chat, OpenAI Responses, and Embeddings.
   - Use it first in `ai-proxy`; do not refactor every AI plugin at once.
 
-- [ ] **Task AI2: Add OpenAI Responses/Embeddings support to `ai-proxy`**
+- [x] **Task AI2: Add OpenAI Responses/Embeddings support to `ai-proxy`**
   - Tests: request detection, provider body construction, response forwarding, log variable extraction where non-streaming.
 
-- [ ] **Task AI3: Reuse protocol abstraction in prompt plugins**
+- [x] **Task AI3: Reuse protocol abstraction in prompt plugins**
   - Apply to `ai-prompt-template`, `ai-prompt-decorator`, and `ai-prompt-guard`.
   - Keep each plugin in a separate commit.
 
-- [ ] **Task AI4: Add Redis/shared policy to `ai-rate-limiting`**
-  - Reuse existing Redis patterns from `limit-count`/`graphql-limit-count`.
-  - Tests: shared quota, strategy-specific counters, `allow_degradation`.
+- [x] **Task AI4: Complete official `ai-rate-limiting` config behavior**
+  - APISIX 3.17 hardcodes local policy; global/instance/rule quota behavior, expressions, and streaming charging are implemented.
+  - Cross-process shared counters remain a runtime fidelity item rather than an official plugin config gap.
 
 ## Observability
 
@@ -225,7 +225,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `traffic-label` | 63% | More variable/expression support and label propagation parity. |
 | `request-id` | 85% | Add plugin-attr snowflake config and etcd-backed machine leasing if local config/store patterns make it practical. |
 | `oas-validator` | 62% | External `$ref`, metadata TTL refresh, more OpenAPI parameter styles, non-JSON body schemas, response validation. |
-| `mcp-bridge` | 55% | Session recovery, ping keepalive, process timeouts, backpressure controls, fuller MCP protocol validation. |
+| `mcp-bridge` | 75% | Cross-worker shared-dict session recovery and exact `ngx.pipe` timeout/worker-exit semantics remain deferred; ping, cancellation-aware forwarding, SSE/message flow, and cleanup are implemented. |
 | `degraphql` | 65% | More GraphQL parsing parity and variable handling. |
 | `kafka-proxy` | 35% | Actual Kafka upstream transport/proxying, websocket-to-Kafka forwarding, SASL mechanisms beyond PLAIN. |
 | `dubbo-proxy` | 30% | Needs a dedicated Dubbo transport design for HTTP-to-Dubbo proxying, Hessian2 conversion, multiplexing, and response mapping. |

@@ -31,7 +31,7 @@ func TestForwardOpenAIAsAnthropicSSEDefersStopUntilUsage(t *testing.T) {
 	if strings.Index(output, "event: message_delta") > strings.Index(output, "event: message_stop") {
 		t.Fatalf("message_delta must precede message_stop:\n%s", output)
 	}
-	if usage.Model != "gpt-4" || usage.PromptTokens != 5 || usage.CompletionTokens != 2 {
+	if usage.Model != "gpt-4" || usage.PromptTokens != 5 || usage.CompletionTokens != 2 || usage.Text != "hello" {
 		t.Fatalf("usage = %#v", usage)
 	}
 }

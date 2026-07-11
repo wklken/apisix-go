@@ -942,6 +942,45 @@ func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {
 	}
 }
 
+func TestHandlerPublishesConfiguredLoggingSummaryAndPayloads(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "model":"gpt-response","choices":[{"message":{"content":"answer"}}],
+		  "usage":{"prompt_tokens":3,"completion_tokens":2}
+		}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		Logging:  Logging{Summaries: true, Payloads: true},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-request","messages":[{"role":"user","content":"question"}]}`),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for AI proxy")
+	})).ServeHTTP(rr, req)
+
+	summary := apisixctx.GetRequestVar(req, "$llm_summary").(map[string]any)
+	if summary["request_model"] != "gpt-request" || summary["model"] != "gpt-response" ||
+		summary["prompt_tokens"] != int64(3) || summary["completion_tokens"] != int64(2) {
+		t.Fatalf("$llm_summary = %#v", summary)
+	}
+	requestLog := apisixctx.GetRequestVar(req, "$llm_request").(map[string]any)
+	if requestLog["stream"] != false || len(requestLog["messages"].([]any)) != 1 {
+		t.Fatalf("$llm_request = %#v", requestLog)
+	}
+	if responseLog := apisixctx.GetRequestVar(req, "$llm_response").(map[string]any); responseLog["content"] != "answer" {
+		t.Fatalf("$llm_response = %#v", responseLog)
+	}
+}
+
 func TestHandlerTracksActiveLLMConnection(t *testing.T) {
 	observabilitymetrics.LLMActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "test_ai_proxy_active"},

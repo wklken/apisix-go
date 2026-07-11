@@ -13,6 +13,7 @@ import (
 
 type Usage struct {
 	Model            string
+	Text             string
 	Raw              map[string]any
 	PromptTokens     int64
 	CompletionTokens int64
@@ -74,6 +75,7 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 	if model, ok := event["model"].(string); ok {
 		usage.Model = model
 	}
+	usage.Text += ai_protocols.ExtractStreamEventText(protocol, event)
 	switch protocol {
 	case ai_protocols.OpenAIResponses:
 		response, _ := event["response"].(map[string]any)

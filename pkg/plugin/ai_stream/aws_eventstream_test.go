@@ -28,7 +28,8 @@ func TestForwardAWSEventStreamPreservesFramesAndExtractsUsage(t *testing.T) {
 	if !rr.Flushed {
 		t.Fatal("AWS EventStream response was not flushed")
 	}
-	if usage.PromptTokens != 4 || usage.CompletionTokens != 2 || usage.Raw["totalTokens"] != float64(6) {
+	if usage.PromptTokens != 4 || usage.CompletionTokens != 2 || usage.Raw["totalTokens"] != float64(6) ||
+		usage.Text != "hello" {
 		t.Fatalf("usage = %#v", usage)
 	}
 }

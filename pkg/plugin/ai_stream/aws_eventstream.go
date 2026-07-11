@@ -146,6 +146,17 @@ func mergeBedrockEventStreamUsage(usage *Usage, headers map[string]any, payload 
 		return true
 	}
 	eventType, _ := headers[":event-type"].(string)
+	if eventType == "contentBlockDelta" {
+		var content struct {
+			Delta struct {
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if json.Unmarshal(payload, &content) == nil {
+			usage.Text += content.Delta.Text
+		}
+		return false
+	}
 	if eventType == "messageStop" {
 		return false
 	}

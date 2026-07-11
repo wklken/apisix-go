@@ -362,7 +362,10 @@ func (p *Plugin) executeProviderRequest(
 ) {
 	p.registerRequestIdentity(r, body, protocol)
 	started := ai_runtime.StartLLMRequest(r)
-	defer ai_runtime.MarkLLMRequestDone(r, started)
+	defer func() {
+		ai_runtime.MarkLLMRequestDone(r, started)
+		ai_runtime.RegisterLogging(r, p.config.Logging.Summaries, p.config.Logging.Payloads, protocol, body)
+	}()
 	doneMetric := metrics.BeginLLMRequest(r)
 	defer doneMetric()
 	prepared, err := p.prepareProviderRequest(body, protocol)
@@ -405,6 +408,10 @@ func (p *Plugin) registerRequestIdentity(r *http.Request, body []byte, protocol 
 		requestType = "ai_stream"
 	}
 	apisixctx.RegisterRequestVar(r, "$request_type", requestType)
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) == nil {
+		apisixctx.RegisterRequestVar(r, "$llm_request_body", decoded)
+	}
 	if model := p.requestModel(body); model != "" {
 		apisixctx.RegisterRequestVar(r, "$request_llm_model", model)
 		apisixctx.RegisterRequestVar(r, "$llm_model", model)
@@ -933,6 +940,9 @@ func registerStreamingLLMRequestVars(r *http.Request, requestBody []byte, usage 
 	if len(usage.Raw) > 0 {
 		apisixctx.RegisterRequestVar(r, "$llm_raw_usage", usage.Raw)
 	}
+	if usage.Text != "" {
+		apisixctx.RegisterRequestVar(r, "$llm_response_text", usage.Text)
+	}
 	if usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 {
 		apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
 			"prompt_tokens":     usage.PromptTokens,
@@ -954,6 +964,14 @@ func registerLLMRequestVars(
 
 	requestModel := modelFromBody(requestBody)
 	responseMetadata := ai_protocols.ExtractResponseMetadata(protocol, responseBody)
+	var decodedResponse map[string]any
+	if json.Unmarshal(responseBody, &decodedResponse) == nil {
+		apisixctx.RegisterRequestVar(
+			r,
+			"$llm_response_text",
+			ai_protocols.ExtractResponseText(protocol, decodedResponse),
+		)
+	}
 
 	apisixctx.RegisterRequestVar(r, "$request_type", protocol.RequestType)
 	if requestModel != "" {

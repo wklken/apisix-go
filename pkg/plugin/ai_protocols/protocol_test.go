@@ -450,3 +450,47 @@ func TestExtractResponseMetadataUsesNativeUsageFields(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestContentUsesProtocolNativeShape(t *testing.T) {
+	messages := []any{map[string]any{"role": "user", "content": "hello"}}
+	tests := []struct {
+		protocol Protocol
+		body     map[string]any
+		want     any
+	}{
+		{OpenAIChat, map[string]any{"messages": messages}, messages},
+		{OpenAIResponses, map[string]any{"input": "hello"}, "hello"},
+		{OpenAIEmbeddings, map[string]any{"input": []any{"a", "b"}}, []any{"a", "b"}},
+		{AnthropicMessages, map[string]any{"messages": messages}, messages},
+		{BedrockConverse, map[string]any{"messages": messages}, messages},
+		{Passthrough, map[string]any{"input": "hello"}, nil},
+	}
+
+	for _, test := range tests {
+		if got := RequestContent(test.protocol, test.body); !reflect.DeepEqual(got, test.want) {
+			t.Fatalf("RequestContent(%s) = %#v, want %#v", test.protocol.OverrideKey, got, test.want)
+		}
+	}
+}
+
+func TestExtractStreamEventText(t *testing.T) {
+	tests := []struct {
+		protocol Protocol
+		event    map[string]any
+		want     string
+	}{
+		{OpenAIChat, map[string]any{"choices": []any{map[string]any{
+			"delta": map[string]any{"content": "chat"},
+		}}}, "chat"},
+		{OpenAIResponses, map[string]any{"type": "response.output_text.delta", "delta": "responses"}, "responses"},
+		{AnthropicMessages, map[string]any{
+			"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "anthropic"},
+		}, "anthropic"},
+	}
+
+	for _, test := range tests {
+		if got := ExtractStreamEventText(test.protocol, test.event); got != test.want {
+			t.Fatalf("ExtractStreamEventText(%s) = %q, want %q", test.protocol.OverrideKey, got, test.want)
+		}
+	}
+}

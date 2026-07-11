@@ -403,6 +403,39 @@ func ExtractResponseText(protocol Protocol, body map[string]any) string {
 	}
 }
 
+func RequestContent(protocol Protocol, body map[string]any) any {
+	switch protocol {
+	case OpenAIResponses, OpenAIEmbeddings:
+		return body["input"]
+	case OpenAIChat, AnthropicMessages, BedrockConverse:
+		return body["messages"]
+	default:
+		return nil
+	}
+}
+
+func ExtractStreamEventText(protocol Protocol, event map[string]any) string {
+	switch protocol {
+	case OpenAIResponses:
+		text, _ := event["delta"].(string)
+		return text
+	case AnthropicMessages:
+		delta, _ := event["delta"].(map[string]any)
+		text, _ := delta["text"].(string)
+		return text
+	default:
+		parts := make([]string, 0)
+		for _, rawChoice := range asMessages(event["choices"]) {
+			choice, _ := rawChoice.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			if text, ok := delta["content"].(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	}
+}
+
 func IsStreaming(protocol Protocol, body map[string]any) bool {
 	if protocol == OpenAIEmbeddings {
 		return false

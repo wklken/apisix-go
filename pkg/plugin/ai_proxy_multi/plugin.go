@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
@@ -198,7 +201,94 @@ const schema = `
             }
           },
           "checks": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": ["http", "https", "tcp"],
+                    "default": "http"
+                  },
+                  "timeout": {
+                    "type": "number",
+                    "default": 1
+                  },
+                  "concurrency": {
+                    "type": "integer",
+                    "default": 10
+                  },
+                  "host": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "http_path": {
+                    "type": "string",
+                    "default": "/"
+                  },
+                  "https_verify_certificate": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "healthy": {
+                    "type": "object",
+                    "properties": {
+                      "interval": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 1
+                      },
+                      "http_statuses": {
+                        "$ref": "#/$defs/health_statuses"
+                      },
+                      "successes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 254,
+                        "default": 2
+                      }
+                    }
+                  },
+                  "unhealthy": {
+                    "type": "object",
+                    "properties": {
+                      "interval": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 1
+                      },
+                      "http_statuses": {
+                        "$ref": "#/$defs/health_statuses"
+                      },
+                      "http_failures": {
+                        "$ref": "#/$defs/health_failure_threshold"
+                      },
+                      "tcp_failures": {
+                        "$ref": "#/$defs/health_failure_threshold"
+                      },
+                      "timeouts": {
+                        "$ref": "#/$defs/health_failure_threshold"
+                      }
+                    }
+                  },
+                  "req_headers": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "required": ["active"]
           }
         },
         "required": ["name", "provider", "weight", "auth"]
@@ -292,6 +382,21 @@ const schema = `
           "type": "string"
         }
       }
+    },
+    "health_statuses": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 200,
+        "maximum": 599
+      }
+    },
+    "health_failure_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 254
     }
   }
 }
@@ -496,6 +601,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			index, ok := p.instanceIndex(state.InstanceName())
 			if !ok {
 				writeJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+				p.registerLogging(r, protocol, body)
 				return
 			}
 			p.executeInstanceRequest(w, r, body, protocol, index, tried)
@@ -567,6 +673,7 @@ func (p *Plugin) executeInstanceRequest(
 				continue
 			}
 			writeJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
+			p.registerLogging(r, protocol, body)
 			return
 		}
 
@@ -583,6 +690,7 @@ func (p *Plugin) executeInstanceRequest(
 			index, ok = p.pickInstance(r, tried)
 			if !ok {
 				writeJSONMessage(w, http.StatusServiceUnavailable, "failed to pick AI instance")
+				p.registerLogging(r, protocol, body)
 				return
 			}
 			ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[index].Name)
@@ -596,6 +704,7 @@ func (p *Plugin) executeInstanceRequest(
 			prepared.cancel()
 		}
 		ai_runtime.MarkLLMRequestDone(r, started)
+		p.registerLogging(r, protocol, body)
 		return
 	}
 }
@@ -614,10 +723,18 @@ func (p *Plugin) registerRequestIdentity(
 		requestType = "ai_stream"
 	}
 	apisixctx.RegisterRequestVar(r, "$request_type", requestType)
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) == nil {
+		apisixctx.RegisterRequestVar(r, "$llm_request_body", decoded)
+	}
 	if model := instanceModel(instance, body); model != "" {
 		apisixctx.RegisterRequestVar(r, "$request_llm_model", model)
 		apisixctx.RegisterRequestVar(r, "$llm_model", model)
 	}
+}
+
+func (p *Plugin) registerLogging(r *http.Request, protocol ai_protocols.Protocol, body []byte) {
+	ai_runtime.RegisterLogging(r, p.config.Logging.Summaries, p.config.Logging.Payloads, protocol, body)
 }
 
 func (p *Plugin) instanceIndex(name string) (int, bool) {
@@ -995,27 +1112,130 @@ func (p *Plugin) nextWeightedSlot(r *http.Request, priority int, size int) int {
 }
 
 func (p *Plugin) hashKey(r *http.Request) string {
+	var key string
 	switch p.config.Balancer.HashOn {
 	case "header":
-		return r.Header.Get(p.config.Balancer.Key)
+		key = r.Header.Get(p.config.Balancer.Key)
 	case "cookie":
 		cookie, err := r.Cookie(p.config.Balancer.Key)
+		if err == nil {
+			key = cookie.Value
+		}
+	case "consumer":
+		key = hashVariable(r, "consumer_name")
+	case "vars":
+		key = hashVariable(r, p.config.Balancer.Key)
+	case "vars_combinations":
+		key = resolveHashVariableCombination(r, p.config.Balancer.Key)
+	default:
+		key = p.config.Balancer.Key
+	}
+	if key == "" {
+		key = hashVariable(r, "remote_addr")
+	}
+	return key
+}
+
+func hashVariable(r *http.Request, name string) string {
+	name = strings.TrimPrefix(name, "$")
+	switch {
+	case name == "uri":
+		return r.URL.Path
+	case name == "request_uri":
+		return r.URL.RequestURI()
+	case name == "query_string":
+		return r.URL.RawQuery
+	case name == "host" || name == "server_name":
+		host, _, err := net.SplitHostPort(r.Host)
+		if err == nil {
+			return host
+		}
+		return r.Host
+	case name == "hostname":
+		hostname, _ := os.Hostname()
+		return hostname
+	case name == "remote_addr":
+		if value := apisixctx.GetString(r.Context(), "remote_addr"); value != "" {
+			return value
+		}
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	case name == "remote_port":
+		_, port, _ := net.SplitHostPort(r.RemoteAddr)
+		return port
+	case name == "server_addr":
+		local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+		if local == nil {
+			return ""
+		}
+		host, _, err := net.SplitHostPort(local.String())
+		if err == nil {
+			return host
+		}
+		return local.String()
+	case strings.HasPrefix(name, "arg_"):
+		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	case strings.HasPrefix(name, "cookie_"):
+		cookie, err := r.Cookie(strings.TrimPrefix(name, "cookie_"))
 		if err == nil {
 			return cookie.Value
 		}
 		return ""
-	case "vars", "vars_combinations":
-		switch p.config.Balancer.Key {
-		case "uri", "request_uri":
-			return r.URL.RequestURI()
-		case "remote_addr":
-			return r.RemoteAddr
-		default:
-			return p.config.Balancer.Key
-		}
-	default:
-		return p.config.Balancer.Key
+	case strings.HasPrefix(name, "http_"):
+		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
+		return r.Header.Get(header)
 	}
+
+	key := "$" + name
+	if value := apisixvar.GetNginxVar(r, key); value != "" {
+		return value
+	}
+	if value := fmt.Sprint(apisixctx.GetApisixVar(r, key)); value != "" {
+		return value
+	}
+	if value := apisixctx.GetRequestVar(r, key); value != nil {
+		return fmt.Sprint(value)
+	}
+	return ""
+}
+
+func resolveHashVariableCombination(r *http.Request, expression string) string {
+	var resolved strings.Builder
+	resolvedVariables := 0
+	for position := 0; position < len(expression); {
+		if expression[position] != '$' {
+			resolved.WriteByte(expression[position])
+			position++
+			continue
+		}
+		end := position + 1
+		for end < len(expression) && isHashVariableCharacter(expression[end]) {
+			end++
+		}
+		if end == position+1 {
+			resolved.WriteByte('$')
+			position++
+			continue
+		}
+		value := hashVariable(r, expression[position+1:end])
+		if value != "" {
+			resolvedVariables++
+		}
+		resolved.WriteString(value)
+		position = end
+	}
+	if resolvedVariables == 0 {
+		return ""
+	}
+	return resolved.String()
+}
+
+func isHashVariableCharacter(value byte) bool {
+	return value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9'
 }
 
 func (p *Plugin) canRetry(code int, elapsed time.Duration, retries int) bool {
@@ -1299,6 +1519,9 @@ func registerStreamingLLMRequestVars(r *http.Request, requestBody []byte, usage 
 	if len(usage.Raw) > 0 {
 		apisixctx.RegisterRequestVar(r, "$llm_raw_usage", usage.Raw)
 	}
+	if usage.Text != "" {
+		apisixctx.RegisterRequestVar(r, "$llm_response_text", usage.Text)
+	}
 	if usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 {
 		apisixctx.RegisterRequestVar(r, "$ai_token_usage", map[string]any{
 			"prompt_tokens":     usage.PromptTokens,
@@ -1320,6 +1543,14 @@ func registerLLMRequestVars(
 
 	requestModel := modelFromBody(requestBody)
 	metadata := ai_protocols.ExtractResponseMetadata(protocol, responseBody)
+	var decodedResponse map[string]any
+	if json.Unmarshal(responseBody, &decodedResponse) == nil {
+		apisixctx.RegisterRequestVar(
+			r,
+			"$llm_response_text",
+			ai_protocols.ExtractResponseText(protocol, decodedResponse),
+		)
+	}
 
 	apisixctx.RegisterRequestVar(r, "$request_type", protocol.RequestType)
 	if requestModel != "" {

@@ -376,39 +376,39 @@ Loggers:
 - [x] [ai](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/ai.lua) 20%
   - support official plugin name, priority, empty schema, and pass-through compatibility registration
   - not support APISIX global-scope router matching cache replacement, upstream handler replacement, balancer phase replacement, route feature analysis, OpenResty keepalive pool behavior, event hook registration, or any runtime acceleration behavior from the Lua implementation
-- [x] [ai-aliyun-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aliyun-content-moderation/) 90%
-  - support official request/response checks, signing/config, shared six-protocol extraction, provider-native JSON/SSE deny responses, Unicode-safe length chunks, realtime/final-packet stream decisions, final-packet risk-level annotation, request replay, fail-open provider errors, and encrypted `access_key_secret`
-  - response-checked streams are buffered before delivery; exact APISIX incremental body-filter timing, `stream_check_interval` scheduling, and log-variable lifecycle remain out of scope
-- [x] [ai-aws-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aws-content-moderation/) 92%
+- [x] [ai-aliyun-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aliyun-content-moderation/) 96%
+  - support official request/response checks, signing/config, shared six-protocol extraction, provider-native JSON/SSE deny responses, Unicode-safe length chunks, incremental realtime checks triggered by `stream_check_cache_size` / `stream_check_interval`, final-packet risk-level annotation, request-scoped moderation sessions, `$llm_content_risk_level`, request replay, fail-open provider errors, and encrypted `access_key_secret`
+  - exact OpenResty body-filter chunk timing remains out of scope
+- [x] [ai-aws-content-moderation](https://apisix.apache.org/docs/apisix/plugins/ai-aws-content-moderation/) 98%
   - support official AWS Comprehend request checks, SigV4 with static/session credentials, encrypted secrets, endpoint/TLS controls, category/toxicity thresholds, request replay, and rejection behavior
-  - not support environment/default AWS credential-provider and cross-process SDK-cache fidelity
-- [x] [ai-rag](https://apisix.apache.org/docs/apisix/plugins/ai-rag/) 92%
+  - exact `resty.aws` module/cache lifecycle remains out of scope; APISIX 3.17 itself requires explicit access key, secret, and region configuration
+- [x] [ai-rag](https://apisix.apache.org/docs/apisix/plugins/ai-rag/) 98%
   - support the official Azure OpenAI embeddings and Azure AI Search providers, request options, provider status propagation, request replay, and protocol-native result append for OpenAI Chat/Responses, Anthropic Messages, and Bedrock Converse
-  - not support exact APISIX context/log-variable lifecycle; Azure API keys are handled by the shared encrypted-field pipeline
+  - Azure API keys are handled by the shared encrypted-field pipeline; exact OpenResty HTTP-client lifecycle remains out of scope
 - [x] [ai-prompt-decorator](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-decorator/) 90%
   - support the shared APISIX 3.17 protocol registry for OpenAI Chat/Responses/Embeddings, Anthropic Messages, Bedrock Converse, and passthrough, including protocol-native prepend/append and request replay
   - embeddings and passthrough decoration are no-ops as upstream defines; exact OpenResty phase/runtime behavior remains out of scope
 - [x] [ai-prompt-guard](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-guard/) 88%
   - support regex policy evaluation and shared extraction across all six APISIX 3.17 AI protocols, including nested content blocks and official generic rejection responses
   - not support exact OpenResty regex-engine flags or phase/runtime fidelity
-- [x] [ai-prompt-template](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-template/) 78%
+- [x] [ai-prompt-template](https://apisix.apache.org/docs/apisix/plugins/ai-prompt-template/) 95%
   - support named templates, JSON body selection, nested dotted and bounded indexed lookup, request replay, and official missing/unknown-template errors
-  - not support full body-transformer syntax, XML/form/multipart inputs, or exact OpenResty template LRU behavior
+  - exact OpenResty template LRU behavior remains out of scope; APISIX 3.17 hardcodes JSON input for this plugin
 - [x] [ai-request-rewrite](https://apisix.apache.org/docs/apisix/plugins/ai-request-rewrite/) 90%
   - support shared protocol-native simple requests/response extraction, Anthropic/Bedrock-native shapes, AWS SigV4, GCP token caching, provider paths, encrypted auth, request replacement/replay, transport controls, and rewrite markers
   - not support streaming sidecar responses or exact APISIX error/log lifecycle
 - [x] [ai-rate-limiting](https://apisix.apache.org/docs/apisix/plugins/ai-rate-limiting/) 90%
   - support official global, per-instance, and rule quotas; string variables; quota headers; all four token strategies; bounded `cost_expr`; two-phase proxy execution; rate-aware multi-instance fallback; and non-buffering streaming usage charging
   - not support cross-process shared counter state or exact OpenResty log-phase timing
-- [x] [ai-proxy](https://apisix.apache.org/docs/apisix/plugins/ai-proxy/) 98%
-  - support six-protocol detection, Anthropic-to-OpenAI request/response/SSE conversion with tools, OpenAI Responses/Embeddings, Vertex embeddings conversion, provider auth/endpoints, protocol overrides, SSE, CRC-validated Bedrock EventStream, usage/timing variables, response/stream-duration limits, scheduled flush intervals, active connection metrics, and two-phase rate limiting
+- [x] [ai-proxy](https://apisix.apache.org/docs/apisix/plugins/ai-proxy/) 99%
+  - support six-protocol detection, Anthropic-to-OpenAI request/response/SSE conversion with tools, OpenAI Responses/Embeddings, Vertex embeddings conversion, provider auth/endpoints, protocol overrides, SSE, CRC-validated Bedrock EventStream, usage/timing variables, `logging.summaries` / `logging.payloads`, response/stream-duration limits, scheduled flush intervals, active connection metrics, and two-phase rate limiting
   - exact OpenResty transport, phase, and log lifecycle remains out of scope
-- [x] [ai-proxy-multi](https://apisix.apache.org/docs/apisix/plugins/ai-proxy-multi/) 96%
-  - support weighted priorities, round-robin/chash, HTTP/rate fallback, retries, active health checks with threshold/interval policy and all-unhealthy fallback, shared protocol conversion, provider auth, Vertex embeddings, Anthropic SSE conversion, Bedrock EventStream, stream-duration/flush controls, timing/active metrics, and two-phase rate limiting
-  - not support explicit APISIX DNS node snapshots; standard Go HTTP preserves hostname/SNI during DNS resolution
-- [x] [mcp-bridge](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/mcp-bridge.lua) 55%
-  - support official plugin name, priority, schema, configurable `base_uri`, stdio subprocess launch with `command` / `args`, `GET {base_uri}/sse` SSE endpoint, initial `endpoint` event advertising `{base_uri}/message?sessionId=...`, `POST {base_uri}/message` JSON-RPC body forwarding to subprocess stdin, stdout line forwarding as SSE `message` events, stderr line forwarding as `notifications/stderr`, and subprocess cleanup on SSE disconnect
-  - not support APISIX shared-dict cross-worker session recovery, ping keepalive events, OpenResty coroutine/process semantics, partial-line buffering parity, process timeouts, worker-exit hooks, distributed session state, backpressure controls, or full MCP protocol validation
+- [x] [ai-proxy-multi](https://apisix.apache.org/docs/apisix/plugins/ai-proxy-multi/) 98%
+  - support weighted priorities, round-robin/chash across vars/header/cookie/consumer/variable-combination keys with remote-address fallback, HTTP/rate fallback, retries, official active-health schema and threshold/interval behavior, all-unhealthy fallback, shared protocol conversion, provider auth, Vertex embeddings, Anthropic SSE conversion, Bedrock EventStream, logging summaries/payloads, stream-duration/flush controls, timing/active metrics, and two-phase rate limiting
+  - explicit APISIX per-address DNS snapshots are deferred; standard Go HTTP preserves hostname/SNI while resolving DNS
+- [x] [mcp-bridge](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/mcp-bridge.lua) 75%
+  - support official plugin name, priority, schema, configurable `base_uri`, stdio subprocess launch with `command` / `args`, `GET {base_uri}/sse`, advertised message endpoints, 30-second JSON-RPC ping keepalives, `POST {base_uri}/message` forwarding, cancellation-aware stdout/stderr line forwarding, `notifications/stderr`, and subprocess cleanup on disconnect
+  - not support APISIX shared-dict cross-worker session recovery, exact `ngx.pipe` timeout/worker-exit semantics, distributed session state, or behavior beyond the official MCP-over-SSE wrapper
 
 ### Stream
 

@@ -14,6 +14,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -28,6 +29,29 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestSchemaValidatesActiveHealthCheckFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"instances": []any{map[string]any{
+			"name": "one", "provider": "openai-compatible", "weight": 1, "auth": map[string]any{},
+			"checks": map[string]any{"active": map[string]any{
+				"type": "http", "timeout": 0.5, "concurrency": 2, "http_path": "/health",
+				"healthy": map[string]any{"successes": 2, "http_statuses": []any{200, 302}},
+			}},
+		}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("valid active health check rejected: %v", err)
+	}
+	config["instances"].([]any)[0].(map[string]any)["checks"].(map[string]any)["active"].(map[string]any)["type"] = "grpc"
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("unsupported active health check type was accepted")
+	}
 }
 
 func TestHandlerRoundRobinBalancesAcrossInstances(t *testing.T) {
@@ -342,6 +366,42 @@ func TestHandlerEnforcesStreamDurationForSelectedInstance(t *testing.T) {
 	}
 }
 
+func TestHandlerPublishesConfiguredLoggingForSelectedInstance(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "model":"selected-model","choices":[{"message":{"content":"selected answer"}}],
+		  "usage":{"prompt_tokens":4,"completion_tokens":1}
+		}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Logging: Logging{Summaries: true, Payloads: true},
+		Instances: []Instance{{
+			Name: "selected", Provider: "openai-compatible", Weight: 1,
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"request-model","messages":[{"role":"user","content":"question"}]}`),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for AI proxy multi")
+	})).ServeHTTP(rr, req)
+
+	summary := apisixctx.GetRequestVar(req, "$llm_summary").(map[string]any)
+	if summary["model"] != "selected-model" || summary["prompt_tokens"] != int64(4) {
+		t.Fatalf("$llm_summary = %#v", summary)
+	}
+	if responseLog := apisixctx.GetRequestVar(req, "$llm_response").(map[string]any); responseLog["content"] != "selected answer" {
+		t.Fatalf("$llm_response = %#v", responseLog)
+	}
+}
+
 func TestHandlerExhaustsHigherPriorityBeforeFallback(t *testing.T) {
 	var highCalls atomic.Int64
 	var lowCalls atomic.Int64
@@ -536,6 +596,44 @@ func TestHandlerChashUsesHeaderKey(t *testing.T) {
 			oneCalls.Load(),
 			twoCalls.Load(),
 		)
+	}
+}
+
+func TestHashKeySupportsConsumerAndVariableCombinations(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/models?version=v1", nil)
+	req.RemoteAddr = "203.0.113.7:1234"
+	req.Header.Set("X-Tenant", "tenant-a")
+	req = apisixctx.WithApisixVars(req, map[string]string{"$consumer_name": "alice"})
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.RegisterRequestVar(req, "$request_llm_model", "gpt-4")
+
+	tests := []struct {
+		hashOn string
+		key    string
+		want   string
+	}{
+		{hashOn: "consumer", want: "alice"},
+		{hashOn: "vars", key: "uri", want: "/models"},
+		{hashOn: "vars", key: "request_llm_model", want: "gpt-4"},
+		{hashOn: "vars_combinations", key: "$consumer_name:$request_llm_model:$uri", want: "alice:gpt-4:/models"},
+		{hashOn: "vars_combinations", key: "literal", want: "203.0.113.7"},
+	}
+
+	for _, test := range tests {
+		p := &Plugin{config: Config{Balancer: Balancer{Algorithm: "chash", HashOn: test.hashOn, Key: test.key}}}
+		if got := p.hashKey(req); got != test.want {
+			t.Fatalf("hashKey(%s, %q) = %q, want %q", test.hashOn, test.key, got, test.want)
+		}
+	}
+}
+
+func TestHashKeyFallsBackToRemoteAddress(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "198.51.100.9:4321"
+	p := &Plugin{config: Config{Balancer: Balancer{Algorithm: "chash", HashOn: "header", Key: "X-Missing"}}}
+
+	if got := p.hashKey(req); got != "198.51.100.9" {
+		t.Fatalf("hashKey() = %q, want remote address IP", got)
 	}
 }
 

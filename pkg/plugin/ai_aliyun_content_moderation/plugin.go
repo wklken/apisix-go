@@ -2,6 +2,7 @@ package ai_aliyun_content_moderation
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -27,6 +29,8 @@ type Plugin struct {
 	client *http.Client
 	now    func() time.Time
 	nonce  func() string
+
+	streamNow func() time.Time
 }
 
 const (
@@ -164,6 +168,8 @@ type serviceParameters struct {
 	Content   string `json:"content"`
 }
 
+type moderationSessionKey struct{}
+
 type aliyunResponse struct {
 	Data *struct {
 		RiskLevel string `json:"RiskLevel"`
@@ -239,6 +245,9 @@ func (p *Plugin) PostInit() error {
 	if p.nonce == nil {
 		p.nonce = randomNonce
 	}
+	if p.streamNow == nil {
+		p.streamNow = time.Now
+	}
 
 	p.client = &http.Client{
 		Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
@@ -254,6 +263,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), moderationSessionKey{}, p.nonce()))
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -303,6 +313,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if ai_protocols.IsStreaming(protocol, bodyTab) && p.config.StreamCheckMode == "realtime" {
+			streamWriter := newRealtimeResponseWriter(w, r, p, protocol, bodyTab)
+			next.ServeHTTP(streamWriter, r)
+			streamWriter.Close()
+			return
+		}
 
 		response := newCapturedResponse()
 		next.ServeHTTP(response, r)
@@ -348,6 +364,124 @@ func (w *capturedResponse) Write(body []byte) (int, error) {
 }
 
 func (w *capturedResponse) Flush() {}
+
+type realtimeResponseWriter struct {
+	http.ResponseWriter
+	request     *http.Request
+	plugin      *Plugin
+	protocol    ai_protocols.Protocol
+	requestBody map[string]any
+
+	status       int
+	content      strings.Builder
+	pending      string
+	lastModerate time.Time
+	blocked      bool
+}
+
+func newRealtimeResponseWriter(
+	w http.ResponseWriter,
+	r *http.Request,
+	p *Plugin,
+	protocol ai_protocols.Protocol,
+	requestBody map[string]any,
+) *realtimeResponseWriter {
+	return &realtimeResponseWriter{
+		ResponseWriter: w,
+		request:        r,
+		plugin:         p,
+		protocol:       protocol,
+		requestBody:    requestBody,
+		status:         http.StatusOK,
+		lastModerate:   p.streamNow(),
+	}
+}
+
+func (w *realtimeResponseWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *realtimeResponseWriter) Write(body []byte) (int, error) {
+	if w.blocked {
+		return len(body), nil
+	}
+	if w.status >= http.StatusBadRequest {
+		return w.ResponseWriter.Write(body)
+	}
+
+	w.content.WriteString(w.extractContent(body))
+	finalPacket := isFinalSSEPacket(body)
+	now := w.plugin.streamNow()
+	cacheFull := len([]rune(w.content.String())) >= w.plugin.config.StreamCheckCacheSize
+	intervalElapsed := now.Sub(w.lastModerate) >=
+		time.Duration(w.plugin.config.StreamCheckInterval*float64(time.Second))
+	if w.content.Len() > 0 && (cacheFull || intervalElapsed || finalPacket) {
+		if w.moderate() {
+			return len(body), nil
+		}
+		w.lastModerate = now
+	}
+
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *realtimeResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *realtimeResponseWriter) Close() {
+	if w.pending != "" {
+		w.content.WriteString(extractSSEText(w.protocol, []byte(w.pending+"\n")))
+		w.pending = ""
+	}
+	if !w.blocked && w.status < http.StatusBadRequest && w.content.Len() > 0 {
+		w.moderate()
+	}
+	w.Flush()
+}
+
+func (w *realtimeResponseWriter) extractContent(body []byte) string {
+	combined := w.pending + string(body)
+	lastNewline := strings.LastIndexByte(combined, '\n')
+	if lastNewline < 0 {
+		w.pending = combined
+		return ""
+	}
+	w.pending = combined[lastNewline+1:]
+	return extractSSEText(w.protocol, []byte(combined[:lastNewline+1]))
+}
+
+func (w *realtimeResponseWriter) moderate() bool {
+	content := w.content.String()
+	w.content.Reset()
+	code, message, _ := w.plugin.moderateContent(
+		w.request,
+		content,
+		w.plugin.config.ResponseCheckLengthLimit,
+		w.plugin.config.ResponseCheckService,
+	)
+	if code == 0 {
+		return false
+	}
+
+	model, _ := w.requestBody["model"].(string)
+	encoded, _, err := ai_protocols.BuildDenyWireResponse(w.protocol, model, message, true)
+	if err != nil {
+		return false
+	}
+	_, _ = w.ResponseWriter.Write(encoded)
+	w.blocked = true
+	return true
+}
+
+func isFinalSSEPacket(body []byte) bool {
+	text := string(body)
+	return strings.Contains(text, "data: [DONE]") || strings.Contains(text, "response.completed") ||
+		strings.Contains(text, "message_stop")
+}
 
 func (p *Plugin) writeModeratedResponse(
 	w http.ResponseWriter,
@@ -396,19 +530,12 @@ func (p *Plugin) writeModeratedStream(
 	requestBody map[string]any,
 ) {
 	content := extractSSEText(protocol, response.body.Bytes())
-	code, message, riskLevel := p.moderateContent(
+	_, _, riskLevel := p.moderateContent(
 		r,
 		content,
 		p.config.ResponseCheckLengthLimit,
 		p.config.ResponseCheckService,
 	)
-	if p.config.StreamCheckMode == "realtime" && code != 0 {
-		copyResponseHeaders(w.Header(), response.header)
-		w.Header().Del("Content-Length")
-		writeProtocolDeny(w, code, protocol, requestBody, message)
-		return
-	}
-
 	body := response.body.Bytes()
 	if p.config.StreamCheckMode == "final_packet" && riskLevel != "" {
 		body = addRiskLevelToFinalSSEPacket(body, riskLevel)
@@ -510,7 +637,10 @@ func (p *Plugin) moderateContent(
 		lengthLimit = len(runes)
 	}
 
-	sessionID := p.nonce()
+	sessionID, _ := r.Context().Value(moderationSessionKey{}).(string)
+	if sessionID == "" {
+		sessionID = p.nonce()
+	}
 	lastRiskLevel := ""
 	for start := 0; start < len(runes); start += lengthLimit {
 		end := start + lengthLimit
@@ -522,6 +652,9 @@ func (p *Plugin) moderateContent(
 			return 0, "", ""
 		}
 		lastRiskLevel = riskLevel
+		if riskLevel != "" && apisixctx.GetRequestVars(r) != nil {
+			apisixctx.RegisterRequestVar(r, "$llm_content_risk_level", riskLevel)
+		}
 		if hit {
 			if p.config.DenyMessage != "" {
 				message = p.config.DenyMessage

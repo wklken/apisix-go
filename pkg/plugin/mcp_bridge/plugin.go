@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gofrs/uuid"
 
@@ -22,6 +23,8 @@ type Plugin struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+
+	pingInterval time.Duration
 }
 
 const (
@@ -62,6 +65,7 @@ type Config struct {
 
 type session struct {
 	id     string
+	ctx    context.Context
 	stdin  io.WriteCloser
 	cancel context.CancelFunc
 	events chan sseEvent
@@ -95,6 +99,9 @@ func (p *Plugin) PostInit() error {
 	p.config.BaseURI = strings.TrimRight(p.config.BaseURI, "/")
 	if p.sessions == nil {
 		p.sessions = map[string]*session{}
+	}
+	if p.pingInterval <= 0 {
+		p.pingInterval = 30 * time.Second
 	}
 
 	return nil
@@ -138,6 +145,12 @@ func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !writeSSE(w, "endpoint", p.config.BaseURI+"/message?sessionId="+sess.id) {
 		return
 	}
+	pingTicker := time.NewTicker(p.pingInterval)
+	defer pingTicker.Stop()
+	pingID := 1
+	if !writePing(w, pingID) {
+		return
+	}
 
 	for {
 		select {
@@ -150,6 +163,11 @@ func (p *Plugin) handleSSE(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-r.Context().Done():
 			return
+		case <-pingTicker.C:
+			pingID++
+			if !writePing(w, pingID) {
+				return
+			}
 		}
 	}
 }
@@ -200,6 +218,7 @@ func (p *Plugin) startSession(parent context.Context) (*session, error) {
 	id := uuid.Must(uuid.NewV4()).String()
 	sess := &session{
 		id:     id,
+		ctx:    ctx,
 		stdin:  stdin,
 		cancel: cancel,
 		events: make(chan sseEvent, 16),
@@ -214,11 +233,11 @@ func (p *Plugin) startSession(parent context.Context) (*session, error) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		scanPipe(stdout, "message", sess.events)
+		scanPipe(sess.ctx, stdout, "message", sess.events)
 	}()
 	go func() {
 		defer wg.Done()
-		scanStderr(stderr, sess.events)
+		scanStderr(sess.ctx, stderr, sess.events)
 	}()
 	go func() {
 		_ = cmd.Wait()
@@ -293,15 +312,17 @@ func (p *Plugin) action(path string) (string, bool) {
 	return strings.TrimPrefix(path, prefix), true
 }
 
-func scanPipe(pipe io.Reader, event string, events chan<- sseEvent) {
+func scanPipe(ctx context.Context, pipe io.Reader, event string, events chan<- sseEvent) {
 	scanner := bufio.NewScanner(pipe)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		events <- sseEvent{event: event, data: scanner.Text()}
+		if !sendEvent(ctx, events, sseEvent{event: event, data: scanner.Text()}) {
+			return
+		}
 	}
 }
 
-func scanStderr(pipe io.Reader, events chan<- sseEvent) {
+func scanStderr(ctx context.Context, pipe io.Reader, events chan<- sseEvent) {
 	scanner := bufio.NewScanner(pipe)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -313,8 +334,23 @@ func scanStderr(pipe io.Reader, events chan<- sseEvent) {
 		if err != nil {
 			continue
 		}
-		events <- sseEvent{event: "message", data: string(body)}
+		if !sendEvent(ctx, events, sseEvent{event: "message", data: string(body)}) {
+			return
+		}
 	}
+}
+
+func sendEvent(ctx context.Context, events chan<- sseEvent, event sseEvent) bool {
+	select {
+	case events <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func writePing(w http.ResponseWriter, id int) bool {
+	return writeSSE(w, "message", fmt.Sprintf(`{"jsonrpc":"2.0","method":"ping","id":"ping:%d"}`, id))
 }
 
 func writeSSE(w http.ResponseWriter, event string, data string) bool {

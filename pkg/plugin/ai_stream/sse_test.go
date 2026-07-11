@@ -11,6 +11,7 @@ import (
 func TestForwardSSEMergesAnthropicUsageAndPreservesWireBody(t *testing.T) {
 	body := "event: message_start\n" +
 		"data: {\"message\":{\"model\":\"claude\",\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n" +
 		"event: message_delta\n" +
 		"data: {\"usage\":{\"output_tokens\":3}}\n\n" +
 		"event: message_stop\ndata: {}\n\n"
@@ -23,7 +24,7 @@ func TestForwardSSEMergesAnthropicUsageAndPreservesWireBody(t *testing.T) {
 	if rr.Body.String() != body {
 		t.Fatalf("forwarded body = %q, want exact input", rr.Body.String())
 	}
-	if usage.Model != "claude" || usage.PromptTokens != 7 || usage.CompletionTokens != 3 {
+	if usage.Model != "claude" || usage.PromptTokens != 7 || usage.CompletionTokens != 3 || usage.Text != "hello" {
 		t.Fatalf("usage = %#v", usage)
 	}
 }
@@ -37,7 +38,7 @@ func TestForwardSSEResponsesFinalUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForwardSSE() error = %v", err)
 	}
-	if usage.Model != "gpt-4.1" || usage.PromptTokens != 5 || usage.CompletionTokens != 2 {
+	if usage.Model != "gpt-4.1" || usage.PromptTokens != 5 || usage.CompletionTokens != 2 || usage.Text != "hi" {
 		t.Fatalf("usage = %#v", usage)
 	}
 }

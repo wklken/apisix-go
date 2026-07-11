@@ -60,16 +60,11 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | Plugin | What needs to be done |
 |---|---|
 | `ai` | Keep deferred unless a Go-native equivalent is explicitly requested; most APISIX behavior replaces runtime/router/balancer internals. |
-| `ai-proxy` | No major normal config gap remains. Exact OpenResty transport, phase, and log lifecycle remains runtime fidelity work. |
-| `ai-proxy-multi` | Add explicit APISIX-style DNS node snapshots if the standard Go resolver behavior is insufficient. Active health checks, all-unhealthy fallback, stream controls/metrics, protocol conversion, priority/rate fallback, and provider auth are implemented. |
-| `ai-request-rewrite` | Only exact APISIX error/log lifecycle and any future provider converters remain. Native AWS/GCP auth and current APISIX 3.17 provider request/response shapes are implemented. |
-| `ai-rate-limiting` | No major normal config gap remains. Global/instance/rule quotas, string variables, bounded expressions, two-phase proxy integration, instance fallback, and streaming usage charging are implemented. Cross-process shared-state and exact OpenResty log-phase timing remain runtime fidelity work. |
-| `ai-rag` | Only APISIX-specific context/log variables remain a normal gap. APISIX 3.17 itself supports only Azure OpenAI embeddings and Azure AI Search; protocol append and encrypted API keys are implemented. |
-| `ai-prompt-template` | Add XML/form/multipart body-transformer inputs and exact template cache/runtime behavior. Nested and bounded indexed JSON lookup is implemented. |
-| `ai-prompt-decorator` | No major normal protocol gap remains; all six APISIX 3.17 protocol handlers are shared with the proxy layer. Embeddings and passthrough decoration are intentionally no-ops, matching upstream. |
-| `ai-prompt-guard` | No major normal protocol gap remains; all six APISIX 3.17 protocol handlers are shared with the proxy layer. Exact OpenResty regex behavior remains native-runtime fidelity. |
-| `ai-aws-content-moderation` | Only environment/default AWS credential-provider fidelity remains. Static/session credentials, SigV4, encrypted secrets, and all official request moderation controls are implemented. |
-| `ai-aliyun-content-moderation` | Only exact incremental body-filter timing, `stream_check_interval` scheduling, and APISIX log-variable lifecycle remain. Response-body moderation, buffered realtime/final-packet decisions, risk-level SSE annotation, native deny responses, Unicode-safe chunking, and encrypted secrets are implemented. |
+| `ai-proxy-multi` | Deferred large/runtime item: explicit per-address DNS snapshots and per-IP health state. Standard Go HTTP already resolves DNS while preserving hostname/SNI; all official user-facing config is accepted and active. |
+| `ai-rate-limiting` | Deferred native item: cross-process shared counters and exact OpenResty log-phase timing. All official normal config and single-process behavior are implemented. |
+| `ai-prompt-template` | Deferred native item: exact OpenResty template LRU behavior. APISIX 3.17 hardcodes JSON input; its normal template behavior is implemented. |
+| `ai-prompt-guard` | Deferred native item: exact OpenResty PCRE flags/engine behavior. All official config and protocol extraction behavior are implemented. |
+| `ai-aliyun-content-moderation` | Deferred native item: exact OpenResty body-filter chunk timing. Request/response, interval/cache-triggered realtime streams, final-packet annotation, session reuse, and risk variables are implemented. |
 
 ## Observability
 
@@ -132,7 +127,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `traffic-label` | Add more variable/expression support and label propagation parity. |
 | `request-id` | Add plugin-attr snowflake config and etcd-backed machine leasing if local config/store patterns make it practical. |
 | `oas-validator` | Add external `$ref`, metadata TTL refresh, more OpenAPI parameter styles, non-JSON body schemas, and response validation. |
-| `mcp-bridge` | Add session recovery, ping keepalive, process timeouts, backpressure controls, and fuller MCP protocol validation. |
+| `mcp-bridge` | Deferred native/runtime items: cross-worker shared-dict session recovery and exact `ngx.pipe` timeout/worker-exit semantics. Official ping, SSE/message flow, cancellation-aware backpressure, and subprocess cleanup are implemented. |
 | `degraphql` | Add more GraphQL parsing parity and variable handling. |
 | `kafka-proxy` | Add actual Kafka upstream transport/proxying, websocket-to-Kafka forwarding, and SASL mechanisms beyond PLAIN. |
 | `dubbo-proxy` | Needs a dedicated Dubbo transport design for HTTP-to-Dubbo proxying, Hessian2 conversion, multiplexing, and response mapping. |

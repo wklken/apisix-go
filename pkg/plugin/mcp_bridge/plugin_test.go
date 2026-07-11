@@ -2,6 +2,7 @@ package mcp_bridge
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,9 @@ func TestSSEStartsProcessAndAdvertisesMessageEndpoint(t *testing.T) {
 	}
 
 	event, data = readSSEEvent(t, reader)
+	assertPingEvent(t, event, data, "ping:1")
+
+	event, data = readSSEEvent(t, reader)
 	if event != "message" {
 		t.Fatalf("process event = %q, want message", event)
 	}
@@ -92,6 +96,8 @@ func TestMessageEndpointWritesToSessionStdin(t *testing.T) {
 	defer resp.Body.Close()
 	reader := bufio.NewReader(resp.Body)
 	_, endpointData := readSSEEvent(t, reader)
+	event, data := readSSEEvent(t, reader)
+	assertPingEvent(t, event, data, "ping:1")
 	endpoint, err := url.Parse(endpointData)
 	if err != nil {
 		t.Fatalf("parse endpoint data %q: %v", endpointData, err)
@@ -107,7 +113,7 @@ func TestMessageEndpointWritesToSessionStdin(t *testing.T) {
 		t.Fatalf("message status = %d, want 202", postResp.StatusCode)
 	}
 
-	event, data := readSSEEvent(t, reader)
+	event, data = readSSEEvent(t, reader)
 	if event != "message" {
 		t.Fatalf("event = %q, want message", event)
 	}
@@ -133,8 +139,10 @@ func TestStderrIsForwardedAsMCPNotification(t *testing.T) {
 	defer resp.Body.Close()
 	reader := bufio.NewReader(resp.Body)
 	readSSEEvent(t, reader)
-
 	event, data := readSSEEvent(t, reader)
+	assertPingEvent(t, event, data, "ping:1")
+
+	event, data = readSSEEvent(t, reader)
 	if event != "message" {
 		t.Fatalf("event = %q, want message", event)
 	}
@@ -154,6 +162,59 @@ func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+}
+
+func TestSSEEmitsPeriodicPingRequests(t *testing.T) {
+	p := newTestPlugin(t, Config{Command: "cat"})
+	p.pingInterval = 10 * time.Millisecond
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})))
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + "/sse")
+	if err != nil {
+		t.Fatalf("GET /sse: %v", err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	readSSEEvent(t, reader)
+
+	event, data := readSSEEvent(t, reader)
+	assertPingEvent(t, event, data, "ping:1")
+	event, data = readSSEEvent(t, reader)
+	assertPingEvent(t, event, data, "ping:2")
+}
+
+func TestScanPipeStopsWhenSessionIsCanceledWithFullEventQueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan sseEvent, 1)
+	done := make(chan struct{})
+	go func() {
+		scanPipe(ctx, strings.NewReader("one\ntwo\nthree\n"), "message", events)
+		close(done)
+	}()
+
+	select {
+	case <-events:
+	case <-time.After(time.Second):
+		t.Fatal("scanPipe did not fill event queue")
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scanPipe did not stop after cancellation")
+	}
+}
+
+func assertPingEvent(t *testing.T, event, data, id string) {
+	t.Helper()
+	if event != "message" || !strings.Contains(data, `"jsonrpc":"2.0"`) ||
+		!strings.Contains(data, `"method":"ping"`) || !strings.Contains(data, `"id":"`+id+`"`) {
+		t.Fatalf("ping event = (%q, %q), want id %q", event, data, id)
 	}
 }
 

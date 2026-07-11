@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -414,9 +416,9 @@ func TestHandlerAddsRiskLevelToFinalStreamingPacket(t *testing.T) {
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
 		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "final_packet", RiskLevelBar: "high",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
-	}`))
+	}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -432,6 +434,9 @@ func TestHandlerAddsRiskLevelToFinalStreamingPacket(t *testing.T) {
 		!strings.HasSuffix(rr.Body.String(), "data: [DONE]\n\n") {
 		t.Fatalf("moderated stream = (%q, %q)", rr.Header().Get("Content-Type"), rr.Body.String())
 	}
+	if got := apisixctx.GetRequestVar(req, "$llm_content_risk_level"); got != "medium" {
+		t.Fatalf("$llm_content_risk_level = %#v, want medium", got)
+	}
 }
 
 func TestHandlerReplacesRiskyRealtimeStream(t *testing.T) {
@@ -441,7 +446,8 @@ func TestHandlerReplacesRiskyRealtimeStream(t *testing.T) {
 	checkRequest := false
 	p := newTestPlugin(t, Config{
 		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
-		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime", RiskLevelBar: "high",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime", StreamCheckCacheSize: 1,
+		RiskLevelBar: "high",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
@@ -461,6 +467,84 @@ func TestHandlerReplacesRiskyRealtimeStream(t *testing.T) {
 			"unsafe answer",
 		) || !strings.HasSuffix(rr.Body.String(), "data: [DONE]\n\n") {
 		t.Fatalf("realtime moderated stream = (%d, %q)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerChecksRealtimeStreamWhenIntervalElapses(t *testing.T) {
+	var moderatedContent string
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		moderatedContent, _ = parameters["content"].(string)
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"high","Advice":[{"Answer":"interval blocked"}]}}`))
+	}))
+	defer moderation.Close()
+
+	checkRequest := false
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckRequest: &checkRequest, CheckResponse: true, StreamCheckMode: "realtime",
+		StreamCheckCacheSize: 128, StreamCheckInterval: 0.1, RiskLevelBar: "high",
+	})
+	started := time.Unix(100, 0)
+	clockCalls := 0
+	p.streamNow = func() time.Time {
+		clockCalls++
+		if clockCalls == 1 {
+			return started
+		}
+		return started.Add(time.Second)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt","stream":true,"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"bad\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})).ServeHTTP(rr, req)
+
+	if moderatedContent != "bad" || !strings.Contains(rr.Body.String(), "interval blocked") ||
+		strings.Contains(rr.Body.String(), `"content":"bad"`) {
+		t.Fatalf("interval moderated stream = content %q, body %q", moderatedContent, rr.Body.String())
+	}
+}
+
+func TestHandlerReusesModerationSessionAcrossRequestAndResponse(t *testing.T) {
+	sessionIDs := make([]string, 0, 2)
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		formBody, _ := io.ReadAll(r.Body)
+		form, _ := url.ParseQuery(string(formBody))
+		var parameters map[string]any
+		_ = json.Unmarshal([]byte(form.Get("ServiceParameters")), &parameters)
+		sessionIDs = append(sessionIDs, parameters["sessionId"].(string))
+		_, _ = w.Write([]byte(`{"Data":{"RiskLevel":"low"}}`))
+	}))
+	defer moderation.Close()
+
+	p := newTestPlugin(t, Config{
+		Endpoint: moderation.URL, RegionID: "cn-shanghai", AccessKeyID: "key", AccessKeySecret: "secret",
+		CheckResponse: true,
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"question"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answer"}}]}`))
+	})).ServeHTTP(rr, req)
+
+	if len(sessionIDs) != 2 || sessionIDs[0] == "" || sessionIDs[0] != sessionIDs[1] {
+		t.Fatalf("moderation session IDs = %#v, want one reused ID", sessionIDs)
 	}
 }
 

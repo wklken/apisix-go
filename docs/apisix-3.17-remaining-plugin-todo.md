@@ -115,7 +115,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `body-transformer` | Add more template syntax, nested values, and XML/form/multipart handling if bounded. |
 | `limit-req` | Add Redis Cluster only after standalone Redis behavior is stable and shared helpers make it low-risk. |
 | `limit-conn` | Add Redis Cluster only after standalone Redis behavior is stable and shared helpers make it low-risk. |
-| `limit-count` | Add Redis Cluster only after standalone Redis behavior is stable and shared helpers make it low-risk. |
+| `limit-count` | Add shared `group` quotas, route-scoped Redis keys, exact group-configuration mismatch validation, and APISIX's failure behavior when every configured rule is unresolved. Redis Cluster is implemented. |
 | `proxy-cache` | Design disk cache zones and stale serving separately; keep current in-memory path stable. |
 | `graphql-proxy-cache` | Only deeper GraphQL parser parity remains normal Go work. `graphql.max_size`, route/service/identity cache keys, and the public purge endpoint are implemented; NGINX disk cache zones remain out of scope. |
 | `request-validation` | Add missing schema edge cases around headers/forms and improve APISIX-style rejection details. |

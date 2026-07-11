@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -78,6 +79,72 @@ func TestSchemaAcceptsRootRedisPolicyFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected root redis policy fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsRootRedisClusterPolicyFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"count":                    1,
+		"time_window":              60,
+		"policy":                   "redis-cluster",
+		"redis_cluster_nodes":      []any{"127.0.0.1:5000", "127.0.0.1:5001"},
+		"redis_password":           "secret",
+		"redis_timeout":            1500,
+		"redis_cluster_name":       "cluster-1",
+		"redis_cluster_ssl":        true,
+		"redis_cluster_ssl_verify": false,
+		"redis_keepalive_timeout":  12000,
+		"redis_keepalive_pool":     80,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected root redis-cluster policy fields: %v", err)
+	}
+
+	delete(config, "redis_cluster_nodes")
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted redis-cluster policy without redis_cluster_nodes")
+	}
+}
+
+func TestPostInitBuildsRedisClusterOptionsFromRootFields(t *testing.T) {
+	ssl := true
+	verify := false
+	p := newTestPlugin(t, Config{
+		Count:                 "$http_x_limit",
+		TimeWindow:            60,
+		Policy:                "redis-cluster",
+		RedisClusterNodes:     []string{"127.0.0.1:5000", "127.0.0.1:5001"},
+		RedisPassword:         "secret",
+		RedisTimeout:          1500,
+		RedisClusterName:      "cluster-1",
+		RedisClusterSSL:       &ssl,
+		RedisClusterSSLVerify: &verify,
+		RedisKeepaliveTimeout: 12000,
+		RedisKeepalivePool:    80,
+	})
+
+	options := p.redisClusterOptions()
+	if len(options.Addrs) != 2 || options.Addrs[0] != "127.0.0.1:5000" {
+		t.Fatalf("cluster addresses = %#v", options.Addrs)
+	}
+	if options.Password != "secret" {
+		t.Fatalf("cluster password = %q, want secret", options.Password)
+	}
+	if options.DialTimeout != 1500*time.Millisecond ||
+		options.ReadTimeout != 1500*time.Millisecond ||
+		options.WriteTimeout != 1500*time.Millisecond {
+		t.Fatalf("cluster timeouts = %s/%s/%s", options.DialTimeout, options.ReadTimeout, options.WriteTimeout)
+	}
+	if options.PoolSize != 80 || options.ConnMaxIdleTime != 12*time.Second {
+		t.Fatalf("cluster pool = %d, idle timeout = %s", options.PoolSize, options.ConnMaxIdleTime)
+	}
+	if options.TLSConfig == nil || !options.TLSConfig.InsecureSkipVerify {
+		t.Fatalf("cluster TLS config = %#v, want TLS with verification disabled", options.TLSConfig)
 	}
 }
 

@@ -7985,3 +7985,25 @@ Run: `go test ./pkg/plugin/graphql_limit_count -count=1 -timeout=30s` and `go te
 - [x] **Step 4: Verify repository**
 
 Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 243: Add Limit Count Redis Cluster Parity
+
+**Files:**
+- Modify: `pkg/plugin/limit_count`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 flat Redis Cluster schema plus the existing nested compatibility config.
+- Produces: shared `go-redis` cluster clients, TLS verification controls, timeout/pool settings, and the existing fixed-window limiter store.
+
+- [x] **Step 1: Pin official cluster schema behavior**
+
+Added a failing schema test for flat `redis_cluster_*` fields and required nodes, then made it pass.
+
+- [x] **Step 2: Implement cluster configuration and runtime**
+
+Normalized flat fields into the compatibility config, applied official defaults, built tested cluster options, and replaced the runtime unsupported error with a Redis Cluster limiter store.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/limit_count -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_count -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

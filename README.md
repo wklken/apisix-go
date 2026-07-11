@@ -228,9 +228,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/) 78%
   - support in-memory response caching with `cache_key`, `cache_method`, `cache_http_status`, `cache_ttl`, `cache_bypass`, `no_cache`, `hide_cache_headers`, `consumer_isolation`, `cache_control` request bypass for `no-cache` / `no-store`, `only-if-cached` misses, request stale refresh controls (`max-age`, `max-stale`, `min-fresh`), upstream `private` / `no-store` / `no-cache` non-storage, upstream `s-maxage` / `max-age` / `Expires` TTL derivation, `Vary`, `PURGE`, and `Apisix-Cache-Status`
   - not support disk cache zones or stale serving
-- [x] [graphql-proxy-cache](https://apisix.apache.org/docs/apisix/plugins/graphql-proxy-cache/) 55%
-  - support official plugin name, priority, schema, GET/POST GraphQL request validation, JSON and `application/graphql` bodies, mutation bypass with `Apisix-Cache-Status: BYPASS`, MD5 cache keys, `APISIX-Cache-Key`, in-memory TTL cache, `consumer_isolation`, and `cache_set_cookie`
-  - not support NGINX disk cache zones, APISIX public `PURGE` endpoint, configured `graphql.max_size`, route/service ID participation in cache keys, full GraphQL spec parsing parity, or exact APISIX `proxy-cache` handler behavior
+- [x] [graphql-proxy-cache](https://apisix.apache.org/docs/apisix/plugins/graphql-proxy-cache/) 88%
+  - support official plugin name, priority, schema, GET/POST GraphQL request validation with configured `graphql.max_size`, JSON and `application/graphql` bodies, mutation bypass with `Apisix-Cache-Status: BYPASS`, route/service/host/consumer-isolated MD5 cache keys, `APISIX-Cache-Key`, in-memory TTL cache, `consumer_isolation`, `cache_set_cookie`, and the route-aware public `PURGE` endpoint
+  - not support NGINX disk cache zones, full GraphQL spec parsing parity, or exact APISIX `proxy-cache` handler internals
 - [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/) 85%
   - support JSON and `application/x-www-form-urlencoded` `body_schema`, JSON body normalization before proxying, `header_schema`, `rejected_code`, and `rejected_msg`
 - [x] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/) 73%

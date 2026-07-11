@@ -7901,3 +7901,34 @@ Run: `go test ./pkg/data_encryption ./pkg/store ./pkg/plugin/openwhisk -count=1 
 - [x] **Step 5: Verify repository**
 
 Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 240: Complete GraphQL Proxy Cache Runtime Parity
+
+**Files:**
+- Modify: `pkg/plugin/graphql_proxy_cache`
+- Modify: `pkg/route/extra.go`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: global `graphql.max_size`, APISIX request resource/consumer context, and public PURGE requests.
+- Produces: bounded GraphQL request reads, isolated cache keys, and lifecycle-safe route cache purging.
+
+- [x] **Step 1: Enforce GraphQL request size**
+
+Applied the global GraphQL maximum to GET arguments and bounded POST body reads before parsing.
+
+- [x] **Step 2: Isolate cache keys**
+
+Included configuration, host, route, service, and authenticated consumer identity in the MD5 cache key.
+
+- [x] **Step 3: Add the public purge endpoint**
+
+Registered Chi's custom PURGE method, exposed the official wildcard endpoint, validated route/strategy/key input, and tied route registrations to plugin lifecycle cleanup.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run: `go test ./pkg/plugin/graphql_proxy_cache ./pkg/route -count=1 -timeout=30s` and `go test -race ./pkg/plugin/graphql_proxy_cache ./pkg/route -count=1 -timeout=60s`.
+
+- [x] **Step 5: Verify repository**
+
+Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

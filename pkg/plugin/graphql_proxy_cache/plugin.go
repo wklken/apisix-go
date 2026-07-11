@@ -11,8 +11,11 @@ import (
 	"sync"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
@@ -22,6 +25,10 @@ type Plugin struct {
 	entries map[string]cacheEntry
 	lock    sync.RWMutex
 	now     func() time.Time
+
+	maxSize   int
+	routeID   string
+	serviceID string
 }
 
 const (
@@ -30,7 +37,15 @@ const (
 
 	cacheStatusHeader = "Apisix-Cache-Status"
 	cacheKeyHeader    = "APISIX-Cache-Key"
+	PurgeURI          = "/apisix/plugin/graphql-proxy-cache/*"
+	purgePrefix       = "/apisix/plugin/graphql-proxy-cache/"
+	defaultMaxSize    = 1048576
 )
+
+var routeCaches = struct {
+	sync.RWMutex
+	plugins map[string]*Plugin
+}{plugins: map[string]*Plugin{}}
 
 const schema = `
 {
@@ -121,7 +136,35 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	p.maxSize = defaultMaxSize
+	if config.GlobalConfig != nil && config.GlobalConfig.GraphQL.MaxSize > 0 {
+		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
+	}
+	if p.routeID != "" {
+		routeCaches.Lock()
+		routeCaches.plugins[p.routeID] = p
+		routeCaches.Unlock()
+	}
 	return nil
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
+	p.routeID = route.ID
+	p.serviceID = route.ServiceID
+	if p.serviceID == "" {
+		p.serviceID = service.ID
+	}
+}
+
+func (p *Plugin) Stop() {
+	if p.routeID == "" {
+		return
+	}
+	routeCaches.Lock()
+	if routeCaches.plugins[p.routeID] == p {
+		delete(routeCaches.plugins, p.routeID)
+	}
+	routeCaches.Unlock()
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -164,6 +207,10 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 	}
 
 	if r.Method == http.MethodGet {
+		if len(r.URL.RawQuery) > p.maxSize {
+			http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
+			return nil, "", false
+		}
 		query := r.URL.Query().Get("query")
 		if query == "" {
 			http.Error(w, "invalid graphql request, args[query] is nil", http.StatusBadRequest)
@@ -172,7 +219,7 @@ func (p *Plugin) graphqlRequest(w http.ResponseWriter, r *http.Request) ([]byte,
 		return []byte(r.URL.RawQuery), query, true
 	}
 
-	body, err := readBody(r)
+	body, err := readBody(r, p.maxSize)
 	if err != nil || len(bytes.TrimSpace(body)) == 0 {
 		http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
 		return nil, "", false
@@ -244,32 +291,107 @@ func (p *Plugin) store(key string, recorder *responseRecorder) {
 }
 
 func (p *Plugin) cacheKey(r *http.Request, body []byte) string {
+	routeID := apisixVarString(r, "$route_id")
+	if routeID == "" {
+		routeID = p.routeID
+	}
+	serviceID := apisixVarString(r, "$service_id")
+	if serviceID == "" {
+		serviceID = p.serviceID
+	}
 	parts := []string{
-		p.config.CacheStrategy,
-		p.config.CacheZone,
+		p.configFingerprint(),
 		r.Host,
-		"",
-		"",
+		routeID,
+		serviceID,
 		"",
 		string(body),
 	}
 	if p.config.ConsumerIsolation != nil && *p.config.ConsumerIsolation {
-		parts[5] = r.Header.Get("X-Consumer-Username")
+		parts[4] = apisixVarString(r, "$consumer_name")
+		if parts[4] == "" {
+			parts[4] = apisixVarString(r, "$remote_user")
+		}
+		if parts[4] == "" {
+			parts[4] = r.Header.Get("X-Consumer-Username")
+		}
 	}
 	sum := md5.Sum([]byte(strings.Join(parts, "\x01")))
 	return hex.EncodeToString(sum[:])
 }
 
-func readBody(r *http.Request) ([]byte, error) {
+func (p *Plugin) configFingerprint() string {
+	return fmt.Sprintf(
+		"%s:%s:%d:%t:%t",
+		p.config.CacheStrategy,
+		p.config.CacheZone,
+		p.config.CacheTTL,
+		p.config.CacheSetCookie,
+		p.config.ConsumerIsolation != nil && *p.config.ConsumerIsolation,
+	)
+}
+
+func apisixVarString(r *http.Request, name string) string {
+	value, _ := apisixctx.GetApisixVar(r, name).(string)
+	return value
+}
+
+func readBody(r *http.Request, maxSize int) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxSize)+1))
 	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err == nil && len(body) > maxSize {
+		err = fmt.Errorf("graphql request body exceeds maximum size %d", maxSize)
+	}
 	return body, err
+}
+
+func PurgeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PURGE" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !strings.HasPrefix(r.URL.Path, purgePrefix) {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, purgePrefix), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	strategy, routeID, cacheKey := parts[0], parts[1], parts[2]
+	if strategy != "disk" && strategy != "memory" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	routeCaches.RLock()
+	plugin := routeCaches.plugins[routeID]
+	routeCaches.RUnlock()
+	if plugin == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if plugin.config.CacheStrategy != strategy {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	plugin.lock.Lock()
+	_, found := plugin.entries[cacheKey]
+	delete(plugin.entries, cacheKey)
+	plugin.lock.Unlock()
+	if strategy == "disk" && !found {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func graphqlHasMutation(query string) (bool, error) {

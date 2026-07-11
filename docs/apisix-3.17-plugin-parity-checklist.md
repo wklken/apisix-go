@@ -71,7 +71,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `ai-aws-content-moderation` | yes | 98% | monitor |
 | `ai-aliyun-content-moderation` | yes | 96% | defer-native |
 | `proxy-mirror` | yes | 73% | monitor |
-| `graphql-proxy-cache` | yes | 55% | implement |
+| `graphql-proxy-cache` | yes | 88% | monitor |
 | `proxy-rewrite` | yes | 98% | monitor |
 | `workflow` | yes | 70% | implement |
 | `api-breaker` | yes | 95% | monitor |

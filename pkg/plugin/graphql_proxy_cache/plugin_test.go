@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -245,6 +249,126 @@ func TestHandlerRefreshesExpiredGraphQLCacheEntries(t *testing.T) {
 
 	if got := res.Header().Get(cacheStatusHeader); got != "EXPIRED" {
 		t.Fatalf("cache status = %q, want EXPIRED", got)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerEnforcesGlobalGraphQLMaxSize(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{GraphQL: config.GraphQL{MaxSize: 32}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for oversized requests")
+	}))
+
+	post := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id name email } }",
+	)
+	if post.Code != http.StatusBadRequest {
+		t.Fatalf("oversized POST response code = %d, want %d", post.Code, http.StatusBadRequest)
+	}
+
+	get := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodGet,
+		"/graphql?query=query%20%7B%20viewer%20%7B%20id%20name%20email%20%7D%20%7D",
+		"",
+		"",
+	)
+	if get.Code != http.StatusBadRequest {
+		t.Fatalf("oversized GET response code = %d, want %d", get.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCacheKeyIncludesRouteServiceAndConsumerIdentity(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	p.SetResourceContext(
+		resource.Route{ID: "route-1", ServiceID: "service-1"},
+		resource.Service{ID: "service-1"},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/graphql", nil)
+	request = apisixctx.WithApisixVars(request, map[string]string{
+		"$route_id":      "route-1",
+		"$service_id":    "service-1",
+		"$consumer_name": "alice",
+	})
+	aliceKey := p.cacheKey(request, []byte(`{"query":"{ viewer { id } }"}`))
+
+	apisixctx.RegisterApisixVar(request, "$consumer_name", "bob")
+	bobKey := p.cacheKey(request, []byte(`{"query":"{ viewer { id } }"}`))
+	if aliceKey == bobKey {
+		t.Fatalf("consumer cache keys are equal: %q", aliceKey)
+	}
+
+	apisixctx.RegisterApisixVar(request, "$consumer_name", "alice")
+	apisixctx.RegisterApisixVar(request, "$route_id", "route-2")
+	routeKey := p.cacheKey(request, []byte(`{"query":"{ viewer { id } }"}`))
+	if aliceKey == routeKey {
+		t.Fatalf("route cache keys are equal: %q", aliceKey)
+	}
+}
+
+func TestPurgeHandlerRemovesRouteCacheEntry(t *testing.T) {
+	p := &Plugin{config: Config{CacheStrategy: "memory", CacheTTL: 60}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Write([]byte("response"))
+	}))
+	first := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	cacheKey := first.Header().Get(cacheKeyHeader)
+	if cacheKey == "" {
+		t.Fatal("cache key is empty")
+	}
+
+	purge := httptest.NewRequest(
+		"PURGE",
+		"/apisix/plugin/graphql-proxy-cache/memory/route-1/"+cacheKey,
+		nil,
+	)
+	purgeResponse := httptest.NewRecorder()
+	PurgeHandler(purgeResponse, purge)
+	if purgeResponse.Code != http.StatusOK {
+		t.Fatalf("purge response code = %d, want %d", purgeResponse.Code, http.StatusOK)
+	}
+
+	second := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if got := second.Header().Get(cacheStatusHeader); got != "MISS" {
+		t.Fatalf("cache status after purge = %q, want MISS", got)
 	}
 	if calls != 2 {
 		t.Fatalf("upstream calls = %d, want 2", calls)

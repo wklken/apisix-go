@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/batch_requests"
+	"github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
@@ -28,6 +29,10 @@ func registerExtraRoutes(mux *chi.Mux) {
 		if uri != batch_requests.DefaultURI {
 			public_api.Register("POST", uri, handler)
 		}
+	}
+	if pluginEnabled("graphql-proxy-cache") {
+		chi.RegisterMethod("PURGE")
+		mux.Method("PURGE", graphql_proxy_cache.PurgeURI, http.HandlerFunc(graphql_proxy_cache.PurgeHandler))
 	}
 }
 

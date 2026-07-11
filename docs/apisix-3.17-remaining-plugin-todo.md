@@ -117,7 +117,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `limit-conn` | Add Redis Cluster only after standalone Redis behavior is stable and shared helpers make it low-risk. |
 | `limit-count` | Add Redis Cluster only after standalone Redis behavior is stable and shared helpers make it low-risk. |
 | `proxy-cache` | Design disk cache zones and stale serving separately; keep current in-memory path stable. |
-| `graphql-proxy-cache` | Add `graphql.max_size`, route/service ID cache keys, public purge endpoint if practical, and deeper GraphQL parser parity. |
+| `graphql-proxy-cache` | Only deeper GraphQL parser parity remains normal Go work. `graphql.max_size`, route/service/identity cache keys, and the public purge endpoint are implemented; NGINX disk cache zones remain out of scope. |
 | `request-validation` | Add missing schema edge cases around headers/forms and improve APISIX-style rejection details. |
 | `proxy-mirror` | Add gRPC mirroring and APISIX DNS resolver behavior only if the Go proxy layer exposes enough hooks. |
 | `workflow` | Add more delegated actions for implemented plugins and better condition expression coverage. |

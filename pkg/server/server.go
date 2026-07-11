@@ -17,6 +17,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
+	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -35,15 +36,31 @@ func NewServer() (*Server, error) {
 	events := make(chan *store.Event)
 	storage := store.NewStore("apisix-go-store.db", events)
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
+	var handler http.Handler = routes
+	if pluginConfigured("node-status") {
+		handler = node_status.Track(handler)
+	}
 	return &Server{
 		// FIXME: listen to multiple address from global config
 		addr:            ":8080",
-		server:          &http.Server{Handler: routes},
+		server:          &http.Server{Handler: handler},
 		routes:          routes,
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
 	}, nil
+}
+
+func pluginConfigured(name string) bool {
+	if config.GlobalConfig == nil {
+		return false
+	}
+	for _, configured := range config.GlobalConfig.Plugins {
+		if configured == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) Start() {

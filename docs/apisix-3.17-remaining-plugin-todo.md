@@ -70,12 +70,12 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 
 | Plugin | What needs to be done |
 |---|---|
-| `zipkin` | Add span reporting transport, richer propagation, sampling behavior, endpoint/service config parity, and error/status tagging. |
-| `skywalking` | Improve Go-native segment reporting, reference fidelity, and body/timing lifecycle where practical. Keep native OpenResty tracer and shared tracing buffer out of scope. |
-| `opentelemetry` | Add collector/exporter metadata parity, `trace_id_source`, and more attribute mapping where current Go tracing support allows it. Keep phase-child-span and log-phase exactness out of scope. |
-| `prometheus` | Add broader APISIX exporter labels, extra-label variable expansion, metric expiration, and privileged-agent offload approximation. Stream metrics only if stream support exists later. |
-| `node-status` | Persist node UID if practical and improve Go-native connection/runtime counters. Keep exact NGINX connection-state counters out of scope. |
-| `datadog` | Add batch processor behavior, exact APISIX log-entry timing/source parity where practical, and richer tag/metric parity. |
+| `zipkin` | No normal Go TODO remains. Multi-phase spans, `set_ngx_var`, exact phase timing, and OpenResty batch behavior remain deferred native/runtime items. |
+| `skywalking` | No normal Go TODO remains. Native OpenResty tracer/shared-buffer behavior and exact delayed body-filter/streaming phase timing remain deferred. |
+| `opentelemetry` | No normal Go TODO remains. `set_ngx_var`, phase child spans, and exact OpenResty log-phase timing remain deferred native/runtime items. |
+| `prometheus` | No normal route/plugin-attribute TODO remains. Metric expiration, privileged-agent offload, exact NGINX lifecycle counters, and stream metrics remain deferred native/runtime items. |
+| `node-status` | No normal Go TODO remains. Exact NGINX reading/writing/waiting connection-state counters remain deferred native behavior. |
+| `datadog` | No normal Go TODO remains. Exact OpenResty log-phase timing and stale batch-manager object-cache behavior remain deferred runtime details. |
 
 ## Others
 

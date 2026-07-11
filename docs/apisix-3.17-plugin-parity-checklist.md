@@ -24,7 +24,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `proxy-buffering` | yes | 60% | implement |
 | `proxy-control` | yes | 60% | implement |
 | `request-id` | yes | 85% | monitor |
-| `zipkin` | yes | 45% | implement |
+| `zipkin` | yes | 82% | defer-native |
 | `ext-plugin-pre-req` | no | unsupported: No need | not-required-native |
 | `fault-injection` | yes | 88% | monitor |
 | `mocking` | yes | 97% | monitor |
@@ -92,8 +92,8 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `grpc-web` | yes | 68% | implement |
 | `http-dubbo` | yes | 55% | implement |
 | `public-api` | yes | 60% | implement |
-| `prometheus` | yes | 45% | implement |
-| `datadog` | yes | 68% | implement |
+| `prometheus` | yes | 82% | defer-native |
+| `datadog` | yes | 88% | monitor |
 | `lago` | yes | 76% | monitor |
 | `loki-logger` | yes | 76% | monitor |
 | `elasticsearch-logger` | yes | 84% | monitor |

@@ -20,6 +20,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }
@@ -44,15 +45,30 @@ func TestPostInitSetsSkyWalkingDefaults(t *testing.T) {
 	}
 }
 
+func TestShouldSampleUsesFractionalRatio(t *testing.T) {
+	p := newTestPlugin(t, Config{SampleRatio: 0.25})
+	p.sampleRandom = func() float64 { return 0.24 }
+	if !p.shouldSample() {
+		t.Fatal("shouldSample() = false below sample ratio, want true")
+	}
+
+	p.sampleRandom = func() float64 { return 0.25 }
+	if p.shouldSample() {
+		t.Fatal("shouldSample() = true at sample ratio boundary, want false")
+	}
+}
+
 func TestParseSW8Context(t *testing.T) {
 	traceID := base64.RawURLEncoding.EncodeToString([]byte("trace-id"))
 	segmentID := base64.RawURLEncoding.EncodeToString([]byte("segment-id"))
 	parentService := base64.RawURLEncoding.EncodeToString([]byte("parent-service"))
 	parentInstance := base64.RawURLEncoding.EncodeToString([]byte("parent-instance"))
 	parentEndpoint := base64.RawURLEncoding.EncodeToString([]byte("parent-endpoint"))
+	address := base64.RawURLEncoding.EncodeToString([]byte("gateway.example.com:80"))
 
 	ctx, ok := parseSW8(
-		"1-" + traceID + "-" + segmentID + "-7-" + parentService + "-" + parentInstance + "-" + parentEndpoint + "-ipport",
+		"1-" + traceID + "-" + segmentID + "-7-" + parentService + "-" + parentInstance + "-" + parentEndpoint + "-" +
+			address,
 	)
 	if !ok {
 		t.Fatal("parseSW8() ok = false, want true")
@@ -62,6 +78,9 @@ func TestParseSW8Context(t *testing.T) {
 	}
 	if ctx.ParentService != "parent-service" || ctx.ParentEndpoint != "parent-endpoint" {
 		t.Fatalf("parsed parent = %#v", ctx)
+	}
+	if ctx.AddressUsedAtClient != "gateway.example.com:80" {
+		t.Fatalf("address used at client = %q, want gateway.example.com:80", ctx.AddressUsedAtClient)
 	}
 }
 
@@ -99,6 +118,7 @@ func TestHandlerInjectsSW8AndReportsSegment(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusCreated)
 	})).ServeHTTP(rr, req)
+	p.Flush()
 
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rr.Code)
@@ -149,6 +169,7 @@ func TestHandlerKeepsIncomingTraceIDInSW8(t *testing.T) {
 	parentService := base64.RawURLEncoding.EncodeToString([]byte("parent-service"))
 	parentInstance := base64.RawURLEncoding.EncodeToString([]byte("parent-instance"))
 	parentEndpoint := base64.RawURLEncoding.EncodeToString([]byte("parent-endpoint"))
+	address := base64.RawURLEncoding.EncodeToString([]byte("gateway.example.com:80"))
 
 	p := newTestPlugin(t, Config{
 		EndpointAddr:        server.URL,
@@ -160,7 +181,7 @@ func TestHandlerKeepsIncomingTraceIDInSW8(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/pay", nil)
 	req.Header.Set(
 		"sw8",
-		"1-"+traceID+"-"+segmentID+"-3-"+parentService+"-"+parentInstance+"-"+parentEndpoint+"-ipport",
+		"1-"+traceID+"-"+segmentID+"-3-"+parentService+"-"+parentInstance+"-"+parentEndpoint+"-"+address,
 	)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +194,7 @@ func TestHandlerKeepsIncomingTraceIDInSW8(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
+	p.Flush()
 
 	select {
 	case segments := <-reported:
@@ -180,7 +202,57 @@ func TestHandlerKeepsIncomingTraceIDInSW8(t *testing.T) {
 		if segment["traceId"] != "incoming-trace" {
 			t.Fatalf("reported traceId = %v, want incoming-trace", segment["traceId"])
 		}
+		if _, ok := segment["segmentReference"]; ok {
+			t.Fatalf("segmentReference must not be emitted at segment level: %#v", segment)
+		}
+		spans := segment["spans"].([]any)
+		span := spans[0].(map[string]any)
+		refs, ok := span["refs"].([]any)
+		if !ok || len(refs) != 1 {
+			t.Fatalf("span refs = %#v, want one cross-process reference", span["refs"])
+		}
+		ref := refs[0].(map[string]any)
+		if ref["refType"] != "CrossProcess" || ref["parentTraceSegmentId"] != "parent-segment" ||
+			ref["networkAddressUsedAtPeer"] != "gateway.example.com:80" {
+			t.Fatalf("span reference = %#v, want decoded SkyWalking cross-process reference", ref)
+		}
+		tags, ok := span["tags"].([]any)
+		if !ok || len(tags) != 3 {
+			t.Fatalf("span tags = %#v, want three key/value tags", span["tags"])
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SkyWalking report")
+	}
+}
+
+func TestReportIntervalBuffersSegmentsUntilFlush(t *testing.T) {
+	reported := make(chan []map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var segments []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&segments); err != nil {
+			t.Fatalf("decode skywalking segments: %v", err)
+		}
+		reported <- segments
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{EndpointAddr: server.URL, ReportInterval: 60})
+	p.reportSegment(skywalkingSegment{TraceID: "trace-a"})
+	p.reportSegment(skywalkingSegment{TraceID: "trace-b"})
+	select {
+	case segments := <-reported:
+		t.Fatalf("segments reported before interval/flush: %#v", segments)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	p.Flush()
+	select {
+	case segments := <-reported:
+		if len(segments) != 2 {
+			t.Fatalf("segments len = %d, want 2", len(segments))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for buffered SkyWalking report")
 	}
 }

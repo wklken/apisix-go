@@ -286,6 +286,7 @@ func buildRequestContextConfig(
 		"$route_id":               r.ID,
 		"$route_name":             r.Name,
 		"$matched_uri":            matchedURI(r),
+		"$matched_host":           matchedHost(r),
 		"$service_id":             r.ServiceID,
 		"$service_name":           service.Name,
 		"$prometheus_prefer_name": prometheusPreferName(pluginConfigs),
@@ -298,6 +299,13 @@ func matchedURI(r resource.Route) string {
 	}
 	if len(r.Uris) > 0 {
 		return r.Uris[0]
+	}
+	return ""
+}
+
+func matchedHost(r resource.Route) string {
+	if len(r.Hosts) > 0 {
+		return r.Hosts[0]
 	}
 	return ""
 }

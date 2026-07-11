@@ -7715,3 +7715,35 @@ Updated `graphql-limit-count` README support notes and the live APISIX 3.17 pari
 - [x] **Step 5: Verify**
 
 Run: `go test ./pkg/plugin/graphql_limit_count -run 'Test(PostInitAcceptsRedisPolicyDefaults|PostInitRejectsRedisPolicyWithoutHost|SchemaAcceptsRedisPolicyFields|HandlerUsesRedisLimiterDepthCost|HandlerAllowsDegradationWhenRedisLimiterFails)' -count=1 -timeout=10s -v` and `go test ./pkg/plugin/graphql_limit_count -count=1 -timeout=10s -v`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 234: Complete Normal Go Observability Parity
+
+**Files:**
+- Modify: `pkg/plugin/zipkin`, `pkg/plugin/skywalking`, `pkg/plugin/otel`, `pkg/plugin/datadog`, `pkg/plugin/node_status`
+- Modify: `pkg/observability/metrics/prometheus.go` and `pkg/plugin/request_context`
+- Modify: `pkg/apisix/id`, `pkg/server/server.go`, `pkg/route/builder.go`
+- Modify: `README.md` and both APISIX 3.17 parity checklists
+
+**Interfaces:**
+- Consumes: APISIX 3.17 tracing, Prometheus, node-status, and Datadog normal configuration.
+- Produces: Go-native tracing/export, metric labels/latencies/sizes/LLM metrics, persistent node identity, process request counters, and buffered DogStatsD delivery.
+
+- [x] **Step 1: Upgrade tracing plugins**
+
+Implemented probabilistic Zipkin/SkyWalking sampling, correct parent/reference propagation, protocol-correct SkyWalking v3 refs/tags, interval buffering, OTLP/HTTP collector metadata, resource/batch options, and `x-request-id` trace IDs.
+
+- [x] **Step 2: Upgrade Prometheus request metrics**
+
+Added final status, matched host, consumer/node labels, request/upstream/APISIX latency, ingress/egress bytes, AI dimensions, LLM latency/tokens, active-connection context labels, and bounded `extra_labels` expansion.
+
+- [x] **Step 3: Upgrade node-status and Datadog**
+
+Added persistent `conf/apisix.uid` fallback IDs, server-wide active/accepted/handled/total counters, Datadog batch processor fields/retries, route/server buffering metrics, shutdown flush, and interface-preserving response capture.
+
+- [x] **Step 4: Update live parity docs**
+
+Marked normal Go observability work complete and retained only explicit OpenResty/NGINX phase, shared-buffer, expiration, privileged-agent, and stream-runtime deferrals.
+
+- [x] **Step 5: Verify**
+
+Focused and race suites pass. Final verification passed with `go test ./...`, `make build`, `rm -f apisix`, and `git diff --check`.

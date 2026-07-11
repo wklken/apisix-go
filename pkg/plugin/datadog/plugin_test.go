@@ -23,6 +23,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
 }
@@ -44,6 +45,14 @@ func TestPostInitSetsDatadogDefaults(t *testing.T) {
 	}
 	if len(p.metadata.ConstantTags) != 1 || p.metadata.ConstantTags[0] != "source:apisix" {
 		t.Fatalf("constant tags = %v, want [source:apisix]", p.metadata.ConstantTags)
+	}
+	if p.config.BatchName != "datadog" || p.config.BatchMaxSize != 1000 || p.config.InactiveTimeout != 5 {
+		t.Fatalf(
+			"batch defaults = name:%q size:%d inactive:%d, want datadog/1000/5",
+			p.config.BatchName,
+			p.config.BatchMaxSize,
+			p.config.InactiveTimeout,
+		)
 	}
 }
 
@@ -248,7 +257,7 @@ func TestHandlerCapturesStatusAndSizes(t *testing.T) {
 		t.Fatalf("split udp addr: %v", err)
 	}
 
-	p := newTestPlugin(t, Config{IncludePath: true, IncludeMethod: true})
+	p := newTestPlugin(t, Config{IncludePath: true, IncludeMethod: true, BatchMaxSize: 1})
 	p.metadata = Metadata{
 		Host:         host,
 		Port:         mustAtoi(t, port),
@@ -288,7 +297,7 @@ func TestHandlerCapturesUpstreamLatency(t *testing.T) {
 		t.Fatalf("split udp addr: %v", err)
 	}
 
-	p := newTestPlugin(t, Config{})
+	p := newTestPlugin(t, Config{BatchMaxSize: 1})
 	p.metadata = Metadata{
 		Host:         host,
 		Port:         mustAtoi(t, port),
@@ -317,7 +326,7 @@ func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
 		t.Fatalf("split udp addr: %v", err)
 	}
 
-	p := newTestPlugin(t, Config{IncludePath: true})
+	p := newTestPlugin(t, Config{IncludePath: true, BatchMaxSize: 1})
 	p.metadata = Metadata{
 		Host:         host,
 		Port:         mustAtoi(t, port),
@@ -350,7 +359,7 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 		t.Fatalf("split udp addr: %v", err)
 	}
 
-	p := newTestPlugin(t, Config{})
+	p := newTestPlugin(t, Config{BatchMaxSize: 1})
 	p.metadata = Metadata{
 		Host:         host,
 		Port:         mustAtoi(t, port),
@@ -382,6 +391,33 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 		if !containsLinePart(messages, tag) {
 			t.Fatalf("messages = %v, want tag %q", messages, tag)
 		}
+	}
+}
+
+func TestHandlerBatchesMetricsUntilBatchMaxSize(t *testing.T) {
+	addr, received := startUDPServer(t, 10)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{BatchMaxSize: 2})
+	p.metadata = Metadata{Host: host, Port: mustAtoi(t, port), Namespace: "apisix"}
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+	select {
+	case message := <-received:
+		t.Fatalf("received metric before batch filled: %q", message)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+	messages := collectMessages(t, received, 10)
+	if len(messages) != 10 {
+		t.Fatalf("messages = %d, want 10 for two five-metric entries", len(messages))
 	}
 }
 

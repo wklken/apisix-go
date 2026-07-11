@@ -3,13 +3,16 @@ package skywalking
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -22,6 +25,14 @@ type Plugin struct {
 	config Config
 
 	client *resty.Client
+
+	sampleRandom func() float64
+
+	reportMu    sync.Mutex
+	reportTimer *time.Timer
+	reportWG    sync.WaitGroup
+	segments    []skywalkingSegment
+	stopped     bool
 }
 
 const (
@@ -66,53 +77,42 @@ type sw8Context struct {
 }
 
 type skywalkingSegment struct {
-	TraceID          string                `json:"traceId"`
-	TraceSegmentID   string                `json:"traceSegmentId"`
-	Service          string                `json:"service"`
-	ServiceInstance  string                `json:"serviceInstance"`
-	Spans            []skywalkingSpan      `json:"spans"`
-	SegmentReference *skywalkingSegmentRef `json:"segmentReference,omitempty"`
+	TraceID         string           `json:"traceId"`
+	TraceSegmentID  string           `json:"traceSegmentId"`
+	Service         string           `json:"service"`
+	ServiceInstance string           `json:"serviceInstance"`
+	Spans           []skywalkingSpan `json:"spans"`
 }
 
 type skywalkingSegmentRef struct {
-	TraceID               string `json:"traceId"`
-	ParentTraceSegmentID  string `json:"parentTraceSegmentId"`
-	ParentSpanID          int    `json:"parentSpanId"`
-	ParentService         string `json:"parentService"`
-	ParentServiceInstance string `json:"parentServiceInstance"`
-	ParentEndpoint        string `json:"parentEndpoint"`
-	AddressUsedAtClient   string `json:"addressUsedAtClient"`
+	RefType                  string `json:"refType"`
+	TraceID                  string `json:"traceId"`
+	ParentTraceSegmentID     string `json:"parentTraceSegmentId"`
+	ParentSpanID             int    `json:"parentSpanId"`
+	ParentService            string `json:"parentService"`
+	ParentServiceInstance    string `json:"parentServiceInstance"`
+	ParentEndpoint           string `json:"parentEndpoint"`
+	NetworkAddressUsedAtPeer string `json:"networkAddressUsedAtPeer"`
+}
+
+type skywalkingTag struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 type skywalkingSpan struct {
-	SpanID        int                 `json:"spanId"`
-	ParentSpanID  int                 `json:"parentSpanId"`
-	OperationName string              `json:"operationName"`
-	StartTime     int64               `json:"startTime"`
-	EndTime       int64               `json:"endTime"`
-	SpanType      string              `json:"spanType"`
-	SpanLayer     string              `json:"spanLayer"`
-	ComponentID   int                 `json:"componentId"`
-	IsError       bool                `json:"isError"`
-	Tags          map[string]string   `json:"tags,omitempty"`
-	Logs          []map[string]string `json:"logs,omitempty"`
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusRecorder) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *statusRecorder) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return w.ResponseWriter.Write(body)
+	SpanID        int                    `json:"spanId"`
+	ParentSpanID  int                    `json:"parentSpanId"`
+	OperationName string                 `json:"operationName"`
+	StartTime     int64                  `json:"startTime"`
+	EndTime       int64                  `json:"endTime"`
+	SpanType      string                 `json:"spanType"`
+	SpanLayer     string                 `json:"spanLayer"`
+	ComponentID   int                    `json:"componentId"`
+	IsError       bool                   `json:"isError"`
+	Refs          []skywalkingSegmentRef `json:"refs,omitempty"`
+	Tags          []skywalkingTag        `json:"tags,omitempty"`
+	Logs          []map[string]string    `json:"logs,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -126,6 +126,9 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	p.loadPluginAttr()
 	p.applyDefaults()
+	if p.sampleRandom == nil {
+		p.sampleRandom = randomUnit
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.EndpointAddr)
@@ -157,13 +160,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		r.Header.Set("sw8", ctx.header(p.config.ServiceName, p.serviceInstanceName(), r.URL.Path))
 
 		start := time.Now()
-		recorder := &statusRecorder{ResponseWriter: w}
-		next.ServeHTTP(recorder, r)
-		if recorder.status == 0 {
-			recorder.status = http.StatusOK
-		}
-
-		p.reportSegment(p.buildSegment(ctx, r, recorder.status, start, time.Since(start)))
+		captured := httpsnoop.CaptureMetrics(next, w, r)
+		p.reportSegment(p.buildSegment(ctx, r, captured.Code, start, captured.Duration))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -209,7 +207,7 @@ func (p *Plugin) applyDefaults() {
 }
 
 func (p *Plugin) shouldSample() bool {
-	return p.config.SampleRatio >= 1
+	return p.config.SampleRatio >= 1 || p.sampleRandom() < p.config.SampleRatio
 }
 
 func (p *Plugin) buildSegment(
@@ -230,10 +228,10 @@ func (p *Plugin) buildSegment(
 		SpanLayer:     "Http",
 		ComponentID:   componentIDAPISIX,
 		IsError:       status >= 500,
-		Tags: map[string]string{
-			"http.method":      r.Method,
-			"http.url":         r.URL.RequestURI(),
-			"http.status_code": fmt.Sprint(status),
+		Tags: []skywalkingTag{
+			{Key: "http.method", Value: r.Method},
+			{Key: "http.url", Value: r.URL.RequestURI()},
+			{Key: "http.status_code", Value: fmt.Sprint(status)},
 		},
 	}
 	segment := skywalkingSegment{
@@ -244,23 +242,65 @@ func (p *Plugin) buildSegment(
 		Spans:           []skywalkingSpan{span},
 	}
 	if ctx.ParentTraceSegmentID != "" {
-		segment.SegmentReference = &skywalkingSegmentRef{
-			TraceID:               ctx.TraceID,
-			ParentTraceSegmentID:  ctx.ParentTraceSegmentID,
-			ParentSpanID:          ctx.ParentSpanID,
-			ParentService:         ctx.ParentService,
-			ParentServiceInstance: ctx.ParentInstance,
-			ParentEndpoint:        ctx.ParentEndpoint,
-			AddressUsedAtClient:   ctx.AddressUsedAtClient,
-		}
+		span.Refs = []skywalkingSegmentRef{{
+			RefType:                  "CrossProcess",
+			TraceID:                  ctx.TraceID,
+			ParentTraceSegmentID:     ctx.ParentTraceSegmentID,
+			ParentSpanID:             ctx.ParentSpanID,
+			ParentService:            ctx.ParentService,
+			ParentServiceInstance:    ctx.ParentInstance,
+			ParentEndpoint:           ctx.ParentEndpoint,
+			NetworkAddressUsedAtPeer: ctx.AddressUsedAtClient,
+		}}
+		segment.Spans[0] = span
 	}
 	return segment
 }
 
 func (p *Plugin) reportSegment(segment skywalkingSegment) {
+	p.reportMu.Lock()
+	if p.stopped {
+		p.reportMu.Unlock()
+		return
+	}
+	p.segments = append(p.segments, segment)
+	if p.reportTimer == nil {
+		p.reportTimer = time.AfterFunc(time.Duration(p.config.ReportInterval)*time.Second, p.flushSegments)
+	}
+	p.reportMu.Unlock()
+}
+
+func (p *Plugin) Flush() {
+	p.flushSegments()
+	p.reportWG.Wait()
+}
+
+func (p *Plugin) Stop() {
+	p.reportMu.Lock()
+	p.stopped = true
+	p.reportMu.Unlock()
+	p.Flush()
+}
+
+func (p *Plugin) flushSegments() {
+	p.reportMu.Lock()
+	if p.reportTimer != nil {
+		p.reportTimer.Stop()
+		p.reportTimer = nil
+	}
+	if len(p.segments) == 0 {
+		p.reportMu.Unlock()
+		return
+	}
+	segments := append([]skywalkingSegment(nil), p.segments...)
+	p.segments = p.segments[:0]
+	p.reportWG.Add(1)
+	p.reportMu.Unlock()
+	defer p.reportWG.Done()
+
 	resp, err := p.client.R().
 		SetHeader("Content-Type", "application/json").
-		SetBody([]skywalkingSegment{segment}).
+		SetBody(segments).
 		Post(p.endpointURL())
 	if err != nil {
 		logger.Errorf("failed to report SkyWalking segment to %s: %s", p.endpointURL(), err)
@@ -310,6 +350,7 @@ func parseSW8(header string) (sw8Context, bool) {
 	parentService, _ := decodeBase64URL(parts[4])
 	parentInstance, _ := decodeBase64URL(parts[5])
 	parentEndpoint, _ := decodeBase64URL(parts[6])
+	addressUsedAtClient, _ := decodeBase64URL(parts[7])
 
 	return sw8Context{
 		TraceID:              traceID,
@@ -318,7 +359,7 @@ func parseSW8(header string) (sw8Context, bool) {
 		ParentService:        parentService,
 		ParentInstance:       parentInstance,
 		ParentEndpoint:       parentEndpoint,
-		AddressUsedAtClient:  parts[7],
+		AddressUsedAtClient:  addressUsedAtClient,
 	}, true
 }
 
@@ -357,6 +398,14 @@ func randomID(n int) string {
 		panic(fmt.Sprintf("read random bytes: %s", err))
 	}
 	return hex.EncodeToString(buf)
+}
+
+func randomUnit() float64 {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		panic(fmt.Sprintf("read random bytes: %s", err))
+	}
+	return float64(binary.BigEndian.Uint64(raw[:])>>11) / (1 << 53)
 }
 
 func intFromAttr(attr map[string]interface{}, key string) int {

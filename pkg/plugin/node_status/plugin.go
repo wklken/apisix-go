@@ -21,7 +21,12 @@ const (
 
 const schema = `{"type":"object"}`
 
-var totalRequests atomic.Uint64
+var (
+	activeRequests   atomic.Uint64
+	acceptedRequests atomic.Uint64
+	handledRequests  atomic.Uint64
+	totalRequests    atomic.Uint64
+)
 
 type Config struct{}
 
@@ -52,15 +57,28 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 }
 
+func Track(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptedRequests.Add(1)
+		totalRequests.Add(1)
+		activeRequests.Add(1)
+		defer func() {
+			activeRequests.Add(^uint64(0))
+			handledRequests.Add(1)
+		}()
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
-	total := totalRequests.Add(1)
 	resp := Response{
 		ID: apisixid.Get(),
 		Status: map[string]string{
-			"active":   "0",
-			"accepted": formatUint(total),
-			"handled":  formatUint(total),
-			"total":    formatUint(total),
+			"active":   formatUint(activeRequests.Load()),
+			"accepted": formatUint(acceptedRequests.Load()),
+			"handled":  formatUint(handledRequests.Load()),
+			"total":    formatUint(totalRequests.Load()),
 			"reading":  "0",
 			"writing":  "0",
 			"waiting":  "0",

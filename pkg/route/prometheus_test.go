@@ -17,6 +17,7 @@ func TestBuildRequestContextConfigPassesPrometheusPreferName(t *testing.T) {
 		resource.Route{
 			ID:        "route-1",
 			Uri:       "/orders/:id",
+			Hosts:     []string{"api.example.com"},
 			Name:      "route-name",
 			ServiceID: "service-1",
 		},
@@ -34,6 +35,9 @@ func TestBuildRequestContextConfigPassesPrometheusPreferName(t *testing.T) {
 	}
 	if cfg["$matched_uri"] != "/orders/:id" {
 		t.Fatalf("$matched_uri = %q, want /orders/:id", cfg["$matched_uri"])
+	}
+	if cfg["$matched_host"] != "api.example.com" {
+		t.Fatalf("$matched_host = %q, want api.example.com", cfg["$matched_host"])
 	}
 	if cfg["$service_id"] != "service-1" {
 		t.Fatalf("$service_id = %q, want service-1", cfg["$service_id"])

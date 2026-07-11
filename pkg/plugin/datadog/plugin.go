@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -20,6 +22,10 @@ type Plugin struct {
 	base.BasePlugin
 	config   Config
 	metadata Metadata
+
+	BatchProcessor *logger_batch.Processor
+	RouteID        string
+	ServerAddr     string
 }
 
 const (
@@ -51,25 +57,66 @@ const schema = `
         "maxLength": 200
       },
       "default": []
+    },
+    "name": {
+      "type": "string",
+      "default": "datadog"
+    },
+    "batch_max_size": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "max_retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "retry_delay": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 1
+    },
+    "buffer_duration": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60
+    },
+    "inactive_timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5
     }
   }
 }
 `
 
 type Config struct {
-	PreferName    bool     `json:"prefer_name,omitempty"`
-	IncludePath   bool     `json:"include_path,omitempty"`
-	IncludeMethod bool     `json:"include_method,omitempty"`
-	ConstantTags  []string `json:"constant_tags,omitempty"`
-	preferNameSet bool
+	PreferName      bool     `json:"prefer_name,omitempty"`
+	IncludePath     bool     `json:"include_path,omitempty"`
+	IncludeMethod   bool     `json:"include_method,omitempty"`
+	ConstantTags    []string `json:"constant_tags,omitempty"`
+	BatchName       string   `json:"name,omitempty"`
+	BatchMaxSize    int      `json:"batch_max_size,omitempty"`
+	MaxRetryCount   int      `json:"max_retry_count,omitempty"`
+	RetryDelay      int      `json:"retry_delay,omitempty"`
+	BufferDuration  int      `json:"buffer_duration,omitempty"`
+	InactiveTimeout int      `json:"inactive_timeout,omitempty"`
+	preferNameSet   bool
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type configJSON struct {
-		PreferName    *bool    `json:"prefer_name,omitempty"`
-		IncludePath   bool     `json:"include_path,omitempty"`
-		IncludeMethod bool     `json:"include_method,omitempty"`
-		ConstantTags  []string `json:"constant_tags,omitempty"`
+		PreferName      *bool    `json:"prefer_name,omitempty"`
+		IncludePath     bool     `json:"include_path,omitempty"`
+		IncludeMethod   bool     `json:"include_method,omitempty"`
+		ConstantTags    []string `json:"constant_tags,omitempty"`
+		BatchName       string   `json:"name,omitempty"`
+		BatchMaxSize    int      `json:"batch_max_size,omitempty"`
+		MaxRetryCount   int      `json:"max_retry_count,omitempty"`
+		RetryDelay      int      `json:"retry_delay,omitempty"`
+		BufferDuration  int      `json:"buffer_duration,omitempty"`
+		InactiveTimeout int      `json:"inactive_timeout,omitempty"`
 	}
 
 	var decoded configJSON
@@ -84,6 +131,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.IncludePath = decoded.IncludePath
 	c.IncludeMethod = decoded.IncludeMethod
 	c.ConstantTags = decoded.ConstantTags
+	c.BatchName = decoded.BatchName
+	c.BatchMaxSize = decoded.BatchMaxSize
+	c.MaxRetryCount = decoded.MaxRetryCount
+	c.RetryDelay = decoded.RetryDelay
+	c.BufferDuration = decoded.BufferDuration
+	c.InactiveTimeout = decoded.InactiveTimeout
 	return nil
 }
 
@@ -112,26 +165,6 @@ type metricEntry struct {
 	Scheme          string
 }
 
-type responseRecorder struct {
-	http.ResponseWriter
-	status int
-	bytes  int64
-}
-
-func (w *responseRecorder) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *responseRecorder) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	n, err := w.ResponseWriter.Write(body)
-	w.bytes += int64(n)
-	return n, err
-}
-
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }
@@ -147,28 +180,57 @@ func (p *Plugin) PostInit() error {
 	if !p.config.preferNameSet {
 		p.config.PreferName = true
 	}
+	if p.config.BatchName == "" {
+		p.config.BatchName = name
+	}
+	if p.config.BatchMaxSize == 0 {
+		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if p.config.RetryDelay == 0 {
+		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if p.config.BufferDuration == 0 {
+		p.config.BufferDuration = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if p.config.InactiveTimeout == 0 {
+		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
 	p.metadata = loadMetadata()
+	p.BatchProcessor = logger_batch.New(logger_batch.Config{
+		Name:            p.config.BatchName,
+		BatchMaxSize:    p.config.BatchMaxSize,
+		MaxRetryCount:   p.config.MaxRetryCount,
+		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
+		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
+		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
+		RouteID:         p.RouteID,
+		ServerAddr:      p.ServerAddr,
+	}, p.deliver)
 	return nil
+}
+
+func (p *Plugin) SetRouteContext(routeID string, serverAddr string) {
+	p.RouteID = routeID
+	p.ServerAddr = serverAddr
+}
+
+func (p *Plugin) Stop() {
+	if p.BatchProcessor != nil {
+		p.BatchProcessor.Stop()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		recorder := &responseRecorder{ResponseWriter: w}
-		next.ServeHTTP(recorder, r)
-		if recorder.status == 0 {
-			recorder.status = http.StatusOK
-		}
-
-		latency := time.Since(start).Milliseconds()
+		captured := httpsnoop.CaptureMetrics(next, w, r)
 		upstreamLatency := requestInt64Var(r, "$upstream_latency")
-		p.Send(metricEntry{
-			LatencyMS:       latency,
+		entry := metricEntry{
+			LatencyMS:       captured.Duration.Milliseconds(),
 			UpstreamLatency: upstreamLatency,
-			ApisixLatency:   apisixLatency(latency, upstreamLatency),
+			ApisixLatency:   apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
 			IngressSize:     requestSize(r),
-			EgressSize:      recorder.bytes,
-			Status:          recorder.status,
+			EgressSize:      captured.Written,
+			Status:          captured.Code,
 			RouteID:         apisixStringVar(r, "$route_id"),
 			RouteName:       apisixStringVar(r, "$route_name"),
 			ServiceID:       apisixStringVar(r, "$service_id"),
@@ -178,25 +240,45 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			Path:            matchedPath(r),
 			Method:          r.Method,
 			Scheme:          requestScheme(r),
-		})
+		}
+		p.BatchProcessor.Push(map[string]any{"entry": entry})
 	}
 	return http.HandlerFunc(fn)
 }
 
 func (p *Plugin) Send(entry metricEntry) {
+	if err := p.send(entry); err != nil {
+		logger.Errorf("failed to send DogStatsD metrics: %s", err)
+	}
+}
+
+func (p *Plugin) send(entry metricEntry) error {
 	addr := net.JoinHostPort(p.metadata.Host, fmt.Sprint(p.metadata.Port))
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
-		logger.Errorf("failed to connect to DogStatsD endpoint %s: %s", addr, err)
-		return
+		return fmt.Errorf("connect to DogStatsD endpoint %s: %w", addr, err)
 	}
 	defer conn.Close()
 
 	for _, line := range p.metricLines(entry) {
 		if _, err := conn.Write([]byte(line)); err != nil {
-			logger.Errorf("failed to send DogStatsD metric %q: %s", line, err)
+			return fmt.Errorf("send DogStatsD metric %q: %w", line, err)
 		}
 	}
+	return nil
+}
+
+func (p *Plugin) deliver(entries []map[string]any, _ int) (int, error) {
+	for i, raw := range entries {
+		entry, ok := raw["entry"].(metricEntry)
+		if !ok {
+			return i + 1, fmt.Errorf("invalid Datadog metric entry %T", raw["entry"])
+		}
+		if err := p.send(entry); err != nil {
+			return i + 1, err
+		}
+	}
+	return 0, nil
 }
 
 func (p *Plugin) metricLines(entry metricEntry) []string {

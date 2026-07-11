@@ -2,6 +2,7 @@ package zipkin
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,6 +24,8 @@ type Plugin struct {
 	config Config
 
 	client *resty.Client
+
+	sampleRandom func() float64
 }
 
 const (
@@ -76,20 +79,22 @@ type b3Context struct {
 }
 
 type zipkinSpan struct {
-	TraceID       string            `json:"traceId"`
-	Name          string            `json:"name"`
-	ParentID      string            `json:"parentId,omitempty"`
-	ID            string            `json:"id"`
-	Kind          string            `json:"kind,omitempty"`
-	Timestamp     int64             `json:"timestamp"`
-	Duration      int64             `json:"duration"`
-	LocalEndpoint zipkinEndpoint    `json:"localEndpoint"`
-	Tags          map[string]string `json:"tags,omitempty"`
+	TraceID        string            `json:"traceId"`
+	Name           string            `json:"name"`
+	ParentID       string            `json:"parentId,omitempty"`
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind,omitempty"`
+	Timestamp      int64             `json:"timestamp"`
+	Duration       int64             `json:"duration"`
+	LocalEndpoint  zipkinEndpoint    `json:"localEndpoint"`
+	RemoteEndpoint *zipkinEndpoint   `json:"remoteEndpoint,omitempty"`
+	Tags           map[string]string `json:"tags,omitempty"`
 }
 
 type zipkinEndpoint struct {
 	ServiceName string `json:"serviceName"`
 	IPv4        string `json:"ipv4,omitempty"`
+	IPv6        string `json:"ipv6,omitempty"`
 	Port        int    `json:"port,omitempty"`
 }
 
@@ -128,6 +133,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.SpanVersion == 0 {
 		p.config.SpanVersion = 2
 	}
+	if p.sampleRandom == nil {
+		p.sampleRandom = randomUnit
+	}
 
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Endpoint)
@@ -148,9 +156,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if ctx.TraceID == "" {
 			ctx.TraceID = randomHex(16)
 		}
-		if ctx.SpanID == "" {
-			ctx.SpanID = randomHex(8)
-		}
 		if ctx.Sampled == "" {
 			if p.shouldSample() {
 				ctx.Sampled = "1"
@@ -158,6 +163,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				ctx.Sampled = "0"
 			}
 		}
+		if ctx.SpanID != "" {
+			ctx.ParentSpanID = ctx.SpanID
+		}
+		ctx.SpanID = randomHex(8)
 		injectB3(r, ctx)
 
 		start := time.Now()
@@ -175,7 +184,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) shouldSample() bool {
-	return p.config.SampleRatio >= 1
+	return p.config.SampleRatio >= 1 || p.sampleRandom() < p.config.SampleRatio
 }
 
 func extractB3(r *http.Request) (b3Context, error) {
@@ -276,10 +285,39 @@ func injectB3(r *http.Request, ctx b3Context) {
 	r.Header.Del("b3")
 }
 
-func (p *Plugin) buildSpan(ctx b3Context, r *http.Request, status int, start time.Time, duration time.Duration) zipkinSpan {
+func (p *Plugin) buildSpan(
+	ctx b3Context,
+	r *http.Request,
+	status int,
+	start time.Time,
+	duration time.Duration,
+) zipkinSpan {
 	serverAddr := p.config.ServerAddr
 	if serverAddr == "" {
+		serverAddr = requestServerAddr(r)
+	}
+	if serverAddr == "" {
 		serverAddr = localIPv4()
+	}
+
+	tags := map[string]string{
+		"component":        "apisix",
+		"http.method":      r.Method,
+		"http.url":         r.URL.RequestURI(),
+		"http.status_code": strconv.Itoa(status),
+	}
+	var remoteEndpoint *zipkinEndpoint
+	if host, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		remoteEndpoint = &zipkinEndpoint{}
+		if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+			remoteEndpoint.IPv6 = host
+		} else {
+			remoteEndpoint.IPv4 = host
+		}
+		remoteEndpoint.Port, _ = strconv.Atoi(port)
+	}
+	if status >= http.StatusInternalServerError {
+		tags["error"] = "true"
 	}
 
 	return zipkinSpan{
@@ -293,13 +331,10 @@ func (p *Plugin) buildSpan(ctx b3Context, r *http.Request, status int, start tim
 		LocalEndpoint: zipkinEndpoint{
 			ServiceName: p.config.ServiceName,
 			IPv4:        serverAddr,
+			Port:        requestServerPort(r),
 		},
-		Tags: map[string]string{
-			"component":        "apisix",
-			"http.method":      r.Method,
-			"http.url":         r.URL.RequestURI(),
-			"http.status_code": strconv.Itoa(status),
-		},
+		RemoteEndpoint: remoteEndpoint,
+		Tags:           tags,
 	}
 }
 
@@ -323,6 +358,39 @@ func randomHex(n int) string {
 		panic(fmt.Sprintf("read random bytes: %s", err))
 	}
 	return hex.EncodeToString(buf)
+}
+
+func randomUnit() float64 {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		panic(fmt.Sprintf("read random bytes: %s", err))
+	}
+	return float64(binary.BigEndian.Uint64(raw[:])>>11) / (1 << 53)
+}
+
+func requestServerPort(r *http.Request) int {
+	local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if local == nil {
+		return 0
+	}
+	_, port, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return 0
+	}
+	value, _ := strconv.Atoi(port)
+	return value
+}
+
+func requestServerAddr(r *http.Request) string {
+	local, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if local == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return ""
+	}
+	return host
 }
 
 func localIPv4() string {

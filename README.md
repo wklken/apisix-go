@@ -280,31 +280,31 @@ Tracers:
 
 > 3/3
 
-- [x] [zipkin](https://apisix.apache.org/zh/docs/apisix/plugins/zipkin/) 45%
-  - support B3 extraction/injection, `endpoint`, `sample_ratio`, `service_name`, `server_addr`, `span_version`, and Zipkin v2 span reporting
-  - not support APISIX multi-phase span tree, batch processor behavior, `plugin_attr.zipkin.set_ngx_var`, or Zipkin v1 span layout
-- [x] [skywalking](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking/) 50%
-  - support `sample_ratio`, `plugin_attr.skywalking` defaults, `sw8` parse/injection, trace/segment IDs, request timing, status/error tags, service and instance names, `$hostname`, and HTTP segment reporting to `/v3/segments`
-  - not support the native OpenResty SkyWalking tracer, shared `tracing_buffer`, delayed body-filter lifecycle, streaming span finish semantics, or full SkyWalking segment reference fidelity
-- [x] [opentelemetry](https://apisix.apache.org/zh/docs/apisix/plugins/opentelemetry/) 47%
-  - support official plugin name with existing Go tracing middleware, APISIX sampler names (`always_on`, `always_off`, `trace_id_ratio`, `parent_base`), sampler defaults, configurable middleware server name, `additional_attributes` from NGINX/APISIX/request vars, and `additional_header_prefix_attributes`
+- [x] [zipkin](https://apisix.apache.org/zh/docs/apisix/plugins/zipkin/) 82%
+  - support B3 extraction/injection, parent/child span identity, probabilistic `sample_ratio`, `endpoint`, `service_name`, local/remote endpoints, status/error tags, `server_addr`, `span_version`, and Zipkin v2 span reporting
+  - not support APISIX multi-phase span tree, batch processor behavior, `plugin_attr.zipkin.set_ngx_var`, or exact OpenResty phase timing
+- [x] [skywalking](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking/) 78%
+  - support probabilistic `sample_ratio`, `plugin_attr.skywalking` defaults, `sw8` parse/injection, trace/segment IDs, protocol-correct span references/tags, request timing, status/error tags, service and instance names, `$hostname`, `report_interval` buffering, shutdown flush, and HTTP segment reporting to `/v3/segments`
+  - not support the native OpenResty SkyWalking tracer, shared `tracing_buffer`, or exact delayed body-filter/streaming phase timing
+- [x] [opentelemetry](https://apisix.apache.org/zh/docs/apisix/plugins/opentelemetry/) 82%
+  - support official plugin name, APISIX sampler names (`always_on`, `always_off`, `trace_id_ratio`, `parent_base`), sampler defaults, configurable middleware server name, `additional_attributes`, `additional_header_prefix_attributes`, OTLP/HTTP collector address/timeout/headers, resource attributes, batch processor sizing/timeouts/blocking behavior, and `x-request-id` trace IDs
   - keep `otel` as a compatibility alias
-  - not support APISIX collector/exporter metadata, `trace_id_source`, `set_ngx_var`, phase child spans, or log-phase timing parity
+  - not support `set_ngx_var`, phase child spans, or exact OpenResty log-phase timing
 
 Metrics:
 
 > 3/3
 
-- [x] [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/) 45%
+- [x] [prometheus](https://apisix.apache.org/zh/docs/apisix/plugins/prometheus/) 82%
   - support official plugin name, priority, `prefer_name` schema validation, route/service metric labels using IDs by default and names when `prefer_name` is true, pass-through route/global plugin config, and public API metrics endpoint registration at `/apisix/prometheus/metrics`
-  - reuse existing Go Prometheus metrics collection and support `plugin_attr.prometheus.metric_prefix`, `default_buckets`, `export_uri`, `enable_export_server`, and `export_addr` for the dedicated metrics export server
-  - not support APISIX exporter parity for all labels, stream metrics, extra-label variable expansion, metric expiration, privileged-agent offload, or exact `nginx-lua-prometheus` lifecycle behavior
-- [x] [node-status](https://apisix.apache.org/zh/docs/apisix/plugins/node-status/) 55%
-  - support `/apisix/status` response shape when `node-status` is enabled in `conf.plugins`, including configured `apisix.id` node IDs and generated process fallback IDs
-  - not support APISIX `conf/apisix.uid` persistence or exact NGINX connection state counters
-- [x] [datadog](https://apisix.apache.org/zh/docs/apisix/plugins/datadog/) 68%
-  - support DogStatsD UDP metrics, metadata `host`, `port`, `namespace`, `constant_tags`, route `constant_tags`, `prefer_name`, route/service ID-vs-name tags, consumer tags, balancer IP tags, `include_path` with matched route pattern, `include_method`, upstream latency, and APISIX-side latency derived from upstream latency
-  - not support APISIX batch processor behavior or exact APISIX log-entry timing/source parity yet
+  - collect status, matched route/host, consumer, balancer, request/upstream/APISIX latency, ingress/egress bytes, AI dimensions, LLM latency/tokens/active connections, and bounded extra-label variables; support `metric_prefix`, `default_buckets`, `llm_latency_buckets`, `export_uri`, `enable_export_server`, and `export_addr`
+  - not support metric expiration, privileged-agent offload, stream metrics, or exact `nginx-lua-prometheus` lifecycle behavior
+- [x] [node-status](https://apisix.apache.org/zh/docs/apisix/plugins/node-status/) 78%
+  - support `/apisix/status`, configured IDs, persisted generated `conf/apisix.uid` IDs, and process-wide active/accepted/handled/total HTTP request counters
+  - not support exact NGINX reading/writing/waiting connection-state counters
+- [x] [datadog](https://apisix.apache.org/zh/docs/apisix/plugins/datadog/) 88%
+  - support DogStatsD UDP metrics, metadata `host`, `port`, `namespace`, `constant_tags`, route `constant_tags`, `prefer_name`, route/service ID-vs-name tags, consumer/balancer/status/scheme tags, optional matched path/method tags, request/upstream/APISIX latency, ingress/egress sizes, APISIX batch processor fields, retry policy, route/server buffering metrics, and shutdown flush
+  - not support exact OpenResty log-phase timing or stale batch-manager object cache behavior
 
 Loggers:
 

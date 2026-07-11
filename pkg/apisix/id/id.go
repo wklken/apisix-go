@@ -1,6 +1,9 @@
 package id
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/gofrs/uuid"
@@ -10,6 +13,7 @@ import (
 var (
 	generatedOnce sync.Once
 	generatedID   string
+	uidFilePath   = filepath.Join("conf", "apisix.uid")
 )
 
 func Get() string {
@@ -18,7 +22,14 @@ func Get() string {
 	}
 
 	generatedOnce.Do(func() {
+		if content, err := os.ReadFile(uidFilePath); err == nil {
+			generatedID = strings.TrimSpace(string(content))
+		}
+		if generatedID != "" {
+			return
+		}
 		generatedID = uuid.Must(uuid.NewV4()).String()
+		_ = os.WriteFile(uidFilePath, []byte(generatedID), 0o600)
 	})
 
 	return generatedID

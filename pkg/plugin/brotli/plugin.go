@@ -236,7 +236,7 @@ func (p *Plugin) shouldCompressResponse(resp *responseRecorder) bool {
 
 func (p *Plugin) compressResponse(resp *responseRecorder) {
 	var compressed bytes.Buffer
-	writer := brotlienc.NewWriterLevel(&compressed, *p.config.CompLevel)
+	writer := brotlienc.NewWriterOptions(&compressed, p.writerOptions())
 	_, writeErr := writer.Write(resp.body.Bytes())
 	closeErr := writer.Close()
 	if writeErr != nil || closeErr != nil {
@@ -251,6 +251,13 @@ func (p *Plugin) compressResponse(resp *responseRecorder) {
 		resp.header.Add("Vary", "Accept-Encoding")
 	}
 	weakenETag(resp.header)
+}
+
+func (p *Plugin) writerOptions() brotlienc.WriterOptions {
+	return brotlienc.WriterOptions{
+		Quality: *p.config.CompLevel,
+		LGWin:   *p.config.LGWin,
+	}
 }
 
 func weakenETag(header http.Header) {

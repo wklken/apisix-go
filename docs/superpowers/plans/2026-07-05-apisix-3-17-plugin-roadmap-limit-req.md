@@ -7747,3 +7747,65 @@ Marked normal Go observability work complete and retained only explicit OpenRest
 - [x] **Step 5: Verify**
 
 Focused and race suites pass. Final verification passed with `go test ./...`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 235: Complete batch-requests Edge Parity
+
+**Files:**
+- Modify: `pkg/plugin/batch_requests/plugin.go`
+- Modify: `pkg/plugin/batch_requests/plugin_test.go`
+- Modify: `README.md`
+- Modify: `docs/apisix-3.17-remaining-plugin-todo.md`
+
+**Interfaces:**
+- Consumes: APISIX 3.17 batch request versions, methods, paths, headers, timeout, and `ssl_verify` input.
+- Produces: validated HTTP versions, per-item host precedence, outer cancellation/deadline propagation with fresh request values, and deterministic `504 upstream timeout` aggregation.
+
+- [x] **Step 1: Confirm official behavior**
+
+Read APISIX 3.17 `batch-requests.lua` and its request schema. `ssl_verify` applies to the internal HTTP pipeline transport; local Go dispatch is in-process and has no TLS handshake.
+
+- [x] **Step 2: Add focused failing tests**
+
+Added focused tests for invalid HTTP versions, cooperative and uncooperative timeout handling, and item-level Host overrides. All three behavior groups failed before implementation.
+
+- [x] **Step 3: Implement bounded dispatch behavior**
+
+Derived subrequest contexts from the outer request, enforced the configured timeout around in-process dispatch, returned APISIX-compatible timeout responses, validated versions, and applied Host header precedence.
+
+- [x] **Step 4: Update docs**
+
+Marked normal Go work complete while documenting true pipelining, NGINX real-ip configuration, and in-process `ssl_verify` limitations.
+
+- [x] **Step 5: Verify**
+
+Run: `go test ./pkg/plugin/batch_requests -count=1 -timeout=30s`, `go test -race ./pkg/plugin/batch_requests ./pkg/route -count=1 -timeout=60s`, `go test ./...`, `make build`, and `git diff --check`.
+
+### Task 236: Close Redirect, Brotli, and Echo Edge Gaps
+
+**Files:**
+- Modify: `pkg/plugin/redirect`, `pkg/plugin/brotli`, and `pkg/plugin/echo`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 redirect SSL-port selection, Brotli window tuning, and echo schema behavior.
+- Produces: functional HTTP-to-HTTPS redirects, supported Brotli encoder options, and official echo validation boundaries.
+
+- [x] **Step 1: Fix HTTP-to-HTTPS redirect behavior**
+
+Replaced the incorrect HTTP-version scheme check, honored `X-Forwarded-Proto`, preserved query strings, normalized host/port replacement, and added `apisix.ssl.listen` fallback after explicit `https_port`.
+
+- [x] **Step 2: Activate supported Brotli tuning**
+
+Switched to `brotli.NewWriterOptions` so both `comp_level` and `lgwin` affect compression. `mode` and `lgblock` remain unavailable in the Go encoder.
+
+- [x] **Step 3: Tighten echo schema parity**
+
+Removed headers-only configuration from the body requirement alternatives and limited response header values to official string/number types.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run: `go test -race ./pkg/plugin/redirect -count=1 -timeout=60s`, `go test -race ./pkg/plugin/brotli -count=1 -timeout=60s`, and `go test ./pkg/plugin/echo -count=1 -timeout=30s`. Full verification remains `go test ./...`, `make build`, and `git diff --check`.
+
+- [x] **Step 5: Verify repository**
+
+Run: `go test ./...`, `make build`, `rm -f apisix`, and `git diff --check`.

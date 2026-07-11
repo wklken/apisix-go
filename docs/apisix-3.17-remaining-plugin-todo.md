@@ -81,11 +81,11 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 
 | Plugin | What needs to be done |
 |---|---|
-| `batch-requests` | Add `ssl_verify` and safe APISIX subrequest edge behavior. Keep true HTTP pipelining and NGINX real-ip config parity out of scope. |
-| `redirect` | Improve `plugin_attr.redirect.https_port` fallback only if local SSL listen config is available. |
-| `echo` | Verify response-header/body timing parity and add focused edge tests if APISIX 3.17 behavior is not covered. |
+| `batch-requests` | No normal Go TODO remains. `ssl_verify` is accepted but inapplicable to in-process dispatch; true HTTP pipelining and NGINX real-ip header config remain deferred native/runtime behavior. |
+| `redirect` | No normal Go TODO remains. Explicit `https_port`, `apisix.ssl.listen` fallback, forwarded schemes, query preservation, and host/port replacement are implemented. |
+| `echo` | No normal Go TODO remains. Body timing and official body/header schema edge behavior are covered. |
 | `gzip` | No normal implementation work; only documentation/tests remain because NGINX `buffers` is native and not required. |
-| `brotli` | Add `mode`, `lgwin`, and `lgblock` runtime tuning if the Go encoder supports them cleanly. Keep NGINX streaming compression internals out of scope. |
+| `brotli` | No normal supported-library TODO remains. `lgwin` is active; the Go encoder exposes neither `mode` nor `lgblock`, and NGINX streaming internals remain out of scope. |
 | `real-ip` | Improve variable-source coverage and schema validation where practical. Keep NGINX variable cache flushing and APISIX-Base `set_real_ip` internals out of scope. |
 | `server-info` | Add UID persistence and etcd reporting/lease keepalive if useful for the Go control plane. |
 | `error-page` | Limit rewrites to APISIX-generated errors if the Go response pipeline can distinguish them; expose metadata schema if local plugin interfaces support it. |

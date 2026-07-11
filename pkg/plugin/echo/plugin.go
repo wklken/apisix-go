@@ -32,7 +32,13 @@ const schema = `
     },
     "headers": {
       "type": "object",
-      "minProperties": 1
+      "minProperties": 1,
+      "additionalProperties": {
+        "anyOf": [
+          {"type": "string"},
+          {"type": "number"}
+        ]
+      }
     }
   },
   "anyOf": [
@@ -44,9 +50,6 @@ const schema = `
     },
     {
       "required": ["after_body"]
-    },
-    {
-      "required": ["headers"]
     }
   ],
   "minProperties": 1

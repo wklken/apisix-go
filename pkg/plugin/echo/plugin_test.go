@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -79,6 +81,52 @@ func TestHandlerSetsResponseHeaders(t *testing.T) {
 	}
 	if got := res.Body.String(); got != "upstream" {
 		t.Fatalf("body = %q, want upstream", got)
+	}
+}
+
+func TestSchemaMatchesOfficialBodyAndHeaderRequirements(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr bool
+	}{
+		{
+			name:    "headers only is rejected",
+			config:  map[string]any{"headers": map[string]any{"X-Echo": "yes"}},
+			wantErr: true,
+		},
+		{
+			name: "string and number headers are accepted with body config",
+			config: map[string]any{
+				"before_body": "",
+				"headers":     map[string]any{"X-Echo": "yes", "X-Count": 2},
+			},
+		},
+		{
+			name: "boolean header is rejected",
+			config: map[string]any{
+				"body":    "replacement",
+				"headers": map[string]any{"X-Bool": true},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := util.Validate(tt.config, p.GetSchema())
+			if tt.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+		})
 	}
 }
 

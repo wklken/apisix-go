@@ -163,6 +163,9 @@ func validateRequest(req Request, limits Limits) error {
 		if item.Method != "" && !validMethod(item.Method) {
 			return fmt.Errorf("pipeline[%d].method is invalid", i)
 		}
+		if item.Version != 0 && item.Version != 1.0 && item.Version != 1.1 {
+			return fmt.Errorf("pipeline[%d].version is invalid", i)
+		}
 	}
 	return nil
 }
@@ -211,7 +214,7 @@ func dispatchPipelineRequest(
 	item PipelineRequest,
 	timeout time.Duration,
 ) PipelineResponse {
-	ctx := context.Background()
+	var ctx context.Context = contextWithoutValues{Context: outer.Context()}
 	var cancel func()
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -232,9 +235,26 @@ func dispatchPipelineRequest(
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(outer.Header, batch.Headers, item.Headers, outer.RemoteAddr)
+	if host := req.Header.Get("Host"); host != "" {
+		req.Host = host
+		req.Header.Del("Host")
+	}
 
 	recorder := httptest.NewRecorder()
-	dispatcher.ServeHTTP(recorder, req)
+	done := make(chan struct{}, 1)
+	go func() {
+		dispatcher.ServeHTTP(recorder, req)
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return timeoutResponse()
+	case <-done:
+		if ctx.Err() != nil {
+			return timeoutResponse()
+		}
+	}
 	result := recorder.Result()
 	defer result.Body.Close()
 
@@ -248,6 +268,21 @@ func dispatchPipelineRequest(
 		resp.Body = string(body)
 	}
 	return resp
+}
+
+type contextWithoutValues struct {
+	context.Context
+}
+
+func (contextWithoutValues) Value(any) any {
+	return nil
+}
+
+func timeoutResponse() PipelineResponse {
+	return PipelineResponse{
+		Status: http.StatusGatewayTimeout,
+		Reason: "upstream timeout",
+	}
 }
 
 func flattenHeaders(header http.Header) map[string]string {

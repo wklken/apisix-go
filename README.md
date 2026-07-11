@@ -33,20 +33,19 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 16/16
 
-- [x] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/) 70%
-  - support `/apisix/batch-requests`, global and per-item query/header merging, default methods, request body forwarding, response aggregation, `X-Real-IP` subrequest injection, `plugin_attr.batch-requests.uri`, and plugin metadata `max_body_size` / `max_pipeline_items`
-  - not support true HTTP pipelining, custom real-ip header name from NGINX config, or `ssl_verify`
-- [x] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/) 90%
-  - support `uri`, `regex_uri`, `http_to_https`, `ret_code`, `append_query_string`, `encode_uri`, and `plugin_attr.redirect.https_port`
-  - not support plugin_attr get random https port from `apisix.ssl.listen`
-- [x] [echo](https://apisix.apache.org/zh/docs/apisix/plugins/echo/) 90%
-  - support `before_body`, `body`, `after_body`, and response `headers`
+- [x] [batch-requests](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/) 85%
+  - support `/apisix/batch-requests`, global and per-item query/header merging, per-item host overrides, HTTP version validation, default methods, request body forwarding, bounded timeout responses, response aggregation, `X-Real-IP` subrequest injection, `plugin_attr.batch-requests.uri`, plugin metadata `max_body_size` / `max_pipeline_items`, and accepted `ssl_verify` input
+  - not support true HTTP pipelining or custom real-ip header names from NGINX config; `ssl_verify` is inapplicable to the local in-process dispatcher because it performs no TLS handshake
+- [x] [redirect](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/) 95%
+  - support `uri`, `regex_uri`, `http_to_https`, forwarded HTTPS detection, method-specific 301/308 responses, query preservation, robust host/port replacement, `ret_code`, `append_query_string`, `encode_uri`, `plugin_attr.redirect.https_port`, and random `apisix.ssl.listen` fallback
+- [x] [echo](https://apisix.apache.org/zh/docs/apisix/plugins/echo/) 95%
+  - support `before_body`, `body`, `after_body`, response `headers`, body-modification header cleanup, and official body/header schema boundaries
 - [x] [gzip](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) 98%
   - support `types`, `types = "*"`, `min_length`, `comp_level`, `http_version`, and `vary`
   - not support `buffers`(it's nginx native feature)
-- [x] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) 75%
-  - support `Accept-Encoding: br` / `*`, `types`, `min_length`, `comp_level`, `http_version`, `vary`, content-encoding skip, content-length removal, and strong ETag weakening
-  - not support NGINX-native streaming compression, `mode`, `lgwin`, or `lgblock` runtime tuning beyond schema/default acceptance
+- [x] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) 82%
+  - support `Accept-Encoding: br` / `*`, `types`, `min_length`, `comp_level`, `lgwin`, `http_version`, `vary`, content-encoding skip, content-length removal, and strong ETag weakening
+  - not support NGINX-native streaming compression; the Go Brotli encoder does not expose `mode` or `lgblock` tuning
 - [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 85%
   - support `arg_*`, `http_*`, `http_x_forwarded_for`, bare IP and IP:port sources, `trusted_addresses`, `recursive`, and request-context `remote_addr` / `remote_port` updates
   - not support APISIX-Base `set_real_ip`, NGINX variable cache flushing, full NGINX variable source coverage, or exact `ip_def` schema validation

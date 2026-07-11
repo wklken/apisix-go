@@ -163,6 +163,18 @@ func TestHandlerAcceptsPositiveBrotliQuality(t *testing.T) {
 	}
 }
 
+func TestWriterOptionsApplyCompressionLevelAndWindow(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		CompLevel: intPtr(9),
+		LGWin:     intPtr(22),
+	})
+
+	options := p.writerOptions()
+	if options.Quality != 9 || options.LGWin != 22 {
+		t.Fatalf("writer options = %#v, want quality=9 lgwin=22", options)
+	}
+}
+
 func decodeBrotli(t *testing.T, body []byte) string {
 	t.Helper()
 

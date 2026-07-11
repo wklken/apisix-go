@@ -2,11 +2,14 @@ package redirect
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 
+	"github.com/spf13/cast"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -113,25 +116,7 @@ func (p *Plugin) PostInit() error {
 		p.config.regexURI = pattern
 	}
 
-	if config.GlobalConfig == nil {
-		p.config.httpsPort = nil
-		return nil
-	}
-
-	pluginAttr, ok := config.GlobalConfig.PluginAttr["redirect"]
-	if !ok {
-		p.config.httpsPort = nil
-	} else {
-		defaultHttpsPort := 443
-		httpsPort, ok := pluginAttr["https_port"].(int)
-		if ok {
-			p.config.httpsPort = &httpsPort
-		} else {
-			// FIXME: read and return random  https port from apisix.ssl.listen
-			p.config.httpsPort = &defaultHttpsPort
-		}
-	}
-
+	p.config.httpsPort = configuredHTTPSPort()
 	return nil
 }
 
@@ -147,19 +132,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// 从配置文件（conf/config.yaml）中读取 plugin_attr.redirect.https_port。
 		// 如果 apisix.ssl 处于开启状态，读取 apisix.ssl.listen 并从中随机选一个 port。
 		// 使用 443 作为默认 https port。
-		if p.config.HttpToHttps != nil && *p.config.HttpToHttps && r.Proto == "http" {
+		if p.config.HttpToHttps != nil && *p.config.HttpToHttps && requestScheme(r) != "https" {
 			retPort := p.config.httpsPort
-			host := r.Host
-			path := r.URL.Path
+			host := requestHostname(r)
+			path := r.URL.RequestURI()
 
 			var url string
-			if retPort == nil || *retPort == 443 || *retPort < 0 || *retPort > 65535 {
-				url = "https://" + host + path
+			if retPort == nil || *retPort == 443 || *retPort <= 0 || *retPort > 65535 {
+				url = "https://" + urlHostname(host) + path
 			} else {
-				// if port in host, replace it
-				newHost := strings.Split(host, ":")[0]
-
-				url = fmt.Sprintf("https://%s:%d%s", newHost, *retPort, path)
+				url = fmt.Sprintf("https://%s%s", net.JoinHostPort(requestHostname(r), fmt.Sprint(*retPort)), path)
 			}
 
 			var retCode int
@@ -200,6 +182,57 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func configuredHTTPSPort() *int {
+	if config.GlobalConfig == nil {
+		return nil
+	}
+	if pluginAttr := config.GlobalConfig.PluginAttr[name]; pluginAttr != nil {
+		if rawPort, ok := pluginAttr["https_port"]; ok {
+			if port, err := cast.ToIntE(rawPort); err == nil {
+				return &port
+			}
+		}
+	}
+
+	ssl := config.GlobalConfig.Apisix.Ssl
+	if !ssl.Enable || len(ssl.Listen) == 0 {
+		return nil
+	}
+	port := ssl.Listen[rand.IntN(len(ssl.Listen))].Port
+	return &port
+}
+
+func requestScheme(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
+		scheme, _, _ := strings.Cut(forwarded, ",")
+		return strings.ToLower(strings.TrimSpace(scheme))
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.URL.Scheme != "" {
+		return strings.ToLower(r.URL.Scheme)
+	}
+	return "http"
+}
+
+func requestHostname(r *http.Request) string {
+	if hostname := r.URL.Hostname(); hostname != "" {
+		return hostname
+	}
+	if hostname, _, err := net.SplitHostPort(r.Host); err == nil {
+		return hostname
+	}
+	return strings.Trim(r.Host, "[]")
+}
+
+func urlHostname(host string) string {
+	if strings.Contains(host, ":") {
+		return "[" + strings.Trim(host, "[]") + "]"
+	}
+	return host
 }
 
 func (p *Plugin) redirectRegexURI(r *http.Request) (string, bool) {

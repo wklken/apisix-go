@@ -8031,3 +8031,25 @@ Made the route builder reject plugins whose `PostInit` validation fails, so grou
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/limit_count ./pkg/route -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_count ./pkg/route -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 245: Complete Limit Request Redis Cluster Parity
+
+**Files:**
+- Modify: `pkg/plugin/limit_req`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 flat Redis Cluster configuration and route resource context.
+- Produces: Redis Cluster token-bucket state, active TLS/timeout/pool options, and route-scoped limiter keys.
+
+- [x] **Step 1: Pin cluster and key behavior**
+
+Added schema-required-node, cluster option, standalone keepalive, cluster handler dispatch, and route-scoped key tests.
+
+- [x] **Step 2: Implement the cluster backend**
+
+Accepted official cluster fields/defaults, shared standalone or cluster clients through the universal Redis interface, applied idle-pool settings, and scoped all limiter keys when route context is available.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/limit_req -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_req -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

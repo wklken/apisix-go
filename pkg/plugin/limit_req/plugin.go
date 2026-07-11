@@ -17,6 +17,7 @@ import (
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -30,6 +31,7 @@ type Plugin struct {
 	now     func() time.Time
 
 	redisLimiter reqLimiter
+	routeID      string
 }
 
 const (
@@ -108,6 +110,26 @@ const schema = `
       "minimum": 1,
       "default": 100
     },
+    "redis_cluster_nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 100
+      }
+    },
+    "redis_cluster_name": {
+      "type": "string"
+    },
+    "redis_cluster_ssl": {
+      "type": "boolean",
+      "default": false
+    },
+    "redis_cluster_ssl_verify": {
+      "type": "boolean",
+      "default": false
+    },
     "rejected_code": {
       "type": "integer",
       "minimum": 200,
@@ -127,30 +149,50 @@ const schema = `
       "default": false
     }
   },
-  "required": ["rate", "burst", "key"]
+  "required": ["rate", "burst", "key"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"policy": {"const": "redis"}},
+        "required": ["policy"]
+      },
+      "then": {"required": ["redis_host"]}
+    },
+    {
+      "if": {
+        "properties": {"policy": {"const": "redis-cluster"}},
+        "required": ["policy"]
+      },
+      "then": {"required": ["redis_cluster_nodes", "redis_cluster_name"]}
+    }
+  ]
 }
 `
 
 type Config struct {
-	Rate                  float64 `json:"rate"`
-	Burst                 float64 `json:"burst"`
-	Key                   string  `json:"key"`
-	KeyType               string  `json:"key_type,omitempty"`
-	Policy                string  `json:"policy,omitempty"`
-	RedisHost             string  `json:"redis_host,omitempty"`
-	RedisPort             int     `json:"redis_port,omitempty"`
-	RedisUsername         string  `json:"redis_username,omitempty"`
-	RedisPassword         string  `json:"redis_password,omitempty"`
-	RedisDatabase         int     `json:"redis_database,omitempty"`
-	RedisTimeout          int     `json:"redis_timeout,omitempty"`
-	RedisSSL              *bool   `json:"redis_ssl,omitempty"`
-	RedisSSLVerify        *bool   `json:"redis_ssl_verify,omitempty"`
-	RedisKeepaliveTimeout int     `json:"redis_keepalive_timeout,omitempty"`
-	RedisKeepalivePool    int     `json:"redis_keepalive_pool,omitempty"`
-	RejectedCode          int     `json:"rejected_code,omitempty"`
-	RejectedMsg           string  `json:"rejected_msg,omitempty"`
-	Nodelay               *bool   `json:"nodelay,omitempty"`
-	AllowDegradation      *bool   `json:"allow_degradation,omitempty"`
+	Rate                  float64  `json:"rate"`
+	Burst                 float64  `json:"burst"`
+	Key                   string   `json:"key"`
+	KeyType               string   `json:"key_type,omitempty"`
+	Policy                string   `json:"policy,omitempty"`
+	RedisHost             string   `json:"redis_host,omitempty"`
+	RedisPort             int      `json:"redis_port,omitempty"`
+	RedisUsername         string   `json:"redis_username,omitempty"`
+	RedisPassword         string   `json:"redis_password,omitempty"`
+	RedisDatabase         int      `json:"redis_database,omitempty"`
+	RedisTimeout          int      `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool    `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool    `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int      `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int      `json:"redis_keepalive_pool,omitempty"`
+	RedisClusterNodes     []string `json:"redis_cluster_nodes,omitempty"`
+	RedisClusterName      string   `json:"redis_cluster_name,omitempty"`
+	RedisClusterSSL       *bool    `json:"redis_cluster_ssl,omitempty"`
+	RedisClusterSSLVerify *bool    `json:"redis_cluster_ssl_verify,omitempty"`
+	RejectedCode          int      `json:"rejected_code,omitempty"`
+	RejectedMsg           string   `json:"rejected_msg,omitempty"`
+	Nodelay               *bool    `json:"nodelay,omitempty"`
+	AllowDegradation      *bool    `json:"allow_degradation,omitempty"`
 
 	rejectBody string
 }
@@ -219,10 +261,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
 	}
-	if p.config.Policy != "local" && p.config.Policy != "redis" {
-		return fmt.Errorf("not supported policy: %s", p.config.Policy)
-	}
-	if p.config.Policy == "redis" {
+	switch p.config.Policy {
+	case "local":
+	case "redis":
 		if p.config.RedisHost == "" {
 			return fmt.Errorf("redis_host is required")
 		}
@@ -249,6 +290,35 @@ func (p *Plugin) PostInit() error {
 		if p.redisLimiter == nil {
 			p.redisLimiter = p.newRedisLimiter()
 		}
+	case "redis-cluster":
+		if len(p.config.RedisClusterNodes) == 0 {
+			return fmt.Errorf("redis_cluster_nodes is required")
+		}
+		if p.config.RedisClusterName == "" {
+			return fmt.Errorf("redis_cluster_name is required")
+		}
+		if p.config.RedisTimeout == 0 {
+			p.config.RedisTimeout = 1000
+		}
+		if p.config.RedisClusterSSL == nil {
+			value := false
+			p.config.RedisClusterSSL = &value
+		}
+		if p.config.RedisClusterSSLVerify == nil {
+			value := false
+			p.config.RedisClusterSSLVerify = &value
+		}
+		if p.config.RedisKeepaliveTimeout == 0 {
+			p.config.RedisKeepaliveTimeout = 10000
+		}
+		if p.config.RedisKeepalivePool == 0 {
+			p.config.RedisKeepalivePool = 100
+		}
+		if p.redisLimiter == nil {
+			p.redisLimiter = p.newRedisClusterLimiter()
+		}
+	default:
+		return fmt.Errorf("not supported policy: %s", p.config.Policy)
 	}
 
 	if p.config.RejectedCode == 0 {
@@ -284,6 +354,17 @@ func (p *Plugin) Config() interface{} {
 	return &p.config
 }
 
+func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
+	p.routeID = route.ID
+}
+
+func (p *Plugin) scopedKey(key string) string {
+	if p.routeID == "" {
+		return key
+	}
+	return "route:" + p.routeID + ":" + key
+}
+
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		key := p.resolveKey(r)
@@ -317,7 +398,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) incoming(key string) (time.Duration, bool, error) {
-	if p.config.Policy == "redis" {
+	key = p.scopedKey(key)
+	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		return p.redisLimiter.incoming(key, p.config.Rate, p.config.Burst)
 	}
 
@@ -350,7 +432,7 @@ func (p *Plugin) incoming(key string) (time.Duration, bool, error) {
 }
 
 type redisReqLimiter struct {
-	client *redis.Client
+	client redis.UniversalClient
 	now    func() time.Time
 }
 
@@ -365,8 +447,14 @@ func (p *Plugin) newRedisLimiter() reqLimiter {
 		p.config.RedisTimeout,
 		*p.config.RedisSSL,
 		*p.config.RedisSSLVerify,
+		p.config.RedisKeepaliveTimeout,
+		p.config.RedisKeepalivePool,
 	)
+	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(p.redisOptions())).(redis.UniversalClient)
+	return &redisReqLimiter{client: client, now: p.now}
+}
 
+func (p *Plugin) redisOptions() *redis.Options {
 	options := &redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
 		Username:     p.config.RedisUsername,
@@ -377,12 +465,51 @@ func (p *Plugin) newRedisLimiter() reqLimiter {
 		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
 		PoolSize:     p.config.RedisKeepalivePool,
 	}
+	if p.config.RedisKeepaliveTimeout > 0 {
+		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
+	}
 	if p.config.RedisSSL != nil && *p.config.RedisSSL {
 		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
 	}
+	return options
+}
 
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(*redis.Client)
+func (p *Plugin) newRedisClusterLimiter() reqLimiter {
+	configUID := shared.NewConfigUID()
+	configUID.Add(
+		p.config.RedisClusterName,
+		strings.Join(p.config.RedisClusterNodes, ","),
+		p.config.RedisPassword,
+		p.config.RedisTimeout,
+		*p.config.RedisClusterSSL,
+		*p.config.RedisClusterSSLVerify,
+		p.config.RedisKeepaliveTimeout,
+		p.config.RedisKeepalivePool,
+	)
+	client := shared.LoadOrStoreClient(
+		name,
+		configUID,
+		redis.NewClusterClient(p.redisClusterOptions()),
+	).(redis.UniversalClient)
 	return &redisReqLimiter{client: client, now: p.now}
+}
+
+func (p *Plugin) redisClusterOptions() *redis.ClusterOptions {
+	options := &redis.ClusterOptions{
+		Addrs:        append([]string(nil), p.config.RedisClusterNodes...),
+		Password:     p.config.RedisPassword,
+		DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		PoolSize:     p.config.RedisKeepalivePool,
+	}
+	if p.config.RedisKeepaliveTimeout > 0 {
+		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
+	}
+	if p.config.RedisClusterSSL != nil && *p.config.RedisClusterSSL {
+		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisClusterSSLVerify}
+	}
+	return options
 }
 
 func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (time.Duration, bool, error) {

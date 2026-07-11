@@ -216,9 +216,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [limit-req](https://apisix.apache.org/zh/docs/apisix/plugins/limit-req/) 96%
   - support local, Redis, and Redis Cluster request-rate limiting, official Redis/Redis Cluster TLS, timeout, and pool config, route-scoped keys, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `nodelay`, and `allow_degradation`
   - not support exact OpenResty `resty.limit.req`/LRU timing or APISIX's internal config-version key suffix
-- [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 87%
-  - support local and standalone Redis concurrent request limiting, official Redis config fields plus `key_ttl`, top-level and rule-level string variable values for `conn` / `burst`, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `only_use_default_delay`, and `allow_degradation`
-  - not support `redis-cluster`
+- [x] [limit-conn](https://apisix.apache.org/zh/docs/apisix/plugins/limit-conn/) 96%
+  - support local, Redis, and Redis Cluster concurrent request limiting, official Redis/Redis Cluster TLS, timeout, pool, and `key_ttl` config, route-scoped admission/release keys, adaptive unit-delay feedback, top-level and rule-level string variable values for `conn` / `burst`, `rules`, `key_type = var`, `var_combination`, HTTP header variables, `rejected_code`, APISIX-style empty/custom rejection bodies, `only_use_default_delay`, and `allow_degradation`
+  - not support exact OpenResty log-phase timing, request-ID sorted-set cleanup, or APISIX's internal config-version key suffix
 - [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 98%
   - support local, Redis, and Redis Cluster fixed-window quotas, APISIX root-level Redis/Redis Cluster fields and legacy nested configs, TLS/pool settings, top-level and rule-level string variable values for `count` / `time_window`, `rules`, per-rule `header_prefix`, shared `group` quotas with configuration mismatch validation, route-scoped keys, `key_type = var`, `constant`, and `var_combination`, HTTP header variables, quota headers, plugin metadata custom quota header names, `rejected_code`, APISIX-style empty/custom rejection bodies, and `allow_degradation`
   - not support exact OpenResty shared-dict/LRU lifecycle or `resty.limit.count` behavior

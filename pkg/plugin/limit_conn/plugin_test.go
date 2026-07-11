@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -77,6 +78,10 @@ func TestPostInitAcceptsRedisPolicyDefaults(t *testing.T) {
 	if p.config.RedisSSLVerify == nil || *p.config.RedisSSLVerify {
 		t.Fatalf("RedisSSLVerify = %v, want false", p.config.RedisSSLVerify)
 	}
+	options := p.redisOptions()
+	if options.PoolSize != 100 || options.ConnMaxIdleTime != 10*time.Second {
+		t.Fatalf("redis pool = %d, idle timeout = %s", options.PoolSize, options.ConnMaxIdleTime)
+	}
 }
 
 func TestSchemaAcceptsRedisPolicyFields(t *testing.T) {
@@ -105,6 +110,112 @@ func TestSchemaAcceptsRedisPolicyFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected redis policy fields: %v", err)
+	}
+}
+
+func TestSchemaAcceptsRedisClusterPolicyFields(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"conn":                     1,
+		"burst":                    0,
+		"default_conn_delay":       0.1,
+		"key":                      "remote_addr",
+		"policy":                   "redis-cluster",
+		"redis_cluster_nodes":      []any{"127.0.0.1:5000", "127.0.0.1:5001"},
+		"redis_password":           "secret",
+		"redis_timeout":            1500,
+		"redis_cluster_name":       "cluster-1",
+		"redis_cluster_ssl":        true,
+		"redis_cluster_ssl_verify": false,
+		"redis_keepalive_timeout":  12000,
+		"redis_keepalive_pool":     80,
+		"key_ttl":                  7200,
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected redis-cluster policy fields: %v", err)
+	}
+
+	delete(config, "redis_cluster_nodes")
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted redis-cluster policy without redis_cluster_nodes")
+	}
+}
+
+func TestPostInitBuildsRedisClusterOptions(t *testing.T) {
+	ssl := true
+	verify := false
+	p := newTestPlugin(t, Config{
+		Conn:                  1,
+		Burst:                 0,
+		DefaultConnDelay:      0.1,
+		Key:                   "remote_addr",
+		Policy:                "redis-cluster",
+		RedisClusterNodes:     []string{"127.0.0.1:5000", "127.0.0.1:5001"},
+		RedisPassword:         "secret",
+		RedisTimeout:          1500,
+		RedisClusterName:      "cluster-1",
+		RedisClusterSSL:       &ssl,
+		RedisClusterSSLVerify: &verify,
+		RedisKeepaliveTimeout: 12000,
+		RedisKeepalivePool:    80,
+		RedisKeyTTL:           7200,
+		OnlyUseDefaultDelay:   true,
+	})
+
+	options := p.redisClusterOptions()
+	if len(options.Addrs) != 2 || options.Addrs[0] != "127.0.0.1:5000" {
+		t.Fatalf("cluster addresses = %#v", options.Addrs)
+	}
+	if options.Password != "secret" {
+		t.Fatalf("cluster password = %q, want secret", options.Password)
+	}
+	if options.DialTimeout != 1500*time.Millisecond ||
+		options.ReadTimeout != 1500*time.Millisecond ||
+		options.WriteTimeout != 1500*time.Millisecond {
+		t.Fatalf("cluster timeouts = %s/%s/%s", options.DialTimeout, options.ReadTimeout, options.WriteTimeout)
+	}
+	if options.PoolSize != 80 || options.ConnMaxIdleTime != 12*time.Second {
+		t.Fatalf("cluster pool = %d, idle timeout = %s", options.PoolSize, options.ConnMaxIdleTime)
+	}
+	if options.TLSConfig == nil || !options.TLSConfig.InsecureSkipVerify {
+		t.Fatalf("cluster TLS config = %#v, want TLS with verification disabled", options.TLSConfig)
+	}
+	limiter, ok := p.redisLimiter.(*redisConnLimiter)
+	if !ok || !limiter.onlyUseDefaultDelay {
+		t.Fatalf("redis limiter = %#v, want only_use_default_delay enabled", p.redisLimiter)
+	}
+}
+
+func TestHandlerScopesRedisClusterAdmissionAndReleaseKeyByRoute(t *testing.T) {
+	redisLimiter := &fakeRedisConnLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Conn:              1,
+		Burst:             0,
+		DefaultConnDelay:  0.1,
+		Key:               "remote_addr",
+		Policy:            "redis-cluster",
+		RedisClusterNodes: []string{"127.0.0.1:5000"},
+		RedisClusterName:  "cluster-1",
+	})
+	p.redisLimiter = redisLimiter
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})), "192.0.2.70:12345")
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+	wantKey := "route:route-1:192.0.2.70"
+	if redisLimiter.key != wantKey || redisLimiter.leavingKey != wantKey {
+		t.Fatalf("admission/release keys = %q/%q, want %q", redisLimiter.key, redisLimiter.leavingKey, wantKey)
+	}
+	if redisLimiter.left != 1 {
+		t.Fatalf("redis leaving calls = %d, want 1", redisLimiter.left)
 	}
 }
 
@@ -319,8 +430,60 @@ func TestIncreaseUsesDefaultDelayWhenConfigured(t *testing.T) {
 	if !allowed {
 		t.Fatal("third request rejected, want allowed")
 	}
-	if thirdDelay != 200*time.Millisecond {
-		t.Fatalf("third delay = %s, want 200ms", thirdDelay)
+	if thirdDelay != 400*time.Millisecond {
+		t.Fatalf("third delay = %s, want 400ms", thirdDelay)
+	}
+}
+
+func TestDecreaseAdaptsUnitDelayFromDownstreamLatency(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:             1,
+		Burst:            1,
+		DefaultConnDelay: 0.2,
+		Key:              "remote_addr",
+	})
+
+	if _, allowed, err := p.increase("client", 1, 1); err != nil || !allowed {
+		t.Fatalf("initial increase = allowed %v, error %v", allowed, err)
+	}
+	latency := 600 * time.Millisecond
+	p.decrease("client", &latency)
+
+	if delay, allowed, err := p.increase("client", 1, 1); err != nil || !allowed || delay != 0 {
+		t.Fatalf("first adapted increase = delay %s, allowed %v, error %v", delay, allowed, err)
+	}
+	delay, allowed, err := p.increase("client", 1, 1)
+	if err != nil || !allowed {
+		t.Fatalf("second adapted increase = allowed %v, error %v", allowed, err)
+	}
+	if delay != 400*time.Millisecond {
+		t.Fatalf("adapted delay = %s, want 400ms", delay)
+	}
+}
+
+func TestDecreaseKeepsDefaultUnitDelayWhenConfigured(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Conn:                1,
+		Burst:               1,
+		DefaultConnDelay:    0.2,
+		Key:                 "remote_addr",
+		OnlyUseDefaultDelay: true,
+	})
+
+	if _, allowed, err := p.increase("client", 1, 1); err != nil || !allowed {
+		t.Fatalf("initial increase = allowed %v, error %v", allowed, err)
+	}
+	latency := 600 * time.Millisecond
+	p.decrease("client", &latency)
+	if _, allowed, err := p.increase("client", 1, 1); err != nil || !allowed {
+		t.Fatalf("first fixed increase = allowed %v, error %v", allowed, err)
+	}
+	delay, allowed, err := p.increase("client", 1, 1)
+	if err != nil || !allowed {
+		t.Fatalf("second fixed increase = allowed %v, error %v", allowed, err)
+	}
+	if delay != 200*time.Millisecond {
+		t.Fatalf("fixed delay = %s, want 200ms", delay)
 	}
 }
 
@@ -568,11 +731,12 @@ func performRequestWithHeaders(
 }
 
 type fakeRedisConnLimiter struct {
-	key     string
-	delay   time.Duration
-	allowed bool
-	err     error
-	left    int
+	key        string
+	leavingKey string
+	delay      time.Duration
+	allowed    bool
+	err        error
+	left       int
 }
 
 func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {
@@ -580,7 +744,8 @@ func (f *fakeRedisConnLimiter) incoming(key string, conn int, burst int) (time.D
 	return f.delay, f.allowed, f.err
 }
 
-func (f *fakeRedisConnLimiter) leaving(key string) error {
+func (f *fakeRedisConnLimiter) leaving(key string, _ *time.Duration) error {
+	f.leavingKey = key
 	f.left++
 	return f.err
 }

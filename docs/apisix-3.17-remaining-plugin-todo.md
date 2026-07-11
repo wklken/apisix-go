@@ -113,7 +113,6 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `chaitin-waf` | Add health checker/round-robin picker approximation, fuller expression support, and response header/body integration where practical. |
 | `data-mask` | Add fuller JSONPath, log-phase-only behavior approximation, and request-line masking for logger output. |
 | `body-transformer` | Add more template syntax, nested values, and XML/form/multipart handling if bounded. |
-| `limit-conn` | Add Redis Cluster only after standalone Redis behavior is stable and shared helpers make it low-risk. |
 | `proxy-cache` | Design disk cache zones and stale serving separately; keep current in-memory path stable. |
 | `graphql-proxy-cache` | Only deeper GraphQL parser parity remains normal Go work. `graphql.max_size`, route/service/identity cache keys, and the public purge endpoint are implemented; NGINX disk cache zones remain out of scope. |
 | `request-validation` | Add missing schema edge cases around headers/forms and improve APISIX-style rejection details. |

@@ -8053,3 +8053,26 @@ Accepted official cluster fields/defaults, shared standalone or cluster clients 
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/limit_req -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_req -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 246: Complete Limit Connection Redis Cluster Parity
+
+**Files:**
+- Modify: `pkg/plugin/limit_conn`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 flat Redis Cluster configuration and route resource context.
+- Produces: Redis Cluster connection admission/release, active TLS/timeout/pool/TTL options, and identical route-scoped keys for both operations.
+
+- [x] **Step 1: Pin cluster admission and release behavior**
+
+Added schema-required-node, cluster option, standalone keepalive, route-scoped admission, and deferred release-key tests.
+
+- [x] **Step 2: Implement the cluster backend**
+
+Accepted official cluster fields/defaults, shared standalone or cluster clients through the universal Redis interface, applied idle-pool settings, and scoped both local and Redis admission/release keys when route context is available.
+Measured downstream latency after intentional delay, adapted the local and Redis unit delay on release, and made `only_use_default_delay` disable that feedback consistently across backends.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/limit_conn -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_conn -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

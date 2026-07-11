@@ -17,6 +17,7 @@ import (
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -25,10 +26,12 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	mu    sync.Mutex
-	conns map[string]int
+	mu        sync.Mutex
+	conns     map[string]int
+	unitDelay float64
 
 	redisLimiter connLimiter
+	routeID      string
 }
 
 const (
@@ -164,6 +167,26 @@ const schema = `
       "minimum": 1,
       "default": 100
     },
+    "redis_cluster_nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 100
+      }
+    },
+    "redis_cluster_name": {
+      "type": "string"
+    },
+    "redis_cluster_ssl": {
+      "type": "boolean",
+      "default": false
+    },
+    "redis_cluster_ssl_verify": {
+      "type": "boolean",
+      "default": false
+    },
     "key_ttl": {
       "type": "integer",
       "default": 3600
@@ -190,33 +213,53 @@ const schema = `
   "oneOf": [
     {"required": ["conn", "burst", "default_conn_delay", "key"]},
     {"required": ["default_conn_delay", "rules"]}
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"policy": {"const": "redis"}},
+        "required": ["policy"]
+      },
+      "then": {"required": ["redis_host"]}
+    },
+    {
+      "if": {
+        "properties": {"policy": {"const": "redis-cluster"}},
+        "required": ["policy"]
+      },
+      "then": {"required": ["redis_cluster_nodes", "redis_cluster_name"]}
+    }
   ]
 }
 `
 
 type Config struct {
-	Conn                  any     `json:"conn"`
-	Burst                 any     `json:"burst"`
-	DefaultConnDelay      float64 `json:"default_conn_delay"`
-	Key                   string  `json:"key"`
-	KeyType               string  `json:"key_type,omitempty"`
-	Policy                string  `json:"policy,omitempty"`
-	RedisHost             string  `json:"redis_host,omitempty"`
-	RedisPort             int     `json:"redis_port,omitempty"`
-	RedisUsername         string  `json:"redis_username,omitempty"`
-	RedisPassword         string  `json:"redis_password,omitempty"`
-	RedisDatabase         int     `json:"redis_database,omitempty"`
-	RedisTimeout          int     `json:"redis_timeout,omitempty"`
-	RedisSSL              *bool   `json:"redis_ssl,omitempty"`
-	RedisSSLVerify        *bool   `json:"redis_ssl_verify,omitempty"`
-	RedisKeepaliveTimeout int     `json:"redis_keepalive_timeout,omitempty"`
-	RedisKeepalivePool    int     `json:"redis_keepalive_pool,omitempty"`
-	RedisKeyTTL           int     `json:"key_ttl,omitempty"`
-	RejectedCode          int     `json:"rejected_code,omitempty"`
-	RejectedMsg           string  `json:"rejected_msg,omitempty"`
-	AllowDegradation      *bool   `json:"allow_degradation,omitempty"`
-	OnlyUseDefaultDelay   bool    `json:"only_use_default_delay,omitempty"`
-	Rules                 []Rule  `json:"rules,omitempty"`
+	Conn                  any      `json:"conn"`
+	Burst                 any      `json:"burst"`
+	DefaultConnDelay      float64  `json:"default_conn_delay"`
+	Key                   string   `json:"key"`
+	KeyType               string   `json:"key_type,omitempty"`
+	Policy                string   `json:"policy,omitempty"`
+	RedisHost             string   `json:"redis_host,omitempty"`
+	RedisPort             int      `json:"redis_port,omitempty"`
+	RedisUsername         string   `json:"redis_username,omitempty"`
+	RedisPassword         string   `json:"redis_password,omitempty"`
+	RedisDatabase         int      `json:"redis_database,omitempty"`
+	RedisTimeout          int      `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool    `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool    `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int      `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int      `json:"redis_keepalive_pool,omitempty"`
+	RedisClusterNodes     []string `json:"redis_cluster_nodes,omitempty"`
+	RedisClusterName      string   `json:"redis_cluster_name,omitempty"`
+	RedisClusterSSL       *bool    `json:"redis_cluster_ssl,omitempty"`
+	RedisClusterSSLVerify *bool    `json:"redis_cluster_ssl_verify,omitempty"`
+	RedisKeyTTL           int      `json:"key_ttl,omitempty"`
+	RejectedCode          int      `json:"rejected_code,omitempty"`
+	RejectedMsg           string   `json:"rejected_msg,omitempty"`
+	AllowDegradation      *bool    `json:"allow_degradation,omitempty"`
+	OnlyUseDefaultDelay   bool     `json:"only_use_default_delay,omitempty"`
+	Rules                 []Rule   `json:"rules,omitempty"`
 
 	rejectBody string
 }
@@ -233,7 +276,7 @@ type admission struct {
 
 type connLimiter interface {
 	incoming(key string, conn int, burst int) (time.Duration, bool, error)
-	leaving(key string) error
+	leaving(key string, latency *time.Duration) error
 }
 
 var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
@@ -292,10 +335,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
 	}
-	if p.config.Policy != "local" && p.config.Policy != "redis" {
-		return fmt.Errorf("not supported policy: %s", p.config.Policy)
-	}
-	if p.config.Policy == "redis" {
+	switch p.config.Policy {
+	case "local":
+	case "redis":
 		if p.config.RedisHost == "" {
 			return fmt.Errorf("redis_host is required")
 		}
@@ -325,6 +367,38 @@ func (p *Plugin) PostInit() error {
 		if p.redisLimiter == nil {
 			p.redisLimiter = p.newRedisLimiter()
 		}
+	case "redis-cluster":
+		if len(p.config.RedisClusterNodes) == 0 {
+			return fmt.Errorf("redis_cluster_nodes is required")
+		}
+		if p.config.RedisClusterName == "" {
+			return fmt.Errorf("redis_cluster_name is required")
+		}
+		if p.config.RedisTimeout == 0 {
+			p.config.RedisTimeout = 1000
+		}
+		if p.config.RedisClusterSSL == nil {
+			value := false
+			p.config.RedisClusterSSL = &value
+		}
+		if p.config.RedisClusterSSLVerify == nil {
+			value := false
+			p.config.RedisClusterSSLVerify = &value
+		}
+		if p.config.RedisKeepaliveTimeout == 0 {
+			p.config.RedisKeepaliveTimeout = 10000
+		}
+		if p.config.RedisKeepalivePool == 0 {
+			p.config.RedisKeepalivePool = 100
+		}
+		if p.config.RedisKeyTTL == 0 {
+			p.config.RedisKeyTTL = 3600
+		}
+		if p.redisLimiter == nil {
+			p.redisLimiter = p.newRedisClusterLimiter()
+		}
+	default:
+		return fmt.Errorf("not supported policy: %s", p.config.Policy)
 	}
 
 	if p.config.RejectedCode == 0 {
@@ -344,6 +418,7 @@ func (p *Plugin) PostInit() error {
 	if p.conns == nil {
 		p.conns = make(map[string]int)
 	}
+	p.unitDelay = p.config.DefaultConnDelay
 
 	if len(p.config.Rules) > 0 {
 		return validateRules(p.config.Rules)
@@ -361,6 +436,17 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() interface{} {
 	return &p.config
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
+	p.routeID = route.ID
+}
+
+func (p *Plugin) scopedKey(key string) string {
+	if p.routeID == "" {
+		return key
+	}
+	return "route:" + p.routeID + ":" + key
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -387,12 +473,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				http.Error(w, "failed to get limit conn rules", http.StatusInternalServerError)
 				return
 			}
-			defer p.decreaseAdmissions(admissions)
-
 			if delay > 0 {
 				time.Sleep(delay)
 			}
 
+			started := time.Now()
+			defer func() {
+				latency := time.Since(started)
+				p.decreaseAdmissions(admissions, &latency)
+			}()
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -420,12 +509,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			p.reject(w)
 			return
 		}
-		defer p.decrease(key)
-
 		if delay > 0 {
 			time.Sleep(delay)
 		}
 
+		started := time.Now()
+		defer func() {
+			latency := time.Since(started)
+			p.decrease(key, &latency)
+		}()
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
@@ -594,11 +686,11 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 
 		nextDelay, allowed, err := p.increase(key, conn, burst)
 		if err != nil {
-			p.decreaseAdmissions(admissions)
+			p.decreaseAdmissions(admissions, nil)
 			return nil, 0, false, err
 		}
 		if !allowed {
-			p.decreaseAdmissions(admissions)
+			p.decreaseAdmissions(admissions, nil)
 			return nil, 0, false, nil
 		}
 		admissions = append(admissions, admission{key: key})
@@ -608,14 +700,15 @@ func (p *Plugin) increaseRules(r *http.Request) ([]admission, time.Duration, boo
 	return admissions, delay, true, nil
 }
 
-func (p *Plugin) decreaseAdmissions(admissions []admission) {
+func (p *Plugin) decreaseAdmissions(admissions []admission, latency *time.Duration) {
 	for _, admission := range admissions {
-		p.decrease(admission.key)
+		p.decrease(admission.key, latency)
 	}
 }
 
 func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool, error) {
-	if p.config.Policy == "redis" {
+	key = p.scopedKey(key)
+	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		return p.redisLimiter.incoming(key, conn, burst)
 	}
 
@@ -630,24 +723,29 @@ func (p *Plugin) increase(key string, conn int, burst int) (time.Duration, bool,
 
 	p.conns[key] = current
 	if current > conn {
-		if p.config.OnlyUseDefaultDelay {
-			return time.Duration(p.config.DefaultConnDelay * float64(time.Second)), true, nil
-		}
-		multiplier := (current - 1) / conn
-		return time.Duration(float64(multiplier) * p.config.DefaultConnDelay * float64(time.Second)), true, nil
+		return connectionDelay(current, conn, p.unitDelay), true, nil
 	}
 
 	return 0, true, nil
 }
 
-func (p *Plugin) decrease(key string) {
-	if p.config.Policy == "redis" {
-		_ = p.redisLimiter.leaving(key)
+func connectionDelay(current int, conn int, unitDelay float64) time.Duration {
+	multiplier := (current - 1) / conn
+	return time.Duration(float64(multiplier) * unitDelay * float64(time.Second))
+}
+
+func (p *Plugin) decrease(key string, latency *time.Duration) {
+	key = p.scopedKey(key)
+	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
+		_ = p.redisLimiter.leaving(key, latency)
 		return
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if latency != nil && !p.config.OnlyUseDefaultDelay {
+		p.unitDelay = (p.unitDelay + latency.Seconds()) / 2
+	}
 
 	current := p.conns[key]
 	if current <= 1 {
@@ -658,9 +756,11 @@ func (p *Plugin) decrease(key string) {
 }
 
 type redisConnLimiter struct {
-	client           *redis.Client
-	defaultConnDelay float64
-	keyTTL           time.Duration
+	mu                  sync.Mutex
+	client              redis.UniversalClient
+	unitDelay           float64
+	keyTTL              time.Duration
+	onlyUseDefaultDelay bool
 }
 
 func (p *Plugin) newRedisLimiter() connLimiter {
@@ -674,8 +774,14 @@ func (p *Plugin) newRedisLimiter() connLimiter {
 		p.config.RedisTimeout,
 		*p.config.RedisSSL,
 		*p.config.RedisSSLVerify,
+		p.config.RedisKeepaliveTimeout,
+		p.config.RedisKeepalivePool,
 	)
+	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(p.redisOptions())).(redis.UniversalClient)
+	return p.newRedisConnLimiter(client)
+}
 
+func (p *Plugin) redisOptions() *redis.Options {
 	options := &redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
 		Username:     p.config.RedisUsername,
@@ -686,26 +792,73 @@ func (p *Plugin) newRedisLimiter() connLimiter {
 		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
 		PoolSize:     p.config.RedisKeepalivePool,
 	}
+	if p.config.RedisKeepaliveTimeout > 0 {
+		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
+	}
 	if p.config.RedisSSL != nil && *p.config.RedisSSL {
 		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisSSLVerify}
 	}
+	return options
+}
 
-	client := shared.LoadOrStoreClient(name, configUID, redis.NewClient(options)).(*redis.Client)
+func (p *Plugin) newRedisClusterLimiter() connLimiter {
+	configUID := shared.NewConfigUID()
+	configUID.Add(
+		p.config.RedisClusterName,
+		strings.Join(p.config.RedisClusterNodes, ","),
+		p.config.RedisPassword,
+		p.config.RedisTimeout,
+		*p.config.RedisClusterSSL,
+		*p.config.RedisClusterSSLVerify,
+		p.config.RedisKeepaliveTimeout,
+		p.config.RedisKeepalivePool,
+	)
+	client := shared.LoadOrStoreClient(
+		name,
+		configUID,
+		redis.NewClusterClient(p.redisClusterOptions()),
+	).(redis.UniversalClient)
+	return p.newRedisConnLimiter(client)
+}
+
+func (p *Plugin) newRedisConnLimiter(client redis.UniversalClient) connLimiter {
 	return &redisConnLimiter{
-		client:           client,
-		defaultConnDelay: p.config.DefaultConnDelay,
-		keyTTL:           time.Duration(p.config.RedisKeyTTL) * time.Second,
+		client:              client,
+		unitDelay:           p.config.DefaultConnDelay,
+		keyTTL:              time.Duration(p.config.RedisKeyTTL) * time.Second,
+		onlyUseDefaultDelay: p.config.OnlyUseDefaultDelay,
 	}
 }
 
+func (p *Plugin) redisClusterOptions() *redis.ClusterOptions {
+	options := &redis.ClusterOptions{
+		Addrs:        append([]string(nil), p.config.RedisClusterNodes...),
+		Password:     p.config.RedisPassword,
+		DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		PoolSize:     p.config.RedisKeepalivePool,
+	}
+	if p.config.RedisKeepaliveTimeout > 0 {
+		options.ConnMaxIdleTime = time.Duration(p.config.RedisKeepaliveTimeout) * time.Millisecond
+	}
+	if p.config.RedisClusterSSL != nil && *p.config.RedisClusterSSL {
+		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*p.config.RedisClusterSSLVerify}
+	}
+	return options
+}
+
 func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Duration, bool, error) {
+	l.mu.Lock()
+	unitDelay := l.unitDelay
+	l.mu.Unlock()
 	result, err := l.client.Eval(
 		context.Background(),
 		redisLimitConnIncomingScript,
 		[]string{"plugin-limit-conn:" + key},
 		conn,
 		burst,
-		l.defaultConnDelay,
+		unitDelay,
 		l.keyTTL.Milliseconds(),
 	).Result()
 	if err != nil {
@@ -728,12 +881,19 @@ func (l *redisConnLimiter) incoming(key string, conn int, burst int) (time.Durat
 	return time.Duration(delayMs) * time.Millisecond, allowed == 1, nil
 }
 
-func (l *redisConnLimiter) leaving(key string) error {
-	return l.client.Eval(
+func (l *redisConnLimiter) leaving(key string, latency *time.Duration) error {
+	err := l.client.Eval(
 		context.Background(),
 		redisLimitConnLeavingScript,
 		[]string{"plugin-limit-conn:" + key},
 	).Err()
+	if err != nil || latency == nil || l.onlyUseDefaultDelay {
+		return err
+	}
+	l.mu.Lock()
+	l.unitDelay = (l.unitDelay + latency.Seconds()) / 2
+	l.mu.Unlock()
+	return nil
 }
 
 func redisInt(value any) (int64, bool) {

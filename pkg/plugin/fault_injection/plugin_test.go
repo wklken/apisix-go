@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func TestAbortPercentageZeroFallsThrough(t *testing.T) {
@@ -71,6 +73,26 @@ func TestAbortWithoutBodyDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestAbortSerializesNumericHeaderValues(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Abort: &Abort{
+			HTTPStatus: http.StatusServiceUnavailable,
+			Headers: map[string]interface{}{
+				"X-Retry-After": 3,
+			},
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("fault-injection should not call the next handler")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/fault", nil))
+
+	if got := rr.Header().Get("X-Retry-After"); got != "3" {
+		t.Fatalf("X-Retry-After = %q, want 3", got)
+	}
+}
+
 func TestAbortVarsMustMatch(t *testing.T) {
 	body := "aborted"
 	p := newTestPlugin(t, Config{
@@ -78,7 +100,7 @@ func TestAbortVarsMustMatch(t *testing.T) {
 			HTTPStatus: http.StatusServiceUnavailable,
 			Body:       &body,
 			Vars: [][]interface{}{
-				{"arg_stage", "==", "beta"},
+				{[]interface{}{"arg_stage", "==", "beta"}},
 			},
 		},
 	})
@@ -106,8 +128,8 @@ func TestAbortVarsUseAnyMatchingExpression(t *testing.T) {
 			HTTPStatus: http.StatusServiceUnavailable,
 			Body:       &body,
 			Vars: [][]interface{}{
-				{"arg_stage", "==", "beta"},
-				{"http_x_fault", "==", "on"},
+				{[]interface{}{"arg_stage", "==", "beta"}},
+				{[]interface{}{"http_x_fault", "==", "on"}},
 			},
 		},
 	})
@@ -136,12 +158,12 @@ func TestAbortSupportsBoundedVarsAndVariableRendering(t *testing.T) {
 			Headers: map[string]interface{}{
 				"X-Fault": "$request_method-$arg_score",
 			},
-			Vars: [][]interface{}{
-				{"$request_method", "==", http.MethodGet},
-				{"arg_score", ">=", "10"},
-				{"http_x_region", "~", "^west-[0-9]+$"},
-				{"uri", "!~", "/internal"},
-			},
+			Vars: [][]interface{}{{
+				[]interface{}{"$request_method", "==", http.MethodGet},
+				[]interface{}{"arg_score", ">=", "10"},
+				[]interface{}{"http_x_region", "~", "^west-[0-9]+$"},
+				[]interface{}{"uri", "!~", "/internal"},
+			}},
 		},
 	})
 
@@ -164,10 +186,7 @@ func TestAbortSupportsBoundedVarsAndVariableRendering(t *testing.T) {
 	}
 }
 
-func TestMatchExprSupportsBoundedOperators(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/fault?score=12", nil)
-	req.Header.Set("X-Region", "west-1")
-
+func TestAbortVarsSupportBoundedOperators(t *testing.T) {
 	tests := []struct {
 		name string
 		expr []interface{}
@@ -181,10 +200,75 @@ func TestMatchExprSupportsBoundedOperators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !matchExpr(req, tt.expr) {
-				t.Fatalf("matchExpr(%v) = false, want true", tt.expr)
+			p := newTestPlugin(t, Config{
+				Abort: &Abort{
+					HTTPStatus: http.StatusServiceUnavailable,
+					Vars:       [][]interface{}{{tt.expr}},
+				},
+			})
+			req := httptest.NewRequest(http.MethodGet, "/fault?score=12", nil)
+			req.Header.Set("X-Region", "west-1")
+			rr := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("fault-injection should not call the next handler")
+			})).ServeHTTP(rr, req)
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d for %v", rr.Code, http.StatusServiceUnavailable, tt.expr)
 			}
 		})
+	}
+}
+
+func TestAbortVarsSupportNestedRestyExpressionsAndApisixVariables(t *testing.T) {
+	body := "aborted"
+	p := newTestPlugin(t, Config{
+		Abort: &Abort{
+			HTTPStatus: http.StatusServiceUnavailable,
+			Body:       &body,
+			Vars: [][]interface{}{
+				{
+					"AND",
+					[]interface{}{"request_method", "in", []interface{}{"GET", "HEAD"}},
+					[]interface{}{"remote_addr", "ipmatch", []interface{}{"192.0.2.0/24"}},
+					[]interface{}{"http_x_env", "~*", "^prod$"},
+					[]interface{}{"graphql_root_fields", "has", "owner"},
+					[]interface{}{"arg_skip", "!", "==", "yes"},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/fault?skip=no", nil)
+	req.RemoteAddr = "192.0.2.40:12345"
+	req.Header.Set("X-Env", "PrOd")
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.RegisterRequestVar(req, "$graphql_root_fields", []string{"viewer", "owner"})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("fault-injection should not call the next handler")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestPostInitRejectsInvalidVarsExpressions(t *testing.T) {
+	tests := []Config{
+		{Abort: &Abort{HTTPStatus: http.StatusServiceUnavailable, Vars: [][]interface{}{{"status", "==", 200}}}},
+		{Abort: &Abort{HTTPStatus: http.StatusServiceUnavailable, Vars: [][]interface{}{{
+			[]interface{}{"status", "bogus", 200},
+		}}}},
+		{Delay: &Delay{Duration: 0.1, Vars: [][]interface{}{{"AND", []interface{}{"method", "==", "GET"}}}}},
+	}
+	for _, config := range tests {
+		p := &Plugin{config: config}
+		if err := p.Init(); err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		if err := p.PostInit(); err == nil {
+			t.Fatalf("PostInit(%+v) error = nil, want invalid vars rejected", config)
+		}
 	}
 }
 
@@ -202,7 +286,7 @@ func TestDelayVarsMustMatch(t *testing.T) {
 		Delay: &Delay{
 			Duration: 0.01,
 			Vars: [][]interface{}{
-				{"arg_stage", "==", "beta"},
+				{[]interface{}{"arg_stage", "==", "beta"}},
 			},
 		},
 	})

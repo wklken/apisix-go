@@ -97,9 +97,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 68%
   - support CORS preflight, APISIX-style `400` rejection for invalid method/content-type/body, route wildcard-to-gRPC path rewriting, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
   - not support OpenResty `upstream_trailer_*` fidelity or streaming chunk-level response filters
-- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 88%
-  - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, abort response bodies/headers with bounded variable resolution, fractional delay seconds, and `vars` gating with common request variables plus `==` / `!=` / numeric comparison / regex match operators
-  - not support full `resty.expr` operator parity or full APISIX variable resolution
+- [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 97%
+  - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, string/numeric response headers, response body/header variable resolution, fractional delay seconds, config-time `vars` validation, OR across wrapped rules, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
+  - not support exact OpenResty PCRE semantics, the complete NGINX variable catalog, or exact rewrite-phase timing
 - [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 97%
   - support `response_example`, `response_schema` object generation, JSON/plain-text/XML schema bodies, response headers, bounded variable resolution, delay, status, content type, and mock marker header
   - not support APISIX random response value distribution exactly for schema fields without examples

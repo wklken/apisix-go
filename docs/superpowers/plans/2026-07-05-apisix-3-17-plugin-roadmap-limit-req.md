@@ -8098,3 +8098,26 @@ Compiled and validated bounded `lua-resty-expr` trees, resolved common NGINX/API
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/response_rewrite -count=1 -timeout=30s`, `go test -race ./pkg/plugin/response_rewrite -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 248: Complete Fault Injection Expression Parity
+
+**Files:**
+- Add: `pkg/plugin/expr`
+- Modify: `pkg/plugin/fault_injection` and `pkg/plugin/response_rewrite`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 wrapped fault rules, `lua-resty-expr` 1.3.2 syntax, common request/APISIX variables, and string/numeric abort headers.
+- Produces: a shared compiled expression evaluator, config-time fault-rule validation, and typed request-variable resolution reusable by traffic plugins.
+
+- [x] **Step 1: Pin official rule and operator behavior**
+
+Added focused failures for wrapped/nested rules, outer OR behavior, comparison/regex/list/IP/negation operators, APISIX array variables, invalid expressions, and numeric response headers.
+
+- [x] **Step 2: Share and apply the expression runtime**
+
+Extracted the response-rewrite expression compiler/evaluator, preserved its behavior through existing tests, added common typed request-variable resolution, compiled abort/delay rules during initialization, and fixed numeric response-header serialization.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=30s`, `go test -race ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

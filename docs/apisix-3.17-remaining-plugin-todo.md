@@ -97,7 +97,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `aws-lambda` | No normal Go TODO remains. Encrypted API-key/IAM credentials, APISIX-compatible SigV4 canonicalization, and wildcard `:ext` forwarding are implemented. |
 | `response-rewrite` | Only remaining normal parity is APISIX secret-reference resolution for `body`. Exact OpenResty PCRE semantics and streaming chunk body filters remain out of scope. |
 | `proxy-rewrite` | Only small URI safe-encoding parity/test gaps remain; avoid risky rewrites. |
-| `fault-injection` | Expand bounded `resty.expr` operator and APISIX variable support. |
+| `fault-injection` | No normal Go TODO remains. Exact OpenResty PCRE semantics, the complete NGINX variable catalog, and rewrite-phase timing remain deferred native/runtime details. |
 | `mocking` | Improve schema random-value distribution only if a concrete parity bug appears; otherwise monitor. |
 | `proxy-buffering` | Add practical Go proxy buffering knobs. Do not implement NGINX buffering internals. |
 | `proxy-control` | Add control knobs that map to Go proxy behavior and document NGINX-native controls as unsupported. |

@@ -26,7 +26,7 @@ Generated from upstream `apisix/cli/config.lua` on the `release/3.17` branch, lo
 | `request-id` | yes | 85% | monitor |
 | `zipkin` | yes | 82% | defer-native |
 | `ext-plugin-pre-req` | no | unsupported: No need | not-required-native |
-| `fault-injection` | yes | 88% | monitor |
+| `fault-injection` | yes | 97% | monitor |
 | `mocking` | yes | 97% | monitor |
 | `serverless-pre-function` | yes | 45% | not-required-native |
 | `cors` | yes | 80% | monitor |

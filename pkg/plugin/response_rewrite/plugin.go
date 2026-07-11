@@ -7,23 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 
 	brotlidec "github.com/andybalholm/brotli"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
-	expr   *responseExpression
+	expr   *pluginexpr.Expression
 }
 
 const (
@@ -263,7 +260,7 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	if len(p.config.Vars) > 0 {
-		expr, err := compileResponseExpression(p.config.Vars)
+		expr, err := pluginexpr.Compile(p.config.Vars)
 		if err != nil {
 			return fmt.Errorf("response-rewrite vars validation failed: %w", err)
 		}
@@ -355,7 +352,9 @@ func (p *Plugin) varsMatched(r *http.Request, resp *responseRecorder) bool {
 	if p.expr == nil {
 		return true
 	}
-	return p.expr.eval(r, resp)
+	return p.expr.Eval(func(name string) any {
+		return responseValue(r, resp, name)
+	})
 }
 
 func (h Headers) apply(r *http.Request, resp *responseRecorder) {
@@ -427,262 +426,6 @@ func decodeFilterBody(resp *responseRecorder) ([]byte, bool) {
 	}
 }
 
-type responseExpression struct {
-	logic     string
-	children  []*responseExpression
-	condition *responseCondition
-}
-
-type responseCondition struct {
-	variable string
-	operator string
-	right    any
-	reverse  bool
-	pattern  *regexp.Regexp
-	prefixes []netip.Prefix
-}
-
-func compileResponseExpression(value any) (*responseExpression, error) {
-	rules, ok := value.([]any)
-	if !ok || len(rules) == 0 {
-		return nil, fmt.Errorf("expression must be a non-empty array")
-	}
-
-	if logic, ok := rules[0].(string); ok && isLogicOperator(logic) {
-		if len(rules) < 3 {
-			return nil, fmt.Errorf("logical expression %s requires at least two operands", logic)
-		}
-		children := make([]*responseExpression, 0, len(rules)-1)
-		for _, child := range rules[1:] {
-			compiled, err := compileResponseExpression(child)
-			if err != nil {
-				return nil, err
-			}
-			children = append(children, compiled)
-		}
-		return &responseExpression{logic: strings.ToUpper(logic), children: children}, nil
-	}
-
-	if len(rules) == 3 || len(rules) == 4 {
-		if _, ok := rules[0].(string); ok {
-			return compileResponseCondition(rules)
-		}
-	}
-
-	if _, ok := rules[0].([]any); !ok {
-		return nil, fmt.Errorf("expression must contain conditions or a logical operator")
-	}
-	current, err := compileResponseExpression(rules[0])
-	if err != nil {
-		return nil, err
-	}
-	pending := "AND"
-	wantsCondition := false
-	for _, item := range rules[1:] {
-		if logic, ok := item.(string); ok {
-			logic = strings.ToUpper(logic)
-			if logic != "AND" && logic != "OR" {
-				return nil, fmt.Errorf("invalid infix logical operator %q", logic)
-			}
-			if wantsCondition {
-				return nil, fmt.Errorf("logical operator %q requires a following condition", pending)
-			}
-			pending = logic
-			wantsCondition = true
-			continue
-		}
-		child, err := compileResponseExpression(item)
-		if err != nil {
-			return nil, err
-		}
-		current = &responseExpression{logic: pending, children: []*responseExpression{current, child}}
-		pending = "AND"
-		wantsCondition = false
-	}
-	if wantsCondition {
-		return nil, fmt.Errorf("logical operator %q requires a following condition", pending)
-	}
-	return current, nil
-}
-
-func isLogicOperator(operator string) bool {
-	switch strings.ToUpper(operator) {
-	case "AND", "OR", "!AND", "!OR":
-		return true
-	default:
-		return false
-	}
-}
-
-func compileResponseCondition(parts []any) (*responseExpression, error) {
-	condition := &responseCondition{variable: fmt.Sprint(parts[0])}
-	if len(parts) == 4 {
-		if fmt.Sprint(parts[1]) != "!" {
-			return nil, fmt.Errorf("invalid negated condition")
-		}
-		condition.reverse = true
-		condition.operator = strings.ToLower(fmt.Sprint(parts[2]))
-		condition.right = parts[3]
-	} else {
-		condition.operator = strings.ToLower(fmt.Sprint(parts[1]))
-		condition.right = parts[2]
-	}
-	switch condition.operator {
-	case "!=":
-		condition.operator = "~="
-	case "~":
-		condition.operator = "~~"
-	case "!~":
-		condition.operator = "~~"
-		condition.reverse = !condition.reverse
-	}
-
-	switch condition.operator {
-	case "==", "~=", ">", ">=", "<", "<=", "has":
-	case "in":
-		if _, ok := expressionValues(condition.right); !ok {
-			return nil, fmt.Errorf("in operator requires an array")
-		}
-	case "~~", "~*":
-		options := ""
-		if condition.operator == "~*" {
-			options = "(?i)"
-		}
-		pattern, err := regexp.Compile(options + fmt.Sprint(condition.right))
-		if err != nil {
-			return nil, fmt.Errorf("invalid expression regex: %w", err)
-		}
-		condition.pattern = pattern
-	case "ipmatch":
-		values, ok := expressionValues(condition.right)
-		if !ok {
-			values = []any{condition.right}
-		}
-		for _, value := range values {
-			prefix, err := parseIPPrefix(fmt.Sprint(value))
-			if err != nil {
-				return nil, err
-			}
-			condition.prefixes = append(condition.prefixes, prefix)
-		}
-	default:
-		return nil, fmt.Errorf("invalid operator %q", condition.operator)
-	}
-	return &responseExpression{condition: condition}, nil
-}
-
-func parseIPPrefix(value string) (netip.Prefix, error) {
-	if prefix, err := netip.ParsePrefix(value); err == nil {
-		return prefix, nil
-	}
-	address, err := netip.ParseAddr(value)
-	if err != nil {
-		return netip.Prefix{}, fmt.Errorf("invalid ipmatch value %q", value)
-	}
-	return netip.PrefixFrom(address, address.BitLen()), nil
-}
-
-func (e *responseExpression) eval(r *http.Request, resp *responseRecorder) bool {
-	if e.condition != nil {
-		matched := e.condition.eval(r, resp)
-		if e.condition.reverse {
-			return !matched
-		}
-		return matched
-	}
-
-	matched := e.logic == "AND" || e.logic == "!AND"
-	if e.logic == "OR" || e.logic == "!OR" {
-		matched = false
-	}
-	for _, child := range e.children {
-		if e.logic == "AND" || e.logic == "!AND" {
-			matched = matched && child.eval(r, resp)
-			if !matched {
-				break
-			}
-		} else {
-			matched = matched || child.eval(r, resp)
-			if matched {
-				break
-			}
-		}
-	}
-	if e.logic == "!AND" || e.logic == "!OR" {
-		return !matched
-	}
-	return matched
-}
-
-func (c *responseCondition) eval(r *http.Request, resp *responseRecorder) bool {
-	actual := responseValue(r, resp, c.variable)
-	switch c.operator {
-	case "==":
-		return expressionEqual(actual, c.right)
-	case "~=":
-		return !expressionEqual(actual, c.right)
-	case ">", ">=", "<", "<=":
-		left, leftErr := strconv.ParseFloat(expressionString(actual), 64)
-		right, rightErr := strconv.ParseFloat(expressionString(c.right), 64)
-		if leftErr != nil || rightErr != nil {
-			return false
-		}
-		switch c.operator {
-		case ">":
-			return left > right
-		case ">=":
-			return left >= right
-		case "<":
-			return left < right
-		default:
-			return left <= right
-		}
-	case "~~", "~*":
-		return c.pattern.MatchString(expressionString(actual))
-	case "in":
-		values, _ := expressionValues(c.right)
-		for _, value := range values {
-			if expressionEqual(actual, value) {
-				return true
-			}
-		}
-		return false
-	case "has":
-		values, ok := expressionValues(actual)
-		if !ok {
-			return false
-		}
-		for _, value := range values {
-			if expressionEqual(value, c.right) {
-				return true
-			}
-		}
-		return false
-	case "ipmatch":
-		address, err := netip.ParseAddr(expressionString(actual))
-		if err != nil {
-			return false
-		}
-		for _, prefix := range c.prefixes {
-			if prefix.Contains(address) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func expressionEqual(left any, right any) bool {
-	switch right.(type) {
-	case float64, float32, int, int64, json.Number:
-		leftNumber, leftErr := strconv.ParseFloat(expressionString(left), 64)
-		rightNumber, rightErr := strconv.ParseFloat(expressionString(right), 64)
-		return leftErr == nil && rightErr == nil && leftNumber == rightNumber
-	default:
-		return expressionString(left) == expressionString(right)
-	}
-}
-
 func expressionString(value any) string {
 	switch typed := value.(type) {
 	case nil:
@@ -697,21 +440,6 @@ func expressionString(value any) string {
 		return strings.Join(parts, ",")
 	default:
 		return fmt.Sprint(value)
-	}
-}
-
-func expressionValues(value any) ([]any, bool) {
-	switch typed := value.(type) {
-	case []any:
-		return typed, true
-	case []string:
-		values := make([]any, len(typed))
-		for i, value := range typed {
-			values[i] = value
-		}
-		return values, true
-	default:
-		return nil, false
 	}
 }
 
@@ -739,70 +467,10 @@ func responseValue(r *http.Request, resp *responseRecorder, name string) any {
 		}
 		header := strings.ReplaceAll(strings.TrimPrefix(name, prefix), "_", "-")
 		return headerValue(resp.header, header)
-	case name == "uri":
-		return r.URL.Path
-	case name == "request_uri":
-		return r.URL.RequestURI()
-	case name == "query_string" || name == "args":
-		return r.URL.RawQuery
-	case name == "is_args":
-		if r.URL.RawQuery != "" {
-			return "?"
-		}
-		return ""
-	case name == "method", name == "request_method":
-		return r.Method
-	case name == "host":
-		return r.Host
-	case name == "scheme":
-		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
-			return scheme
-		}
-		if r.TLS != nil {
-			return "https"
-		}
-		return "http"
-	case name == "remote_addr":
-		if value := apisixctx.GetString(r.Context(), "remote_addr"); value != "" {
-			return value
-		}
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
-	case name == "remote_port":
-		if value := apisixctx.GetString(r.Context(), "remote_port"); value != "" {
-			return value
-		}
-		_, port, _ := net.SplitHostPort(r.RemoteAddr)
-		return port
 	case name == "body_bytes_sent" || name == "bytes_sent":
 		return len(resp.body)
-	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
-	case strings.HasPrefix(name, "cookie_"):
-		cookie, err := r.Cookie(strings.TrimPrefix(name, "cookie_"))
-		if err == nil {
-			return cookie.Value
-		}
-		return ""
-	case strings.HasPrefix(name, "http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return headerValue(r.Header, header)
 	}
-
-	key := "$" + name
-	if value := apisixvar.GetNginxVar(r, key); value != "" {
-		return value
-	}
-	if value := apisixctx.GetApisixVar(r, key); value != nil {
-		return value
-	}
-	if value := apisixctx.GetRequestVar(r, key); value != nil {
-		return value
-	}
-	return ""
+	return pluginexpr.RequestValue(r, name)
 }
 
 func headerValue(header http.Header, name string) any {

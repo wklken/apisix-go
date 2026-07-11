@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -38,7 +38,13 @@ const schema = `
         "type": "object",
         "properties": {
           "match": {
-            "type": "array"
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "vars": {"type": "array"}
+              }
+            }
           },
           "weighted_upstreams": {
             "type": "array",
@@ -48,7 +54,15 @@ const schema = `
               "type": "object",
               "properties": {
                 "upstream_id": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-zA-Z0-9-_.]+$"
+                    },
+                    {"type": "integer", "minimum": 1}
+                  ]
                 },
                 "upstream": {
                   "type": "object"
@@ -85,6 +99,7 @@ type WeightedUpstream struct {
 	UpstreamID string    `json:"upstream_id,omitempty"`
 	Upstream   *Upstream `json:"upstream,omitempty"`
 	Weight     int       `json:"weight,omitempty"`
+	weightSet  bool
 }
 
 type Upstream struct {
@@ -94,9 +109,10 @@ type Upstream struct {
 }
 
 type Node struct {
-	Host   string `json:"host,omitempty"`
-	Port   int    `json:"port,omitempty"`
-	Weight int    `json:"weight,omitempty"`
+	Host      string `json:"host,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	Weight    int    `json:"weight,omitempty"`
+	weightSet bool
 }
 
 type Override struct {
@@ -105,13 +121,15 @@ type Override struct {
 }
 
 type compiledRule struct {
-	match     []Match
+	exprs     []*pluginexpr.Expression
 	balancer  pxy.LoadBalancer
 	overrides map[string]*Override
 	err       error
 }
 
 type overrideKey struct{}
+
+const routeUpstreamKey = "plugin#upstream#is#empty"
 
 type upstreamResolver func(id string) (*Upstream, error)
 
@@ -154,10 +172,57 @@ func (u *Upstream) UnmarshalJSON(data []byte) error {
 	for addr, weight := range nodeMap {
 		host, port := splitAddr(addr)
 		u.Nodes = append(u.Nodes, Node{
-			Host:   host,
-			Port:   port,
-			Weight: weight,
+			Host:      host,
+			Port:      port,
+			Weight:    weight,
+			weightSet: true,
 		})
+	}
+	return nil
+}
+
+func (w *WeightedUpstream) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		UpstreamID json.RawMessage `json:"upstream_id"`
+		Upstream   *Upstream       `json:"upstream"`
+		Weight     *int            `json:"weight"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	w.Upstream = raw.Upstream
+	if raw.Weight != nil {
+		w.Weight = *raw.Weight
+		w.weightSet = true
+	}
+	if len(raw.UpstreamID) == 0 || string(raw.UpstreamID) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(raw.UpstreamID, &w.UpstreamID); err == nil {
+		return nil
+	}
+	var numericID int64
+	if err := json.Unmarshal(raw.UpstreamID, &numericID); err != nil || numericID < 1 {
+		return fmt.Errorf("traffic-split upstream_id must be a string or positive integer")
+	}
+	w.UpstreamID = strconv.FormatInt(numericID, 10)
+	return nil
+}
+
+func (n *Node) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Host   string `json:"host"`
+		Port   int    `json:"port"`
+		Weight *int   `json:"weight"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	n.Host = raw.Host
+	n.Port = raw.Port
+	if raw.Weight != nil {
+		n.Weight = *raw.Weight
+		n.weightSet = true
 	}
 	return nil
 }
@@ -172,15 +237,25 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.rules = p.rules[:0]
-	for _, rule := range p.config.Rules {
+	for ruleIndex, rule := range p.config.Rules {
 		servers := map[string]int{}
 		overrides := map[string]*Override{}
 		var compileErr error
-		for _, weightedUpstream := range rule.WeightedUpstreams {
-			weight := weightedUpstream.Weight
-			if weight == 0 {
-				weight = 1
+		exprs := make([]*pluginexpr.Expression, 0, len(rule.Match))
+		for matchIndex, match := range rule.Match {
+			expr, err := pluginexpr.Compile(match.Vars)
+			if err != nil {
+				return fmt.Errorf(
+					"traffic-split rule %d match %d vars validation failed: %w",
+					ruleIndex,
+					matchIndex,
+					err,
+				)
 			}
+			exprs = append(exprs, expr)
+		}
+		for _, weightedUpstream := range rule.WeightedUpstreams {
+			weight := configuredWeight(weightedUpstream.Weight, weightedUpstream.weightSet)
 			upstream := weightedUpstream.Upstream
 			if upstream == nil && weightedUpstream.UpstreamID != "" {
 				var err error
@@ -194,14 +269,21 @@ func (p *Plugin) PostInit() error {
 				}
 			}
 			if upstream == nil {
+				if weightedUpstream.UpstreamID == "" && weight > 0 {
+					servers[routeUpstreamKey] += weight
+					overrides[routeUpstreamKey] = nil
+				}
+				continue
+			}
+			if weight == 0 {
 				continue
 			}
 			for _, node := range upstream.Nodes {
 				override := overrideFromNode(upstream.Scheme, node)
 				key := override.key()
-				nodeWeight := node.Weight
+				nodeWeight := configuredWeight(node.Weight, node.weightSet)
 				if nodeWeight == 0 {
-					nodeWeight = 1
+					continue
 				}
 				servers[key] += weight * nodeWeight
 				overrides[key] = override
@@ -209,7 +291,7 @@ func (p *Plugin) PostInit() error {
 		}
 
 		compiled := compiledRule{
-			match:     rule.Match,
+			exprs:     exprs,
 			overrides: overrides,
 			err:       compileErr,
 		}
@@ -245,7 +327,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func (p *Plugin) nextOverride(r *http.Request) (*Override, error) {
 	for _, rule := range p.rules {
-		if !matchRule(r, rule.match) {
+		if !matchRule(r, rule.exprs) {
 			continue
 		}
 		if rule.err != nil {
@@ -258,6 +340,13 @@ func (p *Plugin) nextOverride(r *http.Request) (*Override, error) {
 		return rule.overrides[key], nil
 	}
 	return nil, nil
+}
+
+func configuredWeight(weight int, configured bool) int {
+	if weight == 0 && !configured {
+		return 1
+	}
+	return weight
 }
 
 func overrideFromNode(scheme string, node Node) *Override {
@@ -335,131 +424,16 @@ func upstreamFromResource(stored resource.Upstream) *Upstream {
 	return upstream
 }
 
-func matchRule(r *http.Request, matches []Match) bool {
-	if len(matches) == 0 {
+func matchRule(r *http.Request, exprs []*pluginexpr.Expression) bool {
+	if len(exprs) == 0 {
 		return true
 	}
-	for _, match := range matches {
-		if matchVars(r, match.Vars) {
+	for _, expr := range exprs {
+		if expr.Eval(func(name string) any {
+			return pluginexpr.RequestValue(r, name)
+		}) {
 			return true
 		}
 	}
 	return false
-}
-
-func matchVars(r *http.Request, conditions []any) bool {
-	if len(conditions) == 0 {
-		return false
-	}
-
-	pendingOp := "AND"
-	hasResult := false
-	result := true
-	for _, condition := range conditions {
-		if op, ok := condition.(string); ok {
-			switch strings.ToUpper(op) {
-			case "AND", "OR":
-				pendingOp = strings.ToUpper(op)
-			default:
-				return false
-			}
-			continue
-		}
-
-		matched := matchCondition(r, condition)
-		if !hasResult {
-			result = matched
-			hasResult = true
-			continue
-		}
-		if pendingOp == "OR" {
-			result = result || matched
-		} else {
-			result = result && matched
-		}
-		pendingOp = "AND"
-	}
-	return hasResult && result
-}
-
-func matchCondition(r *http.Request, condition any) bool {
-	parts, ok := condition.([]any)
-	if !ok || len(parts) != 3 {
-		return false
-	}
-
-	left := fmt.Sprint(parts[0])
-	op := fmt.Sprint(parts[1])
-	right := fmt.Sprint(parts[2])
-	actual := requestVar(r, left)
-
-	switch op {
-	case "==":
-		return actual == right
-	case "!=":
-		return actual != right
-	case ">":
-		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
-	case ">=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
-	case "<":
-		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
-	case "<=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
-	case "~":
-		matched, _ := regexp.MatchString(right, actual)
-		return matched
-	case "!~":
-		matched, _ := regexp.MatchString(right, actual)
-		return !matched
-	default:
-		return false
-	}
-}
-
-func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
-	l, err := strconv.ParseFloat(left, 64)
-	if err != nil {
-		return false
-	}
-	r, err := strconv.ParseFloat(right, 64)
-	if err != nil {
-		return false
-	}
-	return compare(l, r)
-}
-
-func requestVar(r *http.Request, name string) string {
-	name = strings.TrimPrefix(name, "$")
-	switch {
-	case name == "uri":
-		return r.URL.Path
-	case name == "request_uri":
-		return r.URL.RequestURI()
-	case name == "method", name == "request_method":
-		return r.Method
-	case name == "host":
-		return r.Host
-	case name == "scheme":
-		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
-			return scheme
-		}
-		if r.TLS != nil {
-			return "https"
-		}
-		return "http"
-	case name == "remote_addr":
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
-	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
-	case strings.HasPrefix(name, "http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return r.Header.Get(header)
-	default:
-		return ""
-	}
 }

@@ -249,9 +249,9 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 95%
   - support `break_response_code`, `break_response_body`, `break_response_headers` with bounded variable resolution, `max_breaker_sec`, `unhealthy.http_statuses`, `unhealthy.failures`, `healthy.http_statuses`, and `healthy.successes`
   - not support APISIX shared-dict state keyed by host and URI, exponential breaker windows, or exact OpenResty log-phase timing
-- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 80%
-  - support weighted inline upstream selection, `upstream_id`, and bounded `match.vars` with `==` / `!=` / numeric comparison / regex match operators for common request variables
-  - not support APISIX upstream balancer fidelity for all upstream algorithms, health checks, retries, or full `lua-resty-expr` syntax
+- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 88%
+  - support weighted inline upstream and string/numeric `upstream_id` selection, weighted route-upstream fallback, omitted versus explicit zero upstream/node weights, config-time match validation, OR across match entries, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
+  - not support full inline-upstream `hash_on` / `key` / `pass_host` / `upstream_host` / timeout / retry / health-check behavior or exact APISIX dynamic upstream and balancer lifecycle fidelity
 - [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 96%
   - support schema-validated first-match rules, match-all rules, string/numeric `set_headers` with variable resolution, weighted actions, config-time expression validation, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
   - not support exact OpenResty cached round-robin behavior, the complete NGINX variable catalog, or exact access-phase timing

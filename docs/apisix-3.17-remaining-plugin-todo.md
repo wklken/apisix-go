@@ -120,7 +120,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `workflow` | Add more delegated actions for implemented plugins and better condition expression coverage. |
 | `graphql-limit-count` | Only deeper GraphQL parser parity and exact group-configuration mismatch validation remain. Rules, string expressions, groups, metadata headers, Redis Cluster, and `graphql.max_size` are implemented. |
 | `api-breaker` | Only shared-dict and log-phase exactness remain, which are native; add user-visible breaker-window parity only if practical. |
-| `traffic-split` | Improve upstream balancer parity, health checks, retries, and bounded `lua-resty-expr` syntax where practical. |
+| `traffic-split` | Add inline-upstream `hash_on` / `key` / `pass_host` / `upstream_host` / timeout / retry / health-check behavior where the Go proxy layer can support it. Expression syntax, numeric IDs, route fallback weighting, and explicit zero weights are implemented. |
 | `traffic-label` | No normal Go TODO remains. Exact OpenResty cached round-robin behavior, the complete NGINX variable catalog, and access-phase timing remain deferred runtime details. |
 | `request-id` | Add plugin-attr snowflake config and etcd-backed machine leasing if local config/store patterns make it practical. |
 | `oas-validator` | Add external `$ref`, metadata TTL refresh, more OpenAPI parameter styles, non-JSON body schemas, and response validation. |

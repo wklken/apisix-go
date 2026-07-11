@@ -8144,3 +8144,26 @@ Compiled every rule during initialization, replaced the reduced local matcher an
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/traffic_label ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=30s`, `go test -race ./pkg/plugin/traffic_label ./pkg/plugin/expr ./pkg/plugin/response_rewrite ./pkg/plugin/fault_injection -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 250: Improve Traffic Split Expression And Weight Parity
+
+**Files:**
+- Modify: `pkg/plugin/traffic_split`
+- Reuse: `pkg/plugin/expr`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: APISIX 3.17 match trees, string/integer upstream IDs, omitted/zero upstream and node weights, inline upstreams, and route-upstream fallback entries.
+- Produces: config-time expression validation, typed IDs/weights, nested matching, and weighted selection between inline and route upstreams.
+
+- [x] **Step 1: Pin expression, ID, and weight behavior**
+
+Added focused failures for nested/list/IP/negation operators, APISIX array variables, malformed matches, numeric upstream IDs, route-fallback competition, and explicit zero upstream/node weights.
+
+- [x] **Step 2: Compile matches and preserve configured weights**
+
+Replaced the reduced matcher with shared compiled expressions, added typed ID/weight unmarshalling, preserved omitted-versus-zero semantics, and represented the route upstream as a real weighted balancer choice.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/traffic_split ./pkg/plugin/expr -count=1 -timeout=30s`, `go test -race ./pkg/plugin/traffic_split ./pkg/plugin/expr -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -219,6 +223,173 @@ func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
 	}
 }
 
+func TestMatchSupportsNestedRestyExpressionAndApisixVariables(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match: []Match{{Vars: []any{
+					"AND",
+					[]any{"request_method", "in", []any{"GET", "HEAD"}},
+					[]any{"remote_addr", "ipmatch", []any{"192.0.2.0/24"}},
+					[]any{"http_x_env", "~*", "^prod$"},
+					[]any{"graphql_root_fields", "has", "owner"},
+					[]any{"arg_skip", "!", "==", "yes"},
+				}}},
+				WeightedUpstreams: []WeightedUpstream{{
+					Weight: 1,
+					Upstream: &Upstream{
+						Scheme: "http",
+						Nodes:  []Node{{Host: "canary.example.com", Port: 80, Weight: 1}},
+					},
+				}},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?skip=no", nil)
+	req.RemoteAddr = "192.0.2.40:12345"
+	req.Header.Set("X-Env", "PrOd")
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.RegisterRequestVar(req, "$graphql_root_fields", []string{"viewer", "owner"})
+	override := performRequestWithRequest(t, p, req)
+	if override == nil || override.Host != "canary.example.com:80" {
+		t.Fatalf("override = %#v, want canary.example.com:80", override)
+	}
+}
+
+func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{
+		Match: []Match{{Vars: []any{[]any{"uri", "bogus", "/get"}}}},
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{Nodes: []Node{{Host: "canary.example.com", Port: 80, Weight: 1}}},
+		}},
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid match rejected")
+	}
+}
+
+func TestWeightedRouteFallbackCompetesWithInlineUpstream(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{
+			{
+				Weight: 1,
+				Upstream: &Upstream{
+					Nodes: []Node{{Host: "canary.example.com", Port: 80, Weight: 1}},
+				},
+			},
+			{Weight: 1},
+		},
+	}}})
+
+	seenRoute := 0
+	seenCanary := 0
+	for range 2 {
+		if override := performRequest(t, p); override == nil {
+			seenRoute++
+		} else if override.Host == "canary.example.com:80" {
+			seenCanary++
+		}
+	}
+	if seenRoute != 1 || seenCanary != 1 {
+		t.Fatalf("route selections = %d, canary selections = %d; want one each", seenRoute, seenCanary)
+	}
+}
+
+func TestParsedExplicitZeroWeightDoesNotSelectUpstream(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{
+				map[string]any{
+					"weight": 0,
+					"upstream": map[string]any{
+						"nodes": []any{map[string]any{"host": "disabled.example.com", "port": 80, "weight": 1}},
+					},
+				},
+				map[string]any{"weight": 1},
+			},
+		}},
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	for range 4 {
+		if override := performRequest(t, p); override != nil {
+			t.Fatalf("override = %#v, want route fallback with zero-weight upstream disabled", override)
+		}
+	}
+}
+
+func TestParsedExplicitZeroNodeWeightDoesNotSelectNode(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{map[string]any{
+				"upstream": map[string]any{
+					"nodes": []any{
+						map[string]any{"host": "disabled.example.com", "port": 80, "weight": 0},
+						map[string]any{"host": "enabled.example.com", "port": 80, "weight": 1},
+					},
+				},
+			}},
+		}},
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	for range 4 {
+		override := performRequest(t, p)
+		if override == nil || override.Host != "enabled.example.com:80" {
+			t.Fatalf("override = %#v, want enabled.example.com:80", override)
+		}
+	}
+}
+
+func TestConfigAcceptsNumericUpstreamID(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		if id != "123" {
+			return nil, fmt.Errorf("unexpected upstream id %q", id)
+		}
+		return &Upstream{Nodes: []Node{{Host: "numeric.example.com", Port: 80, Weight: 1}}}, nil
+	})
+
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{map[string]any{"upstream_id": 123, "weight": 1}},
+		}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("Validate() numeric upstream_id error = %v", err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		t.Fatalf("Parse() numeric upstream_id error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if override := performRequest(t, p); override == nil || override.Host != "numeric.example.com:80" {
+		t.Fatalf("override = %#v, want numeric.example.com:80", override)
+	}
+}
+
 func TestHandlerSetsUpstreamIDOverride(t *testing.T) {
 	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
 		if id != "shadow" {
@@ -248,6 +419,22 @@ func TestHandlerSetsUpstreamIDOverride(t *testing.T) {
 	}
 	if override.Scheme != "https" || override.Host != "shadow.example.com:9443" {
 		t.Fatalf("override = %#v, want https://shadow.example.com:9443", override)
+	}
+}
+
+func TestReferencedUpstreamKeepsLegacyDefaultNodeWeight(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return upstreamFromResource(resource.Upstream{
+			Nodes: []resource.Node{{Host: "default-weight.example.com", Port: 80}},
+		}), nil
+	})
+
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{UpstreamID: "default-weight"}},
+	}}})
+	override := performRequest(t, p)
+	if override == nil || override.Host != "default-weight.example.com:80" {
+		t.Fatalf("override = %#v, want default-weight.example.com:80", override)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -197,17 +199,15 @@ func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM) {
 		", Signature="+signature)
 }
 
-func canonicalURI(path string) string {
-	if path == "" {
+func canonicalURI(value string) string {
+	if value == "" {
 		return "/"
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
+	cleaned := path.Clean(value)
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
 	}
-	if path != "/" {
-		path = strings.TrimRight(path, "/")
-	}
-	return path
+	return cleaned
 }
 
 func canonicalQueryString(rawQuery string) string {
@@ -215,18 +215,46 @@ func canonicalQueryString(rawQuery string) string {
 		return ""
 	}
 	parts := strings.Split(rawQuery, "&")
+	for i, part := range parts {
+		key, value, found := strings.Cut(part, "=")
+		key = unescapeQueryPart(key)
+		if found {
+			value = unescapeQueryPart(value)
+			parts[i] = key + "=" + value
+			continue
+		}
+		parts[i] = key + "="
+	}
 	sort.Strings(parts)
 	return strings.Join(parts, "&")
 }
 
+func unescapeQueryPart(value string) string {
+	decoded, err := url.QueryUnescape(value)
+	if err != nil {
+		return value
+	}
+	return decoded
+}
+
 func canonicalHeaders(r *http.Request) (string, string) {
-	values := map[string]string{}
+	values := make(map[string]string, len(r.Header)+1)
 	host := r.Host
 	if host == "" {
 		host = r.URL.Host
 	}
-	values["host"] = strings.Join(strings.Fields(host), " ")
-	values["x-amz-date"] = strings.Join(strings.Fields(r.Header.Get("X-Amz-Date")), " ")
+	values["host"] = normalizeHeaderValue(host)
+	for key, headerValues := range r.Header {
+		key = strings.ToLower(key)
+		if key == "connection" || key == "host" {
+			continue
+		}
+		normalized := make([]string, 0, len(headerValues))
+		for _, value := range headerValues {
+			normalized = append(normalized, normalizeHeaderValue(value))
+		}
+		values[key] = strings.Join(normalized, ",")
+	}
 
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -239,6 +267,10 @@ func canonicalHeaders(r *http.Request) (string, string) {
 		lines = append(lines, key+":"+values[key]+"\n")
 	}
 	return strings.Join(keys, ";"), strings.Join(lines, "")
+}
+
+func normalizeHeaderValue(value string) string {
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func signingKey(secret, dateStamp, region, service string) []byte {

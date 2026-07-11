@@ -74,9 +74,8 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [openwhisk](https://apisix.apache.org/zh/docs/apisix/plugins/openwhisk/) 75%
   - support official plugin name, priority, schema, OpenWhisk action endpoint construction with optional package, POST body forwarding, Basic authorization from `service_token`, default `blocking` / `result` / `timeout` query parameters, JSON result `statusCode` / `headers` / `body`, invalid result fallback to 503, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
   - not support OpenResty response-header behavior or every OpenWhisk result body type edge case
-- [x] [aws-lambda](https://apisix.apache.org/zh/docs/apisix/plugins/aws-lambda/) 70%
-  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers to `function_uri`, API Gateway `x-api-key` injection without overwriting client headers, IAM SigV4 `Authorization` / `X-Amz-Date` signing, relaying function status/body/headers, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
-  - not support exact APISIX/OpenResty SigV4 canonicalization parity for every header/query/path edge case or wildcard `:ext` path forwarding
+- [x] [aws-lambda](https://apisix.apache.org/zh/docs/apisix/plugins/aws-lambda/) 92%
+  - support official plugin name, priority, schema, terminating the APISIX request, forwarding method/query/body/headers and wildcard `:ext` paths to `function_uri`, API Gateway `x-api-key` injection without overwriting client headers, IAM SigV4 signing with APISIX-compatible path/query/header canonicalization, relaying function status/body/headers, HTTP/2 connection-header filtering, `ssl_verify`, `keepalive`, `keepalive_timeout`, and `keepalive_pool`
 - &#x2612; [ext-plugin-pre-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-pre-req/)      NOT SUPPORTED, No need
 - &#x2612; [ext-plugin-post-req](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-req/)    NOT SUPPORTED, No need
 - &#x2612; [ext-plugin-post-resp](https://apisix.apache.org/zh/docs/apisix/plugins/ext-plugin-post-resp/)  NOT SUPPORTED, No need

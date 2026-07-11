@@ -94,7 +94,7 @@ metric emission, `max_pending_entries`, retries, and graceful reload/shutdown bu
 | `azure-functions` | No normal Go TODO remains. Client/route/metadata authorization precedence, wildcard `:ext` forwarding, and HTTP/2 response filtering are implemented. |
 | `openfunction` | No normal Go TODO remains. Wildcard `:ext` forwarding and HTTP/2 response filtering are implemented in the shared function upstream. |
 | `openwhisk` | Improve OpenWhisk result body edge cases; keep OpenResty response-header exactness out of scope. |
-| `aws-lambda` | Improve SigV4 header/query/path canonicalization edge cases and wildcard `:ext` path forwarding. |
+| `aws-lambda` | No normal Go TODO remains. APISIX-compatible SigV4 path/query/header canonicalization and wildcard `:ext` forwarding are implemented. |
 | `response-rewrite` | Expand bounded `lua-resty-expr` variable/operator support and add deflate/brotli decode if practical. Streaming chunk body filters remain out of scope. |
 | `proxy-rewrite` | Only small URI safe-encoding parity/test gaps remain; avoid risky rewrites. |
 | `fault-injection` | Expand bounded `resty.expr` operator and APISIX variable support. |

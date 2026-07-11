@@ -7840,3 +7840,33 @@ Run: `go test -race ./pkg/plugin/function_upstream ./pkg/plugin/azure_functions 
 - [x] **Step 5: Verify repository**
 
 Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 238: Complete AWS Lambda Canonicalization Parity
+
+**Files:**
+- Modify: `pkg/plugin/aws_lambda`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: forwarded function path/query/headers, matched `:ext` route parameters, and IAM credentials.
+- Produces: APISIX-compatible SigV4 canonical requests and wildcard function path forwarding.
+
+- [x] **Step 1: Pin canonical request behavior**
+
+Added regression coverage for normalized paths, decoded/sorted query pairs, normalized forwarded headers, and exclusion of `Connection`.
+
+- [x] **Step 2: Implement canonicalization parity**
+
+Applied path cleaning, query decoding/sorting, and complete forwarded-header signing while preserving API-key and IAM precedence.
+
+- [x] **Step 3: Cover wildcard forwarding**
+
+Verified that AWS Lambda uses the shared function-upstream `:ext` path forwarding behavior.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run: `go test ./pkg/plugin/aws_lambda -count=1 -timeout=30s` and `go test -race ./pkg/plugin/aws_lambda -count=1 -timeout=60s`.
+
+- [x] **Step 5: Verify repository**
+
+Run: `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

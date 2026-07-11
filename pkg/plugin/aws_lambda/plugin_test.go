@@ -1,12 +1,15 @@
 package aws_lambda
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -156,6 +159,58 @@ func TestHandlerSignsIAMRequestWithAWSV4(t *testing.T) {
 	signature := strings.TrimPrefix(gotAuthorization[strings.LastIndex(gotAuthorization, "Signature="):], "Signature=")
 	if len(signature) != 64 {
 		t.Fatalf("signature length = %d, want 64 hex chars; authorization=%q", len(signature), gotAuthorization)
+	}
+}
+
+func TestHandlerForwardsMatchedExtensionPath(t *testing.T) {
+	var gotPath string
+	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer lambda.Close()
+
+	p := newTestPlugin(t, Config{FunctionURI: lambda.URL + "/prod"})
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("ext", "users/42")
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/aws/users/42", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if gotPath != "/prod/users/42" {
+		t.Fatalf("lambda path = %q, want /prod/users/42", gotPath)
+	}
+}
+
+func TestCanonicalRequestComponentsMatchAPISIXNormalization(t *testing.T) {
+	if got := canonicalURI("api//v1/../users/"); got != "/api/users" {
+		t.Fatalf("canonicalURI() = %q, want /api/users", got)
+	}
+	if got := canonicalQueryString("z=last&name=APISIX%20Go&a=first"); got != "a=first&name=APISIX Go&z=last" {
+		t.Fatalf("canonicalQueryString() = %q, want decoded and sorted query", got)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "https://lambda.example/prod", nil)
+	req.Header.Set("Content-Type", " application/json;  charset=utf-8 ")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("X-Amz-Date", "20200102T030405Z")
+	req.Header.Set("X-Custom", "  first   second ")
+	signed, canonical := canonicalHeaders(req)
+
+	if signed != "content-type;host;x-amz-date;x-custom" {
+		t.Fatalf("signed headers = %q, want all forwarded headers except connection", signed)
+	}
+	wantCanonical := "content-type:application/json; charset=utf-8\n" +
+		"host:lambda.example\n" +
+		"x-amz-date:20200102T030405Z\n" +
+		"x-custom:first second\n"
+	if canonical != wantCanonical {
+		t.Fatalf("canonical headers = %q, want %q", canonical, wantCanonical)
 	}
 }
 

@@ -391,7 +391,10 @@ func (b *Builder) initPlugins(
 			setter.SetResourceContext(routeContext.route, routeContext.service)
 		}
 
-		p.PostInit()
+		if err := p.PostInit(); err != nil {
+			logger.Errorf("initialize plugin %s fail: %s", name, err)
+			continue
+		}
 		if stopper, ok := p.(pluginStopper); ok {
 			b.stoppers = append(b.stoppers, stopper)
 		}

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -471,4 +472,108 @@ func TestPostInitRejectsDuplicateRuleKeys(t *testing.T) {
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want duplicate rule key error")
 	}
+}
+
+func TestGroupSharesLocalQuotaAcrossPluginInstances(t *testing.T) {
+	resetLimitCountGroupsForTest()
+	t.Cleanup(resetLimitCountGroupsForTest)
+
+	config := Config{
+		Count:        2,
+		TimeWindow:   60,
+		Group:        "shared-group",
+		RejectedCode: http.StatusTooManyRequests,
+	}
+	firstPlugin := newTestPlugin(t, config)
+	secondPlugin := newTestPlugin(t, config)
+	handler := func(plugin *Plugin) http.Handler {
+		return plugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+	request := func() *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "192.0.2.50:1234"
+		return req
+	}
+
+	for i, plugin := range []*Plugin{firstPlugin, secondPlugin} {
+		res := httptest.NewRecorder()
+		handler(plugin).ServeHTTP(res, request())
+		if res.Code != http.StatusNoContent {
+			t.Fatalf("request %d response code = %d, want %d", i+1, res.Code, http.StatusNoContent)
+		}
+	}
+	res := httptest.NewRecorder()
+	handler(firstPlugin).ServeHTTP(res, request())
+	if res.Code != http.StatusTooManyRequests {
+		t.Fatalf("third response code = %d, want shared group rejection", res.Code)
+	}
+}
+
+func TestPostInitRejectsMismatchedGroupConfiguration(t *testing.T) {
+	resetLimitCountGroupsForTest()
+	t.Cleanup(resetLimitCountGroupsForTest)
+
+	newTestPlugin(t, Config{Count: 2, TimeWindow: 60, Group: "shared-group"})
+	p := &Plugin{config: Config{Count: 3, TimeWindow: 60, Group: "shared-group"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "group conf mismatched" {
+		t.Fatalf("PostInit() error = %v, want group conf mismatched", err)
+	}
+}
+
+func TestScopedKeyUsesRouteUnlessGrouped(t *testing.T) {
+	p := newTestPlugin(t, Config{Count: 2, TimeWindow: 60})
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	if got := p.scopedKey("alice"); got != "route:route-1:alice" {
+		t.Fatalf("scoped key = %q, want route-scoped key", got)
+	}
+
+	p.config.Group = "shared"
+	if got := p.scopedKey("alice"); got != "group:shared:alice" {
+		t.Fatalf("group key = %q, want group-scoped key", got)
+	}
+}
+
+func TestHandlerRejectsWhenNoRuleCanBeResolved(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{Count: "$http_x_limit", TimeWindow: 60, Key: "$http_x_user"},
+		},
+	})
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandlerAllowsDegradationWhenNoRuleCanBeResolved(t *testing.T) {
+	allowDegradation := true
+	p := newTestPlugin(t, Config{
+		AllowDegradation: &allowDegradation,
+		Rules: []Rule{
+			{Count: "$http_x_limit", TimeWindow: 60, Key: "$http_x_user"},
+		},
+	})
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want degradation pass", res.Code)
+	}
+}
+
+func resetLimitCountGroupsForTest() {
+	limitCountGroups.Lock()
+	limitCountGroups.entries = map[string]limitCountGroup{}
+	limitCountGroups.Unlock()
 }

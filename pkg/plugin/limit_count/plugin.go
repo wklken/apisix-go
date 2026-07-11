@@ -19,6 +19,7 @@ import (
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -32,6 +33,7 @@ type Plugin struct {
 	limiterMu    sync.Mutex
 	limiters     map[string]*limiter.Limiter
 	ruleLimiters []*limiter.Limiter
+	routeID      string
 }
 
 const (
@@ -41,6 +43,16 @@ const (
 )
 
 var varPattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+
+type limitCountGroup struct {
+	fingerprint string
+	store       limiter.Store
+}
+
+var limitCountGroups = struct {
+	sync.Mutex
+	entries map[string]limitCountGroup
+}{entries: map[string]limitCountGroup{}}
 
 const schema = `
 {
@@ -475,6 +487,12 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if len(p.config.Rules) > 0 {
+		if err := p.validateRules(); err != nil {
+			return err
+		}
+		if err := p.registerGroup(); err != nil {
+			return err
+		}
 		return p.initRuleLimiters()
 	}
 
@@ -484,6 +502,9 @@ func (p *Plugin) PostInit() error {
 	}
 	timeWindow, timeWindowStatic, err := staticLimitValue(p.config.TimeWindow, "time_window")
 	if err != nil {
+		return err
+	}
+	if err := p.registerGroup(); err != nil {
 		return err
 	}
 	if countStatic && timeWindowStatic {
@@ -497,6 +518,54 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, _ resource.Service) {
+	p.routeID = route.ID
+}
+
+func (p *Plugin) scopedKey(key string) string {
+	if p.config.Group != "" {
+		return "group:" + p.config.Group + ":" + key
+	}
+	if p.routeID != "" {
+		return "route:" + p.routeID + ":" + key
+	}
+	return "route:unknown:" + key
+}
+
+func (p *Plugin) registerGroup() error {
+	if p.config.Group == "" {
+		return nil
+	}
+	fingerprint, err := json.Marshal(p.config)
+	if err != nil {
+		return fmt.Errorf("marshal limit-count group config: %w", err)
+	}
+
+	limitCountGroups.Lock()
+	defer limitCountGroups.Unlock()
+	current, ok := limitCountGroups.entries[p.config.Group]
+	if ok {
+		if current.fingerprint != string(fingerprint) {
+			return fmt.Errorf("group conf mismatched")
+		}
+		return nil
+	}
+	limitCountGroups.entries[p.config.Group] = limitCountGroup{
+		fingerprint: string(fingerprint),
+		store:       memory.NewStore(),
+	}
+	return nil
+}
+
+func (p *Plugin) localStore() limiter.Store {
+	if p.config.Group == "" {
+		return memory.NewStore()
+	}
+	limitCountGroups.Lock()
+	defer limitCountGroups.Unlock()
+	return limitCountGroups.entries[p.config.Group].store
 }
 
 func (p *Plugin) applyRootRedisConfig() {
@@ -529,10 +598,9 @@ func (p *Plugin) applyRootRedisClusterConfig() {
 	p.config.RedisCluster.RedisKeepalivePool = p.config.RedisKeepalivePool
 }
 
-func (p *Plugin) initRuleLimiters() error {
+func (p *Plugin) validateRules() error {
 	seenKeys := make(map[string]struct{}, len(p.config.Rules))
-	p.ruleLimiters = make([]*limiter.Limiter, len(p.config.Rules))
-	for i, rule := range p.config.Rules {
+	for _, rule := range p.config.Rules {
 		if rule.Key == "" {
 			return fmt.Errorf("limit-count rule key is required")
 		}
@@ -541,6 +609,19 @@ func (p *Plugin) initRuleLimiters() error {
 		}
 		seenKeys[rule.Key] = struct{}{}
 
+		if _, _, err := staticLimitValue(rule.Count, "rule count"); err != nil {
+			return err
+		}
+		if _, _, err := staticLimitValue(rule.TimeWindow, "rule time_window"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) initRuleLimiters() error {
+	p.ruleLimiters = make([]*limiter.Limiter, len(p.config.Rules))
+	for i, rule := range p.config.Rules {
 		count, countStatic, err := staticLimitValue(rule.Count, "rule count")
 		if err != nil {
 			return err
@@ -570,7 +651,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 
 	var store limiter.Store
 	if p.config.Policy == "local" {
-		store = memory.NewStore()
+		store = p.localStore()
 	} else if p.config.Policy == "redis" {
 		// each route has its own limit => we should share the redis client
 		configUID := shared.NewConfigUID()
@@ -729,10 +810,8 @@ func (p *Plugin) Config() interface{} {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		// NOTE:  we got limit instance for each chain, so we don't need to worry about the key conflict in memory
-		//        but we do share the same redis instance, so we need to make the namespace
-
 		if len(p.config.Rules) > 0 {
+			applied := 0
 			for i, rule := range p.config.Rules {
 				key, ok := p.resolveRuleKey(r, rule)
 				if !ok {
@@ -742,6 +821,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if !ok {
 					continue
 				}
+				applied++
 				lim := p.ruleLimiters[i]
 				if lim == nil {
 					var err error
@@ -757,6 +837,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if !p.runLimit(w, r, lim, count, key, ruleHeaders(rule, i)) {
 					return
 				}
+			}
+			if applied == 0 && !*p.config.AllowDegradation {
+				http.Error(w, "failed to resolve limit count rules", http.StatusInternalServerError)
+				return
 			}
 			next.ServeHTTP(w, r)
 			return
@@ -846,7 +930,7 @@ func (p *Plugin) runLimit(
 	key string,
 	headers quotaHeaders,
 ) bool {
-	context, err := lim.Get(r.Context(), key)
+	context, err := lim.Get(r.Context(), p.scopedKey(key))
 	if err != nil {
 		if *p.config.AllowDegradation {
 			return true

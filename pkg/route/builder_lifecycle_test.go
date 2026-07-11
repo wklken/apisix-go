@@ -119,3 +119,22 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 		t.Fatal("timed out waiting for Builder.Stop to flush error-log-logger")
 	}
 }
+
+func TestInitPluginsSkipsPluginWhenPostInitFails(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins := builder.initPlugins(
+		map[string]resource.PluginConfig{
+			"limit-count": map[string]any{
+				"rules": []any{
+					map[string]any{"count": 1, "time_window": 60, "key": "$http_x_user"},
+					map[string]any{"count": 2, "time_window": 60, "key": "$http_x_user"},
+				},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
+	)
+
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want invalid plugin skipped", len(plugins))
+	}
+}

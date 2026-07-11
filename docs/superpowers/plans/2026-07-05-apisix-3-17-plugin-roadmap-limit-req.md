@@ -8007,3 +8007,27 @@ Normalized flat fields into the compatibility config, applied official defaults,
 - [x] **Step 3: Verify focused and repository behavior**
 
 Run: `go test ./pkg/plugin/limit_count -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_count -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.
+
+### Task 244: Complete Limit Count Group And Key Parity
+
+**Files:**
+- Modify: `pkg/plugin/limit_count`
+- Modify: `pkg/route/builder.go`
+- Modify: `README.md` and both live APISIX 3.17 backlog/checklist files
+
+**Interfaces:**
+- Consumes: route resource context, named group configuration, and resolved rule sets.
+- Produces: route/group-scoped keys, shared local group quotas, exact group mismatch rejection, and APISIX-compatible zero-rule failure behavior.
+
+- [x] **Step 1: Pin group, scope, and empty-rule behavior**
+
+Added focused tests for cross-instance group sharing, mismatched group configs, route/group key namespaces, zero resolved rules, and degradation.
+
+- [x] **Step 2: Implement shared groups and scoped keys**
+
+Registered canonical group configurations with a shared local store, rejected mismatches, scoped every limiter backend key by route or group, and rejected empty resolved-rule sets unless degradation is enabled.
+Made the route builder reject plugins whose `PostInit` validation fails, so group mismatches and other runtime configuration errors cannot enter the middleware chain.
+
+- [x] **Step 3: Verify focused and repository behavior**
+
+Run: `go test ./pkg/plugin/limit_count ./pkg/route -count=1 -timeout=30s`, `go test -race ./pkg/plugin/limit_count ./pkg/route -count=1 -timeout=60s`, `go test ./... -count=1 -timeout=120s`, `make build`, `rm -f apisix`, and `git diff --check`.

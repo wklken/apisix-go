@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -107,12 +108,7 @@ func HasEncryptedPluginMetadata(name string) bool {
 }
 
 func IsStrictPluginField(pluginName string, field string) bool {
-	for _, registered := range strictPluginFields[pluginName] {
-		if registered == field {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strictPluginFields[pluginName], field)
 }
 
 func DecryptPluginConfigs(configs map[string]any, keyring []string) {

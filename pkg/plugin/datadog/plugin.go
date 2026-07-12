@@ -165,7 +165,7 @@ type metricEntry struct {
 	Scheme          string
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

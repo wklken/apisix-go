@@ -86,7 +86,7 @@ func TestHandlerMasksQueryHeadersAndURLEncodedBody(t *testing.T) {
 
 func TestHandlerMasksParsedPrefixWhenURLEncodedBodyExceedsArgumentLimit(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		MaxReqPostArgs: intPtr(1),
+		MaxReqPostArgs: new(1),
 		Request: []MaskRule{{
 			Type:       "body",
 			BodyFormat: "urlencoded",
@@ -405,7 +405,7 @@ func TestPostInitDefaults(t *testing.T) {
 }
 
 func TestPostInitPreservesExplicitZeroMaxReqPostArgs(t *testing.T) {
-	p := newTestPlugin(t, Config{MaxReqPostArgs: intPtr(0)})
+	p := newTestPlugin(t, Config{MaxReqPostArgs: new(0)})
 
 	if p.config.MaxReqPostArgs == nil || *p.config.MaxReqPostArgs != 0 {
 		t.Fatalf("max_req_post_args = %v, want explicit zero", p.config.MaxReqPostArgs)
@@ -500,6 +500,7 @@ func mustParseQuery(t *testing.T, raw string) url.Values {
 	return values
 }
 
+//go:fix inline
 func intPtr(v int) *int {
-	return &v
+	return new(v)
 }

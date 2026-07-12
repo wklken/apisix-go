@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -54,7 +55,7 @@ type Config struct {
 	CorsAllowHeaders string `json:"cors_allow_headers,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -138,7 +139,7 @@ func wildcardParam(r *http.Request) (string, bool) {
 	if rctx == nil {
 		return "", false
 	}
-	for i := len(rctx.URLParams.Keys) - 1; i >= 0; i-- {
+	for i := range slices.Backward(rctx.URLParams.Keys) {
 		if rctx.URLParams.Keys[i] == "*" && len(rctx.URLParams.Values) > i {
 			return rctx.URLParams.Values[i], true
 		}
@@ -307,7 +308,7 @@ func removeGRPCTrailerAnnouncement(header http.Header) {
 		}
 		remaining := make([]string, 0, len(values))
 		for _, value := range values {
-			for _, token := range strings.Split(value, ",") {
+			for token := range strings.SplitSeq(value, ",") {
 				token = strings.TrimSpace(token)
 				if token == "" || strings.EqualFold(token, "Grpc-Status") ||
 					strings.EqualFold(token, "Grpc-Message") {

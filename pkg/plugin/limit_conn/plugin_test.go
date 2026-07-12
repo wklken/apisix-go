@@ -239,11 +239,9 @@ func TestHandlerRejectsConcurrentRequestsAboveConnAndBurst(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		performRequest(handler, "192.0.2.10:12345")
-	}()
+	})
 	<-started
 
 	second := performRequest(handler, "192.0.2.10:23456")
@@ -281,11 +279,9 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		performRequest(handler, "192.0.2.20:12345")
-	}()
+	})
 	<-started
 
 	rejected := performRequest(handler, "192.0.2.20:23456")
@@ -376,11 +372,9 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		performRequest(handler, "192.0.2.30:12345")
-	}()
+	})
 	<-started
 
 	secondKey := performRequest(handler, "192.0.2.31:12345")
@@ -511,14 +505,12 @@ func TestHandlerAppliesResolvedRules(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		performRequestWithHeaders(handler, "192.0.2.40:12345", map[string]string{
 			"X-Tenant": "t1",
 			"X-User":   "alice",
 		})
-	}()
+	})
 	<-started
 
 	rejected := performRequestWithHeaders(handler, "192.0.2.40:23456", map[string]string{
@@ -621,14 +613,12 @@ func TestHandlerResolvesStringConnAndBurst(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		performRequestWithHeaders(handler, "192.0.2.70:12345", map[string]string{
 			"X-Conn":  "1",
 			"X-Burst": "0",
 		})
-	}()
+	})
 	<-started
 
 	rejected := performRequestWithHeaders(handler, "192.0.2.70:23456", map[string]string{
@@ -681,15 +671,13 @@ func TestHandlerResolvesStringRuleConnAndBurst(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		performRequestWithHeaders(handler, "192.0.2.80:12345", map[string]string{
 			"X-Conn":  "1",
 			"X-Burst": "0",
 			"X-User":  "alice",
 		})
-	}()
+	})
 	<-started
 
 	rejected := performRequestWithHeaders(handler, "192.0.2.80:23456", map[string]string{

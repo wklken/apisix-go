@@ -109,7 +109,7 @@ type Config struct {
 	Match                []MatchRule `json:"match,omitempty"`
 	AppendWAFRespHeader  *bool       `json:"append_waf_resp_header,omitempty"`
 	AppendWAFDebugHeader *bool       `json:"append_waf_debug_header,omitempty"`
-	Config               WAFConfig   `json:"config,omitempty"`
+	Config               WAFConfig   `json:"config"`
 
 	Nodes []Node `json:"nodes,omitempty"`
 }
@@ -117,7 +117,7 @@ type Config struct {
 type Metadata struct {
 	Mode   string    `json:"mode,omitempty"`
 	Nodes  []Node    `json:"nodes"`
-	Config WAFConfig `json:"config,omitempty"`
+	Config WAFConfig `json:"config"`
 }
 
 type MatchRule struct {
@@ -184,7 +184,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -480,7 +480,7 @@ func (p *nodePicker) pick(nodes []Node) (Node, bool) {
 		p.unhealthyTo = make(map[string]time.Time)
 	}
 	now := time.Now()
-	for offset := 0; offset < len(nodes); offset++ {
+	for offset := range nodes {
 		index := (p.next + offset) % len(nodes)
 		node := nodes[index]
 		key := node.hostPort()

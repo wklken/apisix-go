@@ -98,12 +98,12 @@ const schema = `
 }`
 
 type Abort struct {
-	HTTPStatus int                    `json:"http_status"`
-	Body       *string                `json:"body,omitempty"`
-	Percentage *int                   `json:"percentage,omitempty"`
-	Headers    map[string]interface{} `json:"headers,omitempty"` // Note: interface{} due to oneOf {string, number}
+	HTTPStatus int            `json:"http_status"`
+	Body       *string        `json:"body,omitempty"`
+	Percentage *int           `json:"percentage,omitempty"`
+	Headers    map[string]any `json:"headers,omitempty"` // Note: interface{} due to oneOf {string, number}
 
-	Vars  [][]interface{} `json:"vars,omitempty"`
+	Vars  [][]any `json:"vars,omitempty"`
 	exprs []*pluginexpr.Expression
 }
 
@@ -111,7 +111,7 @@ type Delay struct {
 	Duration   float64 `json:"duration"`
 	Percentage *int    `json:"percentage,omitempty"`
 
-	Vars  [][]interface{} `json:"vars,omitempty"`
+	Vars  [][]any `json:"vars,omitempty"`
 	exprs []*pluginexpr.Expression
 }
 
@@ -146,7 +146,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -193,7 +193,7 @@ func SampleHit(percentage *int) bool {
 	return rand.Intn(100) < *percentage
 }
 
-func compileVars(vars [][]interface{}) ([]*pluginexpr.Expression, error) {
+func compileVars(vars [][]any) ([]*pluginexpr.Expression, error) {
 	exprs := make([]*pluginexpr.Expression, 0, len(vars))
 	for i, rule := range vars {
 		expr, err := pluginexpr.Compile([]any(rule))

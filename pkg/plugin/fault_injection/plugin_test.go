@@ -77,7 +77,7 @@ func TestAbortSerializesNumericHeaderValues(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Abort: &Abort{
 			HTTPStatus: http.StatusServiceUnavailable,
-			Headers: map[string]interface{}{
+			Headers: map[string]any{
 				"X-Retry-After": 3,
 			},
 		},
@@ -99,8 +99,8 @@ func TestAbortVarsMustMatch(t *testing.T) {
 		Abort: &Abort{
 			HTTPStatus: http.StatusServiceUnavailable,
 			Body:       &body,
-			Vars: [][]interface{}{
-				{[]interface{}{"arg_stage", "==", "beta"}},
+			Vars: [][]any{
+				{[]any{"arg_stage", "==", "beta"}},
 			},
 		},
 	})
@@ -127,9 +127,9 @@ func TestAbortVarsUseAnyMatchingExpression(t *testing.T) {
 		Abort: &Abort{
 			HTTPStatus: http.StatusServiceUnavailable,
 			Body:       &body,
-			Vars: [][]interface{}{
-				{[]interface{}{"arg_stage", "==", "beta"}},
-				{[]interface{}{"http_x_fault", "==", "on"}},
+			Vars: [][]any{
+				{[]any{"arg_stage", "==", "beta"}},
+				{[]any{"http_x_fault", "==", "on"}},
 			},
 		},
 	})
@@ -155,14 +155,14 @@ func TestAbortSupportsBoundedVarsAndVariableRendering(t *testing.T) {
 		Abort: &Abort{
 			HTTPStatus: http.StatusServiceUnavailable,
 			Body:       &body,
-			Headers: map[string]interface{}{
+			Headers: map[string]any{
 				"X-Fault": "$request_method-$arg_score",
 			},
-			Vars: [][]interface{}{{
-				[]interface{}{"$request_method", "==", http.MethodGet},
-				[]interface{}{"arg_score", ">=", "10"},
-				[]interface{}{"http_x_region", "~", "^west-[0-9]+$"},
-				[]interface{}{"uri", "!~", "/internal"},
+			Vars: [][]any{{
+				[]any{"$request_method", "==", http.MethodGet},
+				[]any{"arg_score", ">=", "10"},
+				[]any{"http_x_region", "~", "^west-[0-9]+$"},
+				[]any{"uri", "!~", "/internal"},
 			}},
 		},
 	})
@@ -189,13 +189,13 @@ func TestAbortSupportsBoundedVarsAndVariableRendering(t *testing.T) {
 func TestAbortVarsSupportBoundedOperators(t *testing.T) {
 	tests := []struct {
 		name string
-		expr []interface{}
+		expr []any
 	}{
-		{name: "prefixed var", expr: []interface{}{"$request_method", "==", http.MethodGet}},
-		{name: "greater equal", expr: []interface{}{"arg_score", ">=", "10"}},
-		{name: "less than", expr: []interface{}{"arg_score", "<", "20"}},
-		{name: "regex", expr: []interface{}{"http_x_region", "~", "^west-[0-9]+$"}},
-		{name: "negative regex", expr: []interface{}{"uri", "!~", "/internal"}},
+		{name: "prefixed var", expr: []any{"$request_method", "==", http.MethodGet}},
+		{name: "greater equal", expr: []any{"arg_score", ">=", "10"}},
+		{name: "less than", expr: []any{"arg_score", "<", "20"}},
+		{name: "regex", expr: []any{"http_x_region", "~", "^west-[0-9]+$"}},
+		{name: "negative regex", expr: []any{"uri", "!~", "/internal"}},
 	}
 
 	for _, tt := range tests {
@@ -203,7 +203,7 @@ func TestAbortVarsSupportBoundedOperators(t *testing.T) {
 			p := newTestPlugin(t, Config{
 				Abort: &Abort{
 					HTTPStatus: http.StatusServiceUnavailable,
-					Vars:       [][]interface{}{{tt.expr}},
+					Vars:       [][]any{{tt.expr}},
 				},
 			})
 			req := httptest.NewRequest(http.MethodGet, "/fault?score=12", nil)
@@ -225,14 +225,14 @@ func TestAbortVarsSupportNestedRestyExpressionsAndApisixVariables(t *testing.T) 
 		Abort: &Abort{
 			HTTPStatus: http.StatusServiceUnavailable,
 			Body:       &body,
-			Vars: [][]interface{}{
+			Vars: [][]any{
 				{
 					"AND",
-					[]interface{}{"request_method", "in", []interface{}{"GET", "HEAD"}},
-					[]interface{}{"remote_addr", "ipmatch", []interface{}{"192.0.2.0/24"}},
-					[]interface{}{"http_x_env", "~*", "^prod$"},
-					[]interface{}{"graphql_root_fields", "has", "owner"},
-					[]interface{}{"arg_skip", "!", "==", "yes"},
+					[]any{"request_method", "in", []any{"GET", "HEAD"}},
+					[]any{"remote_addr", "ipmatch", []any{"192.0.2.0/24"}},
+					[]any{"http_x_env", "~*", "^prod$"},
+					[]any{"graphql_root_fields", "has", "owner"},
+					[]any{"arg_skip", "!", "==", "yes"},
 				},
 			},
 		},
@@ -255,11 +255,11 @@ func TestAbortVarsSupportNestedRestyExpressionsAndApisixVariables(t *testing.T) 
 
 func TestPostInitRejectsInvalidVarsExpressions(t *testing.T) {
 	tests := []Config{
-		{Abort: &Abort{HTTPStatus: http.StatusServiceUnavailable, Vars: [][]interface{}{{"status", "==", 200}}}},
-		{Abort: &Abort{HTTPStatus: http.StatusServiceUnavailable, Vars: [][]interface{}{{
-			[]interface{}{"status", "bogus", 200},
+		{Abort: &Abort{HTTPStatus: http.StatusServiceUnavailable, Vars: [][]any{{"status", "==", 200}}}},
+		{Abort: &Abort{HTTPStatus: http.StatusServiceUnavailable, Vars: [][]any{{
+			[]any{"status", "bogus", 200},
 		}}}},
-		{Delay: &Delay{Duration: 0.1, Vars: [][]interface{}{{"AND", []interface{}{"method", "==", "GET"}}}}},
+		{Delay: &Delay{Duration: 0.1, Vars: [][]any{{"AND", []any{"method", "==", "GET"}}}}},
 	}
 	for _, config := range tests {
 		p := &Plugin{config: config}
@@ -285,8 +285,8 @@ func TestDelayVarsMustMatch(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Delay: &Delay{
 			Duration: 0.01,
-			Vars: [][]interface{}{
-				{[]interface{}{"arg_stage", "==", "beta"}},
+			Vars: [][]any{
+				{[]any{"arg_stage", "==", "beta"}},
 			},
 		},
 	})

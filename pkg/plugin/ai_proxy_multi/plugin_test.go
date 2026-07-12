@@ -108,7 +108,7 @@ func TestHandlerRetriesHTTP5xxFallback(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Balancer:         Balancer{Algorithm: "roundrobin"},
 		FallbackStrategy: "http_5xx",
-		MaxRetries:       intPtr(1),
+		MaxRetries:       new(1),
 		Instances: []Instance{
 			{
 				Name:     "one",
@@ -166,7 +166,7 @@ func TestHandlerStreamsFallbackResponseAndRegistersUsage(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		FallbackStrategy: "http_5xx",
-		MaxRetries:       intPtr(1),
+		MaxRetries:       new(1),
 		Instances: []Instance{
 			{
 				Name: "failed", Provider: "openai-compatible", Priority: 10, Weight: 1,
@@ -228,7 +228,7 @@ func TestHandlerConvertsAnthropicRequestForSuccessfulFallbackInstance(t *testing
 
 	p := newTestPlugin(t, Config{
 		FallbackStrategy: "http_5xx",
-		MaxRetries:       intPtr(1),
+		MaxRetries:       new(1),
 		Instances: []Instance{
 			{
 				Name: "failed", Provider: "openai-compatible", Priority: 10, Weight: 1,
@@ -286,7 +286,7 @@ func TestHandlerConvertsAnthropicStreamForFallbackInstance(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		FallbackStrategy: "http_5xx",
-		MaxRetries:       intPtr(1),
+		MaxRetries:       new(1),
 		Instances: []Instance{
 			{
 				Name: "failed", Provider: "openai-compatible", Priority: 10, Weight: 1,
@@ -412,7 +412,7 @@ func TestHandlerExhaustsHigherPriorityBeforeFallback(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		FallbackStrategy: "http_5xx",
-		MaxRetries:       intPtr(1),
+		MaxRetries:       new(1),
 		Instances: []Instance{
 			{
 				Name: "low", Provider: "openai-compatible", Priority: 0, Weight: 100,
@@ -704,7 +704,7 @@ func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
 				Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
 				Override: Override{
 					Endpoint:                 upstream.URL + "/v1/chat/completions",
-					RequestBodyForceOverride: boolPtr(true),
+					RequestBodyForceOverride: new(true),
 					RequestBody: map[string]any{
 						"openai-chat": map[string]any{
 							"temperature": float64(0),
@@ -1137,12 +1137,14 @@ func serveChatWithBody(t *testing.T, p *Plugin, body string, tenant ...string) s
 	return strings.TrimSpace(rr.Body.String())
 }
 
+//go:fix inline
 func intPtr(v int) *int {
-	return &v
+	return new(v)
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 func testAWSEventStreamFrame(headers map[string]string, payload string) []byte {

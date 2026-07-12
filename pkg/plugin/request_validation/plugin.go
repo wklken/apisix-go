@@ -63,10 +63,10 @@ const schema = `
 type Config struct {
 	// HeaderSchema *string `json:"header_schema,omitempty"`
 	// BodySchema   *string `json:"body_schema,omitempty"`
-	HeaderSchema map[string]interface{} `json:"header_schema,omitempty"`
-	BodySchema   map[string]interface{} `json:"body_schema,omitempty"`
-	RejectedCode int                    `json:"rejected_code"`
-	RejectedMsg  string                 `json:"rejected_msg"`
+	HeaderSchema map[string]any `json:"header_schema,omitempty"`
+	BodySchema   map[string]any `json:"body_schema,omitempty"`
+	RejectedCode int            `json:"rejected_code"`
+	RejectedMsg  string         `json:"rejected_msg"`
 
 	bodySchemaStr   string
 	headerSchemaStr string
@@ -110,7 +110,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -169,16 +169,16 @@ func (p *Plugin) rejectedMessage(err error) string {
 	return err.Error()
 }
 
-func requestHeaders(r *http.Request) map[string]interface{} {
-	headers := make(map[string]interface{}, len(r.Header)*2+2)
+func requestHeaders(r *http.Request) map[string]any {
+	headers := make(map[string]any, len(r.Header)*2+2)
 	for key := range r.Header {
 		values := r.Header.Values(key)
 		if len(values) == 0 {
 			continue
 		}
-		var value interface{} = values[0]
+		var value any = values[0]
 		if len(values) > 1 {
-			items := make([]interface{}, len(values))
+			items := make([]any, len(values))
 			for i, item := range values {
 				items[i] = item
 			}
@@ -202,7 +202,7 @@ func compileNestedSchema(name string, schema []byte) error {
 	return nil
 }
 
-func parseRequestBody(r *http.Request, body []byte) (interface{}, bool, error) {
+func parseRequestBody(r *http.Request, body []byte) (any, bool, error) {
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
 	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
 		data, err := parseURLEncodedForm(body)
@@ -213,7 +213,7 @@ func parseRequestBody(r *http.Request, body []byte) (interface{}, bool, error) {
 	return data, true, err
 }
 
-func normalizeJSONBody(r *http.Request, data interface{}) error {
+func normalizeJSONBody(r *http.Request, data any) error {
 	body, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -230,20 +230,20 @@ func normalizeJSONBody(r *http.Request, data interface{}) error {
 	return nil
 }
 
-func parseURLEncodedForm(data []byte) (map[string]interface{}, error) {
+func parseURLEncodedForm(data []byte) (map[string]any, error) {
 	values, err := url.ParseQuery(util.BytesToString(data))
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string]interface{}, len(values))
+	result := make(map[string]any, len(values))
 	for key, vals := range values {
 		if len(vals) == 1 {
 			result[key] = vals[0]
 			continue
 		}
 
-		items := make([]interface{}, len(vals))
+		items := make([]any, len(vals))
 		for i, val := range vals {
 			items[i] = val
 		}
@@ -254,13 +254,13 @@ func parseURLEncodedForm(data []byte) (map[string]interface{}, error) {
 }
 
 // FIXME: if this func show in another plugin, should be refactor, only do it once
-func parseJSON(data []byte) (interface{}, error) {
+func parseJSON(data []byte) (any, error) {
 	trimmedData := strings.TrimSpace(string(data))
 	// Check the first character of the JSON data to determine its type
 	if len(trimmedData) > 0 {
 		switch trimmedData[0] {
 		case '{':
-			var resultMap map[string]interface{}
+			var resultMap map[string]any
 			err := json.Unmarshal(data, &resultMap)
 			if err != nil {
 				return nil, err
@@ -268,7 +268,7 @@ func parseJSON(data []byte) (interface{}, error) {
 			return resultMap, nil
 
 		case '[':
-			var resultList []interface{}
+			var resultList []any
 			err := json.Unmarshal(data, &resultList)
 			if err != nil {
 				return nil, err

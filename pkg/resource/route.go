@@ -29,7 +29,7 @@ import (
 //	    "filter_func": ""                     # User-defined filtering function
 //	}
 
-type PluginConfig interface{}
+type PluginConfig any
 
 //	{
 //	    "id": "1",                  # id
@@ -53,17 +53,17 @@ type Upstream struct {
 	Type    string       `json:"type,omitempty"`
 	Nodes   []Node       `json:"nodes,omitempty"`
 	Scheme  string       `json:"scheme,omitempty"`
-	Timeout Timeout      `json:"timeout,omitempty"`
+	Timeout Timeout      `json:"timeout"`
 	TLS     *UpstreamTLS `json:"tls,omitempty"`
 
-	Retries      int                    `json:"retries,omitempty"`
-	Checks       map[string]interface{} `json:"checks,omitempty"`
-	HashOn       string                 `json:"hash_on,omitempty"`
-	Key          string                 `json:"key,omitempty"`
-	PassHost     string                 `json:"pass_host,omitempty"`
-	UpstreamHost string                 `json:"upstream_host,omitempty"`
-	Name         string                 `json:"name,omitempty"`
-	Desc         string                 `json:"desc,omitempty"`
+	Retries      int            `json:"retries,omitempty"`
+	Checks       map[string]any `json:"checks,omitempty"`
+	HashOn       string         `json:"hash_on,omitempty"`
+	Key          string         `json:"key,omitempty"`
+	PassHost     string         `json:"pass_host,omitempty"`
+	UpstreamHost string         `json:"upstream_host,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Desc         string         `json:"desc,omitempty"`
 }
 
 func (s *Upstream) UnmarshalJSON(data []byte) error {
@@ -260,12 +260,12 @@ type Route struct {
 	PluginConfigID string   `json:"plugin_config_id,omitempty"`
 	ServiceID      string   `json:"service_id,omitempty"`
 	UpstreamID     string   `json:"upstream_id,omitempty"`
-	Upstream       Upstream `json:"upstream,omitempty"`
+	Upstream       Upstream `json:"upstream"`
 	Timeout        struct {
 		Connect int `json:"connect,omitempty"`
 		Send    int `json:"send,omitempty"`
 		Read    int `json:"read,omitempty"`
-	} `json:"timeout,omitempty"`
+	} `json:"timeout"`
 	FilterFunc string `json:"filter_func,omitempty"`
 
 	CreateTime int64 `json:"create_time,omitempty"`
@@ -283,14 +283,14 @@ type StreamRoute struct {
 	RemoteAddr string                  `json:"remote_addr,omitempty"`
 	Plugins    map[string]PluginConfig `json:"plugins,omitempty"`
 	UpstreamID string                  `json:"upstream_id,omitempty"`
-	Upstream   Upstream                `json:"upstream,omitempty"`
+	Upstream   Upstream                `json:"upstream"`
 }
 
 type Service struct {
 	ID         string                  `json:"id,omitempty"`
 	Plugins    map[string]PluginConfig `json:"plugins,omitempty"`
 	UpstreamID string                  `json:"upstream_id,omitempty"`
-	Upstream   Upstream                `json:"upstream,omitempty"`
+	Upstream   Upstream                `json:"upstream"`
 
 	Name            string   `json:"name,omitempty"`
 	Desc            string   `json:"desc,omitempty"`

@@ -809,7 +809,7 @@ func TestValidateParameterStyleRejectsSchemaMismatch(t *testing.T) {
 func TestValidateParameterStyleRejectsNonExplodedDeepObject(t *testing.T) {
 	err := validateParameterStyle(parameter{
 		Style:   "deepObject",
-		Explode: boolPtr(false),
+		Explode: new(false),
 		Schema:  map[string]any{"type": "object"},
 	}, "query")
 	if err == nil {
@@ -964,7 +964,7 @@ func TestHandlerCanSkipValidationAndAllowMismatch(t *testing.T) {
 			name: "log only mismatch",
 			cfg: Config{
 				Spec:             testSpec(),
-				RejectIfNotMatch: boolPtr(false),
+				RejectIfNotMatch: new(false),
 			},
 		},
 	}
@@ -1231,8 +1231,9 @@ func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 func testSpec() string {

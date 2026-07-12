@@ -12,7 +12,7 @@ func TestReportTTLReadsAndBoundsPluginAttribute(t *testing.T) {
 	t.Cleanup(func() { config.GlobalConfig = previous })
 
 	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]interface{}{
+		PluginAttr: map[string]map[string]any{
 			"server-info": {"report_ttl": 45},
 		},
 	}

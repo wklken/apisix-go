@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -403,9 +405,9 @@ const schema = `
 `
 
 type Config struct {
-	Balancer                 Balancer   `json:"balancer,omitempty"`
+	Balancer                 Balancer   `json:"balancer"`
 	Instances                []Instance `json:"instances"`
-	Logging                  Logging    `json:"logging,omitempty"`
+	Logging                  Logging    `json:"logging"`
 	FallbackStrategy         any        `json:"fallback_strategy,omitempty"`
 	MaxRetries               *int       `json:"max_retries,omitempty"`
 	RetryOnFailureWithinMS   int        `json:"retry_on_failure_within_ms,omitempty"`
@@ -434,7 +436,7 @@ type Instance struct {
 	Weight       int            `json:"weight"`
 	Auth         Auth           `json:"auth"`
 	Options      map[string]any `json:"options,omitempty"`
-	Override     Override       `json:"override,omitempty"`
+	Override     Override       `json:"override"`
 	Checks       *HealthChecks  `json:"checks,omitempty"`
 }
 
@@ -447,7 +449,7 @@ type Auth struct {
 
 type Override struct {
 	Endpoint                 string         `json:"endpoint,omitempty"`
-	LLMOptions               LLMOptions     `json:"llm_options,omitempty"`
+	LLMOptions               LLMOptions     `json:"llm_options"`
 	RequestBody              map[string]any `json:"request_body,omitempty"`
 	RequestBodyForceOverride *bool          `json:"request_body_force_override,omitempty"`
 }
@@ -461,7 +463,7 @@ type Logging struct {
 	Payloads  bool `json:"payloads,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -880,9 +882,7 @@ func (p *Plugin) prepareInstanceRequest(
 	if err := json.Unmarshal(body, &clientBody); err != nil {
 		return prepared, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
-	for key, value := range instance.Options {
-		clientBody[key] = value
-	}
+	maps.Copy(clientBody, instance.Options)
 	clientJSON, err := json.Marshal(clientBody)
 	if err != nil {
 		return prepared, fmt.Errorf("encode Anthropic request body: %w", err)
@@ -927,9 +927,7 @@ func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, insta
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
-	for key, value := range instance.Options {
-		bodyTab[key] = value
-	}
+	maps.Copy(bodyTab, instance.Options)
 	p.applyLLMOptions(bodyTab, protocol, instance)
 	p.applyRequestBodyOverride(bodyTab, protocol, instance)
 	p.applyProviderBodyRules(bodyTab, instance)
@@ -1259,10 +1257,8 @@ func fallbackStrategyHas(strategy any, name string) bool {
 	case string:
 		return values == name
 	case []string:
-		for _, value := range values {
-			if value == name {
-				return true
-			}
+		if slices.Contains(values, name) {
+			return true
 		}
 	case []any:
 		for _, value := range values {

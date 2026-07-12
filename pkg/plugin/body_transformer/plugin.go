@@ -111,7 +111,7 @@ var (
 
 var reservedTemplateValues = [...]string{"_ctx", "_body", "_escape_json", "_escape_xml", "_multipart"}
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -482,8 +482,8 @@ func evaluateTemplateCondition(expr string, ctx templateContext) bool {
 		}
 		return true
 	}
-	if strings.HasPrefix(strings.TrimSpace(expr), "not ") {
-		return !evaluateTemplateCondition(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr), "not ")), ctx)
+	if after, ok := strings.CutPrefix(strings.TrimSpace(expr), "not "); ok {
+		return !evaluateTemplateCondition(strings.TrimSpace(after), ctx)
 	}
 	for _, operator := range []string{"~=", "==", ">=", "<=", ">", "<"} {
 		parts := splitTemplateOperator(expr, operator)
@@ -651,8 +651,8 @@ func resolveExpression(expr string, ctx templateContext) string {
 	if expr == "_body" {
 		return ctx.body
 	}
-	if strings.HasPrefix(expr, "_ctx.var.") {
-		return requestVar(ctx.req, strings.TrimPrefix(expr, "_ctx.var."))
+	if after, ok := strings.CutPrefix(expr, "_ctx.var."); ok {
+		return requestVar(ctx.req, after)
 	}
 	if value, ok := ctx.values[expr]; ok {
 		return value

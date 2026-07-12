@@ -61,9 +61,7 @@ func (p *Plugin) ServeListener(
 			return err
 		}
 
-		active.Add(1)
-		go func() {
-			defer active.Done()
+		active.Go(func() {
 			peer := ""
 			if conn.RemoteAddr() != nil {
 				peer = conn.RemoteAddr().String()
@@ -73,7 +71,7 @@ func (p *Plugin) ServeListener(
 				onResult(info, streamErr)
 			}
 			_ = conn.Close()
-		}()
+		})
 	}
 }
 

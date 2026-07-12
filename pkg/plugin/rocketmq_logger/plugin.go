@@ -197,7 +197,7 @@ type rocketmqClientSender struct {
 	producer rocketmq.Producer
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

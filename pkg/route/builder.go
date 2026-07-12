@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -224,9 +225,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
 	cloned := make(map[string]resource.PluginConfig, len(source))
-	for name, config := range source {
-		cloned[name] = config
-	}
+	maps.Copy(cloned, source)
 	return cloned
 }
 
@@ -763,7 +762,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		scheme := ""
 		// FIXME: how to read the headers?
 		if rewriteValue != nil {
-			rewrite := rewriteValue.(map[string]interface{})
+			rewrite := rewriteValue.(map[string]any)
 			uri = rewrite["uri"].(string)
 			method = rewrite["method"].(string)
 			host = rewrite["host"].(string)

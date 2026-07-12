@@ -194,7 +194,7 @@ func TestHandlerScopesRedisClusterKeyByRoute(t *testing.T) {
 		Policy:            "redis-cluster",
 		RedisClusterNodes: []string{"127.0.0.1:5000"},
 		RedisClusterName:  "cluster-1",
-		Nodelay:           boolPtr(true),
+		Nodelay:           new(true),
 	})
 	p.redisLimiter = redisLimiter
 	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
@@ -218,7 +218,7 @@ func TestHandlerUsesRedisLimiter(t *testing.T) {
 		Key:       "remote_addr",
 		Policy:    "redis",
 		RedisHost: "127.0.0.1",
-		Nodelay:   boolPtr(true),
+		Nodelay:   new(true),
 	})
 	p.redisLimiter = redisLimiter
 
@@ -249,7 +249,7 @@ func TestHandlerRejectsWhenRedisLimiterRejects(t *testing.T) {
 		Policy:      "redis",
 		RedisHost:   "127.0.0.1",
 		RejectedMsg: "slow down",
-		Nodelay:     boolPtr(true),
+		Nodelay:     new(true),
 	})
 	p.redisLimiter = &fakeRedisLimiter{allowed: false}
 
@@ -271,7 +271,7 @@ func TestHandlerRejectsRequestsAboveRateAndBurst(t *testing.T) {
 		Rate:    1,
 		Burst:   0,
 		Key:     "remote_addr",
-		Nodelay: boolPtr(true),
+		Nodelay: new(true),
 	})
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +295,7 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 		Burst:       0,
 		Key:         "remote_addr",
 		RejectedMsg: "slow down",
-		Nodelay:     boolPtr(true),
+		Nodelay:     new(true),
 	})
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +321,7 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 		Rate:    1,
 		Burst:   0,
 		Key:     "remote_addr",
-		Nodelay: boolPtr(true),
+		Nodelay: new(true),
 	})
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -336,8 +336,9 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 type fakeRedisLimiter struct {

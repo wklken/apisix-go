@@ -291,7 +291,7 @@ type graphqlRequest struct {
 	Query string `json:"query"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -710,10 +710,7 @@ func incomingLocal(
 		counters[counterKey] = c
 	}
 
-	reset := int64(c.resetAt.Sub(now).Seconds())
-	if reset < 0 {
-		reset = 0
-	}
+	reset := max(int64(c.resetAt.Sub(now).Seconds()), 0)
 
 	if c.used+cost > count {
 		return 0, reset, false, nil
@@ -959,8 +956,8 @@ func readBody(r *http.Request, maxSize int) ([]byte, error) {
 
 func requestVar(r *http.Request, key string) string {
 	key = strings.TrimPrefix(key, "$")
-	if strings.HasPrefix(key, "http_") {
-		header := strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-")
+	if after, ok := strings.CutPrefix(key, "http_"); ok {
+		header := strings.ReplaceAll(after, "_", "-")
 		return r.Header.Get(header)
 	}
 

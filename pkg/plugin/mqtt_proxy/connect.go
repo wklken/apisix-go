@@ -3,6 +3,7 @@ package mqtt_proxy
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -160,7 +161,7 @@ func validateConnectFlags(flags byte) error {
 func readVariableInteger(data []byte) (int, int, error) {
 	value := 0
 	multiplier := 1
-	for index := 0; index < 4; index++ {
+	for index := range 4 {
 		if index >= len(data) {
 			return 0, 0, ErrNeedMoreData
 		}
@@ -282,10 +283,5 @@ func skipProperties(data []byte, cursor *int, end int) error {
 }
 
 func bytesContainsZero(data []byte) bool {
-	for _, value := range data {
-		if value == 0 {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(data, 0)
 }

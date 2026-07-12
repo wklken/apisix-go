@@ -29,12 +29,12 @@ func TestHandlerSetsHeadersForFirstMatchingRule(t *testing.T) {
 			{
 				Match: []any{[]any{"arg_version", "==", "v1"}},
 				Actions: []Action{
-					{SetHeaders: map[string]interface{}{"X-Server-Id": "100", "X-Version": "$arg_version"}},
+					{SetHeaders: map[string]any{"X-Server-Id": "100", "X-Version": "$arg_version"}},
 				},
 			},
 			{
 				Actions: []Action{
-					{SetHeaders: map[string]interface{}{"X-Server-Id": "fallback"}},
+					{SetHeaders: map[string]any{"X-Server-Id": "fallback"}},
 				},
 			},
 		},
@@ -64,7 +64,7 @@ func TestHandlerSkipsWhenNoRuleMatches(t *testing.T) {
 			{
 				Match: []any{[]any{"arg_version", "==", "v1"}},
 				Actions: []Action{
-					{SetHeaders: map[string]interface{}{"X-Server-Id": "100"}},
+					{SetHeaders: map[string]any{"X-Server-Id": "100"}},
 				},
 			},
 		},
@@ -91,8 +91,8 @@ func TestHandlerUsesWeightedActions(t *testing.T) {
 			{
 				Match: []any{[]any{"uri", "==", "/anything"}},
 				Actions: []Action{
-					{SetHeaders: map[string]interface{}{"X-Bucket": "blue"}, Weight: 2},
-					{SetHeaders: map[string]interface{}{"X-Bucket": "green"}, Weight: 1},
+					{SetHeaders: map[string]any{"X-Bucket": "blue"}, Weight: 2},
+					{SetHeaders: map[string]any{"X-Bucket": "green"}, Weight: 1},
 					{Weight: 1},
 				},
 			},
@@ -100,7 +100,7 @@ func TestHandlerUsesWeightedActions(t *testing.T) {
 	})
 
 	seen := map[string]int{}
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		req := httptest.NewRequest(http.MethodGet, "/anything", nil)
 		rr := httptest.NewRecorder()
 
@@ -134,7 +134,7 @@ func TestMatchSupportsRequestHeaderAndNotEquals(t *testing.T) {
 					[]any{"arg_skip", "!=", "true"},
 				},
 				Actions: []Action{
-					{SetHeaders: map[string]interface{}{"X-Traffic-Label": "$http_x_region"}},
+					{SetHeaders: map[string]any{"X-Traffic-Label": "$http_x_region"}},
 				},
 			},
 		},
@@ -167,7 +167,7 @@ func TestMatchSupportsPrefixedVarsNumericAndRegexOperators(t *testing.T) {
 					[]any{"uri", "!~", "/internal"},
 				},
 				Actions: []Action{
-					{SetHeaders: map[string]interface{}{"X-Traffic-Label": "$arg_score-$http_x_region"}},
+					{SetHeaders: map[string]any{"X-Traffic-Label": "$arg_score-$http_x_region"}},
 				},
 			},
 		},
@@ -201,7 +201,7 @@ func TestHandlerSupportsNestedRestyExpressionAndApisixVariables(t *testing.T) {
 					[]any{"graphql_root_fields", "has", "owner"},
 					[]any{"arg_skip", "!", "==", "yes"},
 				},
-				Actions: []Action{{SetHeaders: map[string]interface{}{"X-Traffic-Label": "$graphql_root_fields"}}},
+				Actions: []Action{{SetHeaders: map[string]any{"X-Traffic-Label": "$graphql_root_fields"}}},
 			},
 		},
 	})
@@ -223,7 +223,7 @@ func TestHandlerSupportsNestedRestyExpressionAndApisixVariables(t *testing.T) {
 func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
 	p := &Plugin{config: Config{Rules: []Rule{{
 		Match:   []any{[]any{"uri", "bogus", "/anything"}},
-		Actions: []Action{{SetHeaders: map[string]interface{}{"X-Traffic-Label": "bad"}}},
+		Actions: []Action{{SetHeaders: map[string]any{"X-Traffic-Label": "bad"}}},
 	}}}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)

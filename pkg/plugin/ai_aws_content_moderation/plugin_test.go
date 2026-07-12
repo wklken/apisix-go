@@ -124,7 +124,7 @@ func TestHandlerRejectsToxicityAboveThreshold(t *testing.T) {
 			Region:          "us-east-1",
 			Endpoint:        moderation.URL,
 		},
-		ModerationThreshold: floatPtr(0.5),
+		ModerationThreshold: new(0.5),
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"prompt":"bad"}`))
@@ -216,6 +216,7 @@ func moderationServer(t *testing.T, body string, status int) *httptest.Server {
 	}))
 }
 
+//go:fix inline
 func floatPtr(v float64) *float64 {
-	return &v
+	return new(v)
 }

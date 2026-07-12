@@ -5,7 +5,7 @@ package ctx
 import "sync"
 
 var varsPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return make(map[string]any)
 	},
 }

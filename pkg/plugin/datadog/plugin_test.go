@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -438,7 +439,7 @@ func startUDPServer(t *testing.T, count int) (string, <-chan string) {
 
 	received := make(chan string, count)
 	go func() {
-		for i := 0; i < count; i++ {
+		for range count {
 			buf := make([]byte, 4096)
 			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
@@ -467,12 +468,7 @@ func collectMessages(t *testing.T, received <-chan string, count int) []string {
 }
 
 func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func containsPrefix(values []string, prefix string) bool {

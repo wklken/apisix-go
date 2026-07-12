@@ -55,7 +55,7 @@ func TestPostInitAcceptsWildcardTypesString(t *testing.T) {
 }
 
 func TestHandlerSkipsSmallContentLength(t *testing.T) {
-	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: intPtr(10)})
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(10)})
 	req := httptest.NewRequest(http.MethodGet, "/text", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	res := httptest.NewRecorder()
@@ -75,7 +75,7 @@ func TestHandlerSkipsSmallContentLength(t *testing.T) {
 }
 
 func TestHandlerWildcardTypesCompressesAnyContentType(t *testing.T) {
-	p := newTestPlugin(t, Config{Types: []string{"*"}, MinLength: intPtr(1)})
+	p := newTestPlugin(t, Config{Types: []string{"*"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/json", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	res := httptest.NewRecorder()
@@ -108,6 +108,7 @@ func decodeGzip(t *testing.T, body []byte) string {
 	return string(decoded)
 }
 
+//go:fix inline
 func intPtr(v int) *int {
-	return &v
+	return new(v)
 }

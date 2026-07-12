@@ -100,7 +100,9 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	if got := rr.Header().Get("X-Provider"); got != "test-llm" {
 		t.Fatalf("X-Provider = %q, want test-llm", got)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"choices":[{"message":{"content":"pong"}}],"usage":{"total_tokens":9}}` {
+	if got := strings.TrimSpace(
+		rr.Body.String(),
+	); got != `{"choices":[{"message":{"content":"pong"}}],"usage":{"total_tokens":9}}` {
 		t.Fatalf("response body = %q, want provider body", got)
 	}
 	if got := upstreamBody["model"]; got != "gpt-4" {
@@ -191,7 +193,7 @@ func TestHandlerForceMergesRequestBodyOverride(t *testing.T) {
 		Override: Override{
 			Endpoint:                 upstream.URL + "/v1/chat/completions",
 			LLMOptions:               LLMOptions{MaxTokens: 64},
-			RequestBodyForceOverride: boolPtr(true),
+			RequestBodyForceOverride: new(true),
 			RequestBody: map[string]any{
 				"openai-chat": map[string]any{
 					"temperature": float64(0),
@@ -1205,8 +1207,9 @@ func TestPostInitRejectsOpenAICompatibleWithoutEndpoint(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 func testAWSEventStreamFrame(headers map[string]string, payload string) []byte {

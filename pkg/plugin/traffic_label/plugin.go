@@ -93,13 +93,13 @@ type Rule struct {
 }
 
 type Action struct {
-	SetHeaders map[string]interface{} `json:"set_headers,omitempty"`
-	Weight     int                    `json:"weight,omitempty"`
+	SetHeaders map[string]any `json:"set_headers,omitempty"`
+	Weight     int            `json:"weight,omitempty"`
 }
 
 var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

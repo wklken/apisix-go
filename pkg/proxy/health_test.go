@@ -40,9 +40,9 @@ func TestHealthReporterContextCarriesSelectedTarget(t *testing.T) {
 func TestHealthAwareLoadBalanceQuarantinesTCPFailures(t *testing.T) {
 	lb, err := NewHealthAwareLoadBalance(
 		map[string]int{"http://one.example:80": 1, "http://two.example:80": 1},
-		map[string]interface{}{
-			"passive": map[string]interface{}{
-				"unhealthy": map[string]interface{}{"tcp_failures": 1},
+		map[string]any{
+			"passive": map[string]any{
+				"unhealthy": map[string]any{"tcp_failures": 1},
 			},
 		},
 	)
@@ -66,10 +66,10 @@ func TestHealthAwareLoadBalanceQuarantinesHTTPStatusesAfterThreshold(t *testing.
 			"http://two.example:80":   1,
 			"http://three.example:80": 1,
 		},
-		map[string]interface{}{
-			"passive": map[string]interface{}{
-				"unhealthy": map[string]interface{}{
-					"http_statuses": []interface{}{500},
+		map[string]any{
+			"passive": map[string]any{
+				"unhealthy": map[string]any{
+					"http_statuses": []any{500},
 					"http_failures": 2,
 				},
 			},
@@ -92,9 +92,9 @@ func TestHealthAwareLoadBalanceQuarantinesHTTPStatusesAfterThreshold(t *testing.
 func TestHealthAwareLoadBalanceQuarantinesTimeouts(t *testing.T) {
 	lb, err := NewHealthAwareLoadBalance(
 		map[string]int{"http://one.example:80": 1, "http://two.example:80": 1},
-		map[string]interface{}{
-			"passive": map[string]interface{}{
-				"unhealthy": map[string]interface{}{"timeouts": 1},
+		map[string]any{
+			"passive": map[string]any{
+				"unhealthy": map[string]any{"timeouts": 1},
 			},
 		},
 	)
@@ -114,9 +114,9 @@ func TestHealthAwareLoadBalanceQuarantinesTimeouts(t *testing.T) {
 func TestHealthAwareLoadBalanceFailsOpenWhenAllTargetsAreUnhealthy(t *testing.T) {
 	lb, err := NewHealthAwareLoadBalance(
 		map[string]int{"http://one.example:80": 1, "http://two.example:80": 1},
-		map[string]interface{}{
-			"passive": map[string]interface{}{
-				"unhealthy": map[string]interface{}{"tcp_failures": 1},
+		map[string]any{
+			"passive": map[string]any{
+				"unhealthy": map[string]any{"tcp_failures": 1},
 			},
 		},
 	)
@@ -136,9 +136,9 @@ func TestHealthAwareLoadBalanceFailsOpenWhenAllTargetsAreUnhealthy(t *testing.T)
 func TestHealthAwareLoadBalanceRejectsMalformedPassiveChecks(t *testing.T) {
 	_, err := NewHealthAwareLoadBalance(
 		map[string]int{"http://one.example:80": 1},
-		map[string]interface{}{
-			"passive": map[string]interface{}{
-				"unhealthy": map[string]interface{}{"tcp_failures": "one"},
+		map[string]any{
+			"passive": map[string]any{
+				"unhealthy": map[string]any{"tcp_failures": "one"},
 			},
 		},
 	)

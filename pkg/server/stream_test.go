@@ -53,7 +53,9 @@ func TestStreamProxyModeEnabled(t *testing.T) {
 		{mode: "http&stream", enabled: true},
 		{mode: "stream&http", enabled: true},
 	} {
-		if got := streamProxyModeEnabled(&config.Config{Apisix: config.Apisix{ProxyMode: test.mode}}); got != test.enabled {
+		if got := streamProxyModeEnabled(
+			&config.Config{Apisix: config.Apisix{ProxyMode: test.mode}},
+		); got != test.enabled {
 			t.Fatalf("streamProxyModeEnabled(%q) = %v, want %v", test.mode, got, test.enabled)
 		}
 	}

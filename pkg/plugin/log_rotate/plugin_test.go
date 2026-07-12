@@ -35,7 +35,7 @@ func TestRotateByMaxSizeRenamesLogsAndRecreatesCurrentFiles(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		AccessLog:       access,
 		ErrorLog:        errorLog,
-		EnableAccessLog: boolPtr(true),
+		EnableAccessLog: new(true),
 		MaxSize:         1,
 		MaxKept:         10,
 	})
@@ -148,6 +148,7 @@ func TestDefaultsMatchOfficialPluginAttr(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }

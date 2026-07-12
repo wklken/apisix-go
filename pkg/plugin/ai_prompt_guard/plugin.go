@@ -63,7 +63,7 @@ type Config struct {
 	denyPatterns  []*regexp.Regexp
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

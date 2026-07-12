@@ -33,7 +33,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func TestHandlerRewritesStatusAndBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		StatusCode: 201,
-		Body:       stringPtr(`{"ok":true}`),
+		Body:       new(`{"ok":true}`),
 	})
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
@@ -55,8 +55,8 @@ func TestHandlerRewritesStatusAndBody(t *testing.T) {
 
 func TestHandlerDecodesBase64Body(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		Body:       stringPtr("aGVsbG8="),
-		BodyBase64: boolPtr(true),
+		Body:       new("aGVsbG8="),
+		BodyBase64: new(true),
 	})
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func TestHandlerResolvesOptInBodySecret(t *testing.T) {
 	data_encryption.Configure(true, []string{key})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
 
-	p := newTestPlugin(t, Config{BodySecret: stringPtr(encryptResponseBodyForTest(t, key, "secret-body"))})
+	p := newTestPlugin(t, Config{BodySecret: new(encryptResponseBodyForTest(t, key, "secret-body"))})
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream"))
@@ -89,7 +89,7 @@ func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
 	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
 
-	p := &Plugin{config: Config{BodySecret: stringPtr("not-a-ciphertext")}}
+	p := &Plugin{config: Config{BodySecret: new("not-a-ciphertext")}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -111,14 +111,14 @@ func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
 		{
 			name: "body",
 			cfg: Config{
-				Body:       stringPtr("plain"),
-				BodySecret: stringPtr("secret"),
+				Body:       new("plain"),
+				BodySecret: new("secret"),
 			},
 		},
 		{
 			name: "filters",
 			cfg: Config{
-				BodySecret: stringPtr("secret"),
+				BodySecret: new("secret"),
 				Filters:    []Filter{{Regex: "secret", Replace: "redacted"}},
 			},
 		},
@@ -140,7 +140,7 @@ func TestPlainBodyRemainsCompatibleWhenEncryptionEnabled(t *testing.T) {
 	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
 
-	p := newTestPlugin(t, Config{Body: stringPtr("plain-body")})
+	p := newTestPlugin(t, Config{Body: new("plain-body")})
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream"))
@@ -217,7 +217,7 @@ func TestHandlerResolvesHeaderValueVariables(t *testing.T) {
 func TestHandlerSkipsRewriteWhenVarsDoNotMatch(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		StatusCode: 201,
-		Body:       stringPtr("rewritten"),
+		Body:       new("rewritten"),
 		Vars:       []any{[]any{"status", "==", 404}},
 	})
 
@@ -237,7 +237,7 @@ func TestHandlerSkipsRewriteWhenVarsDoNotMatch(t *testing.T) {
 func TestHandlerAppliesRewriteWhenVarsMatchResponseStatus(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		StatusCode: 202,
-		Body:       stringPtr("accepted"),
+		Body:       new("accepted"),
 		Vars:       []any{[]any{"status", "==", 404}},
 	})
 
@@ -357,7 +357,7 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 
 func TestHandlerSupportsNestedRestyExpressionOperators(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		Body: stringPtr("matched"),
+		Body: new("matched"),
 		Vars: []any{
 			"AND",
 			[]any{"status", ">=", 200},
@@ -466,7 +466,7 @@ func TestSchemaValidatesOfficialHeaderForms(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidBase64Body(t *testing.T) {
-	p := &Plugin{config: Config{Body: stringPtr("not-base64"), BodyBase64: boolPtr(true)}}
+	p := &Plugin{config: Config{Body: new("not-base64"), BodyBase64: new(true)}}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -478,7 +478,7 @@ func TestPostInitRejectsInvalidBase64Body(t *testing.T) {
 func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 	p := &Plugin{
 		config: Config{
-			Body:    stringPtr("body"),
+			Body:    new("body"),
 			Filters: []Filter{{Regex: "old", Replace: "new"}},
 		},
 	}
@@ -498,12 +498,14 @@ func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)
 	return rr
 }
 
+//go:fix inline
 func stringPtr(v string) *string {
-	return &v
+	return new(v)
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 func encryptResponseBodyForTest(t *testing.T, key string, value string) string {

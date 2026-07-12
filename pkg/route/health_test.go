@@ -31,10 +31,10 @@ func TestBuildReverseHandlerQuarantinesPassiveHTTPFailure(t *testing.T) {
 			upstreamNode(t, bad.URL),
 			upstreamNode(t, good.URL),
 		},
-		Checks: map[string]interface{}{
-			"passive": map[string]interface{}{
-				"unhealthy": map[string]interface{}{
-					"http_statuses": []interface{}{http.StatusInternalServerError},
+		Checks: map[string]any{
+			"passive": map[string]any{
+				"unhealthy": map[string]any{
+					"http_statuses": []any{http.StatusInternalServerError},
 					"http_failures": 1,
 				},
 			},

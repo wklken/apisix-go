@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -38,7 +39,7 @@ const (
 	dubboResponseNullAttach      = 5
 )
 
-var nextDubboRequestID uint64
+var nextDubboRequestID atomic.Uint64
 
 type targetSlot struct {
 	semaphore chan struct{}
@@ -111,13 +112,8 @@ func ServeDubboWithRetries(
 		return
 	}
 
-	attempts := retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
-	if attempts > maxDubboRetries+1 {
-		attempts = maxDubboRetries + 1
-	}
+	attempts := max(retries+1, 1)
+	attempts = min(attempts, maxDubboRetries+1)
 
 	var result dubboAttemptResult
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -139,7 +135,7 @@ func ServeDubboWithRetries(
 }
 
 type dubboAttemptResult struct {
-	response  map[string]interface{}
+	response  map[string]any
 	err       error
 	retryable bool
 }
@@ -157,7 +153,7 @@ func reportDubboOutcome(r *http.Request, result dubboAttemptResult) {
 		(errors.As(result.err, &netErr) && netErr.Timeout()))
 }
 
-func dubboResponseStatus(response map[string]interface{}) int {
+func dubboResponseStatus(response map[string]any) int {
 	if value, ok := response["status"]; ok {
 		if status, ok := hessianInteger(value); ok && status >= 100 && status <= 599 {
 			return int(status)
@@ -227,7 +223,7 @@ func buildDubboRequest(r *http.Request, cfg Config) ([]byte, error) {
 		return nil, err
 	}
 
-	httpContext := make(map[string]interface{}, len(r.Header)+2)
+	httpContext := make(map[string]any, len(r.Header)+2)
 	for name, values := range r.Header {
 		key := strings.ToLower(name)
 		if len(values) == 1 {
@@ -245,7 +241,7 @@ func buildDubboRequest(r *http.Request, cfg Config) ([]byte, error) {
 	httpContext["body"] = body
 
 	encoder := hessian.NewEncoder()
-	values := []interface{}{
+	values := []any{
 		"2.0.2",
 		cfg.ServiceName,
 		cfg.ServiceVersion,
@@ -263,13 +259,13 @@ func buildDubboRequest(r *http.Request, cfg Config) ([]byte, error) {
 	frame := make([]byte, 16+len(payload))
 	frame[0], frame[1] = dubboMagicHigh, dubboMagicLow
 	frame[2] = dubboHessian2RequestFlag
-	binary.BigEndian.PutUint64(frame[4:12], atomic.AddUint64(&nextDubboRequestID, 1))
+	binary.BigEndian.PutUint64(frame[4:12], nextDubboRequestID.Add(1))
 	binary.BigEndian.PutUint32(frame[12:16], uint32(len(payload)))
 	copy(frame[16:], payload)
 	return frame, nil
 }
 
-func readDubboResponse(conn net.Conn) (map[string]interface{}, error) {
+func readDubboResponse(conn net.Conn) (map[string]any, error) {
 	header := make([]byte, 16)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return nil, err
@@ -312,7 +308,7 @@ func readDubboResponse(conn net.Conn) (map[string]interface{}, error) {
 		}
 		return nil, fmt.Errorf("Dubbo provider exception: %v", exception)
 	case dubboResponseNullValue, dubboResponseNullAttach:
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	case dubboResponseValue, dubboResponseValueAttach:
 		value, err := decoder.Decode()
 		if err != nil {
@@ -324,7 +320,7 @@ func readDubboResponse(conn net.Conn) (map[string]interface{}, error) {
 	}
 }
 
-func writeDubboHTTPResponse(w http.ResponseWriter, response map[string]interface{}) error {
+func writeDubboHTTPResponse(w http.ResponseWriter, response map[string]any) error {
 	body, err := dubboBodyBytes(response["body"])
 	if err != nil {
 		return err
@@ -351,7 +347,7 @@ func writeDubboHTTPResponse(w http.ResponseWriter, response map[string]interface
 	return nil
 }
 
-func dubboBodyBytes(value interface{}) ([]byte, error) {
+func dubboBodyBytes(value any) ([]byte, error) {
 	switch body := value.(type) {
 	case nil:
 		return nil, nil
@@ -364,10 +360,10 @@ func dubboBodyBytes(value interface{}) ([]byte, error) {
 	}
 }
 
-func hessianStringMap(value interface{}) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
+func hessianStringMap(value any) (map[string]any, error) {
+	result := make(map[string]any)
 	switch typed := value.(type) {
-	case map[interface{}]interface{}:
+	case map[any]any:
 		for key, item := range typed {
 			name, ok := key.(string)
 			if !ok {
@@ -375,17 +371,15 @@ func hessianStringMap(value interface{}) (map[string]interface{}, error) {
 			}
 			result[name] = item
 		}
-	case map[string]interface{}:
-		for key, item := range typed {
-			result[key] = item
-		}
+	case map[string]any:
+		maps.Copy(result, typed)
 	default:
 		return nil, fmt.Errorf("Dubbo response is %T, want a map", value)
 	}
 	return result, nil
 }
 
-func hessianInteger(value interface{}) (int32, bool) {
+func hessianInteger(value any) (int32, bool) {
 	switch typed := value.(type) {
 	case int:
 		return int32(typed), true
@@ -411,7 +405,7 @@ func hessianInteger(value interface{}) (int32, bool) {
 	}
 }
 
-func hessianHeaderValue(value interface{}) string {
+func hessianHeaderValue(value any) string {
 	switch typed := value.(type) {
 	case []byte:
 		return string(typed)

@@ -15,8 +15,8 @@ type Config struct {
 	Plugins       []string  `mapstructure:"plugins"`
 	StreamPlugins []string  `mapstructure:"stream_plugins"`
 	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
-	PluginAttr map[string]map[string]interface{} `mapstructure:"plugin_attr"`
-	Deployment Deployment                        `mapstructure:"deployment"`
+	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr"`
+	Deployment Deployment                `mapstructure:"deployment"`
 }
 
 // section: apisix
@@ -139,7 +139,7 @@ type Proxy struct {
 
 // section: plugin_attr
 
-type PluginAttr map[string]interface{}
+type PluginAttr map[string]any
 
 // section: deployment
 
@@ -158,7 +158,7 @@ type RoleTraditionalConfig struct {
 
 // section: discovery
 
-type Discovery map[string]interface{}
+type Discovery map[string]any
 
 // section: graphql
 

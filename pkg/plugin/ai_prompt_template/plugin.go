@@ -99,7 +99,7 @@ type Message struct {
 
 var templateExprPattern = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -218,7 +218,7 @@ func renderString(text string, values map[string]any) string {
 
 func lookupValue(values map[string]any, expression string) (any, bool) {
 	var current any = values
-	for _, segment := range strings.Split(expression, ".") {
+	for segment := range strings.SplitSeq(expression, ".") {
 		key, indexes, ok := parseSegment(segment)
 		if !ok {
 			return nil, false

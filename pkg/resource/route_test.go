@@ -52,5 +52,5 @@ func TestUpstreamUnmarshalParsesBracketedIPv6Node(t *testing.T) {
 	}
 	if upstream.Nodes[0].Host != "[2001:db8::1]:8080" || upstream.Nodes[0].Port != 8080 {
 		t.Fatalf("upstream node = %#v, want original bracketed host and port 8080", upstream.Nodes[0])
-}
+	}
 }

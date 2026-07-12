@@ -110,8 +110,8 @@ type Plugin struct {
 type Metadata struct {
 	TraceIDSource      string                   `json:"trace_id_source,omitempty"`
 	Resource           map[string]any           `json:"resource,omitempty"`
-	Collector          CollectorConfig          `json:"collector,omitempty"`
-	BatchSpanProcessor BatchSpanProcessorConfig `json:"batch_span_processor,omitempty"`
+	Collector          CollectorConfig          `json:"collector"`
+	BatchSpanProcessor BatchSpanProcessorConfig `json:"batch_span_processor"`
 	SetNgxVar          bool                     `json:"set_ngx_var,omitempty"`
 }
 
@@ -130,7 +130,7 @@ type BatchSpanProcessorConfig struct {
 }
 
 type Config struct {
-	Sampler                          SamplerConfig `json:"sampler,omitempty"`
+	Sampler                          SamplerConfig `json:"sampler"`
 	AdditionalAttributes             []string      `json:"additional_attributes,omitempty"`
 	AdditionalHeaderPrefixAttributes []string      `json:"additional_header_prefix_attributes,omitempty"`
 	ServerName                       string        `json:"server_name,omitempty"`
@@ -138,24 +138,24 @@ type Config struct {
 
 type SamplerConfig struct {
 	Name    string         `json:"name,omitempty"`
-	Options SamplerOptions `json:"options,omitempty"`
+	Options SamplerOptions `json:"options"`
 }
 
 type SamplerOptions struct {
 	Fraction float64           `json:"fraction,omitempty"`
-	Root     RootSamplerConfig `json:"root,omitempty"`
+	Root     RootSamplerConfig `json:"root"`
 }
 
 type RootSamplerConfig struct {
 	Name    string             `json:"name,omitempty"`
-	Options RootSamplerOptions `json:"options,omitempty"`
+	Options RootSamplerOptions `json:"options"`
 }
 
 type RootSamplerOptions struct {
 	Fraction float64 `json:"fraction,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

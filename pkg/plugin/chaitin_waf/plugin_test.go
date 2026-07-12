@@ -42,8 +42,8 @@ func TestHandlerPassesAllowedRequestAndRestoresBody(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		Mode:                 "block",
-		AppendWAFRespHeader:  boolPtr(true),
-		AppendWAFDebugHeader: boolPtr(true),
+		AppendWAFRespHeader:  new(true),
+		AppendWAFDebugHeader: new(true),
 		Nodes:                []Node{nodeFromURL(t, waf.URL)},
 	})
 
@@ -86,8 +86,8 @@ func TestHandlerBlocksRejectedRequest(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		Mode:                 "block",
-		AppendWAFRespHeader:  boolPtr(true),
-		AppendWAFDebugHeader: boolPtr(false),
+		AppendWAFRespHeader:  new(true),
+		AppendWAFDebugHeader: new(false),
 		Nodes:                []Node{nodeFromURL(t, waf.URL)},
 	})
 
@@ -119,7 +119,7 @@ func TestHandlerMonitorModeDoesNotBlockRejectedRequest(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		Mode:                "monitor",
-		AppendWAFRespHeader: boolPtr(true),
+		AppendWAFRespHeader: new(true),
 		Nodes:               []Node{nodeFromURL(t, waf.URL)},
 	})
 
@@ -155,7 +155,7 @@ func TestHandlerOffAndNoMatchSkipWAF(t *testing.T) {
 
 	offPlugin := newTestPlugin(t, Config{
 		Mode:                "off",
-		AppendWAFRespHeader: boolPtr(true),
+		AppendWAFRespHeader: new(true),
 		Nodes:               []Node{nodeFromURL(t, waf.URL)},
 	})
 	rr := httptest.NewRecorder()
@@ -172,7 +172,7 @@ func TestHandlerOffAndNoMatchSkipWAF(t *testing.T) {
 
 	noMatchPlugin := newTestPlugin(t, Config{
 		Mode:                "monitor",
-		AppendWAFRespHeader: boolPtr(true),
+		AppendWAFRespHeader: new(true),
 		Nodes:               []Node{nodeFromURL(t, waf.URL)},
 		Match: []MatchRule{
 			{Vars: [][]any{{"method", "==", "POST"}}},
@@ -256,11 +256,11 @@ func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
 
 	p := newTestPlugin(t, Config{
 		Mode:                "monitor",
-		AppendWAFRespHeader: boolPtr(true),
+		AppendWAFRespHeader: new(true),
 		Nodes:               []Node{nodeFromURL(t, failedURL), nodeFromURL(t, healthy.URL)},
 	})
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader("a=1"))
 		res := httptest.NewRecorder()
 		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -319,14 +319,15 @@ func TestPostInitDefaults(t *testing.T) {
 		t.Fatal("real_client_ip = false, want true")
 	}
 
-	p = newTestPlugin(t, Config{Config: WAFConfig{RealClientIP: boolPtr(false)}})
+	p = newTestPlugin(t, Config{Config: WAFConfig{RealClientIP: new(false)}})
 	if p.config.Config.RealClientIP == nil || *p.config.Config.RealClientIP {
 		t.Fatal("real_client_ip = true, want explicit false")
 	}
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 func nodeFromURL(t *testing.T, rawURL string) Node {

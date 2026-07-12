@@ -35,7 +35,7 @@ type Config struct {
 
 type requestBufferingKey struct{}
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

@@ -225,13 +225,13 @@ func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
 	oldConfig := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = oldConfig })
 	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]interface{}{
+		PluginAttr: map[string]map[string]any{
 			name: {
 				"trace_id_source": "x-request-id",
-				"resource": map[string]interface{}{
+				"resource": map[string]any{
 					"service.name": "gateway",
 				},
-				"collector": map[string]interface{}{
+				"collector": map[string]any{
 					"address":         "collector.example.com:4318",
 					"request_timeout": 7,
 				},
@@ -313,9 +313,9 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 	oldConfig := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = oldConfig })
 	config.GlobalConfig = &config.Config{
-		PluginAttr: map[string]map[string]interface{}{
+		PluginAttr: map[string]map[string]any{
 			name: {
-				"collector": map[string]interface{}{"address": "://invalid"},
+				"collector": map[string]any{"address": "://invalid"},
 			},
 		},
 	}

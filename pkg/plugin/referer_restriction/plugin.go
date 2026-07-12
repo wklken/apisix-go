@@ -104,7 +104,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -162,8 +162,8 @@ func newHostMatcher(hosts []string) hostMatcher {
 		exact: make(map[string]struct{}, len(hosts)),
 	}
 	for _, host := range hosts {
-		if strings.HasPrefix(host, "*") {
-			matcher.suffixes = append(matcher.suffixes, strings.TrimPrefix(host, "*"))
+		if after, ok := strings.CutPrefix(host, "*"); ok {
+			matcher.suffixes = append(matcher.suffixes, after)
 			continue
 		}
 		matcher.exact[host] = struct{}{}

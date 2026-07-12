@@ -83,7 +83,7 @@ func TestServeDubboDecodesMapResponseIntoHTTP(t *testing.T) {
 		requests <- request
 		encoder := hessian.NewEncoder()
 		_ = encoder.Encode(int32(1))
-		_ = encoder.Encode(map[string]interface{}{
+		_ = encoder.Encode(map[string]any{
 			"status":   201,
 			"x-result": "ok",
 			"body":     []byte("hessian response"),
@@ -151,7 +151,7 @@ func TestServeDubboWithRetriesRetriesConnectFailure(t *testing.T) {
 		}
 		encoder := hessian.NewEncoder()
 		_ = encoder.Encode(int32(1))
-		_ = encoder.Encode(map[string]interface{}{"body": "retry-success"})
+		_ = encoder.Encode(map[string]any{"body": "retry-success"})
 		_ = writeDubboFrameForTest(conn, 20, encoder.Buffer())
 	})
 	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "1.0.0", Method: "call"})
@@ -202,7 +202,7 @@ func TestServeDubboWithRetriesDoesNotRetryAfterRequestWrite(t *testing.T) {
 func TestPostInitLoadsDubboMultiplexLimit(t *testing.T) {
 	oldConfig := appconfig.GlobalConfig
 	appconfig.GlobalConfig = &appconfig.Config{
-		PluginAttr: map[string]map[string]interface{}{
+		PluginAttr: map[string]map[string]any{
 			"dubbo-proxy": {"upstream_multiplex_count": 3},
 		},
 	}
@@ -228,9 +228,9 @@ func TestTargetLimiterHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-func hessianMapForTest(t *testing.T, value interface{}) map[interface{}]interface{} {
+func hessianMapForTest(t *testing.T, value any) map[any]any {
 	t.Helper()
-	result, ok := value.(map[interface{}]interface{})
+	result, ok := value.(map[any]any)
 	if !ok {
 		t.Fatalf("decoded map type = %T, want map[interface{}]interface{}", value)
 	}

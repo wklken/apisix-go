@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -179,7 +180,7 @@ type aliyunResponse struct {
 	} `json:"Data"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -545,7 +546,7 @@ func (p *Plugin) writeModeratedStream(
 
 func extractSSEText(protocol ai_protocols.Protocol, body []byte) string {
 	parts := make([]string, 0)
-	for _, line := range strings.Split(string(body), "\n") {
+	for line := range strings.SplitSeq(string(body), "\n") {
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == line || data == "" || data == "[DONE]" {
 			continue
@@ -584,7 +585,7 @@ func extractSSEEventText(protocol ai_protocols.Protocol, event map[string]any) s
 
 func addRiskLevelToFinalSSEPacket(body []byte, riskLevel string) []byte {
 	lines := strings.Split(string(body), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
+	for i := range slices.Backward(lines) {
 		trimmed := strings.TrimSpace(lines[i])
 		if !strings.HasPrefix(trimmed, "data:") {
 			continue
@@ -643,10 +644,7 @@ func (p *Plugin) moderateContent(
 	}
 	lastRiskLevel := ""
 	for start := 0; start < len(runes); start += lengthLimit {
-		end := start + lengthLimit
-		if end > len(runes) {
-			end = len(runes)
-		}
+		end := min(start+lengthLimit, len(runes))
 		hit, message, riskLevel, err := p.checkSingleContent(r, sessionID, string(runes[start:end]), serviceName)
 		if err != nil {
 			return 0, "", ""

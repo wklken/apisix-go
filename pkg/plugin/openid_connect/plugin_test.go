@@ -193,7 +193,9 @@ func TestDiscoveryUsesConfiguredHTTPProxy(t *testing.T) {
 		if request.requestTarget != "http://idp.example.test/.well-known/openid-configuration" {
 			t.Fatalf("proxy request target = %q, want absolute discovery URL", request.requestTarget)
 		}
-		if want := "Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:proxy-password")); request.proxyAuth != want {
+		if want := "Basic " + base64.StdEncoding.EncodeToString(
+			[]byte("proxy-user:proxy-password"),
+		); request.proxyAuth != want {
 			t.Fatalf("Proxy-Authorization = %q, want %q", request.proxyAuth, want)
 		}
 	default:
@@ -777,7 +779,11 @@ func TestHandlerCodeFlowPKCEExchangesMatchingVerifier(t *testing.T) {
 		t.Fatal("token request did not include code_verifier")
 	}
 	challenge := sha256.Sum256([]byte(verifier))
-	if got, want := authorizationURL.Query().Get("code_challenge"), base64.RawURLEncoding.EncodeToString(challenge[:]); got != want {
+	if got, want := authorizationURL.Query().
+		Get("code_challenge"),
+		base64.RawURLEncoding.EncodeToString(
+			challenge[:],
+		); got != want {
 		t.Fatalf("code_challenge = %q, want challenge for code_verifier", got)
 	}
 }
@@ -844,7 +850,9 @@ func TestHandlerCodeFlowSupportsPrivateKeyJWT(t *testing.T) {
 		if got := r.PostForm.Get("client_id"); got != "apisix" {
 			t.Fatalf("client_id = %q, want apisix", got)
 		}
-		if got := r.PostForm.Get("client_assertion_type"); got != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
+		if got := r.PostForm.Get(
+			"client_assertion_type",
+		); got != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
 			t.Fatalf("client_assertion_type = %q, want JWT bearer type", got)
 		}
 		assertion, err := parseJWT(r.PostForm.Get("client_assertion"))
@@ -1229,7 +1237,7 @@ func TestHandlerRenewsExpiredSessionAccessToken(t *testing.T) {
 func TestHandlerRefreshSessionIntervalSilentlyReauthenticates(t *testing.T) {
 	idp := newCodeFlowIDP(t, nil)
 	cfg := codeFlowConfig(idp.URL)
-	cfg.RefreshSessionInterval = intPtr(60)
+	cfg.RefreshSessionInterval = new(60)
 	p := newTestPlugin(t, cfg)
 
 	cookieRecorder := httptest.NewRecorder()
@@ -1438,7 +1446,7 @@ func TestSessionCookieHonorsConfiguredAttributesAndAbsoluteTimeout(t *testing.T)
 		CookiePath:      "/app",
 		CookieDomain:    "example.com",
 		CookieSecure:    true,
-		CookieHTTPOnly:  boolPtr(false),
+		CookieHTTPOnly:  new(false),
 		CookieSameSite:  "Strict",
 		AbsoluteTimeout: 3600,
 	}
@@ -1548,7 +1556,10 @@ func TestClearRedisSessionDeletesStoredState(t *testing.T) {
 	p.sessionStore = store
 
 	writer := httptest.NewRecorder()
-	if err := p.writeSession(writer, sessionData{CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix()}); err != nil {
+	if err := p.writeSession(
+		writer,
+		sessionData{CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix()},
+	); err != nil {
 		t.Fatalf("writeSession() error = %v", err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "https://example.com/logout", nil)
@@ -1592,7 +1603,7 @@ func codeFlowConfig(discovery string) Config {
 		ClientSecret:          "secret-a",
 		Discovery:             discovery + "/.well-known/openid-configuration",
 		Session:               SessionConfig{Secret: "0123456789abcdef"},
-		SetRefreshTokenHeader: boolPtr(true),
+		SetRefreshTokenHeader: new(true),
 	}
 }
 
@@ -1619,12 +1630,14 @@ func newCodeFlowIDP(t *testing.T, tokenHandler http.HandlerFunc) *httptest.Serve
 	}))
 }
 
+//go:fix inline
 func boolPtr(value bool) *bool {
-	return &value
+	return new(value)
 }
 
+//go:fix inline
 func intPtr(value int) *int {
-	return &value
+	return new(value)
 }
 
 func signRS256(t *testing.T, privateKey *rsa.PrivateKey, payload map[string]any) string {

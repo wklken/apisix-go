@@ -392,7 +392,7 @@ func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T)
 	calls := 0
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(fmt.Sprintf("generation-%d", calls)))
+		_, _ = w.Write(fmt.Appendf(nil, "generation-%d", calls))
 	})
 	firstHandler := firstPlugin.Handler(upstream)
 	first := performRequest(t, firstHandler, http.MethodGet, "/generation", nil)
@@ -400,7 +400,9 @@ func TestMemoryZoneRefreshWithChangedDefinitionStartsNewGeneration(t *testing.T)
 		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
 	}
 
-	if err := RefreshConfiguredZones([]appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "2M"}}); err != nil {
+	if err := RefreshConfiguredZones(
+		[]appconfig.Zone{{Name: "memory-refresh-generation", MemorySize: "2M"}},
+	); err != nil {
 		t.Fatalf("RefreshConfiguredZones() error = %v", err)
 	}
 	secondPlugin := newTestPlugin(t, Config{
@@ -835,7 +837,7 @@ func TestDiskCacheSetCookieIsNeverStored(t *testing.T) {
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Set-Cookie", fmt.Sprintf("visit=%d", calls))
-		_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+		_, _ = w.Write(fmt.Appendf(nil, "response-v%d", calls))
 	}))
 
 	first := performRequest(t, handler, http.MethodGet, "/disk-cache-cookie", nil)
@@ -859,7 +861,7 @@ func TestHandlerCacheControlRequestNoCacheBypassesStoredEntry(t *testing.T) {
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Cache-Control", "max-age=60")
-		_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+		_, _ = w.Write(fmt.Appendf(nil, "response-v%d", calls))
 	}))
 
 	first := performRequest(t, handler, http.MethodGet, "/cache-control", nil)
@@ -1093,7 +1095,7 @@ func TestHandlerCacheControlRequestFreshnessDirectivesForceStaleRefresh(t *testi
 			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				w.Header().Set("Cache-Control", "max-age=60")
-				_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+				_, _ = w.Write(fmt.Appendf(nil, "response-v%d", calls))
 			}))
 
 			first := performRequest(t, handler, http.MethodGet, "/request-freshness", nil)
@@ -1134,7 +1136,7 @@ func TestHandlerPurgesCachedEntry(t *testing.T) {
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(fmt.Sprintf("response-v%d", calls)))
+		_, _ = w.Write(fmt.Appendf(nil, "response-v%d", calls))
 	}))
 
 	first := performRequest(t, handler, http.MethodGet, "/purgeable", nil)

@@ -143,7 +143,7 @@ const schema = `
 `
 
 type Config struct {
-	Headers    Headers  `json:"headers,omitempty"`
+	Headers    Headers  `json:"headers"`
 	Body       *string  `json:"body,omitempty"`
 	BodySecret *string  `json:"body_secret,omitempty"`
 	BodyBase64 *bool    `json:"body_base64,omitempty"`
@@ -310,7 +310,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

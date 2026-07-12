@@ -1107,7 +1107,7 @@ func testDescriptorContent(t *testing.T) string {
 func streamingDescriptorContent(t *testing.T) string {
 	t.Helper()
 	fd := echoFileDescriptor()
-	fd.Service[0].Method[0].ServerStreaming = proto.Bool(true)
+	fd.Service[0].Method[0].ServerStreaming = new(true)
 	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{fd}}
 	raw, err := proto.Marshal(set)
 	if err != nil {
@@ -1118,162 +1118,162 @@ func streamingDescriptorContent(t *testing.T) string {
 
 func echoFileDescriptor() *descriptorpb.FileDescriptorProto {
 	return &descriptorpb.FileDescriptorProto{
-		Name:    proto.String("echo.proto"),
-		Package: proto.String("echo"),
-		Syntax:  proto.String("proto3"),
+		Name:    new("echo.proto"),
+		Package: new("echo"),
+		Syntax:  new("proto3"),
 		MessageType: []*descriptorpb.DescriptorProto{
 			{
-				Name: proto.String("EchoMsg"),
+				Name: new("EchoMsg"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					{
-						Name:     proto.String("msg"),
+						Name:     new("msg"),
 						Number:   proto.Int32(1),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
-						JsonName: proto.String("msg"),
+						JsonName: new("msg"),
 					},
 					{
-						Name:     proto.String("tags"),
+						Name:     new("tags"),
 						Number:   proto.Int32(2),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
-						JsonName: proto.String("tags"),
+						JsonName: new("tags"),
 					},
 					{
-						Name:     proto.String("options"),
+						Name:     new("options"),
 						Number:   proto.Int32(3),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-						TypeName: proto.String(".echo.EchoOptions"),
-						JsonName: proto.String("options"),
+						TypeName: new(".echo.EchoOptions"),
+						JsonName: new("options"),
 					},
 					{
-						Name:     proto.String("labels"),
+						Name:     new("labels"),
 						Number:   proto.Int32(4),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-						TypeName: proto.String(".echo.EchoMsg.LabelsEntry"),
-						JsonName: proto.String("labels"),
+						TypeName: new(".echo.EchoMsg.LabelsEntry"),
+						JsonName: new("labels"),
 					},
 					{
-						Name:     proto.String("mode"),
+						Name:     new("mode"),
 						Number:   proto.Int32(5),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(),
-						TypeName: proto.String(".echo.Mode"),
-						JsonName: proto.String("mode"),
+						TypeName: new(".echo.Mode"),
+						JsonName: new("mode"),
 					},
 					{
-						Name:     proto.String("id"),
+						Name:     new("id"),
 						Number:   proto.Int32(6),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
-						JsonName: proto.String("id"),
+						JsonName: new("id"),
 					},
 					{
-						Name:     proto.String("ids"),
+						Name:     new("ids"),
 						Number:   proto.Int32(7),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
-						JsonName: proto.String("ids"),
+						JsonName: new("ids"),
 					},
 					{
-						Name:     proto.String("counts"),
+						Name:     new("counts"),
 						Number:   proto.Int32(8),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-						TypeName: proto.String(".echo.EchoMsg.CountsEntry"),
-						JsonName: proto.String("counts"),
+						TypeName: new(".echo.EchoMsg.CountsEntry"),
+						JsonName: new("counts"),
 					},
 					{
-						Name:     proto.String("children"),
+						Name:     new("children"),
 						Number:   proto.Int32(9),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-						TypeName: proto.String(".echo.EchoOptions"),
-						JsonName: proto.String("children"),
+						TypeName: new(".echo.EchoOptions"),
+						JsonName: new("children"),
 					},
 				},
 				NestedType: []*descriptorpb.DescriptorProto{
 					{
-						Name: proto.String("LabelsEntry"),
+						Name: new("LabelsEntry"),
 						Field: []*descriptorpb.FieldDescriptorProto{
 							{
-								Name:     proto.String("key"),
+								Name:     new("key"),
 								Number:   proto.Int32(1),
 								Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 								Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
-								JsonName: proto.String("key"),
+								JsonName: new("key"),
 							},
 							{
-								Name:     proto.String("value"),
+								Name:     new("value"),
 								Number:   proto.Int32(2),
 								Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 								Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
-								JsonName: proto.String("value"),
+								JsonName: new("value"),
 							},
 						},
-						Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+						Options: &descriptorpb.MessageOptions{MapEntry: new(true)},
 					},
 					{
-						Name: proto.String("CountsEntry"),
+						Name: new("CountsEntry"),
 						Field: []*descriptorpb.FieldDescriptorProto{
 							{
-								Name:     proto.String("key"),
+								Name:     new("key"),
 								Number:   proto.Int32(1),
 								Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 								Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
-								JsonName: proto.String("key"),
+								JsonName: new("key"),
 							},
 							{
-								Name:     proto.String("value"),
+								Name:     new("value"),
 								Number:   proto.Int32(2),
 								Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 								Type:     descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
-								JsonName: proto.String("value"),
+								JsonName: new("value"),
 							},
 						},
-						Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+						Options: &descriptorpb.MessageOptions{MapEntry: new(true)},
 					},
 				},
 			},
 			{
-				Name: proto.String("EchoOptions"),
+				Name: new("EchoOptions"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					{
-						Name:     proto.String("alias"),
+						Name:     new("alias"),
 						Number:   proto.Int32(1),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
-						JsonName: proto.String("alias"),
+						JsonName: new("alias"),
 					},
 					{
-						Name:     proto.String("id"),
+						Name:     new("id"),
 						Number:   proto.Int32(2),
 						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:     descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
-						JsonName: proto.String("id"),
+						JsonName: new("id"),
 					},
 				},
 			},
 		},
 		EnumType: []*descriptorpb.EnumDescriptorProto{
 			{
-				Name: proto.String("Mode"),
+				Name: new("Mode"),
 				Value: []*descriptorpb.EnumValueDescriptorProto{
-					{Name: proto.String("MODE_UNSPECIFIED"), Number: proto.Int32(0)},
-					{Name: proto.String("MODE_ACTIVE"), Number: proto.Int32(1)},
+					{Name: new("MODE_UNSPECIFIED"), Number: proto.Int32(0)},
+					{Name: new("MODE_ACTIVE"), Number: proto.Int32(1)},
 				},
 			},
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
-				Name: proto.String("EchoService"),
+				Name: new("EchoService"),
 				Method: []*descriptorpb.MethodDescriptorProto{
 					{
-						Name:       proto.String("Echo"),
-						InputType:  proto.String(".echo.EchoMsg"),
-						OutputType: proto.String(".echo.EchoMsg"),
+						Name:       new("Echo"),
+						InputType:  new(".echo.EchoMsg"),
+						OutputType: new(".echo.EchoMsg"),
 					},
 				},
 			},
@@ -1355,11 +1355,11 @@ var echoGRPCServiceDescription = grpc.ServiceDesc{
 	Methods: []grpc.MethodDesc{{
 		MethodName: "Echo",
 		Handler: func(
-			srv interface{},
+			srv any,
 			ctx context.Context,
-			decode func(interface{}) error,
+			decode func(any) error,
 			interceptor grpc.UnaryServerInterceptor,
-		) (interface{}, error) {
+		) (any, error) {
 			descriptor, err := buildEchoMessageDescriptor()
 			if err != nil {
 				return nil, err
@@ -1372,7 +1372,7 @@ var echoGRPCServiceDescription = grpc.ServiceDesc{
 				return srv.(echoGRPCService).Echo(ctx, request)
 			}
 			info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/echo.EchoService/Echo"}
-			handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+			handler := func(ctx context.Context, req any) (any, error) {
 				return srv.(echoGRPCService).Echo(ctx, req.(*dynamicpb.Message))
 			}
 			return interceptor(ctx, request, info, handler)

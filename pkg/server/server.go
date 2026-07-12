@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -71,12 +72,7 @@ func pluginConfigured(name string) bool {
 	if config.GlobalConfig == nil {
 		return false
 	}
-	for _, configured := range config.GlobalConfig.Plugins {
-		if configured == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(config.GlobalConfig.Plugins, name)
 }
 
 func (s *Server) Start() {
@@ -347,7 +343,7 @@ type prometheusExportServerConfig struct {
 	ExportPort int
 }
 
-func newPrometheusExportServerConfig(attr map[string]interface{}) prometheusExportServerConfig {
+func newPrometheusExportServerConfig(attr map[string]any) prometheusExportServerConfig {
 	cfg := prometheusExportServerConfig{
 		Enabled:    true,
 		ExportURI:  "/apisix/prometheus/metrics",
@@ -371,7 +367,7 @@ func newPrometheusExportServerConfig(attr map[string]interface{}) prometheusExpo
 	if v, ok := attr["export_port"]; ok {
 		cfg.ExportPort = cast.ToInt(v)
 	}
-	if v, ok := attr["export_addr"].(map[string]interface{}); ok {
+	if v, ok := attr["export_addr"].(map[string]any); ok {
 		if ip, ok := v["ip"].(string); ok && ip != "" {
 			cfg.ExportIP = ip
 		}

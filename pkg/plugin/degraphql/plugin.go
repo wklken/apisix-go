@@ -54,7 +54,7 @@ type Config struct {
 	OperationName string   `json:"operation_name,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,8 +26,8 @@ type ActiveHealthCheck struct {
 	Port                   int                  `json:"port,omitempty"`
 	HTTPPath               string               `json:"http_path,omitempty"`
 	HTTPSVerifyCertificate *bool                `json:"https_verify_certificate,omitempty"`
-	Healthy                HealthyCheckPolicy   `json:"healthy,omitempty"`
-	Unhealthy              UnhealthyCheckPolicy `json:"unhealthy,omitempty"`
+	Healthy                HealthyCheckPolicy   `json:"healthy"`
+	Unhealthy              UnhealthyCheckPolicy `json:"unhealthy"`
 	ReqHeaders             []string             `json:"req_headers,omitempty"`
 }
 
@@ -307,10 +308,5 @@ func (p *Plugin) instanceHealthy(index int) bool {
 }
 
 func containsStatus(statuses []int, status int) bool {
-	for _, candidate := range statuses {
-		if candidate == status {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(statuses, status)
 }

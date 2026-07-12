@@ -209,7 +209,7 @@ type Config struct {
 	AuthConfig *AuthConfig       `json:"auth_config,omitempty"`
 	AuthFile   string            `json:"auth_file,omitempty"`
 	SSLVerify  *bool             `json:"ssl_verify,omitempty"`
-	Resource   MonitoredResource `json:"resource,omitempty"`
+	Resource   MonitoredResource `json:"resource"`
 	LogID      string            `json:"log_id,omitempty"`
 	LogFormat  map[string]string `json:"log_format,omitempty"`
 
@@ -272,7 +272,7 @@ func (w *responseRecorder) Write(body []byte) (int, error) {
 	return n, err
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

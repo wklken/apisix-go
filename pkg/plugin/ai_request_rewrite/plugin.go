@@ -159,7 +159,7 @@ type Config struct {
 	KeepaliveTimeout int            `json:"keepalive_timeout,omitempty"`
 	KeepalivePool    int            `json:"keepalive_pool,omitempty"`
 	SSLVerify        *bool          `json:"ssl_verify,omitempty"`
-	Override         Override       `json:"override,omitempty"`
+	Override         Override       `json:"override"`
 }
 
 type Auth struct {
@@ -173,7 +173,7 @@ type Override struct {
 	Endpoint string `json:"endpoint,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

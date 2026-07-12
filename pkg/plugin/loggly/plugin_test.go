@@ -551,7 +551,7 @@ func startUDPServerN(t *testing.T, count int) (string, <-chan string) {
 	received := make(chan string, count)
 	go func() {
 		buf := make([]byte, 4096)
-		for i := 0; i < count; i++ {
+		for range count {
 			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				return

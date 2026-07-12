@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -518,7 +519,7 @@ type responseRecorder struct {
 	wroteHeader bool
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -907,8 +908,8 @@ func parseDiskSize(value string) (int64, error) {
 		{suffix: "K", value: 1 << 10},
 		{suffix: "B", value: 1},
 	} {
-		if strings.HasSuffix(value, unit.suffix) {
-			value = strings.TrimSpace(strings.TrimSuffix(value, unit.suffix))
+		if before, ok := strings.CutSuffix(value, unit.suffix); ok {
+			value = strings.TrimSpace(before)
 			multiplier = unit.value
 			break
 		}
@@ -1331,13 +1332,7 @@ func (p *Plugin) forgetDiskEntryLocked(path string) {
 func (p *Plugin) updateVaryIndexLocked(key string, headers []string, signature string, expiresAt time.Time) {
 	index, ok := p.vary[key]
 	if ok && sameStringSlice(index.headers, headers) {
-		found := false
-		for _, existing := range index.signatures {
-			if existing == signature {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(index.signatures, signature)
 		if !found {
 			for len(index.signatures) >= maxVaryVariants {
 				evicted := index.signatures[0]
@@ -1369,8 +1364,8 @@ func (p *Plugin) updateVaryIndexLocked(key string, headers []string, signature s
 func (p *Plugin) cacheKey(r *http.Request) string {
 	var b strings.Builder
 	for _, part := range p.config.CacheKey {
-		if strings.HasPrefix(part, "$") {
-			b.WriteString(requestVar(r, strings.TrimPrefix(part, "$")))
+		if after, ok := strings.CutPrefix(part, "$"); ok {
+			b.WriteString(requestVar(r, after))
 			continue
 		}
 		b.WriteString(part)
@@ -1385,28 +1380,18 @@ func (p *Plugin) cacheKey(r *http.Request) string {
 }
 
 func (p *Plugin) cacheableMethod(method string) bool {
-	for _, allowed := range p.config.CacheMethod {
-		if method == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.config.CacheMethod, method)
 }
 
 func (p *Plugin) cacheableStatus(status int) bool {
-	for _, allowed := range p.config.CacheHTTPStatus {
-		if status == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.config.CacheHTTPStatus, status)
 }
 
 func (p *Plugin) hasTruthyValue(r *http.Request, values []string) bool {
 	for _, value := range values {
 		resolved := value
-		if strings.HasPrefix(value, "$") {
-			resolved = requestVar(r, strings.TrimPrefix(value, "$"))
+		if after, ok := strings.CutPrefix(value, "$"); ok {
+			resolved = requestVar(r, after)
 		}
 		if resolved != "" && resolved != "0" {
 			return true
@@ -1511,7 +1496,7 @@ func cacheControlValueHasDirective(value string, names ...string) bool {
 func cacheControlValueDirective(value string, names ...string) (string, bool) {
 	var found string
 	ok := false
-	for _, part := range strings.Split(value, ",") {
+	for part := range strings.SplitSeq(value, ",") {
 		directive := strings.ToLower(strings.TrimSpace(part))
 		if directive == "" {
 			continue
@@ -1573,10 +1558,7 @@ func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus st
 			w.Header().Add(field, value)
 		}
 	}
-	age := time.Since(entry.storedAt) / time.Second
-	if age < 0 {
-		age = 0
-	}
+	age := max(time.Since(entry.storedAt)/time.Second, 0)
 	w.Header().Set("Age", strconv.FormatInt(int64(age), 10))
 	w.Header().Set(cacheStatusHeader, cacheStatus)
 	w.WriteHeader(entry.status)
@@ -1600,7 +1582,7 @@ func parseVaryHeader(header http.Header) ([]string, bool) {
 	seen := map[string]struct{}{}
 	var headers []string
 	for _, value := range values {
-		for _, part := range strings.Split(value, ",") {
+		for part := range strings.SplitSeq(value, ",") {
 			name := strings.ToLower(strings.TrimSpace(part))
 			if name == "" {
 				continue

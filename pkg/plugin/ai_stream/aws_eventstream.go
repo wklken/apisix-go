@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"maps"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -169,9 +170,7 @@ func mergeBedrockEventStreamUsage(usage *Usage, headers map[string]any, payload 
 	if json.Unmarshal(payload, &metadata) != nil || metadata.Usage == nil {
 		return true
 	}
-	for key, value := range metadata.Usage {
-		usage.Raw[key] = value
-	}
+	maps.Copy(usage.Raw, metadata.Usage)
 	usage.PromptTokens = numericUsage(metadata.Usage["inputTokens"])
 	usage.CompletionTokens = numericUsage(metadata.Usage["outputTokens"])
 	return true

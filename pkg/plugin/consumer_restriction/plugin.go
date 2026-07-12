@@ -3,6 +3,7 @@ package consumer_restriction
 import (
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -165,7 +166,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -222,12 +223,7 @@ func isMethodAllowed(methods []AllowedByMethodsItem, method string, user string)
 	for _, m := range methods {
 		if m.User == user {
 			// FIXME: use map for better performance
-			for _, v := range m.Methods {
-				if v == method {
-					return true
-				}
-			}
-			return false
+			return slices.Contains(m.Methods, method)
 		}
 	}
 

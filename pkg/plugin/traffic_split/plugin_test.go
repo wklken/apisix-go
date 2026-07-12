@@ -222,10 +222,10 @@ func TestHandlerExcludesPassivelyUnhealthyInlineUpstream(t *testing.T) {
 					{Host: "one.example.com", Port: 80, Weight: 1},
 					{Host: "two.example.com", Port: 80, Weight: 1},
 				},
-				Checks: map[string]interface{}{
-					"passive": map[string]interface{}{
-						"unhealthy": map[string]interface{}{
-							"http_statuses": []interface{}{500},
+				Checks: map[string]any{
+					"passive": map[string]any{
+						"unhealthy": map[string]any{
+							"http_statuses": []any{500},
 							"http_failures": 1,
 						},
 					},

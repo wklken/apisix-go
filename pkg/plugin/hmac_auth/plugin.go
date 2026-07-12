@@ -13,6 +13,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -141,7 +142,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -275,12 +276,7 @@ func retrieveSignatureParams(r *http.Request) (signatureParams, error) {
 }
 
 func (p *Plugin) algorithmAllowed(algorithm string) bool {
-	for _, allowed := range p.config.AllowedAlgorithms {
-		if algorithm == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.config.AllowedAlgorithms, algorithm)
 }
 
 func (p *Plugin) validateClockSkew(date string) error {
@@ -332,14 +328,15 @@ func validateSignature(r *http.Request, secretKey string, params signatureParams
 }
 
 func generateSignature(r *http.Request, secretKey string, params signatureParams) ([]byte, error) {
-	signingString := params.KeyID + "\n"
+	var signingString strings.Builder
+	signingString.WriteString(params.KeyID + "\n")
 	for _, header := range params.Headers {
 		if header == "@request-target" {
-			signingString += r.Method + " " + requestURI(r) + "\n"
+			signingString.WriteString(r.Method + " " + requestURI(r) + "\n")
 			continue
 		}
 		if value := r.Header.Get(header); value != "" {
-			signingString += header + ": " + value + "\n"
+			signingString.WriteString(header + ": " + value + "\n")
 		}
 	}
 
@@ -348,7 +345,7 @@ func generateSignature(r *http.Request, secretKey string, params signatureParams
 		return nil, err
 	}
 	mac := hmac.New(hashFunc, []byte(secretKey))
-	mac.Write([]byte(signingString))
+	mac.Write([]byte(signingString.String()))
 	return mac.Sum(nil), nil
 }
 

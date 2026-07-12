@@ -141,7 +141,7 @@ type splunkEvent struct {
 	Event      map[string]any `json:"event"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

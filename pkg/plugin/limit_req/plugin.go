@@ -350,7 +350,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -513,10 +513,7 @@ func (p *Plugin) redisClusterOptions() *redis.ClusterOptions {
 }
 
 func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (time.Duration, bool, error) {
-	ttl := time.Duration(math.Ceil((burst+1)/rate)) * time.Second
-	if ttl < time.Second {
-		ttl = time.Second
-	}
+	ttl := max(time.Duration(math.Ceil((burst+1)/rate))*time.Second, time.Second)
 	now := l.now
 	if now == nil {
 		now = time.Now
@@ -596,8 +593,8 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 func requestVar(r *http.Request, key string) string {
 	key = strings.TrimPrefix(key, "$")
 
-	if strings.HasPrefix(key, "http_") {
-		header := strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-")
+	if after, ok := strings.CutPrefix(key, "http_"); ok {
+		header := strings.ReplaceAll(after, "_", "-")
 		return r.Header.Get(header)
 	}
 

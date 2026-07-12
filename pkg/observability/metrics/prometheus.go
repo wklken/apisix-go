@@ -67,7 +67,7 @@ type HTTPRequestMetrics struct {
 }
 
 func Init() {
-	var attr map[string]interface{}
+	var attr map[string]any
 	if config.GlobalConfig != nil {
 		attr = config.GlobalConfig.PluginAttr["prometheus"]
 	}
@@ -455,7 +455,7 @@ type prometheusMetricConfig struct {
 	ExtraLabels  map[string][]prometheusExtraLabel
 }
 
-func newPrometheusMetricConfig(attr map[string]interface{}) prometheusMetricConfig {
+func newPrometheusMetricConfig(attr map[string]any) prometheusMetricConfig {
 	cfg := prometheusMetricConfig{
 		MetricPrefix: "apisix_",
 		Buckets:      append([]float64(nil), defaultLatencyBuckets...),
@@ -478,8 +478,8 @@ func newPrometheusMetricConfig(attr map[string]interface{}) prometheusMetricConf
 	return cfg
 }
 
-func parseExtraLabels(raw interface{}) map[string][]prometheusExtraLabel {
-	metricConfigs, ok := raw.(map[string]interface{})
+func parseExtraLabels(raw any) map[string][]prometheusExtraLabel {
+	metricConfigs, ok := raw.(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -494,16 +494,16 @@ func parseExtraLabels(raw interface{}) map[string][]prometheusExtraLabel {
 		llmCompleteMetric,
 		llmActiveMetric,
 	} {
-		metricConfig, ok := metricConfigs[metricName].(map[string]interface{})
+		metricConfig, ok := metricConfigs[metricName].(map[string]any)
 		if !ok {
 			continue
 		}
-		labels, ok := metricConfig["extra_labels"].([]interface{})
+		labels, ok := metricConfig["extra_labels"].([]any)
 		if !ok {
 			continue
 		}
 		for _, rawLabel := range labels {
-			label, ok := rawLabel.(map[string]interface{})
+			label, ok := rawLabel.(map[string]any)
 			if !ok || len(label) != 1 {
 				continue
 			}
@@ -520,7 +520,7 @@ func parseExtraLabels(raw interface{}) map[string][]prometheusExtraLabel {
 	return result
 }
 
-func parseFloatBuckets(raw interface{}) ([]float64, bool) {
+func parseFloatBuckets(raw any) ([]float64, bool) {
 	if raw == nil {
 		return nil, false
 	}
@@ -531,7 +531,7 @@ func parseFloatBuckets(raw interface{}) ([]float64, bool) {
 			return nil, false
 		}
 		return append([]float64(nil), values...), true
-	case []interface{}:
+	case []any:
 		buckets := make([]float64, 0, len(values))
 		for _, value := range values {
 			bucket, err := cast.ToFloat64E(value)

@@ -163,7 +163,7 @@ func TestHandlerFallsBackToConfiguredOriginAfterMetadataMiss(t *testing.T) {
 
 func TestHandlerSetsTimingAllowOriginFromConfiguredOrigins(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		TimingAllowOrigins: stringPtr("https://client.example,https://other.example"),
+		TimingAllowOrigins: new("https://client.example,https://other.example"),
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req.Header.Set("Origin", "https://client.example")
@@ -180,7 +180,7 @@ func TestHandlerSetsTimingAllowOriginFromConfiguredOrigins(t *testing.T) {
 
 func TestHandlerSetsTimingAllowOriginFromRegex(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		TimingAllowOrigins:        stringPtr("https://client.example"),
+		TimingAllowOrigins:        new("https://client.example"),
 		TimingAllowOriginsByRegex: []string{`^https://.+\.timing\.example$`},
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
@@ -198,7 +198,7 @@ func TestHandlerSetsTimingAllowOriginFromRegex(t *testing.T) {
 
 func TestHandlerSkipsTimingAllowOriginWhenNotMatched(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		TimingAllowOrigins: stringPtr("https://client.example"),
+		TimingAllowOrigins: new("https://client.example"),
 	})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req.Header.Set("Origin", "https://blocked.example")
@@ -238,6 +238,7 @@ func TestHandlerDoesNotExposeHeadersByDefault(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func stringPtr(v string) *string {
-	return &v
+	return new(v)
 }

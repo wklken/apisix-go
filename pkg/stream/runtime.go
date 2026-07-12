@@ -123,11 +123,9 @@ func (r *Runtime) serveListener(listener net.Listener) {
 			return
 		}
 
-		r.wg.Add(1)
-		go func() {
-			defer r.wg.Done()
+		r.wg.Go(func() {
 			_ = r.router.Serve(r.ctx, listener, conn)
-		}()
+		})
 	}
 }
 

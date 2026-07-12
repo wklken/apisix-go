@@ -21,7 +21,7 @@ Key runtime pieces:
 
 - Use Go 1.26 as the project target from `go.mod`. Run `source .envrc` before Go commands; it keeps the toolchain, caches, temporary files, and installed binaries under the ignored checkout-local `.cache/` directory and does not depend on GVM or a user-level Go environment file.
 - Download dependencies after sourcing `.envrc`: `source .envrc && go mod download`.
-- Install formatting tools: `make init`.
+- Install the golangci-lint linter and formatter: `make init`.
 - Do not run `make dep` casually. It runs `go mod tidy` and `go mod vendor`; use it only when dependency or vendoring changes are intentional.
 
 ### Checkout-local Go cache
@@ -63,15 +63,15 @@ go test ./... -count=1
 - The repository contains focused unit, route-chain, protocol-fixture, and lifecycle tests across the supported plugin surface; `go test ./...` is the full repository gate, not only a compile smoke check.
 - For concurrency-sensitive changes, run the focused race gate as well, for example `source .envrc && go test -race ./pkg/etcd ./pkg/plugin/server_info ./pkg/server -count=1`.
 - Run a build smoke check for code changes: `source .envrc && make build`.
-- The Makefile has no `test` or `lint` targets. Do not invent them in status reports.
+- The Makefile has no `test` target; `make lint` runs golangci-lint with the repository configuration.
 - If a check already fails before your change, record the exact package, file, line, and message. Do not report a skipped or failing check as passing.
 - For docs-only changes, a markdown/diff review is enough unless the documented commands themselves changed.
 
 ## Code Style
 
 - Match existing Go style and package organization. Keep changes surgical.
-- Format touched Go files with the same tools as `make fmt`: `golines` with max line length 120 and `gofumpt`.
-- `make fmt` rewrites the tree. If you use it, inspect the diff and keep only changes related to the task.
+- Format touched Go files with `golangci-lint fmt`.
+- `golangci-lint fmt` rewrites the tree. If you use it, inspect the diff and keep only changes related to the task.
 - Prefer existing project dependencies and patterns before adding new packages.
 - Plugin package directories use snake_case, while APISIX plugin names in config use hyphenated names such as `key-auth`.
 - Plugin implementations usually embed `base.BasePlugin`, define `priority`, `name`, and `schema`, expose a config struct through `Config()`, and fill defaults in `PostInit()`.

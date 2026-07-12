@@ -117,7 +117,7 @@ type responseRecorder struct {
 	wroteHeader bool
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -351,7 +351,7 @@ func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http
 
 func responseCacheControlSkipsStore(header http.Header) bool {
 	for _, value := range header.Values("Cache-Control") {
-		for _, rawDirective := range strings.Split(value, ",") {
+		for rawDirective := range strings.SplitSeq(value, ",") {
 			directive := strings.TrimSpace(rawDirective)
 			if index := strings.IndexByte(directive, '='); index >= 0 {
 				directive = directive[:index]
@@ -488,7 +488,7 @@ func localCacheEntry(entry proxy_cache.SharedCacheEntry) cacheEntry {
 
 func diskResponseTTL(header http.Header, fallback time.Duration, now time.Time) time.Duration {
 	for _, value := range header.Values("Cache-Control") {
-		for _, rawDirective := range strings.Split(value, ",") {
+		for rawDirective := range strings.SplitSeq(value, ",") {
 			parts := strings.SplitN(strings.TrimSpace(rawDirective), "=", 2)
 			if len(parts) != 2 {
 				continue
@@ -1101,10 +1101,7 @@ func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus st
 			w.Header().Add(field, value)
 		}
 	}
-	age := time.Since(entry.storedAt) / time.Second
-	if age < 0 {
-		age = 0
-	}
+	age := max(time.Since(entry.storedAt)/time.Second, 0)
 	w.Header().Set("Age", fmt.Sprintf("%d", age))
 	w.Header().Set(cacheStatusHeader, cacheStatus)
 	w.Header().Set(cacheKeyHeader, cacheKey)

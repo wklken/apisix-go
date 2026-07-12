@@ -84,7 +84,7 @@ func TestHandlerUsesInstancePromptTokenQuota(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":3,"completion_tokens":20,"total_tokens":23}}`))
 	})
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		rr := httptest.NewRecorder()
 		req := WithPickedAIInstanceName(
 			httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
@@ -569,7 +569,7 @@ func TestHandlerAppliesIndependentRulesWithRuleHeaders(t *testing.T) {
 		return req
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		rr := httptest.NewRecorder()
 		p.Handler(upstream).ServeHTTP(rr, request())
 		if rr.Code != http.StatusOK {
@@ -779,7 +779,9 @@ func TestResponseTokenCostPreservesFixedStrategies(t *testing.T) {
 				TimeWindow:    60,
 				LimitStrategy: test.strategy,
 			}, time.Now)
-			if got := p.responseTokenCost([]byte(`{"usage":{"prompt_tokens":4,"completion_tokens":5,"total_tokens":9}}`)); got != test.want {
+			if got := p.responseTokenCost(
+				[]byte(`{"usage":{"prompt_tokens":4,"completion_tokens":5,"total_tokens":9}}`),
+			); got != test.want {
 				t.Fatalf("responseTokenCost() = %d, want %d", got, test.want)
 			}
 		})

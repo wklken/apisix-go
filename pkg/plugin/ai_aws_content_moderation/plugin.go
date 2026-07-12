@@ -120,7 +120,7 @@ type label struct {
 	Score float64 `json:"Score"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

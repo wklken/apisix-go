@@ -204,7 +204,7 @@ type lokiStream struct {
 	Values [][2]string       `json:"values"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -599,8 +599,8 @@ func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
 func (p *Plugin) resolveLabels(log map[string]any) map[string]string {
 	labels := make(map[string]string, len(p.config.LogLabels))
 	for key, value := range p.config.LogLabels {
-		if strings.HasPrefix(value, "$") {
-			if resolved, ok := log[strings.TrimPrefix(value, "$")]; ok {
+		if after, ok := strings.CutPrefix(value, "$"); ok {
+			if resolved, ok := log[after]; ok {
 				labels[key] = fmt.Sprint(resolved)
 				continue
 			}

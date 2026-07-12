@@ -217,7 +217,7 @@ var templatePattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 var randomEndpointIndex = rand.Intn
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -493,24 +493,24 @@ func requestVariable(r *http.Request, name string, status int, responseHeader ht
 	if name == "status" {
 		return status
 	}
-	if strings.HasPrefix(name, "arg_") {
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+	if after, ok := strings.CutPrefix(name, "arg_"); ok {
+		return r.URL.Query().Get(after)
 	}
-	if strings.HasPrefix(name, "cookie_") {
-		cookie, err := r.Cookie(strings.TrimPrefix(name, "cookie_"))
+	if after, ok := strings.CutPrefix(name, "cookie_"); ok {
+		cookie, err := r.Cookie(after)
 		if err != nil {
 			return ""
 		}
 		return cookie.Value
 	}
-	if strings.HasPrefix(name, "http_") {
-		return r.Header.Get(strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-"))
+	if after, ok := strings.CutPrefix(name, "http_"); ok {
+		return r.Header.Get(strings.ReplaceAll(after, "_", "-"))
 	}
-	if strings.HasPrefix(name, "sent_http_") {
-		return responseHeader.Get(strings.ReplaceAll(strings.TrimPrefix(name, "sent_http_"), "_", "-"))
+	if after, ok := strings.CutPrefix(name, "sent_http_"); ok {
+		return responseHeader.Get(strings.ReplaceAll(after, "_", "-"))
 	}
-	if strings.HasPrefix(name, "upstream_http_") {
-		return responseHeader.Get(strings.ReplaceAll(strings.TrimPrefix(name, "upstream_http_"), "_", "-"))
+	if after, ok := strings.CutPrefix(name, "upstream_http_"); ok {
+		return responseHeader.Get(strings.ReplaceAll(after, "_", "-"))
 	}
 
 	return log.GetField(r, "$"+name)

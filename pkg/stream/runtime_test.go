@@ -18,8 +18,7 @@ func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
 	secondUpstream, secondAddr := startStreamUpstream(t, []byte("second-response"))
 	defer secondUpstream.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	results := make(chan Result, 2)
 	runtime, err := NewRuntime(
 		ctx,
@@ -151,10 +150,22 @@ func TestRuntimeCancellationBoundsBackpressure(t *testing.T) {
 }
 
 func TestNewRuntimeRejectsTLSAndInvalidAddress(t *testing.T) {
-	if _, err := NewRuntime(context.Background(), []config.TcpListen{{Addr: "127.0.0.1:0", Tls: true}}, nil, nil, nil); err == nil {
+	if _, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "127.0.0.1:0", Tls: true}},
+		nil,
+		nil,
+		nil,
+	); err == nil {
 		t.Fatal("NewRuntime() accepted unsupported TLS listener")
 	}
-	if _, err := NewRuntime(context.Background(), []config.TcpListen{{Addr: "not-an-address"}}, nil, nil, nil); err == nil {
+	if _, err := NewRuntime(
+		context.Background(),
+		[]config.TcpListen{{Addr: "not-an-address"}},
+		nil,
+		nil,
+		nil,
+	); err == nil {
 		t.Fatal("NewRuntime() accepted invalid listener address")
 	}
 }

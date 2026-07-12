@@ -97,7 +97,7 @@ type regexURIPair struct {
 type HeaderValues map[string]string
 
 func (h *HeaderValues) UnmarshalJSON(data []byte) error {
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -172,7 +172,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		uri, captures := p.rewriteURI(p.rewriteSourceURI(r))
 		p.config.Headers.apply(r, captures)
 
-		data := map[string]interface{}{
+		data := map[string]any{
 			"uri":     uri,
 			"method":  p.config.Method,
 			"host":    p.config.Host,

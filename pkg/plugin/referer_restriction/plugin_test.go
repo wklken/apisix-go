@@ -88,7 +88,10 @@ func TestSchemaValidatesHostDefinitions(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	if err := util.Validate(map[string]any{"whitelist": []any{"*.example.com", "example.org:8443"}}, p.GetSchema()); err != nil {
+	if err := util.Validate(
+		map[string]any{"whitelist": []any{"*.example.com", "example.org:8443"}},
+		p.GetSchema(),
+	); err != nil {
 		t.Fatalf("valid host definitions should pass schema: %v", err)
 	}
 	if err := util.Validate(map[string]any{"whitelist": []any{"https://example.org/path"}}, p.GetSchema()); err == nil {

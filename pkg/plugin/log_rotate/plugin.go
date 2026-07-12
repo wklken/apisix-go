@@ -78,7 +78,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -253,7 +253,7 @@ func (p *Plugin) pruneHistory(file logFile) error {
 	return nil
 }
 
-func intFromAttr(attr map[string]interface{}, key string) int {
+func intFromAttr(attr map[string]any, key string) int {
 	value, ok := attr[key]
 	if !ok {
 		return 0

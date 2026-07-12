@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -222,8 +223,8 @@ type Config struct {
 	ProviderConf             map[string]any `json:"provider_conf,omitempty"`
 	Auth                     Auth           `json:"auth"`
 	Options                  map[string]any `json:"options,omitempty"`
-	Override                 Override       `json:"override,omitempty"`
-	Logging                  Logging        `json:"logging,omitempty"`
+	Override                 Override       `json:"override"`
+	Logging                  Logging        `json:"logging"`
 	Timeout                  int            `json:"timeout,omitempty"`
 	MaxReqBodySize           int64          `json:"max_req_body_size,omitempty"`
 	MaxStreamDurationMS      int            `json:"max_stream_duration_ms,omitempty"`
@@ -244,7 +245,7 @@ type Auth struct {
 
 type Override struct {
 	Endpoint                 string         `json:"endpoint,omitempty"`
-	LLMOptions               LLMOptions     `json:"llm_options,omitempty"`
+	LLMOptions               LLMOptions     `json:"llm_options"`
 	RequestBody              map[string]any `json:"request_body,omitempty"`
 	RequestBodyForceOverride *bool          `json:"request_body_force_override,omitempty"`
 }
@@ -258,7 +259,7 @@ type Logging struct {
 	Payloads  bool `json:"payloads,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -502,9 +503,7 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, e
 	if err != nil {
 		return nil, ai_protocols.Protocol{}, err
 	}
-	for key, value := range p.config.Options {
-		bodyTab[key] = value
-	}
+	maps.Copy(bodyTab, p.config.Options)
 	if protocol != ai_protocols.AnthropicMessages || !providerUsesOpenAIChat(p.config.Provider) {
 		p.applyLLMOptions(bodyTab, protocol)
 		p.applyRequestBodyOverride(bodyTab, protocol)
@@ -680,7 +679,14 @@ func (p *Plugin) buildProviderRequest(
 	}
 	if p.config.Provider == "bedrock" {
 		region, _ := p.config.ProviderConf["region"].(string)
-		if err := ai_auth.SignAWSRequest(req, providerBody, *p.config.Auth.AWS, region, "bedrock", p.now()); err != nil {
+		if err := ai_auth.SignAWSRequest(
+			req,
+			providerBody,
+			*p.config.Auth.AWS,
+			region,
+			"bedrock",
+			p.now(),
+		); err != nil {
 			return nil, fmt.Errorf("sign Bedrock request: %w", err)
 		}
 	}

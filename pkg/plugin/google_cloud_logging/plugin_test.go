@@ -457,7 +457,7 @@ func TestSendBatchReusesCachedAccessToken(t *testing.T) {
 		t.Fatalf("second SendBatch() error = %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case auth := <-entryRequests:
 			if auth != "Bearer token-a" {
@@ -516,7 +516,7 @@ func TestSendBatchRefreshesExpiredAccessToken(t *testing.T) {
 		t.Fatalf("second SendBatch() error = %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		select {
 		case <-tokenRequests:
 		case <-time.After(2 * time.Second):

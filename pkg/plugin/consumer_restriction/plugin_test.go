@@ -23,7 +23,9 @@ func TestMissingConsumerReturnsOfficialMessage(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Missing authentication or identity verification."}` {
+	if got := strings.TrimSpace(
+		rr.Body.String(),
+	); got != `{"message":"Missing authentication or identity verification."}` {
 		t.Fatalf("body = %q", got)
 	}
 	if got := rr.Header().Get("Content-Type"); got != "application/json" {

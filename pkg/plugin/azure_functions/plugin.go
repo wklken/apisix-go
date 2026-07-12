@@ -106,7 +106,7 @@ func (p *Plugin) PostInit() error {
 	return p.Plugin.PostInit()
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

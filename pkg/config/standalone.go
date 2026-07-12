@@ -105,20 +105,20 @@ type PluginMetadata struct {
 }
 
 // MarshalYAML is serializing method for plugin_metadata
-func (pm *PluginMetadata) MarshalYAML() (interface{}, error) {
+func (pm *PluginMetadata) MarshalYAML() (any, error) {
 	by, err := json.Marshal(pm.RawExtension)
 	if err != nil {
 		return nil, err
 	}
-	var resMap map[string]interface{}
+	var resMap map[string]any
 	json.Unmarshal(by, &resMap)
 	resMap["id"] = pm.ID
 	return resMap, nil
 }
 
 // UnmarshalYAML is serializing method for plugin_metadata
-func (pm *PluginMetadata) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var resMap map[string]interface{}
+func (pm *PluginMetadata) UnmarshalYAML(unmarshal func(any) error) error {
+	var resMap map[string]any
 	err := unmarshal(&resMap)
 	if err != nil {
 		return err

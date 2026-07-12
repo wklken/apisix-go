@@ -118,7 +118,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -228,7 +228,7 @@ func (p *Plugin) checkPermission(
 
 	client := p.clientForConfig(cfg)
 	var resp *http.Response
-	for attempt := 0; attempt < wolfRetryMax; attempt++ {
+	for attempt := range wolfRetryMax {
 		response, err := client.Do(req)
 		if err != nil {
 			return 0, "", nil, fmt.Errorf("request to wolf-server failed, err:%w", err)

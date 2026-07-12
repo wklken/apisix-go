@@ -91,7 +91,7 @@ func (p *Plugin) PostInit() error {
 	return err
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

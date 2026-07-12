@@ -2,6 +2,7 @@ package route
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -40,12 +41,7 @@ func pluginEnabled(name string) bool {
 	if config.GlobalConfig == nil {
 		return false
 	}
-	for _, plugin := range config.GlobalConfig.Plugins {
-		if plugin == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(config.GlobalConfig.Plugins, name)
 }
 
 func batchRequestsURI() string {

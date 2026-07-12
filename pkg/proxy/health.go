@@ -97,7 +97,7 @@ func healthStateFromRequest(r *http.Request) (*healthRequestState, bool) {
 // NewUpstreamLoadBalance builds the common upstream selector. A passive
 // checks block enables local health state; active-only checks retain the
 // existing weighted selector until an explicit active-probe owner exists.
-func NewUpstreamLoadBalance(servers map[string]int, checks map[string]interface{}) (LoadBalancer, error) {
+func NewUpstreamLoadBalance(servers map[string]int, checks map[string]any) (LoadBalancer, error) {
 	if _, hasPassive := checks["passive"]; !hasPassive {
 		return NewWeightedRRLoadBalance(servers), nil
 	}
@@ -134,7 +134,7 @@ type HealthAwareLoadBalance struct {
 	mu       sync.Mutex
 }
 
-func NewHealthAwareLoadBalance(servers map[string]int, checks map[string]interface{}) (*HealthAwareLoadBalance, error) {
+func NewHealthAwareLoadBalance(servers map[string]int, checks map[string]any) (*HealthAwareLoadBalance, error) {
 	config, err := parsePassiveHealthConfig(checks)
 	if err != nil {
 		return nil, err
@@ -233,7 +233,7 @@ func (lb *HealthAwareLoadBalance) IsHealthy(target string) bool {
 	return ok && !state.unhealthy
 }
 
-func parsePassiveHealthConfig(checks map[string]interface{}) (PassiveHealthConfig, error) {
+func parsePassiveHealthConfig(checks map[string]any) (PassiveHealthConfig, error) {
 	config := PassiveHealthConfig{
 		Type:              "http",
 		HealthyStatuses:   defaultHealthyStatuses(),
@@ -304,18 +304,18 @@ func parsePassiveHealthConfig(checks map[string]interface{}) (PassiveHealthConfi
 	return config, nil
 }
 
-func healthMap(value interface{}, field string) (map[string]interface{}, error) {
-	if result, ok := value.(map[string]interface{}); ok {
+func healthMap(value any, field string) (map[string]any, error) {
+	if result, ok := value.(map[string]any); ok {
 		return result, nil
 	}
 	return nil, fmt.Errorf("%s must be an object", field)
 }
 
-func parseStatusSet(value interface{}, field string) (map[int]struct{}, error) {
-	values, ok := value.([]interface{})
+func parseStatusSet(value any, field string) (map[int]struct{}, error) {
+	values, ok := value.([]any)
 	if !ok {
 		if ints, ok := value.([]int); ok {
-			values = make([]interface{}, len(ints))
+			values = make([]any, len(ints))
 			for index, item := range ints {
 				values[index] = item
 			}
@@ -337,7 +337,7 @@ func parseStatusSet(value interface{}, field string) (map[int]struct{}, error) {
 	return result, nil
 }
 
-func nonNegativeInt(value interface{}, field string) (int, error) {
+func nonNegativeInt(value any, field string) (int, error) {
 	var result int
 	switch typed := value.(type) {
 	case int:

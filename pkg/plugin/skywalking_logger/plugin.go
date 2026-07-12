@@ -177,7 +177,7 @@ type jsonWrapper struct {
 	JSON string `json:"json"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

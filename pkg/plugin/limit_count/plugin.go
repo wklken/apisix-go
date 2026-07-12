@@ -347,8 +347,8 @@ type Config struct {
 	RedisClusterName      string             `json:"redis_cluster_name,omitempty"`
 	RedisClusterSSL       *bool              `json:"redis_cluster_ssl,omitempty"`
 	RedisClusterSSLVerify *bool              `json:"redis_cluster_ssl_verify,omitempty"`
-	Redis                 RedisConfig        `json:"redis_config,omitempty"`
-	RedisCluster          RedisClusterConfig `json:"redis_cluster_config,omitempty"`
+	Redis                 RedisConfig        `json:"redis_config"`
+	RedisCluster          RedisClusterConfig `json:"redis_cluster_config"`
 	Rules                 []Rule             `json:"rules,omitempty"`
 
 	rejectBody string
@@ -804,7 +804,7 @@ func numericLimitValue(value any, name string) (int64, error) {
 	}
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -1066,8 +1066,8 @@ func ruleHeaders(rule Rule, index int) quotaHeaders {
 func requestVar(r *http.Request, key string) string {
 	key = strings.TrimPrefix(key, "$")
 
-	if strings.HasPrefix(key, "http_") {
-		header := strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-")
+	if after, ok := strings.CutPrefix(key, "http_"); ok {
+		header := strings.ReplaceAll(after, "_", "-")
 		return r.Header.Get(header)
 	}
 

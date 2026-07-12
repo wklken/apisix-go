@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -241,9 +242,7 @@ func (s *anthropicStreamState) flushPendingStop() []anthropicSSEEvent {
 }
 
 func (s *anthropicStreamState) mergeUsage(raw map[string]any) {
-	for key, value := range raw {
-		s.usage.Raw[key] = value
-	}
+	maps.Copy(s.usage.Raw, raw)
 	s.usage.PromptTokens = numericUsage(raw["prompt_tokens"])
 	s.usage.CompletionTokens = numericUsage(raw["completion_tokens"])
 	if model := stringValue(raw["model"]); model != "" {
@@ -252,14 +251,8 @@ func (s *anthropicStreamState) mergeUsage(raw map[string]any) {
 }
 
 func (s *anthropicStreamState) anthropicUsage() map[string]any {
-	prompt := s.usage.PromptTokens
-	if prompt < 0 {
-		prompt = 0
-	}
-	completion := s.usage.CompletionTokens
-	if completion < 0 {
-		completion = 0
-	}
+	prompt := max(s.usage.PromptTokens, 0)
+	completion := max(s.usage.CompletionTokens, 0)
 	usage := map[string]any{"input_tokens": prompt, "output_tokens": completion}
 	if details, ok := s.usage.Raw["prompt_tokens_details"].(map[string]any); ok {
 		cached := numericUsage(details["cached_tokens"])

@@ -147,7 +147,7 @@ type sessionPayload struct {
 	ExpiresAt int64          `json:"expires_at"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

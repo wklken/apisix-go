@@ -2,6 +2,7 @@ package ai_protocols
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 
@@ -445,9 +446,7 @@ func IsStreaming(protocol Protocol, body map[string]any) bool {
 }
 
 func copySimpleOptions(body map[string]any, options map[string]any) {
-	for key, value := range options {
-		body[key] = value
-	}
+	maps.Copy(body, options)
 }
 
 func ExtractResponseMetadata(protocol Protocol, body []byte) ResponseMetadata {

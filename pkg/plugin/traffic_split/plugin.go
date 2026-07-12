@@ -134,16 +134,16 @@ type WeightedUpstream struct {
 }
 
 type Upstream struct {
-	Type         string                 `json:"type,omitempty"`
-	Scheme       string                 `json:"scheme,omitempty"`
-	PassHost     string                 `json:"pass_host,omitempty"`
-	UpstreamHost string                 `json:"upstream_host,omitempty"`
-	HashOn       string                 `json:"hash_on,omitempty"`
-	Key          string                 `json:"key,omitempty"`
-	Timeout      resource.Timeout       `json:"timeout,omitempty"`
-	Retries      int                    `json:"retries,omitempty"`
-	Checks       map[string]interface{} `json:"checks,omitempty"`
-	Nodes        []Node                 `json:"nodes,omitempty"`
+	Type         string           `json:"type,omitempty"`
+	Scheme       string           `json:"scheme,omitempty"`
+	PassHost     string           `json:"pass_host,omitempty"`
+	UpstreamHost string           `json:"upstream_host,omitempty"`
+	HashOn       string           `json:"hash_on,omitempty"`
+	Key          string           `json:"key,omitempty"`
+	Timeout      resource.Timeout `json:"timeout"`
+	Retries      int              `json:"retries,omitempty"`
+	Checks       map[string]any   `json:"checks,omitempty"`
+	Nodes        []Node           `json:"nodes,omitempty"`
 }
 
 type Node struct {
@@ -398,7 +398,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

@@ -155,7 +155,7 @@ type Config struct {
 	InactiveTimeout int `json:"inactive_timeout,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

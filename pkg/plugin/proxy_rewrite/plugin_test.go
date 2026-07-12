@@ -25,10 +25,10 @@ func TestHandlerDerivesURIFromRegexURI(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		RegexURI: []string{`^/users/(\d+)/profile$`, `/profiles/$1`},
 	})
-	var rewrite map[string]interface{}
+	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]interface{})
+		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/users/42/profile", nil)
@@ -43,10 +43,10 @@ func TestHandlerUsesFirstMatchingRegexURIPair(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		RegexURI: []string{`^/orders/(\d+)$`, `/primary/$1`, `^/orders/(\d+)$`, `/fallback/$1`},
 	})
-	var rewrite map[string]interface{}
+	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]interface{})
+		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/orders/7", nil)
@@ -62,10 +62,10 @@ func TestHandlerURIHasPriorityOverRegexURI(t *testing.T) {
 		Uri:      "/static",
 		RegexURI: []string{`^/users/(\d+)$`, `/profiles/$1`},
 	})
-	var rewrite map[string]interface{}
+	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]interface{})
+		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
@@ -80,10 +80,10 @@ func TestHandlerUsesRealRequestURIUnsafeAsRewriteSource(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		UseRealRequestURIUnsafe: true,
 	})
-	var rewrite map[string]interface{}
+	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]interface{})
+		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/files/%2Fraw?download=1", nil)
@@ -99,10 +99,10 @@ func TestHandlerRegexURIMatchesRealRequestURIUnsafe(t *testing.T) {
 		UseRealRequestURIUnsafe: true,
 		RegexURI:                []string{`^/api/(.*)\?token=.*$`, `/private/$1?token=redacted`},
 	})
-	var rewrite map[string]interface{}
+	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]interface{})
+		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1?token=abc", nil)

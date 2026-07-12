@@ -214,7 +214,7 @@ func wildcardCredentialOption(config Config) bool {
 	return config.TimingAllowOrigins != nil && *config.TimingAllowOrigins == "*"
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -237,7 +237,7 @@ func (p *Plugin) allowOrigin(origin string) bool {
 			return false
 		}
 	}
-	for _, allowedOrigin := range strings.Split(p.config.AllowOrigins, ",") {
+	for allowedOrigin := range strings.SplitSeq(p.config.AllowOrigins, ",") {
 		if allowedOrigin == "*" || allowedOrigin == origin {
 			return true
 		}
@@ -285,7 +285,7 @@ func (p *Plugin) timingAllowOrigin(origin string) (string, bool) {
 }
 
 func matchConfiguredOrigin(origin string, configured string) (string, bool) {
-	for _, allowedOrigin := range strings.Split(configured, ",") {
+	for allowedOrigin := range strings.SplitSeq(configured, ",") {
 		switch allowedOrigin {
 		case "*":
 			return "*", true

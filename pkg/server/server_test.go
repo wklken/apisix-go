@@ -23,10 +23,10 @@ func TestPrometheusExportServerConfigDefaults(t *testing.T) {
 }
 
 func TestPrometheusExportServerConfigUsesOfficialPluginAttr(t *testing.T) {
-	cfg := newPrometheusExportServerConfig(map[string]interface{}{
+	cfg := newPrometheusExportServerConfig(map[string]any{
 		"enable_export_server": false,
 		"export_uri":           "/metrics",
-		"export_addr": map[string]interface{}{
+		"export_addr": map[string]any{
 			"ip":   "0.0.0.0",
 			"port": 19091,
 		},

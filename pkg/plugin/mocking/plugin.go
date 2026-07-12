@@ -119,7 +119,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -228,8 +228,8 @@ func generateObject(property map[string]any) map[string]any {
 }
 
 func parseContentType(contentType string) string {
-	if index := strings.Index(contentType, ";"); index >= 0 {
-		return strings.TrimSpace(contentType[:index])
+	if before, _, ok := strings.Cut(contentType, ";"); ok {
+		return strings.TrimSpace(before)
 	}
 	return strings.TrimSpace(contentType)
 }
@@ -259,7 +259,7 @@ func writeXMLValue(buf *bytes.Buffer, name string, value any) {
 			writeXMLValue(buf, "item", item)
 		}
 	default:
-		_ = xml.EscapeText(buf, []byte(fmt.Sprint(typed)))
+		_ = xml.EscapeText(buf, fmt.Append(nil, typed))
 	}
 	buf.WriteString("</")
 	buf.WriteString(name)

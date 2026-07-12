@@ -294,13 +294,14 @@ func signatureHeader(
 ) string {
 	t.Helper()
 
-	signingString := keyID + "\n"
+	var signingString strings.Builder
+	signingString.WriteString(keyID + "\n")
 	for _, header := range signedHeaders {
-		signingString += header + ": " + values[header] + "\n"
+		signingString.WriteString(header + ": " + values[header] + "\n")
 	}
 
 	mac := hmac.New(testHashForAlgorithm(t, algorithm), []byte(secret))
-	mac.Write([]byte(signingString))
+	mac.Write([]byte(signingString.String()))
 	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	return fmt.Sprintf(

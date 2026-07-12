@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -141,7 +142,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -222,10 +223,8 @@ func containsValue(wantValues []string, value any) bool {
 func containsValueWithParser(wantValues []string, value any, parser, separator string) bool {
 	values := extractValuesWithParser(value, parser, separator)
 	for _, want := range wantValues {
-		for _, got := range values {
-			if want == got {
-				return true
-			}
+		if slices.Contains(values, want) {
+			return true
 		}
 	}
 	return false
@@ -274,8 +273,8 @@ func externalUserField(user any, path string) (any, bool) {
 	}
 
 	path = strings.TrimSpace(path)
-	if strings.HasPrefix(path, "$..") {
-		fieldPath := strings.TrimPrefix(path, "$..")
+	if after, ok0 := strings.CutPrefix(path, "$.."); ok0 {
+		fieldPath := after
 		if fieldPath == "" {
 			return nil, false
 		}
@@ -295,7 +294,7 @@ func externalUserField(user any, path string) (any, bool) {
 	}
 
 	var current any = object
-	for _, segment := range strings.Split(path, ".") {
+	for segment := range strings.SplitSeq(path, ".") {
 		segment = strings.TrimSpace(segment)
 		if segment == "" {
 			return nil, false

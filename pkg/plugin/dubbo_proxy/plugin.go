@@ -64,7 +64,7 @@ func GetConfig(r *http.Request) (Config, bool) {
 	return cfg, ok
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

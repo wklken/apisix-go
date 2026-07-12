@@ -434,7 +434,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -956,8 +956,8 @@ func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, 
 func requestVar(r *http.Request, key string) string {
 	key = strings.TrimPrefix(key, "$")
 
-	if strings.HasPrefix(key, "http_") {
-		header := strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-")
+	if after, ok := strings.CutPrefix(key, "http_"); ok {
+		header := strings.ReplaceAll(after, "_", "-")
 		return r.Header.Get(header)
 	}
 

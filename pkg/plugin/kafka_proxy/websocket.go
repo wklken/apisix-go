@@ -56,7 +56,7 @@ func IsWebSocketUpgrade(r *http.Request) bool {
 }
 
 func headerContainsToken(value, token string) bool {
-	for _, item := range strings.Split(value, ",") {
+	for item := range strings.SplitSeq(value, ",") {
 		if strings.EqualFold(strings.TrimSpace(item), token) {
 			return true
 		}

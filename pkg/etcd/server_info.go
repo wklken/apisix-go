@@ -107,10 +107,7 @@ func (r *ServerInfoReporter) Start(ctx context.Context, provider func() ([]byte,
 		return err
 	}
 
-	interval := time.Duration(r.ttl) * time.Second / 2
-	if interval < time.Second {
-		interval = time.Second
-	}
+	interval := max(time.Duration(r.ttl)*time.Second/2, time.Second)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

@@ -97,7 +97,7 @@ func startRouteHessianDubboTestServer(t *testing.T) string {
 		}
 		encoder := hessian.NewEncoder()
 		_ = encoder.Encode(int32(1))
-		_ = encoder.Encode(map[string]interface{}{"body": "from hessian upstream"})
+		_ = encoder.Encode(map[string]any{"body": "from hessian upstream"})
 		frame := make([]byte, 16+len(encoder.Buffer()))
 		frame[0], frame[1], frame[2], frame[3] = 0xda, 0xbb, 0x02, 20
 		binary.BigEndian.PutUint64(frame[4:12], 1)

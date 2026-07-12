@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -194,7 +195,7 @@ func (p *Plugin) PostInit() error {
 
 var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -222,11 +223,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// stats the status code
 		switch {
 		case containsStatus(p.config.Unhealthy.HTTPStatuses, status):
-			p.cb.Execute(func() (interface{}, error) {
+			p.cb.Execute(func() (any, error) {
 				return nil, fmt.Errorf("unhealthy status")
 			})
 		case containsStatus(p.config.Healthy.HTTPStatuses, status):
-			p.cb.Execute(func() (interface{}, error) {
+			p.cb.Execute(func() (any, error) {
 				return nil, nil
 			})
 		}
@@ -235,12 +236,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func containsStatus(statuses []int, status int) bool {
-	for _, s := range statuses {
-		if status == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(statuses, status)
 }
 
 func resolveHeaderValue(r *http.Request, value string) string {

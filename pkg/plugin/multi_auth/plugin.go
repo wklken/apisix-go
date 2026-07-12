@@ -49,7 +49,7 @@ type AuthPluginConfig map[string]map[string]any
 type authPlugin interface {
 	Init() error
 	PostInit() error
-	Config() interface{}
+	Config() any
 	GetSchema() string
 	Handler(http.Handler) http.Handler
 }
@@ -104,7 +104,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

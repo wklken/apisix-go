@@ -35,7 +35,7 @@ func (e *Event) String() string {
 
 // add a event pool here, for new, save
 var eventPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &Event{}
 	},
 }

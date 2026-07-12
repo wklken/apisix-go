@@ -17,10 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -270,7 +272,7 @@ type Config struct {
 	ClientRSAPrivateKeyID            string         `json:"client_rsa_private_key_id,omitempty"`
 	ClientJWTAssertionExpiresIn      int            `json:"client_jwt_assertion_expires_in,omitempty"`
 	BearerOnly                       bool           `json:"bearer_only,omitempty"`
-	Session                          SessionConfig  `json:"session,omitempty"`
+	Session                          SessionConfig  `json:"session"`
 	ProxyOpts                        *ProxyOptions  `json:"proxy_opts,omitempty"`
 	Realm                            string         `json:"realm,omitempty"`
 	RequiredScopes                   []string       `json:"required_scopes,omitempty"`
@@ -605,7 +607,7 @@ func (p *Plugin) configureRedisSessionStore() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -810,9 +812,7 @@ func (p *Plugin) beginAuthorization(
 		return
 	}
 	query := authorizationURL.Query()
-	for key, values := range parameters {
-		query[key] = values
-	}
+	maps.Copy(query, parameters)
 	authorizationURL.RawQuery = query.Encode()
 	http.Redirect(w, r, authorizationURL.String(), http.StatusFound)
 }
@@ -1221,7 +1221,12 @@ func (p *Plugin) writeSession(w http.ResponseWriter, session sessionData) error 
 				return err
 			}
 		}
-		if err := p.sessionStore.Set(context.Background(), p.redisSessionKey(redisID), value, p.sessionStorageTTL(session)); err != nil {
+		if err := p.sessionStore.Set(
+			context.Background(),
+			p.redisSessionKey(redisID),
+			value,
+			p.sessionStorageTTL(session),
+		); err != nil {
 			return err
 		}
 		value, err = p.sealSession([]byte(redisID))
@@ -1478,10 +1483,8 @@ func audienceMatchesClientID(value any, clientID string) bool {
 			}
 		}
 	case []string:
-		for _, item := range typed {
-			if item == clientID {
-				return true
-			}
+		if slices.Contains(typed, clientID) {
+			return true
 		}
 	}
 	return false
@@ -1925,7 +1928,7 @@ func (p *Plugin) configureProxy() error {
 	if err != nil {
 		return fmt.Errorf("invalid proxy_opts.https_proxy: %w", err)
 	}
-	for _, host := range strings.Split(p.config.ProxyOpts.NoProxy, ",") {
+	for host := range strings.SplitSeq(p.config.ProxyOpts.NoProxy, ",") {
 		if host = strings.TrimSpace(strings.ToLower(host)); host != "" {
 			p.noProxy = append(p.noProxy, strings.TrimPrefix(host, "."))
 		}
@@ -2005,7 +2008,7 @@ func requiredScopesPresent(required []string, claims map[string]any) bool {
 
 	available := map[string]struct{}{}
 	if scope, ok := claims["scope"].(string); ok {
-		for _, item := range strings.Fields(scope) {
+		for item := range strings.FieldsSeq(scope) {
 			available[item] = struct{}{}
 		}
 	}

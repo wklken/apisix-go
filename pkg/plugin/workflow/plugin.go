@@ -107,7 +107,7 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

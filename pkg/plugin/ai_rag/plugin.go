@@ -95,7 +95,7 @@ type AzureProvider struct {
 	APIKey   string `json:"api_key"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

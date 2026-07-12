@@ -99,7 +99,7 @@ func GetConfig(r *http.Request) (Config, bool) {
 	return cfg, ok
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -146,13 +146,8 @@ func ServeDubboWithRetries(
 	cfg Config,
 	retries int,
 ) {
-	attempts := retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
-	if attempts > maxDubboRetries+1 {
-		attempts = maxDubboRetries + 1
-	}
+	attempts := max(retries+1, 1)
+	attempts = min(attempts, maxDubboRetries+1)
 
 	var result dubboAttemptResult
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -220,7 +215,9 @@ func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptR
 	stopClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
 	defer stopClose()
 
-	if err := conn.SetWriteDeadline(dubboDeadline(r.Context(), time.Duration(cfg.SendTimeout)*time.Millisecond)); err != nil {
+	if err := conn.SetWriteDeadline(
+		dubboDeadline(r.Context(), time.Duration(cfg.SendTimeout)*time.Millisecond),
+	); err != nil {
 		return dubboAttemptResult{
 			err:       fmt.Errorf("failed to set upstream write deadline: %w", err),
 			retryable: true,
@@ -237,7 +234,9 @@ func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptR
 		return dubboAttemptResult{err: io.ErrShortWrite}
 	}
 
-	if err := conn.SetReadDeadline(dubboDeadline(r.Context(), time.Duration(cfg.ReadTimeout)*time.Millisecond)); err != nil {
+	if err := conn.SetReadDeadline(
+		dubboDeadline(r.Context(), time.Duration(cfg.ReadTimeout)*time.Millisecond),
+	); err != nil {
 		return dubboAttemptResult{err: fmt.Errorf("failed to set upstream read deadline: %w", err)}
 	}
 	status, body, err := readDubboResponse(conn)

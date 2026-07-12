@@ -188,7 +188,7 @@ type Config struct {
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

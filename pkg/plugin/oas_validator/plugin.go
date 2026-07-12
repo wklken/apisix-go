@@ -130,7 +130,7 @@ type Metadata struct {
 
 type openAPISpec struct {
 	Paths      map[string]pathItem `json:"paths"`
-	Components components          `json:"components,omitempty"`
+	Components components          `json:"components"`
 }
 
 type components struct {
@@ -193,7 +193,7 @@ type compiledOperation struct {
 	body       *requestBody
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -564,7 +564,7 @@ func jsonPointer(document any, fragment string) (any, error) {
 		return nil, fmt.Errorf("unsupported JSON pointer %q", fragment)
 	}
 	current := document
-	for _, part := range strings.Split(strings.TrimPrefix(fragment, "#/"), "/") {
+	for part := range strings.SplitSeq(strings.TrimPrefix(fragment, "#/"), "/") {
 		part, err := url.PathUnescape(part)
 		if err != nil {
 			return nil, fmt.Errorf("invalid JSON pointer %q: %w", fragment, err)
@@ -1132,7 +1132,7 @@ func parseRepeatedDelimitedArray(values []string, style string, schema map[strin
 	}
 	items := make([]any, 0, len(values))
 	for _, value := range values {
-		for _, item := range strings.Split(value, delimiter) {
+		for item := range strings.SplitSeq(value, delimiter) {
 			items = append(items, item)
 		}
 	}

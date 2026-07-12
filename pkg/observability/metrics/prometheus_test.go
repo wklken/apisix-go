@@ -57,15 +57,15 @@ func gaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 }
 
 func TestPrometheusMetricConfigParsesOfficialPluginAttr(t *testing.T) {
-	cfg := newPrometheusMetricConfig(map[string]interface{}{
+	cfg := newPrometheusMetricConfig(map[string]any{
 		"metric_prefix":       "gateway_",
-		"default_buckets":     []interface{}{10, 50.5, int64(100), "200"},
-		"llm_latency_buckets": []interface{}{5, 25, 125},
-		"metrics": map[string]interface{}{
-			"http_status": map[string]interface{}{
-				"extra_labels": []interface{}{
-					map[string]interface{}{"upstream_addr": "$upstream_addr"},
-					map[string]interface{}{"method": "$request_method"},
+		"default_buckets":     []any{10, 50.5, int64(100), "200"},
+		"llm_latency_buckets": []any{5, 25, 125},
+		"metrics": map[string]any{
+			"http_status": map[string]any{
+				"extra_labels": []any{
+					map[string]any{"upstream_addr": "$upstream_addr"},
+					map[string]any{"method": "$request_method"},
 				},
 			},
 		},
@@ -113,8 +113,8 @@ func TestPrometheusExtraLabelValuesUseRequestAndBoundedHTTPVariables(t *testing.
 }
 
 func TestPrometheusMetricConfigKeepsDefaultsForInvalidBuckets(t *testing.T) {
-	cfg := newPrometheusMetricConfig(map[string]interface{}{
-		"default_buckets": []interface{}{10, "not-a-number"},
+	cfg := newPrometheusMetricConfig(map[string]any{
+		"default_buckets": []any{10, "not-a-number"},
 	})
 
 	if !reflect.DeepEqual(cfg.Buckets, defaultLatencyBuckets) {

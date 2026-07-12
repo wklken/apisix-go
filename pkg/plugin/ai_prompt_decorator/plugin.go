@@ -75,7 +75,7 @@ type Config struct {
 
 type Message = ai_protocols.Message
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

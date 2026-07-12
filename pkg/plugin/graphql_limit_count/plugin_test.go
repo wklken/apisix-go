@@ -229,7 +229,7 @@ func TestHandlerAllowsDegradationWhenRedisLimiterFails(t *testing.T) {
 		Key:              "remote_addr",
 		Policy:           "redis",
 		RedisHost:        "127.0.0.1",
-		AllowDegradation: boolPtr(true),
+		AllowDegradation: new(true),
 	})
 	p.redisLimiter = &fakeRedisLimiter{err: errors.New("redis down")}
 
@@ -301,7 +301,7 @@ func TestHandlerLimitsJSONGraphQLByDepthCost(t *testing.T) {
 		TimeWindow:           60,
 		Key:                  "remote_addr",
 		RejectedCode:         http.StatusTooManyRequests,
-		ShowLimitQuotaHeader: boolPtr(true),
+		ShowLimitQuotaHeader: new(true),
 	})
 
 	req := httptest.NewRequest(
@@ -678,8 +678,9 @@ func TestWindowResetsAfterTimeWindow(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(value bool) *bool {
-	return &value
+	return new(value)
 }
 
 func resetGroupCountersForTest() {

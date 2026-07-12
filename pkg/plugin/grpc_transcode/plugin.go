@@ -256,7 +256,7 @@ var grpcStatusToHTTPStatus = map[string]int{
 	"16": http.StatusUnauthorized,
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 

@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"math/rand"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -79,7 +80,7 @@ type RangeID struct {
 	CharSet string `json:"char_set"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -156,7 +157,7 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 	id := p.bytePool.Get()
 	defer p.bytePool.Put(id)
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		id[i] = charSet[rand.Intn(len(charSet))]
 	}
 
@@ -190,7 +191,7 @@ func encodeBase62(value []byte) string {
 	remaining := new(big.Int).SetBytes(value)
 	base := big.NewInt(int64(len(ksuidAlphabet)))
 	encoded := make([]byte, 27)
-	for index := len(encoded) - 1; index >= 0; index-- {
+	for index := range slices.Backward(encoded) {
 		digit := new(big.Int)
 		remaining.QuoRem(remaining, base, digit)
 		encoded[index] = ksuidAlphabet[digit.Int64()]

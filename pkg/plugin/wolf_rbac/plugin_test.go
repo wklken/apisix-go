@@ -197,7 +197,9 @@ func TestHandlerPropagatesWolfDenial(t *testing.T) {
 }
 
 func TestFetchTokenFromQueryAndCookie(t *testing.T) {
-	if got := fetchRBACToken(httptest.NewRequest(http.MethodGet, "/?rbac_token=V1%23app%23query", nil)); got != "V1#app#query" {
+	if got := fetchRBACToken(
+		httptest.NewRequest(http.MethodGet, "/?rbac_token=V1%23app%23query", nil),
+	); got != "V1#app#query" {
 		t.Fatalf("query token = %q", got)
 	}
 
@@ -218,7 +220,7 @@ func TestCheckPermissionHonorsSSLVerifyFalse(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
 	status, _, _, err := p.checkPermission(request, consumerConfig{
 		Server:    wolf.URL,
-		SSLVerify: boolPtr(false),
+		SSLVerify: new(false),
 	}, rbacToken{AppID: "app-a", WolfToken: "token-a"})
 	if err != nil {
 		t.Fatalf("checkPermission() error = %v", err)
@@ -326,8 +328,9 @@ func TestWolfRBACLoginPublicAPIForwardsCredentialsAndWrapsToken(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(value bool) *bool {
-	return &value
+	return new(value)
 }
 
 func performRequest(t *testing.T, p *Plugin, token string) *httptest.ResponseRecorder {

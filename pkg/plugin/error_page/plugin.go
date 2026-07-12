@@ -27,10 +27,10 @@ type Config struct{}
 
 type Metadata struct {
 	Enable   bool      `json:"enable,omitempty"`
-	Error404 ErrorPage `json:"error_404,omitempty"`
-	Error500 ErrorPage `json:"error_500,omitempty"`
-	Error502 ErrorPage `json:"error_502,omitempty"`
-	Error503 ErrorPage `json:"error_503,omitempty"`
+	Error404 ErrorPage `json:"error_404"`
+	Error500 ErrorPage `json:"error_500"`
+	Error502 ErrorPage `json:"error_502"`
+	Error503 ErrorPage `json:"error_503"`
 }
 
 type ErrorPage struct {
@@ -54,14 +54,14 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := newResponseRecorder()
-			next.ServeHTTP(recorder, r)
+		next.ServeHTTP(recorder, r)
 
 		p.rewrite(r, recorder)
 		recorder.writeTo(w)

@@ -207,7 +207,7 @@ func PickedAIInstanceName(r *http.Request) (string, bool) {
 	return ai_runtime.SelectedInstanceName(r)
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -552,8 +552,8 @@ func positiveQuotaValue(value int64, name string) (int64, error) {
 
 func requestVariable(r *http.Request, key string) string {
 	key = strings.TrimPrefix(key, "$")
-	if strings.HasPrefix(key, "http_") {
-		return r.Header.Get(strings.ReplaceAll(strings.TrimPrefix(key, "http_"), "_", "-"))
+	if after, ok := strings.CutPrefix(key, "http_"); ok {
+		return r.Header.Get(strings.ReplaceAll(after, "_", "-"))
 	}
 
 	variableName := "$" + key
@@ -777,10 +777,7 @@ func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 	}
 
 	used, reset := p.snapshot(q)
-	remaining := q.limit - used
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(q.limit-used, 0)
 	if q.headerPrefix != "" {
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Limit", strconv.FormatInt(q.limit, 10))
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Remaining", strconv.FormatInt(remaining, 10))

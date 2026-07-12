@@ -115,7 +115,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -232,7 +232,7 @@ func parseURLValues(raw string, maxArgs int) (url.Values, error) {
 
 	values := url.Values{}
 	parsed := 0
-	for _, pair := range strings.Split(raw, "&") {
+	for pair := range strings.SplitSeq(raw, "&") {
 		if pair == "" {
 			continue
 		}
@@ -484,13 +484,13 @@ func parseJSONPath(path string) []pathSegment {
 		return "." + matches[2]
 	})
 	recursive := false
-	if strings.HasPrefix(path, "$..") {
-		path = strings.TrimPrefix(path, "$..")
+	if after, ok := strings.CutPrefix(path, "$.."); ok {
+		path = after
 		recursive = true
-	} else if strings.HasPrefix(path, "$.") {
-		path = strings.TrimPrefix(path, "$.")
-	} else if strings.HasPrefix(path, "$") {
-		path = strings.TrimPrefix(path, "$")
+	} else if after, ok := strings.CutPrefix(path, "$."); ok {
+		path = after
+	} else if after, ok := strings.CutPrefix(path, "$"); ok {
+		path = after
 		path = strings.TrimPrefix(path, ".")
 	}
 	if path == "" {
@@ -516,8 +516,8 @@ func parseJSONPath(path string) []pathSegment {
 
 func parsePathSegment(part string) (pathSegment, bool) {
 	segment := pathSegment{name: part}
-	if strings.HasSuffix(part, "[*]") {
-		segment.name = strings.TrimSuffix(part, "[*]")
+	if before, ok := strings.CutSuffix(part, "[*]"); ok {
+		segment.name = before
 		segment.each = true
 		return segment, segment.name != "" || segment.each
 	}

@@ -28,7 +28,7 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	vary := true
 	p := newTestPlugin(t, Config{
 		Types:     []string{"text/plain"},
-		MinLength: intPtr(5),
+		MinLength: new(5),
 		Vary:      &vary,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/text", nil)
@@ -105,7 +105,7 @@ func TestHandlerSkipsSmallOrAlreadyEncodedResponses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newTestPlugin(t, Config{
 				Types:     []string{"text/plain"},
-				MinLength: intPtr(tt.minLength),
+				MinLength: new(tt.minLength),
 			})
 			req := httptest.NewRequest(http.MethodGet, "/text", nil)
 			req.Header.Set("Accept-Encoding", "br")
@@ -129,7 +129,7 @@ func TestHandlerSkipsSmallOrAlreadyEncodedResponses(t *testing.T) {
 }
 
 func TestHandlerSupportsWildcardAcceptEncodingAndType(t *testing.T) {
-	p := newTestPlugin(t, Config{Types: []string{"*"}, MinLength: intPtr(1)})
+	p := newTestPlugin(t, Config{Types: []string{"*"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/json", nil)
 	req.Header.Set("Accept-Encoding", "*")
 	res := httptest.NewRecorder()
@@ -148,7 +148,7 @@ func TestHandlerSupportsWildcardAcceptEncodingAndType(t *testing.T) {
 }
 
 func TestHandlerAcceptsPositiveBrotliQuality(t *testing.T) {
-	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: intPtr(1)})
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/text", nil)
 	req.Header.Set("Accept-Encoding", "gzip, br;q=0.5")
 	res := httptest.NewRecorder()
@@ -165,8 +165,8 @@ func TestHandlerAcceptsPositiveBrotliQuality(t *testing.T) {
 
 func TestWriterOptionsApplyCompressionLevelAndWindow(t *testing.T) {
 	p := newTestPlugin(t, Config{
-		CompLevel: intPtr(9),
-		LGWin:     intPtr(22),
+		CompLevel: new(9),
+		LGWin:     new(22),
 	})
 
 	options := p.writerOptions()
@@ -185,6 +185,7 @@ func decodeBrotli(t *testing.T, body []byte) string {
 	return string(decoded)
 }
 
+//go:fix inline
 func intPtr(v int) *int {
-	return &v
+	return new(v)
 }

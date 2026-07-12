@@ -29,7 +29,7 @@ func TestUnauthenticatedRequestRedirectsToCASLogin(t *testing.T) {
 		LogoutURI:      "/logout",
 		Cookie: CookieConfig{
 			Secret: strings.Repeat("s", 32),
-			Secure: boolPtr(false),
+			Secure: new(false),
 		},
 	})
 
@@ -83,7 +83,7 @@ func TestCallbackValidatesTicketAndCreatesSession(t *testing.T) {
 		LogoutURI:      "/logout",
 		Cookie: CookieConfig{
 			Secret: strings.Repeat("s", 32),
-			Secure: boolPtr(false),
+			Secure: new(false),
 		},
 	})
 
@@ -131,7 +131,7 @@ func TestExistingSessionPassesRequest(t *testing.T) {
 		LogoutURI:      "/logout",
 		Cookie: CookieConfig{
 			Secret: strings.Repeat("s", 32),
-			Secure: boolPtr(false),
+			Secure: new(false),
 		},
 	})
 	sessionName := p.sessionOptions().cookieName
@@ -161,7 +161,7 @@ func TestIdPLogoutRequestDeletesMatchingCASSession(t *testing.T) {
 		LogoutURI:      "/logout",
 		Cookie: CookieConfig{
 			Secret: strings.Repeat("s", 32),
-			Secure: boolPtr(false),
+			Secure: new(false),
 		},
 	})
 	p.storeSession("ST-1", "alice")
@@ -196,7 +196,7 @@ func TestLogoutDeletesSessionAndRedirectsToCASLogout(t *testing.T) {
 		LogoutURI:      "/logout",
 		Cookie: CookieConfig{
 			Secret: strings.Repeat("s", 32),
-			Secure: boolPtr(false),
+			Secure: new(false),
 		},
 	})
 	sessionName := p.sessionOptions().cookieName
@@ -224,8 +224,9 @@ func TestLogoutDeletesSessionAndRedirectsToCASLogout(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func boolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 func findSetCookie(cookies []*http.Cookie, name string) *http.Cookie {

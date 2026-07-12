@@ -149,7 +149,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -178,7 +178,7 @@ func (p *Plugin) shouldConsiderRequest(r *http.Request) bool {
 }
 
 func acceptsBrotli(acceptEncoding string) bool {
-	for _, part := range strings.Split(acceptEncoding, ",") {
+	for part := range strings.SplitSeq(acceptEncoding, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -197,7 +197,7 @@ func acceptsBrotli(acceptEncoding string) bool {
 }
 
 func qualityIsZero(params string) bool {
-	for _, param := range strings.Split(params, ";") {
+	for param := range strings.SplitSeq(params, ";") {
 		key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
 		if !ok || key != "q" {
 			continue

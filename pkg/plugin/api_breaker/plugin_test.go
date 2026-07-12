@@ -9,8 +9,9 @@ import (
 	"github.com/sony/gobreaker"
 )
 
+//go:fix inline
 func intPtr(value int) *int {
-	return &value
+	return new(value)
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -37,7 +38,7 @@ func TestHandlerResolvesBreakResponseHeaders(t *testing.T) {
 		},
 		Unhealthy: UnHealthCheck{
 			HTTPStatuses: []int{http.StatusInternalServerError},
-			Failures:     intPtr(1),
+			Failures:     new(1),
 		},
 	})
 
@@ -84,11 +85,11 @@ func TestHandlerUsesConfiguredHealthyStatusesForRecovery(t *testing.T) {
 		MaxBreakerSec:     1,
 		Unhealthy: UnHealthCheck{
 			HTTPStatuses: []int{http.StatusInternalServerError},
-			Failures:     intPtr(1),
+			Failures:     new(1),
 		},
 		Healthy: HealthCheck{
 			HTTPStatuses: []int{http.StatusNoContent},
-			Successes:    intPtr(1),
+			Successes:    new(1),
 		},
 	})
 

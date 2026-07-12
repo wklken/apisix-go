@@ -4,6 +4,12 @@ This is an [apache/apisix](https://github.com/apache/apisix) Data Plane(DP) impl
 
 This project is still under development and NOT READY FOR PRODUCTION!
 
+## APISIX 3.17 parity status
+
+The current Go-native parity baseline registers 100 of the 104 APISIX 3.17 default plugins (96.2%). The checklist tracks 89 plugins at the current supported monitoring level and 9 explicit native/runtime or separate-subsystem deferrals. The four missing registrations—`ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`—depend on external plugin runners or Lua/OpenResty features.
+
+The detailed status is maintained in the [parity checklist](docs/apisix-3.17-plugin-parity-checklist.md), [execution TODO](docs/apisix-3.17-plugin-parity-execution-todo.md), and [remaining gap catalog](docs/apisix-3.17-remaining-plugin-todo.md). Protocol-specific boundaries are documented in [the protocol bridge design](docs/apisix-3.17-protocol-bridge-design.md).
+
 ## Features
 
 - Small binary size and image size (<100M)
@@ -20,10 +26,10 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] Global Rules
 - [x] Plugin Attr
 - [x] Consumer
+- [x] Consumer Group (store/resource support and `consumer-restriction` path)
 - [x] Plugin Config
-- [ ] Consumer Group
 - [ ] Script
-- [ ] Secret
+- [ ] Secret (generic secret resource is not complete; plugin-level APISIX data-encryption fields are supported)
 
 ### Local Go environment
 
@@ -38,7 +44,7 @@ The checkout-local `.cache/` directory contains the Go toolchain download, modul
 
 ## Plugins
 
-> still working on it
+> Go-native APISIX 3.17 behavior is implemented and tested for the supported surface; limitations below are intentional runtime/native or separate-subsystem boundaries.
 
 APISIX 3.17 coverage is tracked in the [parity checklist](docs/apisix-3.17-plugin-parity-checklist.md), the [remaining-plugin gap catalog](docs/apisix-3.17-remaining-plugin-todo.md), and the [execution TODO](docs/apisix-3.17-plugin-parity-execution-todo.md).
 
@@ -439,7 +445,16 @@ Loggers:
   - support official name/priority/schema and metadata schema, required `i`, optional `s` / `t` / `ip` / `port`, pass-through middleware, route upstream override through the existing Go traffic-split override path when `ip` is configured, and control API `GET /v1/plugin/example-plugin/hello` with text or JSON response
   - not support plugin-attr logging, OpenResty phase-specific logging, delayed body filter behavior, direct `apisix.upstream.set` parity, or treating this upstream demonstration plugin as a production feature
 
+## Runtime boundaries
+
+- HTTP routes listen on `:8080` by default and are built from the bbolt store populated by the etcd watcher.
+- Traditional etcd deployments with `server-info` enabled periodically publish `<etcd-prefix>/data_plane/server_info/<apisix-id>` and renew the lease until shutdown.
+- TCP stream routing is enabled through `apisix.proxy_mode` and `apisix.stream_proxy.tcp`; the current main-server stream owner is `mqtt-proxy`, with weighted/chash upstream selection, route reload, cancellation, and lifecycle tests.
+- Kafka PubSub uses the dedicated WebSocket/protobuf owner; Dubbo and HTTP-Dubbo use route-terminal TCP owners. General stream-plugin chains, stream mTLS, active upstream probes, exact OpenResty phase timing, and full Lua runtime compatibility remain deferred.
+
 ## TODO
+
+The APISIX 3.17 plugin parity backlog is maintained in [the execution TODO](docs/apisix-3.17-plugin-parity-execution-todo.md). The legacy project TODOs below are separate repository-level work and are not plugin parity claims.
 
 - [ ] standalone mode
 - [ ] handle etcd compact

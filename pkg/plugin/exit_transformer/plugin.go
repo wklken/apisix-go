@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -73,6 +74,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			status: recorder.statusCode,
 			body:   recorder.body.Bytes(),
 			header: recorder.header.Clone(),
+		}
+		if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source == "upstream" {
+			writeResponse(w, resp)
+			return
 		}
 		for _, fn := range p.config.Functions {
 			resp = applyFunction(resp, fn)

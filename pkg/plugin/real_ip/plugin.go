@@ -4,8 +4,10 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -83,7 +85,7 @@ func (p *Plugin) PostInit() error {
 		var err error
 		p.trustedCIDRs, err = prepareTrustedCIDRs(p.config.TrustedAddresses)
 		if err != nil {
-			logger.Warn("prepareTrustedCIDRs fail")
+			return err
 		}
 	}
 
@@ -124,7 +126,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) sourceValue(r *http.Request) string {
-	source := p.config.Source
+	source := strings.TrimPrefix(p.config.Source, "$")
 	if strings.HasPrefix(source, "arg_") {
 		return r.URL.Query().Get(source[4:])
 	}
@@ -139,6 +141,46 @@ func (p *Plugin) sourceValue(r *http.Request) string {
 		if strings.EqualFold(source, "http_x_forwarded_for") {
 			return p.forwardedFor(value)
 		}
+		return value
+	}
+
+	if strings.HasPrefix(source, "cookie_") {
+		cookie, err := r.Cookie(source[7:])
+		if err == nil {
+			return cookie.Value
+		}
+		return ""
+	}
+
+	switch source {
+	case "remote_addr", "realip_remote_addr":
+		if value := apisixctx.GetString(r.Context(), source); value != "" {
+			return value
+		}
+		ip, _, _ := parseAddr(r.RemoteAddr)
+		return ip
+	case "remote_port", "realip_remote_port":
+		if value := apisixctx.GetString(r.Context(), source); value != "" {
+			return value
+		}
+		_, port, _ := parseAddr(r.RemoteAddr)
+		return port
+	case "host":
+		return r.Host
+	case "request_method":
+		return r.Method
+	case "request_uri":
+		return r.URL.RequestURI()
+	case "uri":
+		return r.URL.Path
+	case "scheme":
+		if r.TLS != nil {
+			return "https"
+		}
+		return "http"
+	}
+
+	if value, ok := apisixctx.GetRequestVar(r, "$"+source).(string); ok {
 		return value
 	}
 
@@ -189,6 +231,10 @@ func parseAddr(addr string) (string, string, bool) {
 	if err == nil {
 		host = strings.Trim(host, "[]")
 		if net.ParseIP(host) == nil {
+			return "", "", false
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
 			return "", "", false
 		}
 		return host, port, true

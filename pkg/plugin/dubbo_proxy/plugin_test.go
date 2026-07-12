@@ -64,6 +64,10 @@ func TestHandlerDefaultsMethodFromURI(t *testing.T) {
 		if got := Method(r); got != "sayHello" {
 			t.Fatalf("Method() = %q, want URI without leading slash", got)
 		}
+		cfg, ok := GetConfig(r)
+		if !ok || cfg.Method != "sayHello" {
+			t.Fatalf("GetConfig().Method = %q (ok=%t), want sayHello", cfg.Method, ok)
+		}
 		w.WriteHeader(http.StatusAccepted)
 	})).ServeHTTP(rr, req)
 

@@ -47,6 +47,27 @@ func GetUpstream(id string) (resource.Upstream, error) {
 	return ParseUpstream(config)
 }
 
+func GetSSL(id string) (resource.SSL, error) {
+	if s == nil {
+		return resource.SSL{}, ErrNotFound
+	}
+	config := s.GetFromBucket("ssls", util.StringToBytes(id))
+	if config == nil {
+		return resource.SSL{}, ErrNotFound
+	}
+
+	return ParseSSL(config)
+}
+
+func GetStreamRoute(id string) (resource.StreamRoute, error) {
+	config := s.GetFromBucket("stream_routes", util.StringToBytes(id))
+	if config == nil {
+		return resource.StreamRoute{}, ErrNotFound
+	}
+
+	return ParseStreamRoute(config)
+}
+
 func GetService(id string) (resource.Service, error) {
 	config := s.GetFromBucket("services", util.StringToBytes(id))
 	if config == nil {
@@ -109,6 +130,19 @@ func ListRoutes() ([]resource.Route, error) {
 	return routes, nil
 }
 
+func ListStreamRoutes() ([]resource.StreamRoute, error) {
+	var routes []resource.StreamRoute
+	data := s.GetBucketData("stream_routes")
+	for _, d := range data {
+		route, err := ParseStreamRoute(d)
+		if err != nil {
+			return nil, fmt.Errorf("parse stream route error: %w", err)
+		}
+		routes = append(routes, route)
+	}
+	return routes, nil
+}
+
 func ListGlobalRules() ([]resource.GlobalRule, error) {
 	var rules []resource.GlobalRule
 	data := s.GetBucketData("global_rules")
@@ -132,6 +166,15 @@ func ParseRoute(config []byte) (resource.Route, error) {
 	return r, nil
 }
 
+func ParseStreamRoute(config []byte) (resource.StreamRoute, error) {
+	var route resource.StreamRoute
+	if err := json.Unmarshal(config, &route); err != nil {
+		return route, err
+	}
+	decryptPluginConfigs(route.Plugins)
+	return route, nil
+}
+
 func ParseService(config []byte) (resource.Service, error) {
 	var s resource.Service
 	err := json.Unmarshal(config, &s)
@@ -149,6 +192,14 @@ func ParseUpstream(config []byte) (resource.Upstream, error) {
 		return u, err
 	}
 	return u, nil
+}
+
+func ParseSSL(config []byte) (resource.SSL, error) {
+	var ssl resource.SSL
+	if err := json.Unmarshal(config, &ssl); err != nil {
+		return ssl, err
+	}
+	return ssl, nil
 }
 
 func ParseConsumer(config []byte) (resource.Consumer, error) {

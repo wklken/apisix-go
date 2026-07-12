@@ -45,3 +45,22 @@ func TestHandlerSetsDisableProxyBufferingContext(t *testing.T) {
 		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
+
+func TestHandlerFlushesResponseWhenBufferingDisabled(t *testing.T) {
+	p := newTestPlugin(t, Config{DisableProxyBuffering: true})
+	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte("chunk")); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	})).ServeHTTP(rr, req)
+
+	if !rr.Flushed {
+		t.Fatal("response writer was not flushed with proxy buffering disabled")
+	}
+	if rr.Body.String() != "chunk" {
+		t.Fatalf("response body = %q, want chunk", rr.Body.String())
+	}
+}

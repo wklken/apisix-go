@@ -11,6 +11,7 @@ var NginxVars = map[string]struct{}{
 	"$time_iso8601":         {},
 	"$time_local":           {},
 	"$request_method":       {},
+	"$request_line":         {},
 	"$request_uri":          {},
 	"$remote_addr":          {},
 	"$http_host":            {},
@@ -36,6 +37,8 @@ func GetNginxVar(r *http.Request, key string) string {
 	// others
 	case "$request_method":
 		return r.Method
+	case "$request_line":
+		return r.Method + " " + r.URL.RequestURI() + " " + r.Proto
 	case "$request_uri":
 		return r.URL.RequestURI()
 	case "$remote_addr":

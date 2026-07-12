@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -60,15 +61,18 @@ func (p *Plugin) Config() interface{} {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := newResponseRecorder()
-		next.ServeHTTP(recorder, r)
+			next.ServeHTTP(recorder, r)
 
-		p.rewrite(recorder)
+		p.rewrite(r, recorder)
 		recorder.writeTo(w)
 	})
 }
 
-func (p *Plugin) rewrite(resp *responseRecorder) {
+func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
 	if !p.metadata.Enable || resp.statusCode < http.StatusNotFound {
+		return
+	}
+	if source, _ := apisixctx.GetRequestVar(r, "$response_source").(string); source == "upstream" {
 		return
 	}
 	page, ok := p.errorPage(resp.statusCode)

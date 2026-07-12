@@ -1,6 +1,9 @@
 package splunk_hec_logging
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -43,6 +48,38 @@ func TestPostInitSetsSplunkDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedToken(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Endpoint: Endpoint{Token: "not-a-ciphertext"}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted endpoint.token rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Endpoint: Endpoint{Token: encryptSplunkTestValue(t, oldKey, "splunk-token")}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.Endpoint.Token != "splunk-token" {
+		t.Fatalf("endpoint.token = %q, want resolved plaintext", p.config.Endpoint.Token)
 	}
 }
 
@@ -173,4 +210,20 @@ func TestSendBatchPostsConcatenatedSplunkHECEvents(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Splunk HEC batch request")
 	}
+}
+
+func encryptSplunkTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }

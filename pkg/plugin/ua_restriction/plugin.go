@@ -56,7 +56,11 @@ const schema = `
 		"maxLength": 1024,
 		"default": "Not allowed"
 	  }
-	}
+	},
+	"oneOf": [
+	  {"required": ["allowlist"]},
+	  {"required": ["denylist"]}
+	]
 }`
 
 type Config struct {

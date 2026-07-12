@@ -8,6 +8,7 @@ type Plugin interface {
 	Handler(next http.Handler) http.Handler
 	Config() interface{}
 	GetSchema() string
+	GetMetadataSchema() string
 	GetPriority() int
 	GetName() string
 }

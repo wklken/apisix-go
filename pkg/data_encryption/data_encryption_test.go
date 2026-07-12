@@ -106,6 +106,132 @@ func TestDecryptPluginConfigsSupportsServerlessCredentials(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigsPreservesStrictPluginFields(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	clickhousePassword := encryptForTest(t, key, "clickhouse-secret")
+	csrfKey := encryptForTest(t, key, "csrf-secret")
+	googlePrivateKey := encryptForTest(t, key, "google-private-key")
+	httpLoggerAuthHeader := encryptForTest(t, key, "Bearer logger")
+	kafkaLoggerPassword := encryptForTest(t, key, "kafka-secret")
+	kafkaProxyPassword := encryptForTest(t, key, "proxy-secret")
+	elasticsearchPassword := encryptForTest(t, key, "elasticsearch-secret")
+	errorLogClickhousePassword := encryptForTest(t, key, "error-clickhouse-secret")
+	errorLogKafkaPassword := encryptForTest(t, key, "error-kafka-secret")
+	rocketMQSecretKey := encryptForTest(t, key, "rocketmq-secret")
+	slsAccessKeySecret := encryptForTest(t, key, "sls-secret")
+	logglyCustomerToken := encryptForTest(t, key, "loggly-token")
+	lagoToken := encryptForTest(t, key, "lago-token")
+	splunkToken := encryptForTest(t, key, "splunk-token")
+	tencentCLSSecretKey := encryptForTest(t, key, "cls-secret")
+	configs := map[string]any{
+		"clickhouse-logger": map[string]any{
+			"password": clickhousePassword,
+		},
+		"csrf": map[string]any{
+			"key": csrfKey,
+		},
+		"google-cloud-logging": map[string]any{
+			"auth_config": map[string]any{"private_key": googlePrivateKey},
+		},
+		"elasticsearch-logger": map[string]any{
+			"auth": map[string]any{"password": elasticsearchPassword},
+		},
+		"error-log-logger": map[string]any{
+			"clickhouse": map[string]any{"password": errorLogClickhousePassword},
+			"kafka": map[string]any{"brokers": []any{map[string]any{
+				"sasl_config": map[string]any{"password": errorLogKafkaPassword},
+			}}},
+		},
+		"http-logger": map[string]any{
+			"auth_header": httpLoggerAuthHeader,
+		},
+		"kafka-logger": map[string]any{
+			"brokers": []any{map[string]any{
+				"sasl_config": map[string]any{"password": kafkaLoggerPassword},
+			}},
+		},
+		"kafka-proxy": map[string]any{
+			"sasl": map[string]any{"password": kafkaProxyPassword},
+		},
+		"response-rewrite": map[string]any{
+			"body": encryptForTest(t, key, "rewritten-body"),
+		},
+		"rocketmq-logger": map[string]any{
+			"secret_key": rocketMQSecretKey,
+		},
+		"sls-logger": map[string]any{
+			"access_key_secret": slsAccessKeySecret,
+		},
+		"loggly": map[string]any{
+			"customer_token": logglyCustomerToken,
+		},
+		"lago": map[string]any{
+			"token": lagoToken,
+		},
+		"splunk-hec-logging": map[string]any{
+			"endpoint": map[string]any{"token": splunkToken},
+		},
+		"tencent-cloud-cls": map[string]any{
+			"secret_key": tencentCLSSecretKey,
+		},
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if got := configs["clickhouse-logger"].(map[string]any)["password"]; got != clickhousePassword {
+		t.Fatalf("clickhouse-logger.password = %v, want ciphertext preserved", got)
+	}
+	if got := configs["csrf"].(map[string]any)["key"]; got != csrfKey {
+		t.Fatalf("csrf.key = %v, want ciphertext preserved", got)
+	}
+	if got := configs["elasticsearch-logger"].(map[string]any)["auth"].(map[string]any)["password"]; got != elasticsearchPassword {
+		t.Fatalf("elasticsearch-logger.auth.password = %v, want ciphertext preserved", got)
+	}
+	if got := configs["google-cloud-logging"].(map[string]any)["auth_config"].(map[string]any)["private_key"]; got != googlePrivateKey {
+		t.Fatalf("google-cloud-logging.auth_config.private_key = %v, want ciphertext preserved", got)
+	}
+	errorLog := configs["error-log-logger"].(map[string]any)
+	if got := errorLog["clickhouse"].(map[string]any)["password"]; got != errorLogClickhousePassword {
+		t.Fatalf("error-log-logger.clickhouse.password = %v, want ciphertext preserved", got)
+	}
+	if got := errorLog["kafka"].(map[string]any)["brokers"].([]any)[0].(map[string]any)["sasl_config"].(map[string]any)["password"]; got != errorLogKafkaPassword {
+		t.Fatalf("error-log-logger.kafka broker password = %v, want ciphertext preserved", got)
+	}
+	if got := configs["sls-logger"].(map[string]any)["access_key_secret"]; got != slsAccessKeySecret {
+		t.Fatalf("sls-logger.access_key_secret = %v, want ciphertext preserved", got)
+	}
+	if got := configs["rocketmq-logger"].(map[string]any)["secret_key"]; got != rocketMQSecretKey {
+		t.Fatalf("rocketmq-logger.secret_key = %v, want ciphertext preserved", got)
+	}
+	if got := configs["loggly"].(map[string]any)["customer_token"]; got != logglyCustomerToken {
+		t.Fatalf("loggly.customer_token = %v, want ciphertext preserved", got)
+	}
+	if got := configs["lago"].(map[string]any)["token"]; got != lagoToken {
+		t.Fatalf("lago.token = %v, want ciphertext preserved", got)
+	}
+	if got := configs["splunk-hec-logging"].(map[string]any)["endpoint"].(map[string]any)["token"]; got != splunkToken {
+		t.Fatalf("splunk-hec-logging.endpoint.token = %v, want ciphertext preserved", got)
+	}
+	if got := configs["tencent-cloud-cls"].(map[string]any)["secret_key"]; got != tencentCLSSecretKey {
+		t.Fatalf("tencent-cloud-cls.secret_key = %v, want ciphertext preserved", got)
+	}
+	if got := configs["http-logger"].(map[string]any)["auth_header"]; got != httpLoggerAuthHeader {
+		t.Fatalf("http-logger.auth_header = %v, want ciphertext preserved", got)
+	}
+	kafka := configs["kafka-logger"].(map[string]any)
+	brokers := kafka["brokers"].([]any)
+	sasl := brokers[0].(map[string]any)["sasl_config"].(map[string]any)
+	if got := sasl["password"]; got != kafkaLoggerPassword {
+		t.Fatalf("kafka-logger broker password = %v, want ciphertext preserved", got)
+	}
+	proxySASL := configs["kafka-proxy"].(map[string]any)["sasl"].(map[string]any)
+	if got := proxySASL["password"]; got != kafkaProxyPassword {
+		t.Fatalf("kafka-proxy password = %v, want ciphertext preserved", got)
+	}
+	if got := configs["response-rewrite"].(map[string]any)["body"]; got != "rewritten-body" {
+		t.Fatalf("response-rewrite.body = %v, want decrypted value", got)
+	}
+}
+
 func encryptForTest(t *testing.T, key string, value string) string {
 	t.Helper()
 	padding := aes.BlockSize - len(value)%aes.BlockSize

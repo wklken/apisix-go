@@ -22,8 +22,345 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
+	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestConfiguredMemoryZoneSharesGraphQLEntriesAcrossInstances(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-memory-shared", MemorySize: "1M"}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	firstPlugin := newTestPlugin(t, Config{
+		CacheStrategy: "memory",
+		CacheZone:     "graphql-memory-shared",
+		CacheTTL:      60,
+	})
+	secondPlugin := newTestPlugin(t, Config{
+		CacheStrategy: "memory",
+		CacheZone:     "graphql-memory-shared",
+		CacheTTL:      60,
+	})
+	calls := 0
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("shared-graphql-response"))
+	})
+
+	first := performGraphQLRequest(
+		t,
+		firstPlugin.Handler(upstream),
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+
+	second := performGraphQLRequest(
+		t,
+		secondPlugin.Handler(upstream),
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if second.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("second cache status = %q, want HIT from shared memory zone", second.Header().Get(cacheStatusHeader))
+	}
+	if second.Body.String() != "shared-graphql-response" {
+		t.Fatalf("second body = %q, want shared-graphql-response", second.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestConfiguredDiskZonePersistsGraphQLEntriesAcrossInstances(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-disk-shared", DiskPath: root, DiskSize: "1M"}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	firstPlugin := newTestPlugin(t, Config{
+		CacheStrategy: "disk",
+		CacheZone:     "graphql-disk-shared",
+		CacheTTL:      60,
+	})
+	calls := 0
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("persistent-graphql-response"))
+	})
+	first := performGraphQLRequest(
+		t,
+		firstPlugin.Handler(upstream),
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+	firstPlugin.Stop()
+
+	secondPlugin := newTestPlugin(t, Config{
+		CacheStrategy: "disk",
+		CacheZone:     "graphql-disk-shared",
+		CacheTTL:      60,
+	})
+	second := performGraphQLRequest(
+		t,
+		secondPlugin.Handler(upstream),
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if second.Header().Get(cacheStatusHeader) != "HIT" {
+		t.Fatalf("second cache status = %q, want HIT from disk zone", second.Header().Get(cacheStatusHeader))
+	}
+	if second.Body.String() != "persistent-graphql-response" {
+		t.Fatalf("second body = %q, want persistent-graphql-response", second.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestConfiguredDiskZoneUsesUpstreamCacheTTL(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-disk-response-ttl", DiskPath: root}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{
+		CacheStrategy: "disk",
+		CacheZone:     "graphql-disk-response-ttl",
+		CacheTTL:      60,
+	})
+	base := time.Date(2026, 7, 12, 1, 2, 3, 0, time.UTC)
+	p.now = func() time.Time { return base }
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Cache-Control", "max-age=1")
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	first := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if first.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf("first cache status = %q, want MISS", first.Header().Get(cacheStatusHeader))
+	}
+
+	p.now = func() time.Time { return base.Add(2 * time.Second) }
+	second := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if second.Header().Get(cacheStatusHeader) != "EXPIRED" {
+		t.Fatalf(
+			"second cache status = %q, want EXPIRED from upstream max-age=1",
+			second.Header().Get(cacheStatusHeader),
+		)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestConfiguredDiskZoneNeverStoresGraphQLSetCookie(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-disk-cookie", DiskPath: root}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{
+		CacheStrategy:  "disk",
+		CacheZone:      "graphql-disk-cookie",
+		CacheTTL:       60,
+		CacheSetCookie: true,
+	})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Set-Cookie", "visit=graphql")
+		_, _ = w.Write([]byte("graphql-response"))
+	}))
+
+	first := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	second := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if first.Header().Get(cacheStatusHeader) != "MISS" || second.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf(
+			"cache statuses = %q/%q, want MISS/MISS",
+			first.Header().Get(cacheStatusHeader),
+			second.Header().Get(cacheStatusHeader),
+		)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestHandlerDoesNotStoreGraphQLResponsesWithPrivateCacheControl(t *testing.T) {
+	for _, directive := range []string{"private", "no-store", "no-cache"} {
+		t.Run(directive, func(t *testing.T) {
+			p := newTestPlugin(t, Config{CacheStrategy: "memory", CacheTTL: 60})
+			calls := 0
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Cache-Control", directive)
+				_, _ = w.Write([]byte("response"))
+			}))
+
+			first := performGraphQLRequest(
+				t,
+				handler,
+				http.MethodPost,
+				"/graphql",
+				"application/graphql",
+				"query { viewer { id } }",
+			)
+			second := performGraphQLRequest(
+				t,
+				handler,
+				http.MethodPost,
+				"/graphql",
+				"application/graphql",
+				"query { viewer { id } }",
+			)
+			if first.Header().Get(cacheStatusHeader) != "MISS" || second.Header().Get(cacheStatusHeader) != "MISS" {
+				t.Fatalf(
+					"cache statuses = %q/%q, want MISS/MISS for Cache-Control: %s",
+					first.Header().Get(cacheStatusHeader),
+					second.Header().Get(cacheStatusHeader),
+					directive,
+				)
+			}
+			if calls != 2 {
+				t.Fatalf("upstream calls = %d, want 2", calls)
+			}
+		})
+	}
+}
+
+func TestConfiguredDiskZoneDoesNotStoreGraphQLNoStoreResponse(t *testing.T) {
+	root := t.TempDir()
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-disk-no-store", DiskPath: root}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := newTestPlugin(t, Config{
+		CacheStrategy: "disk",
+		CacheZone:     "graphql-disk-no-store",
+		CacheTTL:      60,
+	})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("response"))
+	}))
+
+	first := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	second := performGraphQLRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/graphql",
+		"application/graphql",
+		"query { viewer { id } }",
+	)
+	if first.Header().Get(cacheStatusHeader) != "MISS" || second.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf(
+			"cache statuses = %q/%q, want MISS/MISS for disk Cache-Control: no-store",
+			first.Header().Get(cacheStatusHeader),
+			second.Header().Get(cacheStatusHeader),
+		)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+}
+
+func TestPostInitRejectsUnknownConfiguredGraphQLCacheZone(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "known-graphql-zone", MemorySize: "1M"}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "unknown-graphql-zone"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want unknown cache zone rejection")
+	}
+}
+
+func TestPostInitRejectsGraphQLCacheStrategyZoneMismatch(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{ProxyCache: config.ProxyCache{
+		Zones: []config.Zone{{Name: "graphql-disk-only", DiskPath: t.TempDir()}},
+	}}}
+	t.Cleanup(func() { config.GlobalConfig = oldConfig })
+
+	p := &Plugin{config: Config{CacheStrategy: "memory", CacheZone: "graphql-disk-only"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want cache strategy/zone mismatch rejection")
+	} else if !strings.Contains(err.Error(), "cache_strategy") {
+		t.Fatalf("PostInit() error = %q, want cache_strategy context", err)
+	}
 }
 
 func TestHandlerCachesGraphQLPOSTResponses(t *testing.T) {
@@ -216,6 +553,55 @@ func TestHandlerRejectsInvalidGraphQLCacheRequests(t *testing.T) {
 				t.Fatalf("response code = %d, want %d", res.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestGraphQLParserAcceptsCommonQuerySyntax(t *testing.T) {
+	query := `query Viewer($id: ID!, $includeEmail: Boolean = true) @trace {
+		viewer: user(id: $id, filter: {status: ACTIVE, tags: ["one", "two"]})
+			@include(if: $includeEmail) {
+			id
+			...UserFields
+			... on Admin { permissions }
+		}
+	}
+	fragment UserFields on User @defer { name }`
+
+	isMutation, err := graphqlHasMutation(query)
+	if err != nil {
+		t.Fatalf("graphqlHasMutation() error = %v", err)
+	}
+	if isMutation {
+		t.Fatal("graphqlHasMutation() = true, want false")
+	}
+}
+
+func TestGraphQLParserRejectsMalformedSyntax(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "unterminated variable definitions", query: `query Viewer($id: ID! { viewer(id: $id) { id } }`},
+		{name: "missing argument value", query: `query { viewer(id: ) { id } }`},
+		{name: "missing field name", query: `query { { id } }`},
+		{name: "unexpected trailing token", query: `query { viewer { id } } garbage`},
+		{name: "unterminated string", query: `query { viewer(name: "Alice) { id } }`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := graphqlHasMutation(tt.query); err == nil {
+				t.Fatal("graphqlHasMutation() error = nil, want syntax rejection")
+			}
+		})
+	}
+}
+
+func TestGraphQLParserValidatesEveryOperationBeforeMutationBypass(t *testing.T) {
+	query := `query { viewer { id } } mutation { updateUser } query { broken( }`
+
+	if _, err := graphqlHasMutation(query); err == nil {
+		t.Fatal("graphqlHasMutation() error = nil, want malformed later operation rejection")
 	}
 }
 

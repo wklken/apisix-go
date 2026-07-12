@@ -3,6 +3,9 @@ package kafka_logger
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
 type captureSender struct {
@@ -136,6 +140,59 @@ func TestPostInitAcceptsDeprecatedBrokerListAndAppliesDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedSASLPassword(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{
+		config: Config{
+			Brokers: []Broker{{
+				Host:       "127.0.0.1",
+				Port:       9092,
+				SASLConfig: &SASLConfig{User: "logger", Password: "not-a-ciphertext"},
+			}},
+			KafkaTopic: "apisix-logs",
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted SASL password rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedSASLPassword(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	password := encryptKafkaLoggerTestValue(t, oldKey, "kafka-secret")
+	p := &Plugin{
+		config: Config{
+			Brokers: []Broker{{
+				Host:       "127.0.0.1",
+				Port:       9092,
+				SASLConfig: &SASLConfig{User: "logger", Password: password},
+			}},
+			KafkaTopic: "apisix-logs",
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if got := p.config.Brokers[0].SASLConfig.Password; got != "kafka-secret" {
+		t.Fatalf("SASL password = %q, want resolved plaintext", got)
 	}
 }
 
@@ -449,4 +506,20 @@ func TestNewWriterUsesBrokerSASLConfig(t *testing.T) {
 	if got := transport.SASL.Name(); got != "SCRAM-SHA-512" {
 		t.Fatalf("writer SASL mechanism = %q, want SCRAM-SHA-512", got)
 	}
+}
+
+func encryptKafkaLoggerTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }

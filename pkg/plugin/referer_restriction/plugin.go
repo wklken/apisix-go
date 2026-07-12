@@ -36,14 +36,16 @@ const schema = `
 	  "whitelist": {
 		"type": "array",
 		"items": {
-		  "type": "string"
+		  "type": "string",
+		  "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
 		},
 		"minItems": 1
 	  },
 	  "blacklist": {
 		"type": "array",
 		"items": {
-		  "type": "string"
+		  "type": "string",
+		  "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
 		},
 		"minItems": 1
 	  },

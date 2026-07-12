@@ -46,23 +46,56 @@ var pluginFields = map[string][]string{
 		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
 		"auth.aws.session_token",
 	},
-	"authz-keycloak":  {"client_secret"},
-	"authz-casdoor":   {"client_secret"},
-	"aws-lambda":      {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
-	"azure-functions": {"authorization.apikey"},
-	"basic-auth":      {"password"},
-	"cas-auth":        {"cookie.secret"},
-	"dingtalk-auth":   {"app_secret", "secret"},
-	"feishu-auth":     {"app_secret", "secret"},
-	"hmac-auth":       {"secret"},
-	"jwe-decrypt":     {"key", "secret"},
-	"jwt-auth":        {"secret", "private_key"},
-	"key-auth":        {"key"},
-	"ldap-auth":       {"user_dn"},
-	"openid-connect":  {"client_secret", "client_rsa_private_key", "session.secret", "session.redis.password"},
-	"openfunction":    {"authorization.service_token"},
-	"openwhisk":       {"service_token"},
-	"saml-auth":       {"sp_private_key", "secret"},
+	"authz-keycloak":       {"client_secret"},
+	"authz-casdoor":        {"client_secret"},
+	"aws-lambda":           {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
+	"azure-functions":      {"authorization.apikey"},
+	"basic-auth":           {"password"},
+	"cas-auth":             {"cookie.secret"},
+	"dingtalk-auth":        {"app_secret", "secret"},
+	"feishu-auth":          {"app_secret", "secret"},
+	"hmac-auth":            {"secret"},
+	"http-logger":          {"auth_header"},
+	"jwe-decrypt":          {"key", "secret"},
+	"jwt-auth":             {"secret", "private_key"},
+	"kafka-logger":         {"brokers.*.sasl_config.password"},
+	"kafka-proxy":          {"sasl.password"},
+	"key-auth":             {"key"},
+	"ldap-auth":            {"user_dn"},
+	"openid-connect":       {"client_secret", "client_rsa_private_key", "session.secret", "session.redis.password"},
+	"openfunction":         {"authorization.service_token"},
+	"openwhisk":            {"service_token"},
+	"clickhouse-logger":    {"password"},
+	"csrf":                 {"key"},
+	"elasticsearch-logger": {"auth.password"},
+	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+	"google-cloud-logging": {"auth_config.private_key"},
+	"lago":                 {"token"},
+	"loggly":               {"customer_token"},
+	"response-rewrite":     {"body", "body_secret"},
+	"rocketmq-logger":      {"secret_key"},
+	"saml-auth":            {"sp_private_key", "secret"},
+	"sls-logger":           {"access_key_secret"},
+	"splunk-hec-logging":   {"endpoint.token"},
+	"tencent-cloud-cls":    {"secret_key"},
+}
+
+var strictPluginFields = map[string][]string{
+	"clickhouse-logger":    {"password"},
+	"csrf":                 {"key"},
+	"elasticsearch-logger": {"auth.password"},
+	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+	"google-cloud-logging": {"auth_config.private_key"},
+	"http-logger":          {"auth_header"},
+	"kafka-logger":         {"brokers.*.sasl_config.password"},
+	"kafka-proxy":          {"sasl.password"},
+	"lago":                 {"token"},
+	"loggly":               {"customer_token"},
+	"rocketmq-logger":      {"secret_key"},
+	"response-rewrite":     {"body_secret"},
+	"sls-logger":           {"access_key_secret"},
+	"splunk-hec-logging":   {"endpoint.token"},
+	"tencent-cloud-cls":    {"secret_key"},
 }
 
 var pluginMetadataFields = map[string][]string{
@@ -73,17 +106,30 @@ func HasEncryptedPluginMetadata(name string) bool {
 	return len(pluginMetadataFields[name]) != 0
 }
 
+func IsStrictPluginField(pluginName string, field string) bool {
+	for _, registered := range strictPluginFields[pluginName] {
+		if registered == field {
+			return true
+		}
+	}
+	return false
+}
+
 func DecryptPluginConfigs(configs map[string]any, keyring []string) {
 	if len(keyring) == 0 {
 		return
 	}
+	resolver := NewResolver(true, keyring)
 	for name, fields := range pluginFields {
 		config, ok := configs[name].(map[string]any)
 		if !ok {
 			continue
 		}
 		for _, field := range fields {
-			decryptField(config, field, keyring)
+			if IsStrictPluginField(name, field) {
+				continue
+			}
+			decryptField(config, field, resolver)
 		}
 	}
 }
@@ -92,16 +138,17 @@ func DecryptPluginMetadata(name string, metadata map[string]any, keyring []strin
 	if len(keyring) == 0 {
 		return
 	}
+	resolver := NewResolver(true, keyring)
 	for _, field := range pluginMetadataFields[name] {
-		decryptField(metadata, field, keyring)
+		decryptField(metadata, field, resolver)
 	}
 }
 
-func decryptField(config map[string]any, path string, keyring []string) {
-	decryptPath(config, strings.Split(path, "."), keyring)
+func decryptField(config map[string]any, path string, resolver Resolver) {
+	decryptPath(config, strings.Split(path, "."), resolver)
 }
 
-func decryptPath(current any, segments []string, keyring []string) {
+func decryptPath(current any, segments []string, resolver Resolver) {
 	if len(segments) == 0 {
 		return
 	}
@@ -110,7 +157,7 @@ func decryptPath(current any, segments []string, keyring []string) {
 	case map[string]any:
 		if segment == "*" {
 			for _, child := range value {
-				decryptPath(child, segments[1:], keyring)
+				decryptPath(child, segments[1:], resolver)
 			}
 			return
 		}
@@ -119,33 +166,31 @@ func decryptPath(current any, segments []string, keyring []string) {
 			return
 		}
 		if len(segments) == 1 {
-			value[segment] = decryptValue(child, keyring)
+			value[segment] = decryptValue(child, resolver)
 			return
 		}
-		decryptPath(child, segments[1:], keyring)
+		decryptPath(child, segments[1:], resolver)
 	case []any:
 		if segment != "*" {
 			return
 		}
 		for _, child := range value {
-			decryptPath(child, segments[1:], keyring)
+			decryptPath(child, segments[1:], resolver)
 		}
 	}
 }
 
-func decryptValue(value any, keyring []string) any {
+func decryptValue(value any, resolver Resolver) any {
 	switch typed := value.(type) {
 	case string:
-		if plain, err := Decrypt(typed, keyring); err == nil {
-			return plain
-		}
+		return resolver.ResolveOptional(typed)
 	case map[string]any:
 		for key, child := range typed {
-			typed[key] = decryptValue(child, keyring)
+			typed[key] = decryptValue(child, resolver)
 		}
 	case []any:
 		for i, child := range typed {
-			typed[i] = decryptValue(child, keyring)
+			typed[i] = decryptValue(child, resolver)
 		}
 	}
 	return value

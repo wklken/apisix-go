@@ -18,8 +18,8 @@ Key runtime pieces:
 
 ## Setup Commands
 
-- Use Go 1.26 as the project target from `go.mod`. `.envrc` tries `gvm use go1.26` when gvm is available.
-- Download dependencies: `go mod download`.
+- Use Go 1.26 as the project target from `go.mod`. Run `source .envrc` before Go commands; it keeps the toolchain, caches, temporary files, and installed binaries under the ignored checkout-local `.cache/` directory and does not depend on GVM or a user-level Go environment file.
+- Download dependencies after sourcing `.envrc`: `source .envrc && go mod download`.
 - Install formatting tools: `make init`.
 - Do not run `make dep` casually. It runs `go mod tidy` and `go mod vendor`; use it only when dependency or vendoring changes are intentional.
 

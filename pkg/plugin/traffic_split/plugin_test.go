@@ -1,10 +1,13 @@
 package traffic_split
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -54,6 +57,72 @@ func TestHandlerSetsInlineUpstreamOverride(t *testing.T) {
 	}
 }
 
+func TestHandlerFormatsIPv6InlineUpstreamNode(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Nodes: []Node{{Host: "2001:db8::1", Port: 8080, Weight: 1}},
+			},
+		}},
+	}}})
+
+	override := performRequest(t, p)
+	if override == nil {
+		t.Fatal("traffic split override is nil")
+	}
+	if override.Host != "[2001:db8::1]:8080" {
+		t.Fatalf("override host = %q, want bracketed IPv6 address", override.Host)
+	}
+}
+
+func TestHandlerCarriesInlineHostRewriteSettings(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{{
+			WeightedUpstreams: []WeightedUpstream{{
+				Upstream: &Upstream{
+					PassHost:     "rewrite",
+					UpstreamHost: "api.example.com",
+					Nodes:        []Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
+				},
+			}},
+		}},
+	})
+
+	override := performRequest(t, p)
+	if override == nil {
+		t.Fatal("traffic split override is nil")
+	}
+	if override.PassHost != "rewrite" || override.UpstreamHost != "api.example.com" {
+		t.Fatalf("override host settings = %#v, want rewrite/api.example.com", override)
+	}
+}
+
+func TestHandlerAppliesSelectedUpstreamTimeoutToRequestContext(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Timeout: resource.Timeout{Connect: 3, Send: 2, Read: 1},
+				Nodes:   []Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
+			},
+		}},
+	}}})
+
+	var deadline time.Time
+	performRequestWithHandler(t, p, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ok bool
+		deadline, ok = r.Context().Deadline()
+		if !ok {
+			t.Fatal("request context has no deadline")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > 1100*time.Millisecond {
+		t.Fatalf("selected upstream deadline remaining = %s, want about one second", remaining)
+	}
+}
+
 func TestHandlerUsesWeightedRoundRobin(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Rules: []Rule{
@@ -92,6 +161,88 @@ func TestHandlerUsesWeightedRoundRobin(t *testing.T) {
 	}
 	if first.Host == second.Host {
 		t.Fatalf("weighted round-robin returned same host twice: %s", first.Host)
+	}
+}
+
+func TestHandlerUsesStableHashForChashHeader(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Type:   "chash",
+				HashOn: "header",
+				Key:    "X-User",
+				Nodes: []Node{
+					{Host: "one.example.com", Port: 80, Weight: 1},
+					{Host: "two.example.com", Port: 80, Weight: 1},
+				},
+			},
+		}},
+	}}})
+
+	seen := make(map[string]struct{})
+	for range 4 {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+		req.Header.Set("X-User", "alice")
+		if override := performRequestWithRequest(t, p, req); override == nil {
+			t.Fatal("traffic split override is nil")
+		} else {
+			seen[override.Host] = struct{}{}
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("hash-selected hosts = %#v, want one stable host", seen)
+	}
+}
+
+func TestResolveHashValueSupportsVariableCombinations(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/pets?id=42", nil)
+	req.RemoteAddr = "192.0.2.40:12345"
+
+	for _, test := range []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "adjacent variables", key: "$request_uri$remote_addr", want: "/pets?id=42192.0.2.40"},
+		{name: "default value", key: "${arg_missing ?? fallback}$remote_addr", want: "fallback192.0.2.40"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resolveHashValue(req, "vars_combinations", test.key); got != test.want {
+				t.Fatalf("vars_combinations hash value = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerExcludesPassivelyUnhealthyInlineUpstream(t *testing.T) {
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				Nodes: []Node{
+					{Host: "one.example.com", Port: 80, Weight: 1},
+					{Host: "two.example.com", Port: 80, Weight: 1},
+				},
+				Checks: map[string]interface{}{
+					"passive": map[string]interface{}{
+						"unhealthy": map[string]interface{}{
+							"http_statuses": []interface{}{500},
+							"http_failures": 1,
+						},
+					},
+				},
+			},
+		}},
+	}}})
+
+	first := performRequest(t, p)
+	if first == nil || first.HealthReporter == nil || first.HealthTarget == "" {
+		t.Fatalf("first override = %#v, want passive health reporter and target", first)
+	}
+	first.HealthReporter.ReportHTTP(first.HealthTarget, http.StatusInternalServerError)
+
+	second := performRequest(t, p)
+	if second == nil || second.Host == first.Host {
+		t.Fatalf("second override = %#v, want the other healthy node", second)
 	}
 }
 
@@ -272,6 +423,43 @@ func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsInvalidPassHostMode(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{
+			Upstream: &Upstream{
+				PassHost: "invalid",
+				Nodes:    []Node{{Host: "example.com", Port: 80, Weight: 1}},
+			},
+		}},
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid pass_host rejected")
+	}
+}
+
+func TestSchemaRejectsInvalidInlineUpstreamHostMode(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"rules": []any{map[string]any{
+			"weighted_upstreams": []any{map[string]any{
+				"upstream": map[string]any{
+					"pass_host": "invalid",
+					"nodes":     []any{map[string]any{"host": "example.com", "port": 80}},
+				},
+			}},
+		}},
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("Validate() error = nil, want invalid pass_host rejected")
+	}
+}
+
 func TestWeightedRouteFallbackCompetesWithInlineUpstream(t *testing.T) {
 	p := newTestPlugin(t, Config{Rules: []Rule{{
 		WeightedUpstreams: []WeightedUpstream{
@@ -422,6 +610,27 @@ func TestHandlerSetsUpstreamIDOverride(t *testing.T) {
 	}
 }
 
+func TestReferencedUpstreamCarriesHostRewriteSettings(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return upstreamFromResource(resource.Upstream{
+			PassHost:     "rewrite",
+			UpstreamHost: "api.example.com",
+			Nodes:        []resource.Node{{Host: "127.0.0.1", Port: 8080, Weight: 1}},
+		}), nil
+	})
+
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{UpstreamID: "upstream-1"}},
+	}}})
+	override := performRequest(t, p)
+	if override == nil {
+		t.Fatal("traffic split override is nil")
+	}
+	if override.PassHost != "rewrite" || override.UpstreamHost != "api.example.com" {
+		t.Fatalf("override host settings = %#v, want rewrite/api.example.com", override)
+	}
+}
+
 func TestReferencedUpstreamKeepsLegacyDefaultNodeWeight(t *testing.T) {
 	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
 		return upstreamFromResource(resource.Upstream{
@@ -435,6 +644,35 @@ func TestReferencedUpstreamKeepsLegacyDefaultNodeWeight(t *testing.T) {
 	override := performRequest(t, p)
 	if override == nil || override.Host != "default-weight.example.com:80" {
 		t.Fatalf("override = %#v, want default-weight.example.com:80", override)
+	}
+}
+
+func TestReferencedUpstreamDoesNotSelectExplicitZeroWeightNode(t *testing.T) {
+	var stored resource.Upstream
+	if err := json.Unmarshal([]byte(`{
+		"nodes": [
+			{"host": "disabled.example.com", "port": 80, "weight": 0},
+			{"host": "enabled.example.com", "port": 80, "weight": 1}
+		]
+	}`), &stored); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return upstreamFromResource(stored), nil
+	})
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{UpstreamID: "referenced"}},
+	}}})
+
+	target := p.rules[0].targets["traffic-split-0-0"]
+	if got := len(target.overrides); got != 1 {
+		t.Fatalf("compiled node overrides = %d, want one enabled node", got)
+	}
+	for nodeID, override := range target.overrides {
+		if override.Host != "enabled.example.com:80" {
+			t.Fatalf("compiled node %s override = %#v, want enabled.example.com:80", nodeID, override)
+		}
 	}
 }
 
@@ -464,6 +702,42 @@ func TestHandlerReturnsInternalServerErrorForMissingUpstreamID(t *testing.T) {
 	}
 	if got := rr.Body.String(); got != "failed to fetch upstream info by upstream id: missing\n" {
 		t.Fatalf("response body = %q, want missing upstream error", got)
+	}
+}
+
+func TestHandlerRejectsInvalidUpstreamIDBeforeRuleMatching(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return nil, fmt.Errorf("missing upstream %s", id)
+	})
+
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Match:             []Match{{Vars: []any{[]any{"arg_stage", "==", "beta"}}}},
+				WeightedUpstreams: []WeightedUpstream{{UpstreamID: "missing", Weight: 1}},
+			},
+			{
+				WeightedUpstreams: []WeightedUpstream{{
+					Weight: 1,
+					Upstream: &Upstream{
+						Nodes: []Node{{Host: "stable.example.com", Port: 80, Weight: 1}},
+					},
+				}},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?stage=stable", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called when any upstream_id is invalid")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "failed to fetch upstream info") {
+		t.Fatalf("response body = %q, want upstream lookup error", rr.Body.String())
 	}
 }
 
@@ -507,4 +781,14 @@ func performRequestWithRequest(t *testing.T, p *Plugin, req *http.Request) *Over
 		t.Fatal("next handler was not called")
 	}
 	return seen
+}
+
+func performRequestWithHandler(t *testing.T, p *Plugin, next http.Handler) {
+	t.Helper()
+
+	rr := httptest.NewRecorder()
+	p.Handler(next).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://example.com/get", nil))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
+	}
 }

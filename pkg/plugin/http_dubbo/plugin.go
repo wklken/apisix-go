@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
 type Plugin struct {
@@ -23,8 +25,10 @@ type Plugin struct {
 }
 
 const (
-	priority = 504
-	name     = "http-dubbo"
+	priority                = 504
+	name                    = "http-dubbo"
+	maxDubboResponsePayload = 8 * 1024 * 1024
+	maxDubboRetries         = 10
 )
 
 const schema = `
@@ -123,38 +127,127 @@ func (p *Plugin) ServeDubbo(w http.ResponseWriter, r *http.Request, target strin
 }
 
 func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Config) {
+	result := serveDubboAttempt(r, target, cfg)
+	reportDubboOutcome(r, result)
+	if result.err != nil {
+		writeJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
+		return
+	}
+	writeDubboResponse(w, result.status, result.body)
+}
+
+// ServeDubboWithRetries retries only failures that happen before any request
+// bytes are written. A Dubbo invocation may be non-idempotent, so a timeout or
+// malformed response after a successful write must not issue it again.
+func ServeDubboWithRetries(
+	w http.ResponseWriter,
+	r *http.Request,
+	nextTarget func() (string, error),
+	cfg Config,
+	retries int,
+) {
+	attempts := retries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > maxDubboRetries+1 {
+		attempts = maxDubboRetries + 1
+	}
+
+	var result dubboAttemptResult
+	for attempt := 0; attempt < attempts; attempt++ {
+		target, err := nextTarget()
+		if err != nil {
+			result.err = fmt.Errorf("failed to select upstream target: %w", err)
+			break
+		}
+		result = serveDubboAttempt(r, target, cfg)
+		reportDubboOutcome(r, result)
+		if result.err == nil || !result.retryable {
+			break
+		}
+		if r.Context().Err() != nil {
+			break
+		}
+	}
+
+	if result.err != nil {
+		writeJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
+		return
+	}
+	writeDubboResponse(w, result.status, result.body)
+}
+
+type dubboAttemptResult struct {
+	status    int
+	body      string
+	err       error
+	retryable bool
+}
+
+func reportDubboOutcome(r *http.Request, result dubboAttemptResult) {
+	if result.err == nil {
+		pxy.ReportHTTPOutcome(r, result.status)
+		return
+	}
+	if r.Context().Err() != nil {
+		return
+	}
+	var netErr net.Error
+	pxy.ReportTCPFailureOutcome(r, errors.Is(result.err, context.DeadlineExceeded) ||
+		(errors.As(result.err, &netErr) && netErr.Timeout()))
+}
+
+func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptResult {
 	applyDefaults(&cfg)
 	frame, err := buildDubboRequest(r, cfg)
 	if err != nil {
-		writeJSONMessage(w, http.StatusBadRequest, "failed to build Dubbo request: "+err.Error())
-		return
+		return dubboAttemptResult{err: fmt.Errorf("failed to build Dubbo request: %w", err)}
 	}
 
-	conn, err := net.DialTimeout("tcp", target, time.Duration(cfg.ConnectTimeout)*time.Millisecond)
+	conn, err := (&net.Dialer{Timeout: time.Duration(cfg.ConnectTimeout) * time.Millisecond}).DialContext(
+		r.Context(),
+		"tcp",
+		target,
+	)
 	if err != nil {
-		writeJSONMessage(w, http.StatusBadGateway, "failed to connect to upstream: "+err.Error())
-		return
+		return dubboAttemptResult{
+			err:       fmt.Errorf("failed to connect to upstream: %w", err),
+			retryable: true,
+		}
 	}
 	defer conn.Close()
+	stopClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
+	defer stopClose()
 
-	if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(cfg.SendTimeout) * time.Millisecond)); err != nil {
-		writeJSONMessage(w, http.StatusInternalServerError, "failed to set upstream write deadline: "+err.Error())
-		return
+	if err := conn.SetWriteDeadline(dubboDeadline(r.Context(), time.Duration(cfg.SendTimeout)*time.Millisecond)); err != nil {
+		return dubboAttemptResult{
+			err:       fmt.Errorf("failed to set upstream write deadline: %w", err),
+			retryable: true,
+		}
 	}
-	if _, err := conn.Write(frame); err != nil {
-		writeJSONMessage(w, http.StatusInternalServerError, "failed to send Dubbo request: "+err.Error())
-		return
+	written, err := conn.Write(frame)
+	if err != nil {
+		return dubboAttemptResult{
+			err:       fmt.Errorf("failed to send Dubbo request: %w", err),
+			retryable: written == 0,
+		}
+	}
+	if written != len(frame) {
+		return dubboAttemptResult{err: io.ErrShortWrite}
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(time.Duration(cfg.ReadTimeout) * time.Millisecond)); err != nil {
-		writeJSONMessage(w, http.StatusInternalServerError, "failed to set upstream read deadline: "+err.Error())
-		return
+	if err := conn.SetReadDeadline(dubboDeadline(r.Context(), time.Duration(cfg.ReadTimeout)*time.Millisecond)); err != nil {
+		return dubboAttemptResult{err: fmt.Errorf("failed to set upstream read deadline: %w", err)}
 	}
 	status, body, err := readDubboResponse(conn)
 	if err != nil {
-		writeJSONMessage(w, http.StatusInternalServerError, "failed to read Dubbo response: "+err.Error())
-		return
+		return dubboAttemptResult{err: fmt.Errorf("failed to read Dubbo response: %w", err)}
 	}
+	return dubboAttemptResult{status: status, body: body}
+}
+
+func writeDubboResponse(w http.ResponseWriter, status int, body string) {
 	w.WriteHeader(status)
 	if body != "" {
 		_, _ = w.Write([]byte(body))
@@ -263,11 +356,42 @@ func encodeDubboParam(param any) (string, error) {
 	if param == nil {
 		return "null", nil
 	}
+	if stringValue, ok := param.(string); ok {
+		return encodeFastJSONString(stringValue), nil
+	}
 	encoded, err := json.Marshal(param)
 	if err != nil {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func encodeFastJSONString(value string) string {
+	var out strings.Builder
+	out.Grow(len(value) + 2)
+	out.WriteByte('"')
+	for _, char := range value {
+		switch char {
+		case '\\':
+			out.WriteString(`\\`)
+		case '"':
+			out.WriteString(`\"`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\t':
+			out.WriteString(`\t`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '\b':
+			out.WriteString(`\b`)
+		case '\f':
+			out.WriteString(`\f`)
+		default:
+			out.WriteRune(char)
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
 }
 
 func appendDubboLine(buf *bytes.Buffer, value string) {
@@ -277,14 +401,28 @@ func appendDubboLine(buf *bytes.Buffer, value string) {
 }
 
 func readDubboResponse(conn net.Conn) (int, string, error) {
-	reader := bufio.NewReader(conn)
 	header := make([]byte, 16)
-	if _, err := io.ReadFull(reader, header); err != nil {
+	if _, err := io.ReadFull(conn, header); err != nil {
 		return 0, "", err
+	}
+	if header[0] != 0xda || header[1] != 0xbb {
+		return 0, "", fmt.Errorf("unexpected Dubbo response magic %x%02x", header[0], header[1])
 	}
 	if header[3] != 20 {
 		return 0, "", fmt.Errorf("unexpected Dubbo response status %d", header[3])
 	}
+	payloadLength := binary.BigEndian.Uint32(header[12:16])
+	if payloadLength == 0 {
+		return 0, "", fmt.Errorf("empty Dubbo response payload")
+	}
+	if payloadLength > maxDubboResponsePayload {
+		return 0, "", fmt.Errorf("Dubbo response payload exceeds %d bytes", maxDubboResponsePayload)
+	}
+	payload := make([]byte, payloadLength)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return 0, "", err
+	}
+	reader := bufio.NewReader(bytes.NewReader(payload))
 
 	bodyStatus, err := reader.ReadString('\n')
 	if err != nil {
@@ -302,6 +440,25 @@ func readDubboResponse(conn net.Conn) (int, string, error) {
 	default:
 		return 0, "", fmt.Errorf("unexpected Dubbo body status %q", bodyStatus)
 	}
+}
+
+func dubboDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		return contextDeadline
+	}
+	return deadline
+}
+
+func dubboErrorStatus(ctx context.Context, err error) int {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusBadGateway
 }
 
 func readBody(r *http.Request) ([]byte, error) {

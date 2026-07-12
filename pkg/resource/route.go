@@ -3,6 +3,7 @@ package resource
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -49,17 +50,20 @@ type PluginConfig interface{}
 //	    "scheme": "http"            # 跟上游通信时使用的 scheme，默认是 `http`
 //	}
 type Upstream struct {
-	Type    string  `json:"type,omitempty"`
-	Nodes   []Node  `json:"nodes,omitempty"`
-	Scheme  string  `json:"scheme,omitempty"`
-	Timeout Timeout `json:"timeout,omitempty"`
+	Type    string       `json:"type,omitempty"`
+	Nodes   []Node       `json:"nodes,omitempty"`
+	Scheme  string       `json:"scheme,omitempty"`
+	Timeout Timeout      `json:"timeout,omitempty"`
+	TLS     *UpstreamTLS `json:"tls,omitempty"`
 
-	Retries int                    `json:"retries,omitempty"`
-	Checks  map[string]interface{} `json:"checks,omitempty"`
-	HashOn  string                 `json:"hash_on,omitempty"`
-	Key     string                 `json:"key,omitempty"`
-	Name    string                 `json:"name,omitempty"`
-	Desc    string                 `json:"desc,omitempty"`
+	Retries      int                    `json:"retries,omitempty"`
+	Checks       map[string]interface{} `json:"checks,omitempty"`
+	HashOn       string                 `json:"hash_on,omitempty"`
+	Key          string                 `json:"key,omitempty"`
+	PassHost     string                 `json:"pass_host,omitempty"`
+	UpstreamHost string                 `json:"upstream_host,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	Desc         string                 `json:"desc,omitempty"`
 }
 
 func (s *Upstream) UnmarshalJSON(data []byte) error {
@@ -81,15 +85,13 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		var nodes map[string]int
 		if err := json.Unmarshal(upstreamData["nodes"], &nodes); err == nil {
 			for host, weight := range nodes {
-				port := 80
-				if strings.Contains(host, ":") {
-					port, _ = strconv.Atoi(strings.Split(host, ":")[1])
-				}
+				host, port := parseNodeAddress(host)
 
 				s.Nodes = append(s.Nodes, Node{
-					Host:   host,
-					Port:   port,
-					Weight: weight,
+					Host:      host,
+					Port:      port,
+					Weight:    weight,
+					weightSet: true,
 				})
 			}
 		} else {
@@ -97,16 +99,28 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		}
 	}
 
-	if err := json.Unmarshal(upstreamData["type"], &s.Type); err != nil {
-		return fmt.Errorf("unmarshal field `type` fail, %w", err)
+	if raw := upstreamData["type"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &s.Type); err != nil {
+			return fmt.Errorf("unmarshal field `type` fail, %w", err)
+		}
 	}
 
-	if err := json.Unmarshal(upstreamData["scheme"], &s.Scheme); err != nil {
-		return fmt.Errorf("unmarshal field `scheme` fail, %w", err)
+	if raw := upstreamData["scheme"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &s.Scheme); err != nil {
+			return fmt.Errorf("unmarshal field `scheme` fail, %w", err)
+		}
 	}
 
-	if err := json.Unmarshal(upstreamData["timeout"], &s.Timeout); err != nil {
-		return fmt.Errorf("unmarshal field `timeout` fail, %w", err)
+	if raw := upstreamData["timeout"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &s.Timeout); err != nil {
+			return fmt.Errorf("unmarshal field `timeout` fail, %w", err)
+		}
+	}
+
+	if raw := upstreamData["tls"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &s.TLS); err != nil {
+			return fmt.Errorf("unmarshal field `tls` fail, %w", err)
+		}
 	}
 
 	if upstreamData["retries"] != nil {
@@ -133,6 +147,18 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	if upstreamData["pass_host"] != nil {
+		if err := json.Unmarshal(upstreamData["pass_host"], &s.PassHost); err != nil {
+			return fmt.Errorf("unmarshal field `pass_host` fail, %w", err)
+		}
+	}
+
+	if upstreamData["upstream_host"] != nil {
+		if err := json.Unmarshal(upstreamData["upstream_host"], &s.UpstreamHost); err != nil {
+			return fmt.Errorf("unmarshal field `upstream_host` fail, %w", err)
+		}
+	}
+
 	if upstreamData["name"] != nil {
 		if err := json.Unmarshal(upstreamData["name"], &s.Name); err != nil {
 			return fmt.Errorf("unmarshal field `name` fail, %w", err)
@@ -148,17 +174,74 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func parseNodeAddress(address string) (string, int) {
+	const defaultPort = 80
+	if _, portText, err := net.SplitHostPort(address); err == nil {
+		if port, parseErr := strconv.Atoi(portText); parseErr == nil {
+			return address, port
+		}
+	}
+	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
+		return address, defaultPort
+	}
+	if strings.Count(address, ":") == 1 {
+		_, portText, _ := strings.Cut(address, ":")
+		if port, err := strconv.Atoi(portText); err == nil {
+			return address, port
+		}
+	}
+	return address, defaultPort
+}
+
 type Timeout struct {
 	Connect int `json:"connect,omitempty"`
 	Send    int `json:"send,omitempty"`
 	Read    int `json:"read,omitempty"`
 }
 
+// UpstreamTLS contains the APISIX upstream TLS fields that are applicable to
+// Kafka. client_cert_id is resolved from the local SSL resource store at the
+// owner boundary.
+type UpstreamTLS struct {
+	ClientCertID any    `json:"client_cert_id,omitempty" yaml:"client_cert_id,omitempty"`
+	ClientCert   string `json:"client_cert,omitempty" yaml:"client_cert,omitempty"`
+	ClientKey    string `json:"client_key,omitempty" yaml:"client_key,omitempty"`
+	Verify       bool   `json:"verify,omitempty" yaml:"verify,omitempty"`
+}
+
 type Node struct {
-	Host     string `json:"host,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Weight   int    `json:"weight,omitempty"`
-	Priority int    `json:"priority,omitempty"`
+	Host      string `json:"host,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	Weight    int    `json:"weight,omitempty"`
+	Priority  int    `json:"priority,omitempty"`
+	weightSet bool
+}
+
+func (n *Node) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Weight   *int   `json:"weight"`
+		Priority int    `json:"priority"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	n.Host = raw.Host
+	n.Port = raw.Port
+	n.Priority = raw.Priority
+	n.Weight = 0
+	n.weightSet = false
+	if raw.Weight != nil {
+		n.Weight = *raw.Weight
+		n.weightSet = true
+	}
+	return nil
+}
+
+func (n Node) WeightConfigured() bool {
+	return n.weightSet || n.Weight != 0
 }
 
 type Route struct {
@@ -190,6 +273,19 @@ type Route struct {
 	Status     int   `json:"status,omitempty"`
 }
 
+// StreamRoute describes the APISIX L4 route fields used by the Go stream
+// owner. The stream listener and remote address are matched before the
+// selected upstream is dialed.
+type StreamRoute struct {
+	ID         string                  `json:"id,omitempty"`
+	ServerAddr string                  `json:"server_addr,omitempty"`
+	ServerPort int                     `json:"server_port,omitempty"`
+	RemoteAddr string                  `json:"remote_addr,omitempty"`
+	Plugins    map[string]PluginConfig `json:"plugins,omitempty"`
+	UpstreamID string                  `json:"upstream_id,omitempty"`
+	Upstream   Upstream                `json:"upstream,omitempty"`
+}
+
 type Service struct {
 	ID         string                  `json:"id,omitempty"`
 	Plugins    map[string]PluginConfig `json:"plugins,omitempty"`
@@ -205,6 +301,7 @@ type Service struct {
 // {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}
 type Consumer struct {
 	Username string `json:"username,required"`
+	GroupID  string `json:"group_id,omitempty"`
 	Plugins  map[string]PluginConfig
 	Labels   map[string]any `json:"labels,omitempty"`
 }

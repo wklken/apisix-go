@@ -15,6 +15,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -171,6 +172,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.AccessKeySecret)
+	if err != nil {
+		return fmt.Errorf("sls-logger access_key_secret: %w", err)
+	}
+	p.config.AccessKeySecret = resolved
+
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 5000
 	}

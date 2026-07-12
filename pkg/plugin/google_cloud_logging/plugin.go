@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -306,6 +307,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.AuthConfig != nil {
+		keyring, enabled := data_encryption.Keyring()
+		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.AuthConfig.PrivateKey)
+		if err != nil {
+			return fmt.Errorf("google-cloud-logging auth_config.private_key: %w", err)
+		}
+		p.config.AuthConfig.PrivateKey = resolved
+	}
+
 	if p.config.Resource.Type == "" {
 		p.config.Resource.Type = "global"
 	}

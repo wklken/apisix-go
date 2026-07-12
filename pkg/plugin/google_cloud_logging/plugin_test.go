@@ -2,6 +2,8 @@ package google_cloud_logging
 
 import (
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -59,6 +62,43 @@ func TestPostInitSetsGoogleDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedPrivateKey(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{AuthConfig: &AuthConfig{PrivateKey: "not-a-ciphertext"}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted private_key rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedPrivateKey(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	pemKey, _ := testPrivateKey(t)
+	p := &Plugin{config: Config{AuthConfig: &AuthConfig{
+		ClientEmail: "svc@example.iam.gserviceaccount.com",
+		PrivateKey:  encryptGooglePrivateKeyTestValue(t, oldKey, pemKey),
+		ProjectID:   "project-a",
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.AuthConfig.PrivateKey != pemKey {
+		t.Fatalf("private_key = %q, want resolved PEM", p.config.AuthConfig.PrivateKey)
 	}
 }
 
@@ -497,6 +537,22 @@ func testPrivateKey(t *testing.T) (string, *rsa.PrivateKey) {
 		Bytes: mustMarshalPKCS8(t, key),
 	})
 	return string(pemKey), key
+}
+
+func encryptGooglePrivateKeyTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func mustMarshalPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {

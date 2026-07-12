@@ -26,6 +26,7 @@ type Store struct {
 	consumerKV map[string][]byte
 	// store consumer_id -> keys, like foo->[key-auth:123456], for update and delete
 	consumerToKeys map[string][]string
+	consumerMu     sync.RWMutex
 }
 
 // should it be global store?
@@ -192,7 +193,7 @@ func (s *Store) processEvents() {
 
 		// FIXME: what type of event should trigger the hooks?
 		if bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("services")) ||
-			bytes.Equal(bucketName, []byte("upstreams")) {
+			bytes.Equal(bucketName, []byte("upstreams")) || bytes.Equal(bucketName, []byte("stream_routes")) {
 			s.triggerEventUpdateHooks(event)
 		}
 	}

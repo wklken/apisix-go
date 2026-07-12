@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -88,6 +90,9 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal header schema: %w", err)
 		}
+		if err := compileNestedSchema("header_schema", headerSchemaStr); err != nil {
+			return err
+		}
 		p.config.headerSchemaStr = util.BytesToString(headerSchemaStr)
 	}
 
@@ -95,6 +100,9 @@ func (p *Plugin) PostInit() error {
 		bodySchemaStr, err := json.Marshal(p.config.BodySchema)
 		if err != nil {
 			return fmt.Errorf("failed to marshal body schema: %w", err)
+		}
+		if err := compileNestedSchema("body_schema", bodySchemaStr); err != nil {
+			return err
 		}
 		p.config.bodySchemaStr = util.BytesToString(bodySchemaStr)
 	}
@@ -121,7 +129,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if err != nil {
 				err = fmt.Errorf("failed to read request body: %w", err)
 				logger.Error(err.Error())
-				http.Error(w, err.Error(), p.config.RejectedCode)
+				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
 
@@ -129,7 +137,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if err != nil {
 				err = fmt.Errorf("failed to parse request body: %w", err)
 				logger.Error(err.Error())
-				http.Error(w, err.Error(), p.config.RejectedCode)
+				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 				return
 			}
 
@@ -142,7 +150,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if err := normalizeJSONBody(r, bodyData); err != nil {
 					err = fmt.Errorf("failed to normalize request body: %w", err)
 					logger.Error(err.Error())
-					http.Error(w, err.Error(), p.config.RejectedCode)
+					http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
 					return
 				}
 			}
@@ -164,7 +172,18 @@ func (p *Plugin) rejectedMessage(err error) string {
 func requestHeaders(r *http.Request) map[string]interface{} {
 	headers := make(map[string]interface{}, len(r.Header)*2+2)
 	for key := range r.Header {
-		value := r.Header.Get(key)
+		values := r.Header.Values(key)
+		if len(values) == 0 {
+			continue
+		}
+		var value interface{} = values[0]
+		if len(values) > 1 {
+			items := make([]interface{}, len(values))
+			for i, item := range values {
+				items[i] = item
+			}
+			value = items
+		}
 		headers[key] = value
 		headers[strings.ToLower(key)] = value
 	}
@@ -174,6 +193,13 @@ func requestHeaders(r *http.Request) map[string]interface{} {
 	}
 
 	return headers
+}
+
+func compileNestedSchema(name string, schema []byte) error {
+	if _, err := jsonschema.CompileString(name+".json", util.BytesToString(schema)); err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return nil
 }
 
 func parseRequestBody(r *http.Request, body []byte) (interface{}, bool, error) {

@@ -21,6 +21,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -202,6 +203,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.SecretKey)
+	if err != nil {
+		return fmt.Errorf("tencent-cloud-cls secret_key: %w", err)
+	}
+	p.config.SecretKey = resolved
+
 	p.applyDefaults()
 
 	configUID := shared.NewConfigUID()

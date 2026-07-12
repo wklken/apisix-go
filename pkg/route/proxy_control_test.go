@@ -107,6 +107,9 @@ func TestModifyResponseRecordsUpstreamLatency(t *testing.T) {
 	if got := apisixctx.GetRequestVar(req, "$status"); got != http.StatusAccepted {
 		t.Fatalf("$status = %v, want %d", got, http.StatusAccepted)
 	}
+	if got := apisixctx.GetRequestVar(req, "$response_source"); got != "upstream" {
+		t.Fatalf("$response_source = %v, want upstream", got)
+	}
 	latency, ok := apisixctx.GetRequestVar(req, upstreamLatencyVar).(int64)
 	if !ok {
 		t.Fatalf("%s was not recorded as int64", upstreamLatencyVar)

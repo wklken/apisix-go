@@ -40,7 +40,30 @@ const schema = `
           "regex": {"type": "string"},
           "value": {"type": "string"}
         },
-        "required": ["type", "name", "action"]
+        "required": ["type", "name", "action"],
+        "allOf": [
+          {
+            "if": {
+              "required": ["type"],
+              "properties": {"type": {"const": "body"}}
+            },
+            "then": {"required": ["body_format"]}
+          },
+          {
+            "if": {
+              "required": ["action"],
+              "properties": {"action": {"const": "regex"}}
+            },
+            "then": {"required": ["regex", "value"]}
+          },
+          {
+            "if": {
+              "required": ["action"],
+              "properties": {"action": {"const": "replace"}}
+            },
+            "then": {"required": ["value"]}
+          }
+        ]
       }
     },
     "max_body_size": {
@@ -170,12 +193,9 @@ func maskHeader(r *http.Request, rule MaskRule) {
 func (p *Plugin) maskBody(body []byte, rule MaskRule) (bool, []byte, error) {
 	switch rule.BodyFormat {
 	case "urlencoded":
-		values, err := url.ParseQuery(string(body))
+		values, err := parseURLValues(string(body), *p.config.MaxReqPostArgs)
 		if err != nil {
 			return false, body, err
-		}
-		if *p.config.MaxReqPostArgs > 0 && len(values) > *p.config.MaxReqPostArgs {
-			return false, body, nil
 		}
 		if !maskValues(values, rule) {
 			return false, body, nil
@@ -200,6 +220,42 @@ func (p *Plugin) maskBody(body []byte, rule MaskRule) (bool, []byte, error) {
 	default:
 		return false, body, nil
 	}
+}
+
+func parseURLValues(raw string, maxArgs int) (url.Values, error) {
+	if _, err := url.ParseQuery(raw); err != nil {
+		return nil, err
+	}
+	if maxArgs <= 0 {
+		return url.ParseQuery(raw)
+	}
+
+	values := url.Values{}
+	parsed := 0
+	for _, pair := range strings.Split(raw, "&") {
+		if pair == "" {
+			continue
+		}
+		if parsed >= maxArgs {
+			break
+		}
+		key, value, hasValue := strings.Cut(pair, "=")
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			return nil, err
+		}
+		if hasValue {
+			value, err = url.QueryUnescape(value)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			value = ""
+		}
+		values.Add(decodedKey, value)
+		parsed++
+	}
+	return values, nil
 }
 
 func maskValues(values url.Values, rule MaskRule) bool {
@@ -243,7 +299,38 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 	if len(segments) == 0 {
 		return false
 	}
+	if segments[0].recursive {
+		return maskJSONRecursive(node, segments, rule)
+	}
 	segment := segments[0]
+	if segment.name == "" {
+		items, ok := node.([]any)
+		if !ok {
+			return false
+		}
+		if segment.each {
+			masked := false
+			for index, item := range items {
+				if len(segments) == 1 {
+					if maskJSONArrayElement(items, index, rule) {
+						masked = true
+					}
+					continue
+				}
+				if maskJSONNode(item, segments[1:], rule) {
+					masked = true
+				}
+			}
+			return masked
+		}
+		if !segment.hasIndex || segment.index < 0 || segment.index >= len(items) {
+			return false
+		}
+		if len(segments) == 1 {
+			return maskJSONArrayElement(items, segment.index, rule)
+		}
+		return maskJSONNode(items[segment.index], segments[1:], rule)
+	}
 	object, ok := node.(map[string]any)
 	if !ok {
 		return false
@@ -282,6 +369,43 @@ func maskJSONNode(node any, segments []pathSegment, rule MaskRule) bool {
 		return maskJSONNode(items[segment.index], segments[1:], rule)
 	}
 	return maskJSONNode(value, segments[1:], rule)
+}
+
+func maskJSONRecursive(node any, segments []pathSegment, rule MaskRule) bool {
+	if len(segments) == 0 {
+		return false
+	}
+	segment := segments[0]
+	segment.recursive = false
+	remaining := make([]pathSegment, len(segments))
+	copy(remaining, segments)
+	remaining[0] = segment
+
+	masked := false
+	switch typed := node.(type) {
+	case map[string]any:
+		if value, ok := typed[segment.name]; ok {
+			if len(remaining) == 1 {
+				if maskJSONField(typed, segment.name, rule) {
+					masked = true
+				}
+			} else if maskJSONNode(value, remaining[1:], rule) {
+				masked = true
+			}
+		}
+		for _, value := range typed {
+			if maskJSONRecursive(value, segments, rule) {
+				masked = true
+			}
+		}
+	case []any:
+		for _, value := range typed {
+			if maskJSONRecursive(value, segments, rule) {
+				masked = true
+			}
+		}
+	}
+	return masked
 }
 
 func maskJSONField(object map[string]any, field string, rule MaskRule) bool {
@@ -341,17 +465,38 @@ func maskString(value string, rule MaskRule) (string, bool) {
 }
 
 type pathSegment struct {
-	name     string
-	each     bool
-	hasIndex bool
-	index    int
+	name      string
+	each      bool
+	hasIndex  bool
+	index     int
+	recursive bool
 }
 
+var quotedJSONPathSegment = regexp.MustCompile(`\[(?:"([^"]+)"|'([^']+)')\]`)
+
 func parseJSONPath(path string) []pathSegment {
-	if !strings.HasPrefix(path, "$.") {
+	path = strings.TrimSpace(path)
+	path = quotedJSONPathSegment.ReplaceAllStringFunc(path, func(segment string) string {
+		matches := quotedJSONPathSegment.FindStringSubmatch(segment)
+		if matches[1] != "" {
+			return "." + matches[1]
+		}
+		return "." + matches[2]
+	})
+	recursive := false
+	if strings.HasPrefix(path, "$..") {
+		path = strings.TrimPrefix(path, "$..")
+		recursive = true
+	} else if strings.HasPrefix(path, "$.") {
+		path = strings.TrimPrefix(path, "$.")
+	} else if strings.HasPrefix(path, "$") {
+		path = strings.TrimPrefix(path, "$")
+		path = strings.TrimPrefix(path, ".")
+	}
+	if path == "" {
 		return nil
 	}
-	parts := strings.Split(strings.TrimPrefix(path, "$."), ".")
+	parts := strings.Split(path, ".")
 	segments := make([]pathSegment, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
@@ -363,6 +508,9 @@ func parseJSONPath(path string) []pathSegment {
 		}
 		segments = append(segments, segment)
 	}
+	if recursive {
+		segments[0].recursive = true
+	}
 	return segments
 }
 
@@ -371,13 +519,13 @@ func parsePathSegment(part string) (pathSegment, bool) {
 	if strings.HasSuffix(part, "[*]") {
 		segment.name = strings.TrimSuffix(part, "[*]")
 		segment.each = true
-		return segment, segment.name != ""
+		return segment, segment.name != "" || segment.each
 	}
 	if !strings.HasSuffix(part, "]") {
 		return segment, true
 	}
 	open := strings.LastIndex(part, "[")
-	if open <= 0 {
+	if open < 0 {
 		return pathSegment{}, false
 	}
 	index, err := strconv.Atoi(part[open+1 : len(part)-1])
@@ -387,7 +535,7 @@ func parsePathSegment(part string) (pathSegment, bool) {
 	segment.name = part[:open]
 	segment.hasIndex = true
 	segment.index = index
-	return segment, true
+	return segment, segment.name != "" || segment.hasIndex
 }
 
 func readBody(r *http.Request) ([]byte, error) {

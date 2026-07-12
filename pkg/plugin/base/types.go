@@ -9,9 +9,10 @@ import (
 )
 
 type BasePlugin struct {
-	Name     string
-	Priority int
-	Schema   string
+	Name           string
+	Priority       int
+	Schema         string
+	MetadataSchema string
 }
 
 func (p *BasePlugin) GetName() string {
@@ -24,6 +25,10 @@ func (p *BasePlugin) GetPriority() int {
 
 func (p *BasePlugin) GetSchema() string {
 	return p.Schema
+}
+
+func (p *BasePlugin) GetMetadataSchema() string {
+	return p.MetadataSchema
 }
 
 // type LoggerPlugin interface {

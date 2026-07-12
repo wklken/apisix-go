@@ -2,6 +2,9 @@ package tencent_cloud_cls
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -64,6 +68,50 @@ func TestPostInitAppliesCLSDefaults(t *testing.T) {
 	}
 	if p.config.InactiveTimeout != 5 {
 		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{
+		CLSHost:   "cls.example.com",
+		CLSTopic:  "topic-a",
+		SecretID:  "id",
+		SecretKey: "not-a-ciphertext",
+	}}
+	p.now = func() time.Time { return time.Unix(1710000000, 0) }
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted secret_key rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{
+		CLSHost:   "cls.example.com",
+		CLSTopic:  "topic-a",
+		SecretID:  "id",
+		SecretKey: encryptTencentCLSTestValue(t, oldKey, "cls-secret"),
+	}}
+	p.now = func() time.Time { return time.Unix(1710000000, 0) }
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.SecretKey != "cls-secret" {
+		t.Fatalf("secret_key = %q, want resolved plaintext", p.config.SecretKey)
 	}
 }
 
@@ -588,4 +636,20 @@ func decodeContent(t *testing.T, content []byte) (string, string) {
 		}
 	}
 	return key, value
+}
+
+func encryptTencentCLSTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }

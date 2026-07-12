@@ -2,6 +2,9 @@ package error_log_logger
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -30,6 +34,51 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Cleanup(p.Stop)
 
 	return p
+}
+
+func TestPostInitRejectsInvalidEncryptedClickHousePassword(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Clickhouse: &ClickHouseConfig{Password: "not-a-ciphertext"}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted ClickHouse password rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedKafkaPassword(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{
+		config: Config{Kafka: &KafkaConfig{
+			Brokers: []KafkaBroker{{
+				Host: "127.0.0.1",
+				Port: 9092,
+				SASLConfig: &SASLConfig{
+					User:     "user",
+					Password: encryptErrorLoggerTestValue(t, oldKey, "kafka-secret"),
+				},
+			}},
+			KafkaTopic: "apisix-error-logs",
+		}},
+		kafkaSender: &fakeKafkaSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.Stop() })
+	if got := p.config.Kafka.Brokers[0].SASLConfig.Password; got != "kafka-secret" {
+		t.Fatalf("kafka password = %q, want resolved plaintext", got)
+	}
 }
 
 func TestSendLogsFiltersByLevelAndWritesTCP(t *testing.T) {
@@ -394,6 +443,22 @@ type fakeKafkaSender struct {
 func (f *fakeKafkaSender) Send(_ context.Context, message kafkaMessage) error {
 	f.messages = append(f.messages, message)
 	return nil
+}
+
+func encryptErrorLoggerTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func mustAtoi(t *testing.T, s string) int {

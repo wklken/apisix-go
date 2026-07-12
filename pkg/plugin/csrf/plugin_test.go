@@ -1,12 +1,15 @@
 package csrf
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -42,6 +45,84 @@ func TestHandlerRejectsMissingHeaderWithJSONError(t *testing.T) {
 	if got := strings.TrimSpace(rr.Body.String()); got != `{"error_msg":"no csrf token in headers"}` {
 		t.Fatalf("body = %q, want APISIX csrf error JSON", got)
 	}
+}
+
+func TestPostInitRejectsInvalidEncryptedKey(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Key: "plain"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted csrf key rejection")
+	}
+}
+
+func TestPostInitResolvesEncryptedKey(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, key, "secret")}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.config.Key != "secret" {
+		t.Fatalf("csrf key = %q, want decrypted value", p.config.Key)
+	}
+}
+
+func TestPostInitResolvesKeyFromRotatedKeyring(t *testing.T) {
+	oldKey := "qeddd145sfvddff3"
+	newKey := "1234567890abcdef"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Key: encryptCSRFTestValue(t, oldKey, "rotated-secret")}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.config.Key != "rotated-secret" {
+		t.Fatalf("csrf key = %q, want rotated plaintext", p.config.Key)
+	}
+}
+
+func TestPostInitRejectsMissingKeyring(t *testing.T) {
+	data_encryption.Configure(true, nil)
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{Key: "ciphertext"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want missing keyring rejection")
+	}
+}
+
+func encryptCSRFTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func TestCheckCSRFTokenAllowsExpiredTokenWhenExpiresIsZero(t *testing.T) {

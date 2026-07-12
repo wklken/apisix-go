@@ -2,6 +2,9 @@ package clickhouse_logger
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -53,6 +57,50 @@ func TestPostInitSetsClickHouseDefaults(t *testing.T) {
 	}
 	if p.config.InactiveTimeout != 5 {
 		t.Fatalf("inactive_timeout = %d, want 5", p.config.InactiveTimeout)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedPassword(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "default",
+		Password:      "not-a-ciphertext",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted password rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedPassword(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "default",
+		Password:      encryptClickHouseTestValue(t, oldKey, "clickhouse-secret"),
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.Password != "clickhouse-secret" {
+		t.Fatalf("password = %q, want resolved plaintext", p.config.Password)
 	}
 }
 
@@ -460,4 +508,20 @@ func TestSchemaAcceptsBatchAndMaxPendingFields(t *testing.T) {
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected batch and max pending fields: %v", err)
 	}
+}
+
+func encryptClickHouseTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }

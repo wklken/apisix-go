@@ -48,9 +48,21 @@ type Config struct {
 	ServiceName    string `json:"service_name"`
 	ServiceVersion string `json:"service_version"`
 	Method         string `json:"method,omitempty"`
+	MultiplexCount int    `json:"-"`
 }
 
 type contextKey string
+
+type configKey struct{}
+
+func WithConfig(r *http.Request, cfg Config) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), configKey{}, cfg))
+}
+
+func GetConfig(r *http.Request) (Config, bool) {
+	cfg, ok := r.Context().Value(configKey{}).(Config)
+	return cfg, ok
+}
 
 func (p *Plugin) Config() interface{} {
 	return &p.config
@@ -64,6 +76,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	multiplexCount, err := loadMultiplexCount()
+	if err != nil {
+		return err
+	}
+	p.config.MultiplexCount = multiplexCount
 	return nil
 }
 
@@ -73,12 +90,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if method == "" {
 			method = strings.TrimPrefix(r.URL.Path, "/")
 		}
+		cfg := p.config
+		cfg.Method = method
 
 		ctx := context.WithValue(r.Context(), ctxEnabled, true)
 		ctx = context.WithValue(ctx, ctxServiceName, p.config.ServiceName)
 		ctx = context.WithValue(ctx, ctxServiceVersion, p.config.ServiceVersion)
 		ctx = context.WithValue(ctx, ctxMethod, method)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, WithConfig(r.WithContext(ctx), cfg))
 	}
 	return http.HandlerFunc(fn)
 }

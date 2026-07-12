@@ -142,6 +142,69 @@ func TestHandlerUsesFirstMatchingRule(t *testing.T) {
 	}
 }
 
+func TestHandlerSupportsRestyExpressionOperators(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rules: []Rule{
+			{
+				Case: []any{
+					"AND",
+					[]any{"method", "in", []any{"GET", "HEAD"}},
+					[]any{"http_x_stage", "~*", "^prod$"},
+					[]any{"remote_addr", "ipmatch", []any{"192.0.2.0/24"}},
+				},
+				Actions: []Action{
+					{Name: "return", Return: ReturnAction{Code: http.StatusForbidden}},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	req.Header.Set("X-Stage", "PrOd")
+	req.RemoteAddr = "192.0.2.40:1234"
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
+func TestPostInitRejectsUnsupportedAction(t *testing.T) {
+	p := &Plugin{config: Config{
+		Rules: []Rule{
+			{Actions: []Action{{Name: "unsupported-action"}}},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "unsupported workflow action") {
+		t.Fatalf("PostInit() error = %v, want unsupported workflow action error", err)
+	}
+}
+
+func TestPostInitRejectsInvalidReturnCode(t *testing.T) {
+	p := &Plugin{config: Config{
+		Rules: []Rule{
+			{Actions: []Action{{Name: "return", Return: ReturnAction{Code: http.StatusContinue - 1}}}},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "return action code") {
+		t.Fatalf("PostInit() error = %v, want return action code error", err)
+	}
+}
+
 func TestHandlerRunsLimitCountAction(t *testing.T) {
 	var cfg Config
 	err := util.Parse(map[string]any{

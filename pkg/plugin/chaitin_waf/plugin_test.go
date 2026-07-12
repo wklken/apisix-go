@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -170,7 +171,7 @@ func TestHandlerOffAndNoMatchSkipWAF(t *testing.T) {
 	}
 
 	noMatchPlugin := newTestPlugin(t, Config{
-		Mode:                "block",
+		Mode:                "monitor",
 		AppendWAFRespHeader: boolPtr(true),
 		Nodes:               []Node{nodeFromURL(t, waf.URL)},
 		Match: []MatchRule{
@@ -189,6 +190,116 @@ func TestHandlerOffAndNoMatchSkipWAF(t *testing.T) {
 	}
 	if rr.Header().Get(HeaderChaitinWAF) != "no" {
 		t.Fatalf("waf header = %q, want no", rr.Header().Get(HeaderChaitinWAF))
+	}
+}
+
+func TestHandlerSupportsNestedMatchExpression(t *testing.T) {
+	wafCalls := 0
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wafCalls++
+		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:  "monitor",
+		Nodes: []Node{nodeFromURL(t, waf.URL)},
+		Match: []MatchRule{{Vars: []any{
+			"AND",
+			[]any{"method", "in", []any{"POST", "PUT"}},
+			[]any{"http_x_env", "~*", "^prod$"},
+			[]any{"remote_addr", "ipmatch", []any{"192.0.2.0/24"}},
+		}}},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", nil)
+	req.RemoteAddr = "192.0.2.40:1234"
+	req.Header.Set("X-Env", "PrOd")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if wafCalls != 1 {
+		t.Fatalf("waf calls = %d, want 1 for matching expression", wafCalls)
+	}
+}
+
+func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
+	p := &Plugin{config: Config{Match: []MatchRule{{Vars: []any{
+		[]any{"method", "bogus", "POST"},
+	}}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid match expression rejected")
+	}
+}
+
+func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
+	healthyCalls := 0
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		healthyCalls++
+		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(healthy.Close)
+
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("failed WAF node unexpectedly received a second request")
+	}))
+	failedURL := failed.URL
+	failed.Close()
+
+	p := newTestPlugin(t, Config{
+		Mode:                "monitor",
+		AppendWAFRespHeader: boolPtr(true),
+		Nodes:               []Node{nodeFromURL(t, failedURL), nodeFromURL(t, healthy.URL)},
+	})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader("a=1"))
+		res := httptest.NewRecorder()
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(res, req)
+		if res.Code != http.StatusNoContent {
+			t.Fatalf("request %d status = %d, want 204", i+1, res.Code)
+		}
+	}
+
+	if healthyCalls != 1 {
+		t.Fatalf("healthy WAF calls = %d, want 1 after failed node is quarantined", healthyCalls)
+	}
+}
+
+func TestHandlerTimesOutWAFNodeInMonitorMode(t *testing.T) {
+	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+	}))
+	t.Cleanup(waf.Close)
+
+	p := newTestPlugin(t, Config{
+		Mode:  "monitor",
+		Nodes: []Node{nodeFromURL(t, waf.URL)},
+		Config: WAFConfig{
+			ReadTimeout: 5,
+		},
+	})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil))
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 in monitor mode; body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get(HeaderChaitinWAF) != "timeout" {
+		t.Fatalf("waf header = %q, want timeout", rr.Header().Get(HeaderChaitinWAF))
 	}
 }
 

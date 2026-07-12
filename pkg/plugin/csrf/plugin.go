@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -65,6 +66,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Key)
+	if err != nil {
+		return fmt.Errorf("csrf key: %w", err)
+	}
+	p.config.Key = resolved
+
 	p.config.safeMethods = map[string]struct{}{
 		http.MethodGet:     {},
 		http.MethodHead:    {},

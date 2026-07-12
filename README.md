@@ -25,9 +25,22 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [ ] Script
 - [ ] Secret
 
+### Local Go environment
+
+Source `.envrc` before running Go commands (this is local to the checkout and does not require `direnv allow`):
+
+```bash
+source .envrc
+go test ./...
+```
+
+The checkout-local `.cache/` directory contains the Go toolchain download, module/build caches, installed binaries, and temporary build files. It is ignored by Git, so normal tests and builds do not need write access to user-level `/private` or home-directory cache paths.
+
 ## Plugins
 
 > still working on it
+
+APISIX 3.17 coverage is tracked in the [parity checklist](docs/apisix-3.17-plugin-parity-checklist.md), the [remaining-plugin gap catalog](docs/apisix-3.17-remaining-plugin-todo.md), and the [execution TODO](docs/apisix-3.17-plugin-parity-execution-todo.md).
 
 ### General
 
@@ -46,21 +59,22 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [brotli](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) 82%
   - support `Accept-Encoding: br` / `*`, `types`, `min_length`, `comp_level`, `lgwin`, `http_version`, `vary`, content-encoding skip, content-length removal, and strong ETag weakening
   - not support NGINX-native streaming compression; the Go Brotli encoder does not expose `mode` or `lgblock` tuning
-- [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 85%
-  - support `arg_*`, `http_*`, `http_x_forwarded_for`, bare IP and IP:port sources, `trusted_addresses`, `recursive`, and request-context `remote_addr` / `remote_port` updates
-  - not support APISIX-Base `set_real_ip`, NGINX variable cache flushing, full NGINX variable source coverage, or exact `ip_def` schema validation
-- [x] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/) 45%
-  - support `/v1/server_info` response shape when `server-info` is enabled in `conf.plugins`, including configured `apisix.id` node IDs and generated process fallback IDs
-  - not support APISIX `conf/apisix.uid` persistence, periodic etcd server-info reporting, or lease keepalive
-- [x] [error-page](https://apisix.apache.org/zh/docs/apisix/plugins/error-page/) 55%
+- [x] [real-ip](https://apisix.apache.org/zh/docs/apisix/plugins/real-ip/) 90%
+  - support `arg_*`, `http_*`, `cookie_*`, common built-in request variables, `http_x_forwarded_for`, bare IP and IP:port sources with valid port bounds, `trusted_addresses` with config-time CIDR rejection, `recursive`, and request-context `remote_addr` / `remote_port` updates
+  - not support APISIX-Base `set_real_ip`, NGINX variable cache flushing, the full NGINX variable catalog, or exact `ip_def` schema validation
+- [x] [server-info](https://apisix.apache.org/zh/docs/apisix/plugins/server-info/) 75%
+  - support `/v1/server_info` response shape when `server-info` is enabled in `conf.plugins`, including configured `apisix.id` node IDs, persisted `conf/apisix.uid` fallback IDs, and generated process fallback IDs
+  - support periodic reporting to the configured etcd prefix under `data_plane/server_info/{id}`, bounded `plugin_attr.server-info.report_ttl`, lease keepalive, and shutdown cleanup for traditional etcd configuration
+  - not support dynamic etcd-version lookup or exact OpenResty shared-dict lifecycle semantics
+- [x] [error-page](https://apisix.apache.org/zh/docs/apisix/plugins/error-page/) 70%
   - support official plugin name, priority, empty route schema, metadata-shaped `enable` and `error_404` / `error_500` / `error_502` / `error_503`, custom body/content-type/content-length, and default APISIX-style HTML bodies
-  - not support APISIX response-source detection, header/body filter phases, plugin metadata schema exposure through the plugin interface, or limiting rewrites only to APISIX-generated errors instead of upstream error responses
-- [x] [exit-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/exit-transformer/) 30%
-  - support official plugin name, priority, schema, chained response capture, documented status-remap Lua pattern, and documented normalized JSON error body / `X-Error-Code` header pattern
-  - not support arbitrary Lua execution, APISIX `core.response.exit()` callback integration, Lua cache behavior, transforming only APISIX-generated exits, or general Lua table/header/body mutation
-- [x] [attach-consumer-label](https://apisix.apache.org/zh/docs/apisix/plugins/attach-consumer-label/) 70%
-  - support official plugin name, priority, schema, and copying configured authenticated consumer string labels to request headers before upstream proxying
-  - not support non-string consumer label serialization, independent authentication behavior, or APISIX Lua/OpenResty phase fidelity beyond this middleware position
+  - support response-source provenance markers from the Go route and skip rewriting known upstream error responses; not support exact header/body filter phase timing or metadata schema exposure through the plugin interface
+- [x] [exit-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/exit-transformer/) 55%
+  - support official plugin name, priority, schema, chained response capture, documented status-remap Lua pattern, normalized JSON error body / `X-Error-Code` header pattern, and skipping known upstream responses via Go response provenance
+  - not support arbitrary Lua execution, APISIX `core.response.exit()` callback integration, Lua cache behavior, or general Lua table/header/body mutation
+- [x] [attach-consumer-label](https://apisix.apache.org/zh/docs/apisix/plugins/attach-consumer-label/) 80%
+  - support official plugin name, priority, schema, and copying configured authenticated consumer labels to request headers before upstream proxying, including JSON serialization for numeric, boolean, and array label values
+  - not support independent authentication behavior or APISIX Lua/OpenResty phase fidelity beyond this middleware position
 - [x] [serverless-pre-function](https://apisix.apache.org/zh/docs/apisix/plugins/serverless/) 45%
   - support official plugin name, priority, schema, Lua chunks that return functions, sequential execution, `code` / `body` return short-circuiting, `ngx.log`, `ngx.say`, `ngx.req.set_header`, `ngx.header`, `ngx.status`, `ngx.arg`, `cjson`, and selected `apisix.core` helpers
   - not support the full OpenResty/APISIX Lua runtime, shared-dict/lrucache semantics, custom variable registration effects, streaming body chunks, or exact phase lifecycle fidelity
@@ -85,30 +99,30 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 8/8
 
-- [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 96%
+- [x] [response-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/response-rewrite/) 97%
   - support `status_code`, validated plain/base64 `body`, legacy and `add` / `set` / `remove` headers with string or numeric values, response/request header variables, nested `lua-resty-expr` logical groups, comparison/regex/list/IP operators, response body `filters`, and gzip/Brotli response decoding before filters
-  - not support APISIX secret-reference resolution for `body`, exact OpenResty PCRE semantics, or streaming chunk-level body filters
-- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 98%
+  - support the Go extension `body_secret` for strict APISIX data-encryption resolution before rewriting; ordinary `body` remains compatibility-oriented so plaintext rewrites are not rejected when encryption is enabled; exact OpenResty PCRE semantics and streaming chunk-level body filters remain unsupported
+- [x] [proxy-rewrite](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-rewrite/) 99%
   - support `uri`, `regex_uri`, `use_real_request_uri_unsafe`, `method`, `host`, `scheme`, request header `add` / `set` / `remove`, legacy header set config, bounded header value variable resolution, and `regex_uri` capture resolution in header values
-  - not support exact OpenResty URI safe-encoding parity
-- [x] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/) 55%
-  - support base64 `.pb` FileDescriptorSet proto resources, string/integer `proto_id`, GET query and POST JSON request mapping, gRPC request framing, `grpc-timeout`, JSON response decoding, and gRPC status to HTTP status mapping
-  - not support plain `.proto` text compilation, imported source resolution without `.pb`, `pb_option` encoding variants, `grpc-status-details-bin` body decoding, or streaming response chunk filters
-- [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 68%
-  - support CORS preflight, APISIX-style `400` rejection for invalid method/content-type/body, route wildcard-to-gRPC path rewriting, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, and basic gRPC-Web trailer chunk encoding
-  - not support OpenResty `upstream_trailer_*` fidelity or streaming chunk-level response filters
+  - support encoded path-segment and raw-query preservation through the Go reverse proxy; not support exact OpenResty URI normalization parity
+- [x] [grpc-transcode](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-transcode/) 95%
+  - support base64 `.pb` FileDescriptorSet and plain `.proto` proto resources with unchanged-content binding caching, pure-Go imported-source/standard-import resolution, string/integer `proto_id`, GET scalar/repeated/dotted nested-message/scalar-map query and bounded repeated-message query forms (`children.0.field`, `children[0].field`, or repeated JSON-object values), POST JSON mapping including repeated nested messages, Lua-compatible `#` decimal/hex int64 request inputs, gRPC request framing, `grpc-timeout`, JSON response decoding with `enum_as_name`/`enum_as_value`, all three int64 output modes (`int64_as_number`, `int64_as_string`, `int64_as_hexstring`, including nested/list/map fields), JSON-visible proto3 default-value modes, gRPC status to HTTP status mapping, `grpc-status-details-bin` body decoding with optional `status_detail_type`, and in-process gRPC-server integration coverage for unary success/errors
+  - explicitly reject client/server-streaming method descriptors; not support any separately defined HTTP-annotation contract, hooks/exact Lua metatable semantics, or streaming response chunk filters
+- [x] [grpc-web](https://apisix.apache.org/zh/docs/apisix/plugins/grpc-web/) 88%
+  - support CORS preflight and existing-origin preservation, APISIX-style `400` rejection for invalid method/content-type/body, route wildcard-to-gRPC path rewriting, binary/text gRPC-Web request body translation, upstream `application/grpc` content type, response content type restoration, trailers-only status/message preservation, known `http.TrailerPrefix` `grpc-status`/`grpc-message` promotion from the Go reverse proxy, bounded binary/text response streaming with flush and request cancellation, and basic gRPC-Web trailer chunk encoding
+  - not support exact OpenResty streaming chunk-level phase filters or arbitrary unknown trailer-field conversion
 - [x] [fault-injection](https://apisix.apache.org/zh/docs/apisix/plugins/fault-injection/) 97%
   - support `abort`, `delay`, omitted-vs-explicit `percentage`, empty abort bodies, string/numeric response headers, response body/header variable resolution, fractional delay seconds, config-time `vars` validation, OR across wrapped rules, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
   - not support exact OpenResty PCRE semantics, the complete NGINX variable catalog, or exact rewrite-phase timing
 - [x] [mocking](https://apisix.apache.org/zh/docs/apisix/plugins/mocking/) 97%
   - support `response_example`, `response_schema` object generation, JSON/plain-text/XML schema bodies, response headers, bounded variable resolution, delay, status, content type, and mock marker header
   - not support APISIX random response value distribution exactly for schema fields without examples
-- [x] [degraphql](https://apisix.apache.org/zh/docs/apisix/plugins/degraphql/) 65%
-  - support GET/POST rewriting to GraphQL `query`, `variables`, and `operationName`
-  - not support GraphQL AST validation or multi-operation validation
-- [x] [body-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/body-transformer/) 55%
-  - support request and response body template substitution for `json`, `xml`, `encoded`, `args`, and `plain`, plus `_body`, `_ctx.var.*`, `_escape_json()`, `_escape_xml()`, and base64 templates
-  - not support multipart decoding or full `lua-resty-template` expression syntax
+- [x] [degraphql](https://apisix.apache.org/zh/docs/apisix/plugins/degraphql/) 78%
+  - support bounded GraphQL syntax/structure validation, multiple-operation `operation_name` enforcement, and GET/POST rewriting to GraphQL `query`, `variables`, and `operationName`
+  - not support full GraphQL AST/type validation or exact parser error parity
+- [x] [body-transformer](https://apisix.apache.org/zh/docs/apisix/plugins/body-transformer/) 88%
+  - support request and response body template substitution for `json`, `xml`, `encoded`, `args`, `plain`, and bounded `multipart`, including nested values, repeated XML element indexes, XML `_attr.<name>` lookup, repeated query/form values with numeric indexes, array indexes and bracket paths, bounded `..` string concatenation and `+` numeric addition, single- and double-quoted string literals, raw `{* expr *}` output, bounded `{% if ... then %}` / `{% elseif ... then %}` / `{% else %}` / `{% end %}` branches, multipart fields/file names, reserved-helper shadowing protection for `_ctx`/`_body`/`_escape_json`/`_escape_xml`/`_multipart`, `_body`, shared APISIX/request `_ctx.var.*` values, `_escape_json()`, `_escape_xml()`, APISIX-compatible Base64 template attempt/fallback behavior, and oversized-request rejection through the existing `client-control.max_body_size` route boundary
+  - not support loops/arbitrary Lua and function execution, full XML namespace URI/prefix fidelity, or all multipart helper semantics
 
 ### Authentication
 
@@ -169,45 +183,48 @@ This project is still under development and NOT READY FOR PRODUCTION!
 
 > 13/13
 
-- [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) 80%
-  - support `allow_origins`, `allow_origins = "**"` request-origin echo, `allow_origins_by_regex`, `allow_origins_by_metadata`, `timing_allow_origins`, `timing_allow_origins_by_regex`, method wildcards, `allow_headers = "**"` request-header reflection, APISIX-style 200 preflight responses, headers/exposed headers, `max_age`, and `allow_credential`
-  - not support exact APISIX wildcard response-header semantics for methods/exposed headers
-- [x] [acl](https://apisix.apache.org/zh/docs/apisix/plugins/acl/) 70%
-  - only support authenticated consumer `labels`
-  - not support `external_user` label fields
+- [x] [cors](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) 87%
+  - support `allow_origins`, `allow_origins = "**"` request-origin echo, `allow_origins_by_regex`, `allow_origins_by_metadata`, `timing_allow_origins`, `timing_allow_origins_by_regex`, method wildcards, `allow_headers = "**"` request-header reflection, APISIX-style 200 preflight responses, explicit exposed headers with no custom expose header by default, `max_age`, and wildcard/credential cross-field validation
+  - not support every exact APISIX wildcard response-header semantic in the third-party CORS middleware
+- [x] [acl](https://apisix.apache.org/zh/docs/apisix/plugins/acl/) 85%
+  - support authenticated consumer `labels`, including string, JSON/segmented-text, numeric, boolean, and array label values, plus `$external_user` label extraction with bounded dotted fields, `$..field[.suffix]` recursive lookup, and `json`/`segmented_text`/`table` parsers
+  - not support full OpenResty JSONPath and parser-engine behavior
 - [x] [uri-blocker](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) 95%
   - support `block_rules`, `rejected_code`, `rejected_msg`, `case_insensitive`, APISIX-style empty default rejection bodies, and `error_msg` JSON custom rejections
   - not support APISIX PCRE/JIT regex engine parity exactly
-- [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 90%
-  - support `whitelist`, `blacklist`, CIDR/IP matching, custom messages, `remote_addr` context overrides, and APISIX-style JSON rejection bodies
-  - not support APISIX `ip_def` schema validation exactly or shared LRU matcher caching
+- [x] [ip-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) 95%
+  - support `whitelist`, `blacklist`, CIDR/IP matching, custom messages, `response_code` 403/404 selection, fail-fast IP/CIDR validation, `remote_addr` context overrides, and APISIX-style JSON rejection bodies
+  - not support shared OpenResty LRU matcher caching
 - [x] [ua-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) 95%
-  - support `allowlist`, `denylist`, using both lists together, allow-before-deny matching, `bypass_missing`, trimmed User-Agent matching, and APISIX-style JSON rejection bodies
+  - support mutually exclusive APISIX `allowlist` or `denylist` schema branches, allow-before-deny matching, `bypass_missing`, trimmed User-Agent matching, and APISIX-style JSON rejection bodies
   - not support OpenResty multi-value User-Agent header fidelity exactly
-- [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 95%
-  - support `whitelist`, `blacklist`, `bypass_missing`, custom rejection messages, APISIX-style JSON rejection bodies, and leading-`*` suffix host matching
-  - not support APISIX `host_def` schema validation exactly
-- [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/) 80%
-  - support `consumer_name`, `service_id`, `route_id`, `consumer_group_id`, blacklist, whitelist, `allowed_by_methods`, custom rejection status/message, and APISIX-style rejection bodies
-  - not support APISIX schema method enum validation or automatic consumer-group attachment
-- [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 72%
-  - support official token cookie/header validation, safe method bypass, token expiry/signature checks including `expires = 0` no-expiry validation, configurable `key` / `expires` / `name`, and APISIX-style JSON error bodies
-  - not support encrypted consumer fields or exact Lua random-number formatting parity for token signatures
-- [x] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/) 60%
+- [x] [referer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) 98%
+  - support `whitelist`, `blacklist`, `bypass_missing`, custom rejection messages, APISIX-style JSON rejection bodies, leading-`*` suffix host matching, and APISIX `host_def` character/ wildcard schema validation
+  - not support exact OpenResty host parsing/cache lifecycle
+- [x] [consumer-restriction](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/) 85%
+  - support `consumer_name`, `service_id`, `route_id`, `consumer_group_id`, blacklist, whitelist, `allowed_by_methods` with the official GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/CONNECT/TRACE/PURGE method enum, custom rejection status/message, and APISIX-style rejection bodies
+  - not support exact OpenResty consumer-context lifecycle beyond the propagated consumer `group_id`
+- [x] [csrf](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) 80%
+  - support official token cookie/header validation, safe method bypass, token expiry/signature checks including `expires = 0` no-expiry validation, configurable `key` / `expires` / `name`, strict `key` resolution through `apisix.data_encryption`, and APISIX-style JSON error bodies
+  - not support exact Lua random-number formatting parity for token signatures
+- [x] [public-api](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/) 75%
   - support exposing registered internal public APIs such as `batch-requests`, `node-status`, and `server-info`, with optional `uri` override
   - not support arbitrary internal API discovery, Prometheus public metrics proxying, or exposing non-registered runtime endpoints
 - [x] [GM](https://apisix.apache.org/zh/docs/apisix/plugins/GM/) 25%
   - support official plugin name, priority, empty route schema, no-op HTTP handler, and APISIX SSL `gm` marker validation requiring encryption cert/key plus exactly one sign cert/key pair
   - not support Tongsuo/APISIX-Runtime NTLS enablement, SM2/SM3/SM4 TLS handshakes, dynamic TLS certificate installation, SSL schema injection, or real dual-certificate serving
-- [x] [chaitin-waf](https://apisix.apache.org/zh/docs/apisix/plugins/chaitin-waf/) 55%
-  - support `mode`, `match.vars` for common request variables, `append_waf_resp_header`, `append_waf_debug_header`, metadata/config `nodes`, config timeout/body/keepalive defaults, monitor/block/off behavior, request body restoration, official WAF response headers, and block response body with `event_id`
-  - not support native `resty.t1k`, APISIX health checker/round-robin picker fidelity, full `lua-resty-expr`, response header-filter integration, Unix socket nodes, or real SafeLine binary protocol details
-- [x] [data-mask](https://apisix.apache.org/zh/docs/apisix/plugins/data-mask/) 65%
-  - support query/header/urlencoded-body masking, simple JSONPath body masking for dot paths, `[*]`, and numeric array indexes, `remove` / `replace` / `regex`, `max_body_size`, `max_req_post_args`, and official plugin name/schema/priority
-  - not support APISIX log-phase-only behavior, full `jsonpath` syntax, temporary-file request bodies, access-log `$request_line` rewriting, or preserving original upstream request data while masking logger output
-- [x] [oas-validator](https://apisix.apache.org/docs/apisix/plugins/oas-validator/) 62%
-  - support official plugin name, priority, schema, inline JSON `spec`, `spec_url` fetch with custom headers, timeout and `ssl_verify`, method/path matching, required path/query/header parameters, JSON request body schema validation, local `#/components/schemas/...` schema refs, skip flags, `reject_if_not_match`, `verbose_errors`, and configurable rejection status
-  - not support external `$ref` resolution, plugin metadata `spec_url_ttl` refresh semantics, all OpenAPI parameter style/explode combinations, non-JSON request body schema validation, or response validation
+- [x] [chaitin-waf](https://apisix.apache.org/zh/docs/apisix/plugins/chaitin-waf/) 80%
+  - support `mode`, bounded nested `match.vars` expression operators, official metadata schema, metadata/config `nodes`, Go round-robin selection with five-minute failure quarantine, timeout/body/keepalive defaults, monitor/block/off behavior, request body restoration, official WAF response headers, and block response body with `event_id`
+  - APISIX 3.17's plugin source has no user-configurable active-probe contract; not support native `resty.t1k`, full `lua-resty-expr`, Unix socket nodes, or real SafeLine binary protocol details
+- [x] [data-mask](https://apisix.apache.org/zh/docs/apisix/plugins/data-mask/) 80%
+  - support query/header/urlencoded-body masking, bounded `max_req_post_args` prefix parsing, APISIX conditional rule-schema validation, bounded JSONPath body masking for dot paths, root-array selectors, quoted bracket fields, recursive descent, `[*]`, and numeric array indexes, `remove` / `replace` / `regex`, `max_body_size`, `max_req_post_args`, official plugin name/schema/priority, and downstream logger visibility for masked `$request_uri`/`$request_line`
+  - not support exact APISIX log-phase timing, full `jsonpath` syntax, temporary-file request bodies, or preserving original upstream request data while masking logger output
+- [x] [oas-validator](https://apisix.apache.org/docs/apisix/plugins/oas-validator/) 99%
+  - support official plugin name, priority, schema, inline JSON `spec`, `spec_url` fetch with custom headers, timeout and `ssl_verify`, method/path matching, required path/query/header/cookie parameters, JSON request body schema validation, local component refs for parameters/request bodies/schemas, skip flags, `reject_if_not_match`, `verbose_errors`, and configurable rejection status
+  - support free-form exploded `form` query objects backed by `additionalProperties` with schema-guided coercion; duplicate scalar properties remain rejected
+  - support bounded Parameter Object `content` serialization for one `application/json`/`application/*+json` or `text/plain` media type, including schema validation and explicit rejection of malformed JSON, duplicate values, and unsupported codecs
+  - support external HTTP(S) `$ref` resolution with JSON Pointer fragments, relative refs from `spec_url`, bounded cycle/depth/count handling, plugin metadata `spec_url_ttl` refresh semantics, URL-encoded, multipart, `text/plain`, `application/octet-stream`, bounded XML (`application/xml`, `text/xml`, `application/*+xml`) and YAML (`application/yaml`, `text/yaml`, `application/x-yaml`, `application/*+yaml`) body validation, specificity-ordered wildcard OpenAPI content-key matching for structured `+json`/`+xml`/`+yaml` media types, `application/*+json` reuse, scalar opaque bodies for arbitrary media-type entries, bounded `form` arrays and repeated values with OpenAPI default `explode=true`, repeated `spaceDelimited`/`pipeDelimited` array values and objects, repeated Cookie arrays and exploded/non-exploded Cookie objects, comma-preserving exploded arrays, exploded and non-exploded objects, repeated `deepObject` array properties, rejection of repeated `deepObject` scalar properties, `spaceDelimited`, `pipeDelimited`, `deepObject`, matrix, label, and simple path/header parameter parsing; location-specific style/schema mismatches are rejected instead of silently decoded as another style, explicit `deepObject` `explode=false` is rejected, repeated non-exploded form arrays and duplicate structured object fields are rejected, structured custom codecs without a local decoder are rejected explicitly, and other uncommon nested/explode combinations remain unsupported
+  - APISIX 3.17's official plugin validates requests only; response validation is not part of the official parity surface and would require a separate project extension
 
 ### Traffic
 
@@ -222,51 +239,52 @@ This project is still under development and NOT READY FOR PRODUCTION!
 - [x] [limit-count](https://apisix.apache.org/zh/docs/apisix/plugins/limit-count/) 98%
   - support local, Redis, and Redis Cluster fixed-window quotas, APISIX root-level Redis/Redis Cluster fields and legacy nested configs, TLS/pool settings, top-level and rule-level string variable values for `count` / `time_window`, `rules`, per-rule `header_prefix`, shared `group` quotas with configuration mismatch validation, route-scoped keys, `key_type = var`, `constant`, and `var_combination`, HTTP header variables, quota headers, plugin metadata custom quota header names, `rejected_code`, APISIX-style empty/custom rejection bodies, and `allow_degradation`
   - not support exact OpenResty shared-dict/LRU lifecycle or `resty.limit.count` behavior
-- [x] [graphql-limit-count](https://apisix.apache.org/docs/apisix/plugins/graphql-limit-count/) 95%
-  - support official plugin name, priority, schema, POST `application/json` and `application/graphql` requests bounded by `graphql.max_size`, GraphQL selection-depth cost counting, local, standalone Redis, and Redis Cluster fixed-window quotas, official Redis/TLS/pool config fields, top-level and rule-level string variable values for `count` / `time_window`, `rules`, per-rule `header_prefix`, shared `group` quotas, route-scoped Redis keys, limit-count metadata header names, `allow_degradation`, `rejected_code`, `rejected_msg`, `key`, `key_type`, and fragment/inline-fragment/chained-fragment depth expansion
-  - not support full GraphQL spec parsing parity, exact group-configuration mismatch validation, or exact `resty.limit.count` behavior
-- [x] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/) 78%
-  - support in-memory response caching with `cache_key`, `cache_method`, `cache_http_status`, `cache_ttl`, `cache_bypass`, `no_cache`, `hide_cache_headers`, `consumer_isolation`, `cache_control` request bypass for `no-cache` / `no-store`, `only-if-cached` misses, request stale refresh controls (`max-age`, `max-stale`, `min-fresh`), upstream `private` / `no-store` / `no-cache` non-storage, upstream `s-maxage` / `max-age` / `Expires` TTL derivation, `Vary`, `PURGE`, and `Apisix-Cache-Status`
-  - not support disk cache zones or stale serving
-- [x] [graphql-proxy-cache](https://apisix.apache.org/docs/apisix/plugins/graphql-proxy-cache/) 88%
-  - support official plugin name, priority, schema, GET/POST GraphQL request validation with configured `graphql.max_size`, JSON and `application/graphql` bodies, mutation bypass with `Apisix-Cache-Status: BYPASS`, route/service/host/consumer-isolated MD5 cache keys, `APISIX-Cache-Key`, in-memory TTL cache, `consumer_isolation`, `cache_set_cookie`, and the route-aware public `PURGE` endpoint
-  - not support NGINX disk cache zones, full GraphQL spec parsing parity, or exact APISIX `proxy-cache` handler internals
-- [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/) 85%
-  - support JSON and `application/x-www-form-urlencoded` `body_schema`, JSON body normalization before proxying, `header_schema`, `rejected_code`, and `rejected_msg`
+- [x] [graphql-limit-count](https://apisix.apache.org/docs/apisix/plugins/graphql-limit-count/) 98%
+  - support official plugin name, priority, schema, POST `application/json` and `application/graphql` requests bounded by `graphql.max_size`, GraphQL selection-depth cost counting with alias/argument/directive syntax, undefined/cyclic fragment rejection, static group-configuration mismatch rejection before sharing local quota state, local, standalone Redis, and Redis Cluster fixed-window quotas, official Redis/TLS/pool config fields, top-level and rule-level string variable values for `count` / `time_window`, `rules`, per-rule `header_prefix`, shared `group` quotas, route-scoped Redis keys, limit-count metadata header names, `allow_degradation`, `rejected_code`, `rejected_msg`, `key`, `key_type`, and fragment/inline-fragment/chained-fragment depth expansion
+  - not support exact `resty.limit.count` behavior
+- [x] [proxy-cache](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-cache/) 99%
+  - support in-memory response caching and configured absolute disk zones with atomic versioned response envelopes, cross-plugin-instance reload, persisted `Vary` indexes and `PURGE`, observed-expired entry cleanup, bounded once-per-minute traffic-triggered expiry sweeps, lifecycle-owned background expiry cleanup, configured memory-zone sharing across plugin instances, shared configured memory/disk storage with `graphql-proxy-cache`, complete static zone-registry preflight before route replacement, validated process-local dynamic zone snapshots through `RefreshConfiguredZones`, duplicate/empty name and bounded `cache_levels` registry validation, cache strategy/zone storage matching, `$request_method` cache-key rejection, unique/method/status/variable-name cache-filter validation, strict cache initialization failure during route replacement, write-time `disk_size` eviction of expired/oldest files, plus `cache_key`, `cache_method`, `cache_http_status`, `cache_ttl`, `cache_bypass`, `no_cache`, `hide_cache_headers`, `consumer_isolation`, strategy-specific `cache_control` request/TTL behavior (memory zones only and disabled for identity-bearing cache keys), strategy-specific `cache_set_cookie` behavior (memory opt-in; disk never stores `Set-Cookie`), `Age` on cache hits, upstream `private` / `no-store` / `no-cache` non-storage, upstream `s-maxage` / `max-age` / `Expires` TTL derivation, and `Apisix-Cache-Status`
+  - not support full NGINX cache-manager or cross-worker runtime fidelity; changed configured memory-zone definitions are isolated by generation, rejected refresh snapshots leave the last valid configuration in place, cross-plugin stale-if-error is not implicitly enabled, and design/phased acceptance criteria are in [`docs/apisix-3.17-proxy-cache-design.md`](docs/apisix-3.17-proxy-cache-design.md)
+- [x] [graphql-proxy-cache](https://apisix.apache.org/docs/apisix/plugins/graphql-proxy-cache/) 95%
+  - support official plugin name, priority, schema, GET/POST GraphQL request validation with configured `graphql.max_size`, bounded grammar parsing for operation definitions, variables/types, arguments, directives, fragments, aliases, input values, strings, numbers, and trailing-token rejection, JSON and `application/graphql` bodies, mutation bypass with `Apisix-Cache-Status: BYPASS`, route/service/host/consumer-isolated MD5 cache keys, `APISIX-Cache-Key`, configured memory-zone sharing, configured disk-zone persistence/expiry cleanup, upstream `Cache-Control: s-maxage/max-age` and `Expires` TTL derivation for disk zones with `cache_ttl` fallback, unconditional upstream `private`/`no-store`/`no-cache` non-storage, `consumer_isolation`, memory-only `cache_set_cookie` opt-in (disk zones never store `Set-Cookie`), and the route-aware public `PURGE` endpoint
+  - not support GraphQL schema/type validation or exact APISIX OpenResty phase/cache-manager internals
+- [x] [request-validation](https://apisix.apache.org/zh/docs/apisix/plugins/request-validation/) 90%
+  - support JSON and `application/x-www-form-urlencoded` `body_schema`, JSON body normalization before proxying, nested-schema validation at configuration time, repeated-header array validation, `header_schema`, `rejected_code`, and `rejected_msg` for schema and decode failures
+  - not support exact OpenResty header normalization/secret-reference behavior
 - [x] [proxy-mirror](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-mirror/) 73%
   - support HTTP mirror `host`, `path`, `path_concat_mode`, `sample_ratio`, and APISIX-style `host` / `path` schema validation
   - not support gRPC mirroring
   - not support APISIX DNS resolver behavior
-- [x] [kafka-proxy](https://apisix.apache.org/docs/apisix/plugins/kafka-proxy/) 35%
-  - support official plugin name, priority, schema, optional SASL/PLAIN config, and request-context propagation for future Kafka upstream transport integration
-  - not support Kafka upstream transport/proxying, websocket-to-Kafka forwarding, SASL mechanisms beyond PLAIN, or encrypted storage for `sasl.password`
-- [x] [dubbo-proxy](https://apisix.apache.org/docs/apisix/plugins/dubbo-proxy/) 30%
-  - support official plugin name, priority, schema, required `service_name` / `service_version`, optional `method`, URI-derived method fallback, and request-context propagation for future Dubbo upstream transport integration
-  - not support OpenResty/Tengine Dubbo runtime support, hessian2 Map request/response conversion, `upstream_multiplex_count`, HTTP-to-Dubbo proxy transport, or Dubbo response-to-HTTP conversion
-- [x] [http-dubbo](https://apisix.apache.org/docs/apisix/plugins/http-dubbo/) 55%
-  - support official plugin name, priority, schema, route-upstream TCP dialing, Dubbo 2.x fastjson request frame construction, `service_name`, `service_version`, `method`, `params_type_desc`, `serialized`, `serialization_header_key`, connect/send/read timeouts, JSON-array generic invocation parameter serialization, pre-serialized body passthrough, Dubbo header/status parsing, and HTTP 200 body mapping for application responses
-  - not support APISIX `before_proxy` phase fidelity, OpenResty cosocket behavior, hessian2 serialization, full fastjson precision/type features, multiplexing, every Dubbo response status branch, upstream health checks/retries, or route-builder support for non-round-robin upstream algorithms
+- [x] [kafka-proxy](https://apisix.apache.org/docs/apisix/plugins/kafka-proxy/) 75%
+  - support official plugin name, priority, schema, strict password resolution, request-context propagation, the APISIX PubSub protobuf WebSocket owner (`cmd_kafka_list_offset` and `cmd_kafka_fetch` with sequence preservation), Kafka offset/timestamp/key/value conversion through a bounded `kafka-go` consumer, PLAIN SASL credentials, upstream TLS `verify`, inline client certificate/key configuration, and `client_cert_id` lookup through the local SSL resource bucket
+  - route/fake-consumer coverage verifies fetch, list-offset, malformed-request close, sequence handling, sanitized auth/timeout mapping, invalid TLS resource rejection, SSL-resource resolution, and TLS option propagation; an in-process TLS wire fixture verifies the actual PLAIN payload and broker auth error; external broker smoke tests are optional, while mechanisms beyond PLAIN and REST semantics are outside the APISIX 3.17 schema; the raw Kafka frame bridge is compatibility-only and transport boundaries are documented in [`apisix-3.17-protocol-bridge-design.md`](docs/apisix-3.17-protocol-bridge-design.md)
+- [x] [dubbo-proxy](https://apisix.apache.org/docs/apisix/plugins/dubbo-proxy/) 82%
+  - support official plugin name, priority, schema, required `service_name` / `service_version`, URI-derived method fallback, Hessian2 `Map<String,Object>` HTTP-context request encoding, route-upstream TCP terminal integration, provider response map conversion to HTTP status/headers/body, request cancellation, and `upstream_multiplex_count` as a cancellation-aware per-target in-flight bound
+  - support bounded connect-only retries from the selected upstream's `retries` setting and passive `checks` thresholds through the shared Go load-balancer state; not support retry after any request bytes are written, active probes, OpenResty/Tengine runtime lifecycle, persistent shared-connection multiplexing/response-ID matching, or exact native phase behavior; the separate fastjson/Hessian2 design is documented in [`apisix-3.17-protocol-bridge-design.md`](docs/apisix-3.17-protocol-bridge-design.md)
+- [x] [http-dubbo](https://apisix.apache.org/docs/apisix/plugins/http-dubbo/) 75%
+  - support official plugin name, priority, schema, route-upstream TCP dialing, Dubbo 2.x fastjson request frame construction, `service_name`, `service_version`, `method`, `params_type_desc`, `serialized`, `serialization_header_key`, bounded connect/send/read timeouts, request cancellation, JSON-array generic invocation parameter serialization with APISIX-compatible string escaping, pre-serialized body passthrough, response-size/malformed-frame rejection, transport-error mapping, Dubbo header/status parsing, HTTP 200 body mapping for application response/exception payloads, and bounded connect-only retries from the upstream `retries` setting
+  - support passive `checks` thresholds through the shared Go load-balancer state; not support retry after any request bytes are written, active probes, APISIX `before_proxy` phase fidelity, OpenResty cosocket behavior, hessian2 serialization, full fastjson precision/type features, multiplexing, or route-builder support for non-round-robin upstream algorithms; revisit only after a concrete APISIX-vs-Go mismatch, with protocol notes in [`apisix-3.17-protocol-bridge-design.md`](docs/apisix-3.17-protocol-bridge-design.md)
 - [x] [api-breaker](https://apisix.apache.org/zh/docs/apisix/plugins/api-breaker/) 95%
   - support `break_response_code`, `break_response_body`, `break_response_headers` with bounded variable resolution, `max_breaker_sec`, `unhealthy.http_statuses`, `unhealthy.failures`, `healthy.http_statuses`, and `healthy.successes`
   - not support APISIX shared-dict state keyed by host and URI, exponential breaker windows, or exact OpenResty log-phase timing
-- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 88%
-  - support weighted inline upstream and string/numeric `upstream_id` selection, weighted route-upstream fallback, omitted versus explicit zero upstream/node weights, config-time match validation, OR across match entries, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
-  - not support full inline-upstream `hash_on` / `key` / `pass_host` / `upstream_host` / timeout / retry / health-check behavior or exact APISIX dynamic upstream and balancer lifecycle fidelity
+- [x] [traffic-split](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/) 97%
+  - support ordered `match.vars`, pre-match validation of every referenced `upstream_id`, weighted inline/upstream-ID targets, route fallback entries, explicit zero weights including referenced upstream resources, numeric/string `upstream_id`, `pass_host` / `upstream_host`, bracketed IPv6 node targets, deterministic `chash` selection for `vars`, `header`, `cookie`, `consumer`, and APISIX-compatible `vars_combinations` templates with `$variable` concatenation and bounded `??` defaults, and selected-upstream timeout propagation through the Go request context
+  - support passive `checks` thresholds through the shared Go load-balancer state, including HTTP-status, TCP-failure, and timeout quarantine with fail-open selection when every node is unhealthy; APISIX 3.17's traffic-split generated-upstream contract does not propagate `retries`; remaining gaps are active health probes, phase-specific transport deadlines, full APISIX upstream balancer fidelity, and full `lua-resty-expr` syntax
 - [x] [traffic-label](https://apisix.apache.org/zh/docs/apisix/plugins/traffic-label/) 96%
   - support schema-validated first-match rules, match-all rules, string/numeric `set_headers` with variable resolution, weighted actions, config-time expression validation, nested `AND` / `OR` / `!AND` / `!OR`, and comparison/regex/list/IP/negation operators over common NGINX, APISIX, and request variables
   - not support exact OpenResty cached round-robin behavior, the complete NGINX variable catalog, or exact access-phase timing
-- [x] [request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 85%
-  - support custom header names, response header opt-out, incoming request ID preservation, `uuid`, `nanoid`, `range_id`, and local numeric `snowflake` generation
-  - not support APISIX plugin-attr `snowflake` configuration or etcd-backed distributed data-machine leasing
-- [x] [proxy-control](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-control/) 60%
+- [x] [request-id](https://apisix.apache.org/zh/docs/apisix/plugins/request-id/) 90%
+  - support custom header names, response header opt-out, incoming request ID preservation, `uuid`, `uuidv7`, `nanoid`, `ksuid`, and `range_id`
+- [x] [proxy-control](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-control/) 75%
   - support route/global `request_buffering` flag by buffering the Go proxy request body before upstream forwarding
   - not support APISIX-Runtime/NGINX dynamic `proxy_request_buffering` control or disk-backed buffering
-- [x] [proxy-buffering](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-buffering/) 60%
+- [x] [proxy-buffering](https://apisix.apache.org/zh/docs/apisix/plugins/proxy-buffering/) 75%
   - support route/global `disable_proxy_buffering` by switching to immediate reverse-proxy response flushing
   - not support NGINX `proxy_buffering` internals or disk-backed response buffering controls
 - [x] [client-control](https://apisix.apache.org/zh/docs/apisix/plugins/client-control/) 100%
-- [x] [workflow](https://apisix.apache.org/zh/docs/apisix/plugins/workflow/) 70%
-  - support official action-array config shape, first matching `case`, `return` actions with configured status code, and delegated `limit-req` / `limit-count` / `limit-conn` actions
+- [x] [workflow](https://apisix.apache.org/zh/docs/apisix/plugins/workflow/) 85%
+  - support official action-array config shape, first matching `case`, bounded APISIX expression operators/request variables, validated `return` actions with configured status code, and delegated `limit-req` / `limit-count` / `limit-conn` actions
+  - unsupported actions and invalid return status codes are rejected during plugin initialization; exact Lua/OpenResty phase behavior remains out of scope
   - not support full `lua-resty-expr` or other delegated plugin actions/log handlers
 
 ### Observability
@@ -307,7 +325,7 @@ Loggers:
 
 - [x] [http-logger](https://apisix.apache.org/zh/docs/apisix/plugins/http-logger/) 76%
   - support `uri`, `auth_header`, `timeout`, `log_format`, `concat_method`, `ssl_verify`, HTTP POST delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON/newline batch payloads, `max_pending_entries`, graceful reload/shutdown buffer flush, and the route/server-aware shared `batch_process_entries` gauge hook
-  - not support encrypted `auth_header` or exact APISIX Lua batch-manager stale-object cache cleanup
+  - `auth_header` stays encrypted through store parsing and is strictly resolved in the plugin boundary; invalid ciphertext/missing keys fail before client creation; exact APISIX Lua batch-manager stale-object cache cleanup remains
 - [x] [skywalking-logger](https://apisix.apache.org/zh/docs/apisix/plugins/skywalking-logger/) 76%
   - support `endpoint_addr`, `service_name`, `service_instance_name`, `timeout`, `log_format`, `/v3/logs` delivery, basic `sw8` trace correlation, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), SkyWalking JSON-array batch payloads, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
   - not support exact APISIX Lua batch-manager stale-object cache cleanup
@@ -316,16 +334,16 @@ Loggers:
   - not support OpenResty cosocket connection pooling or exact APISIX Lua batch-manager stale-object cache cleanup
 - [x] [kafka-logger](https://apisix.apache.org/zh/docs/apisix/plugins/kafka-logger/) 76%
   - support `brokers`, deprecated `broker_list`, broker `sasl_config` for `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512`, `kafka_topic`, `key`, `producer_type`, `required_acks`, `timeout`, producer batch defaults, `meta_format = origin`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), single-object / JSON-array Kafka batch payloads, and `max_pending_entries`
-  - not support encrypted broker password storage
+  - broker SASL passwords stay encrypted through store parsing and are strictly resolved before the Kafka writer is created; rotated keys are supported and invalid ciphertext fails initialization
 - [x] [rocketmq-logger](https://apisix.apache.org/zh/docs/apisix/plugins/rocketmq-logger/) 72%
   - support `nameserver_list`, `topic`, `key`, `tag`, `timeout`, `access_key`, `secret_key`, `meta_format = origin`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), single-object / JSON-array RocketMQ batch payloads, and `max_pending_entries`
-  - not support encrypted `secret_key` or `use_tls` because the current RocketMQ Go client exposes no TLS option
+  - `secret_key` stays encrypted through store parsing and is strictly resolved before producer setup; rotated keys are supported and invalid ciphertext fails initialization; `use_tls` remains unsupported because the current RocketMQ Go client exposes no TLS option
 - [x] [udp-logger](https://apisix.apache.org/zh/docs/apisix/plugins/udp-logger/) 70%
   - support `host`, `port`, `timeout`, `log_format`, UDP delivery, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), JSON batch payloads, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
   - not support exact APISIX Lua batch-manager stale-object cache cleanup
 - [x] [clickhouse-logger](https://apisix.apache.org/zh/docs/apisix/plugins/clickhouse-logger/) 76%
   - support `endpoint_addr`, random selection from `endpoint_addrs`, `user`, `password`, `database`, `logtable`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), ClickHouse JSONEachRow batch payloads, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
-  - not support encrypted `password` or exact APISIX Lua batch-manager stale-object cache cleanup
+  - `password` stays encrypted through store parsing and is strictly resolved before the ClickHouse client is created; rotated keys are supported and invalid ciphertext fails initialization; exact APISIX Lua batch-manager stale-object cache cleanup remains
 - [x] [syslog](https://apisix.apache.org/zh/docs/apisix/plugins/syslog/) 70%
   - support `host`, `port`, `timeout`, `sock_type`, `flush_limit`, `drop_limit`, `pool_size`, `tls` schema/config acceptance, `log_format`, `include_req_body`, `include_req_body_expr`, Go-side `include_resp_body`, `include_resp_body_expr`, capped body-size capture, UDP/TCP syslog delivery through the Go syslog writer, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), batched JSON payloads, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
   - not support OpenResty syslog connection pooling/TLS behavior parity or exact APISIX Lua batch-manager stale-object cache cleanup
@@ -334,35 +352,35 @@ Loggers:
   - not support OpenResty timer lifecycle, NGINX master `USR1` log reopening, NGINX config path discovery, or shelling out to system `tar`
 - [x] [error-log-logger](https://apisix.apache.org/zh/docs/apisix/plugins/error-log-logger/) 69%
   - support official metadata-shaped config for `tcp`, `skywalking`, `clickhouse`, and `kafka`, level filtering, TCP/TLS delivery, SkyWalking `/v3/logs` entries with `$hostname` service-instance resolution, ClickHouse JSONEachRow inserts, Kafka topic/key publishing, Kafka broker `sasl_config` with `PLAIN`, legacy `host` / `port` TCP config, official batch/default knobs, shared batch processor buffering/retry semantics, and graceful reload/shutdown buffer flush
-  - not support direct `ngx.errlog` capture, OpenResty timer lifecycle, route/server `batch_process_entries` labels for global explicit delivery, Lua-resty-kafka producer cache exactness, exact APISIX Lua batch-manager stale-object cache cleanup, or encrypted metadata fields
+  - nested ClickHouse/Kafka credentials stay encrypted through store parsing and are strictly resolved before the corresponding sender is created; rotated keys are supported and invalid ciphertext fails initialization; direct `ngx.errlog` capture, OpenResty timer lifecycle, route/server `batch_process_entries` labels for global explicit delivery, Lua-resty-kafka producer cache exactness, and exact APISIX Lua batch-manager stale-object cache cleanup remain
 - [x] [sls-logger](https://apisix.apache.org/zh/docs/apisix/plugins/sls-logger/) 72%
   - support RFC5424 SLS log messages over TLS TCP with `host`, `port`, `project`, `logstore`, `access_key_id`, `access_key_secret`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), concatenated RFC5424 batch writes, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
-  - not support encrypted `access_key_secret` or exact APISIX Lua batch-manager stale-object cache cleanup
+  - `access_key_secret` stays encrypted through store parsing and is strictly resolved before sender setup; rotated keys are supported and invalid ciphertext fails initialization; exact APISIX Lua batch-manager stale-object cache cleanup remains
 - [x] [google-cloud-logging](https://apisix.apache.org/zh/docs/apisix/plugins/google-cloud-logging/) 67%
   - support service-account `auth_config`, `auth_file`, JWT bearer token exchange with access-token caching/refresh, `entries_uri`, `resource`, `log_id`, `ssl_verify`, `log_format`, default Cloud Logging `httpRequest` entry expansion, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-entry Cloud Logging writes, and `max_pending_entries`
-  - not support encrypted `auth_config.private_key` or request/response body capture
+  - `auth_config.private_key` stays encrypted through store parsing and is strictly resolved before the logger batch processor starts; rotated keys are supported and invalid ciphertext fails initialization; request/response body capture remains unsupported
 - [x] [splunk-hec-logging](https://apisix.apache.org/zh/docs/apisix/plugins/splunk-hec-logging/) 62%
   - support Splunk HEC `endpoint.uri`, `endpoint.token`, `endpoint.channel`, `endpoint.timeout`, `endpoint.keepalive_timeout`, `ssl_verify`, `log_format`, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), concatenated JSON event-object batch payloads, `max_pending_entries`, and HEC error-text extraction
-  - not support encrypted `endpoint.token` or request/response body capture
+  - `endpoint.token` stays encrypted through store parsing and is strictly resolved before the HTTP client is created; rotated keys are supported and invalid ciphertext fails initialization; request/response body capture remains unsupported
 - [x] [file-logger](https://apisix.apache.org/zh/docs/apisix/plugins/file-logger/) 82%
   - support `path` from plugin config or plugin metadata, `log_format` from plugin config or plugin metadata, bounded `match` expressions for common request variables and `$status`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, and Go-native current-path writes after external rotation
   - not support APISIX/OpenResty file-cache semantics exactly
 - [x] [loggly](https://apisix.apache.org/zh/docs/apisix/plugins/loggly/) 76%
   - support RFC5424 Loggly syslog messages over UDP and HTTP/S bulk endpoint delivery
   - support `customer_token`, `severity`, `severity_map`, `tags`, `host`, `port`, `protocol`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), HTTP/S newline bulk batching, UDP per-entry batch delivery, metadata delivery config fallback, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
-  - not support encrypted `customer_token` or exact APISIX Lua batch-manager stale-object cache cleanup
+  - `customer_token` stays encrypted through store parsing and is strictly resolved before the logger batch processor starts; rotated keys are supported and invalid ciphertext fails initialization; exact APISIX Lua batch-manager stale-object cache cleanup remains
 - [x] [elasticsearch-logger](https://apisix.apache.org/zh/docs/apisix/plugins/elasticsearch-logger/) 84%
   - support `endpoint_addr`, random `endpoint_addrs` selection, `field.index`, time/APISIX variable expansion in `field.index`, Elasticsearch major-version discovery for legacy `_type`, `auth`, `headers`, `timeout`, `ssl_verify`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), `_bulk` NDJSON batch delivery, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
-  - not support encrypted `auth.password` or exact APISIX Lua batch-manager stale-object cache cleanup
+  - `auth.password` stays encrypted through store parsing and is strictly resolved before the logger batch processor starts; rotated keys are supported and invalid ciphertext fails initialization; exact APISIX Lua batch-manager stale-object cache cleanup remains
 - [x] [tencent-cloud-cls](https://apisix.apache.org/zh/docs/apisix/plugins/tencent-cloud-cls/) 76%
   - support `cls_host`, `cls_topic`, `scheme`, `ssl_verify`, `secret_id`, `secret_key`, `sample_ratio`, `global_tag`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, Tencent CLS sha1 authorization, `/structuredlog` protobuf delivery, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), multi-log protobuf batch payloads, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
-  - not support encrypted `secret_key` or exact APISIX Lua batch-manager stale-object cache cleanup
+  - `secret_key` stays encrypted through store parsing and is strictly resolved before the shared HTTP client is created; rotated keys are supported and invalid ciphertext fails initialization; exact APISIX Lua batch-manager stale-object cache cleanup remains
 - [x] [loki-logger](https://apisix.apache.org/zh/docs/apisix/plugins/loki-logger/) 76%
   - support random selection from `endpoint_addrs`, `endpoint_uri`, `tenant_id`, custom headers, `log_labels`, `ssl_verify`, `timeout`, `log_format`, `include_req_body`, `include_req_body_expr`, `include_resp_body`, `include_resp_body_expr`, capped body-size capture, APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`), one-stream multi-value Loki batches, `max_pending_entries`, graceful reload/shutdown buffer flush, and route/server-aware `batch_process_entries`
   - not support exact APISIX Lua batch-manager stale-object cache cleanup
 - [x] [lago](https://apisix.apache.org/docs/apisix/plugins/lago/) 76%
   - support official plugin name, priority, schema, Lago batch event payload shape, random selection from `endpoint_addrs`, Bearer token delivery to `endpoint_uri`, request/response variable templates for transaction ID, subscription ID, and event properties, request-start event timestamps, dynamic `${arg_*}`, `${cookie_*}`, `${http_*}`, `${sent_http_*}`, and `${upstream_http_*}` template variables, `include_req_body`, `include_resp_body`, capped body-size capture through `${request_body}` / `${response_body}` templates, `ssl_verify`, timeout, keepalive config defaults, APISIX `batch_max_size` default of 100, and APISIX batch processor fields (`batch_max_size`, `max_retry_count`, `retry_delay`, `buffer_duration`, `inactive_timeout`)
-  - not support encrypted `token` or exotic OpenResty/NGINX-only variable fidelity
+  - `token` stays encrypted through store parsing and is strictly resolved before the logger batch processor starts; rotated keys are supported and invalid ciphertext fails initialization; exotic OpenResty/NGINX-only variable fidelity remains deferred
 
 ### AI
 
@@ -409,17 +427,17 @@ Loggers:
 
 > 1/1
 
-- [x] [mqtt-proxy](https://apisix.apache.org/docs/apisix/plugins/mqtt-proxy/) 15%
-  - support official plugin name, priority, schema, required `protocol_level`, default `protocol_name = "MQTT"`, and registry/config validation
-  - not support APISIX stream routes, L4 TCP proxying, MQTT CONNECT preread parsing, `mqtt_client_id` variable registration, chash load balancing by MQTT client ID, stream mTLS behavior, or stream log phase
+- [x] [mqtt-proxy](https://apisix.apache.org/docs/apisix/plugins/mqtt-proxy/) 65%
+  - support official plugin name, priority, schema, required `protocol_level`, default `protocol_name = "MQTT"`, registry/config validation, bounded MQTT 3.1.1/5.0 CONNECT parsing, variable-length and flags/property validation, UTF-8 validation, client-ID extraction, peer-address fallback, plugin-owned `ServeStream` preread/replay plus bidirectional cancellation, and a plugin-owned `ServeListener` accept loop with `StreamInfo` callbacks
+  - support main-server TCP `stream_proxy.tcp` listener ownership, `stream_routes` store parsing, `server_addr` / `server_port` / `remote_addr` matching, inline or `upstream_id` resolution, weighted TCP upstream selection, deterministic `chash` keyed by `mqtt_client_id` with peer fallback, cancellation, runtime result/log callbacks, and bounded cancellation of a large write to a non-reading upstream; in-process fixtures cover exact forwarding, client-ID selection, malformed rejection before dialing, reload, shutdown cancellation, and no-route rejection; general stream-variable/plugin-chain support and stream mTLS remain deferred; the required stream design is documented in [`apisix-3.17-protocol-bridge-design.md`](docs/apisix-3.17-protocol-bridge-design.md)
 
 ### Development
 
 > 1/1
 
-- [x] [example-plugin](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/example-plugin.lua) 60%
-  - support official plugin name, priority, schema, required `i`, optional `s` / `t` / `ip` / `port`, pass-through middleware, route upstream override through the existing Go traffic-split override path when `ip` is configured, and control API `GET /v1/plugin/example-plugin/hello` with text or JSON response
-  - not support APISIX metadata schema exposure, plugin attr logging, OpenResty phase-specific logging, delayed body filter behavior, direct `apisix.upstream.set` parity, or treating this upstream demonstration plugin as a production feature
+- [x] [example-plugin](https://github.com/apache/apisix/blob/release/3.17/apisix/plugins/example-plugin.lua) 80%
+  - support official name/priority/schema and metadata schema, required `i`, optional `s` / `t` / `ip` / `port`, pass-through middleware, route upstream override through the existing Go traffic-split override path when `ip` is configured, and control API `GET /v1/plugin/example-plugin/hello` with text or JSON response
+  - not support plugin-attr logging, OpenResty phase-specific logging, delayed body filter behavior, direct `apisix.upstream.set` parity, or treating this upstream demonstration plugin as a production feature
 
 ## TODO
 

@@ -156,12 +156,11 @@ func (p *Plugin) PostInit() error {
 		p.config.AllowHeaders = "*"
 	}
 
-	if p.config.ExposeHeaders == "" {
-		p.config.ExposeHeaders = "*"
-	}
-
 	if p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
+	}
+	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
+		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
 	}
 	if len(p.config.AllowOriginsByMetadata) > 0 && len(p.metadata.AllowOrigins) == 0 {
 		p.metadata = loadMetadata()
@@ -182,11 +181,15 @@ func (p *Plugin) PostInit() error {
 		p.timingOriginRegex = append(p.timingOriginRegex, compiled)
 	}
 
+	var exposedHeaders []string
+	if p.config.ExposeHeaders != "" {
+		exposedHeaders = strings.Split(p.config.ExposeHeaders, ",")
+	}
 	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
 		AllowedMethods:   allowedMethods(p.config.AllowMethods),
 		AllowedHeaders:   allowedHeaders(p.config.AllowHeaders),
-		ExposedHeaders:   strings.Split(p.config.ExposeHeaders, ","),
+		ExposedHeaders:   exposedHeaders,
 		MaxAge:           p.config.MaxAge,
 		AllowCredentials: p.config.AllowCredential,
 		// APISIX exits successful preflight OPTIONS requests with 200.
@@ -201,6 +204,14 @@ func (p *Plugin) PostInit() error {
 	p.cors.Log = new(logger.DebugLogger)
 
 	return nil
+}
+
+func wildcardCredentialOption(config Config) bool {
+	if config.AllowOrigins == "*" || config.AllowMethods == "*" || config.AllowHeaders == "*" ||
+		config.ExposeHeaders == "*" {
+		return true
+	}
+	return config.TimingAllowOrigins != nil && *config.TimingAllowOrigins == "*"
 }
 
 func (p *Plugin) Config() interface{} {

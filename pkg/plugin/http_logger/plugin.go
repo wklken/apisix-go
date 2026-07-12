@@ -15,6 +15,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -178,6 +179,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.AuthHeader != nil {
+		keyring, enabled := data_encryption.Keyring()
+		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(*p.config.AuthHeader)
+		if err != nil {
+			return fmt.Errorf("http-logger auth_header: %w", err)
+		}
+		p.config.AuthHeader = &resolved
+	}
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 3
 	}

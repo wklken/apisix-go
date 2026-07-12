@@ -54,13 +54,6 @@ type Config struct {
 	CorsAllowHeaders string `json:"cors_allow_headers,omitempty"`
 }
 
-type responseRecorder struct {
-	header      http.Header
-	body        bytes.Buffer
-	statusCode  int
-	wroteHeader bool
-}
-
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }
@@ -81,15 +74,15 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		p.setCommonCorsHeaders(w.Header())
-
 		if r.Method == http.MethodOptions {
+			p.setCommonCorsHeaders(w.Header())
 			w.Header().Set("Access-Control-Allow-Methods", defaultCorsAllowMethods)
 			w.Header().Set("Access-Control-Allow-Headers", p.config.CorsAllowHeaders)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if r.Method != http.MethodPost {
+			p.setCommonCorsHeaders(w.Header())
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -97,24 +90,27 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		mime := r.Header.Get("Content-Type")
 		encoding, ok := grpcWebContentEncodings[mime]
 		if !ok {
+			p.setCommonCorsHeaders(w.Header())
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
 		if err := rewriteGRPCPath(r); err != nil {
+			p.setCommonCorsHeaders(w.Header())
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		if err := transformRequest(r, encoding); err != nil {
+			p.setCommonCorsHeaders(w.Header())
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		recorder := newResponseRecorder()
-		next.ServeHTTP(recorder, r)
-		p.transformResponse(recorder, mime, encoding)
-		recorder.writeTo(w)
+		stream := newStreamingResponseWriter(w, mime, encoding, p.setCommonCorsHeaders)
+		next.ServeHTTP(stream, r)
+		p.setCommonCorsHeaders(stream.Header())
+		_ = stream.finish()
 	}
 	return http.HandlerFunc(fn)
 }
@@ -174,32 +170,164 @@ func transformRequest(r *http.Request, encoding string) error {
 	return nil
 }
 
-func (p *Plugin) transformResponse(resp *responseRecorder, mime string, encoding string) {
-	p.setCommonCorsHeaders(resp.header)
-	resp.header.Set("Content-Type", mime)
-	resp.header.Del("Content-Length")
+type streamingResponseWriter struct {
+	writer      http.ResponseWriter
+	mime        string
+	encoding    string
+	ensure      func(http.Header)
+	wroteHeader bool
+	wroteBody   bool
+}
 
-	status := resp.header.Get("Grpc-Status")
-	message := resp.header.Get("Grpc-Message")
+func newStreamingResponseWriter(
+	writer http.ResponseWriter,
+	mime string,
+	encoding string,
+	ensure func(http.Header),
+) *streamingResponseWriter {
+	writer.Header().Set("Content-Type", mime)
+	writer.Header().Del("Content-Length")
+	return &streamingResponseWriter{
+		writer:   writer,
+		mime:     mime,
+		encoding: encoding,
+		ensure:   ensure,
+	}
+}
+
+func (w *streamingResponseWriter) Header() http.Header {
+	return w.writer.Header()
+}
+
+func (w *streamingResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	if w.ensure != nil {
+		w.ensure(w.writer.Header())
+	}
+	w.writer.Header().Set("Content-Type", w.mime)
+	w.writer.Header().Del("Content-Length")
+	w.writer.WriteHeader(statusCode)
+	w.wroteHeader = true
+}
+
+func (w *streamingResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if len(body) == 0 {
+		return 0, nil
+	}
+	w.wroteBody = true
+	if w.encoding == encodingBase64 {
+		encoded := base64.StdEncoding.EncodeToString(body)
+		if _, err := io.WriteString(w.writer, encoded); err != nil {
+			return 0, err
+		}
+		w.Flush()
+		return len(body), nil
+	}
+	n, err := w.writer.Write(body)
+	w.Flush()
+	return n, err
+}
+
+func (w *streamingResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	_ = http.NewResponseController(w.writer).Flush()
+}
+
+func (w *streamingResponseWriter) finish() error {
+	promoteGRPCTrailerMetadata(w.Header())
+	status := w.Header().Get("Grpc-Status")
+	message := w.Header().Get("Grpc-Message")
+	if !w.wroteBody && status != "" {
+		if !w.wroteHeader {
+			w.WriteHeader(http.StatusOK)
+		}
+		return nil
+	}
 	if status == "" {
 		status = "2"
 		message = "upstream grpc status not received"
 	}
-
-	trailer := buildTrailer(status, message)
-	if encoding == encodingBase64 {
-		encodedBody := base64.StdEncoding.EncodeToString(resp.body.Bytes())
-		encodedTrailer := base64.StdEncoding.EncodeToString(trailer)
-		resp.body.Reset()
-		_, _ = resp.body.WriteString(encodedBody + encodedTrailer)
-		return
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
 	}
+	trailer := buildTrailer(status, message)
+	if w.encoding == encodingBase64 {
+		_, err := io.WriteString(w.writer, base64.StdEncoding.EncodeToString(trailer))
+		w.Flush()
+		return err
+	}
+	_, err := w.writer.Write(trailer)
+	w.Flush()
+	return err
+}
 
-	_, _ = resp.body.Write(trailer)
+func promoteGRPCTrailerMetadata(header http.Header) {
+	for _, field := range []string{"Grpc-Status", "Grpc-Message"} {
+		if header.Get(field) == "" {
+			if value := trailerHeaderValue(header, field); value != "" {
+				header.Set(field, value)
+			}
+		}
+		deleteTrailerHeader(header, field)
+	}
+	removeGRPCTrailerAnnouncement(header)
+}
+
+func trailerHeaderValue(header http.Header, field string) string {
+	want := http.TrailerPrefix + field
+	for key, values := range header {
+		if !strings.EqualFold(key, want) || len(values) == 0 {
+			continue
+		}
+		return values[0]
+	}
+	return ""
+}
+
+func deleteTrailerHeader(header http.Header, field string) {
+	want := http.TrailerPrefix + field
+	for key := range header {
+		if strings.EqualFold(key, want) {
+			delete(header, key)
+		}
+	}
+}
+
+func removeGRPCTrailerAnnouncement(header http.Header) {
+	for key, values := range header {
+		if !strings.EqualFold(key, "Trailer") {
+			continue
+		}
+		remaining := make([]string, 0, len(values))
+		for _, value := range values {
+			for _, token := range strings.Split(value, ",") {
+				token = strings.TrimSpace(token)
+				if token == "" || strings.EqualFold(token, "Grpc-Status") ||
+					strings.EqualFold(token, "Grpc-Message") {
+					continue
+				}
+				remaining = append(remaining, token)
+			}
+		}
+		if len(remaining) == 0 {
+			delete(header, key)
+			continue
+		}
+		header[key] = []string{strings.Join(remaining, ", ")}
+	}
 }
 
 func (p *Plugin) setCommonCorsHeaders(header http.Header) {
-	header.Set("Access-Control-Allow-Origin", defaultCorsAllowOrigin)
+	if header.Get("Access-Control-Allow-Origin") == "" {
+		header.Set("Access-Control-Allow-Origin", defaultCorsAllowOrigin)
+	}
 	header.Set("Access-Control-Expose-Headers", defaultCorsExposeHeaders)
 }
 
@@ -214,43 +342,4 @@ func buildTrailer(status string, message string) []byte {
 		byte(size),
 	}
 	return append(out, trailer...)
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header:     make(http.Header),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	if r.wroteHeader {
-		return
-	}
-	r.statusCode = statusCode
-	r.wroteHeader = true
-}
-
-func (r *responseRecorder) Write(body []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	return r.body.Write(body)
-}
-
-func (r *responseRecorder) writeTo(w http.ResponseWriter) {
-	for field, values := range r.header {
-		if strings.EqualFold(field, "Content-Length") {
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
-	w.WriteHeader(r.statusCode)
-	_, _ = w.Write(r.body.Bytes())
 }

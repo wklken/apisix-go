@@ -57,7 +57,8 @@ const schema = `
 			  "type": "array",
 			  "minItems": 1,
 			  "items": {
-				"type": "string"
+				"type": "string",
+				"enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE", "PURGE"]
 			  }
 			}
 		  },

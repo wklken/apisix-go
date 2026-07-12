@@ -256,6 +256,11 @@ var groupCounters = struct {
 	entries map[string]*counter
 }{entries: map[string]*counter{}}
 
+var graphqlLimitCountGroups = struct {
+	sync.Mutex
+	entries map[string]string
+}{entries: map[string]string{}}
+
 const redisLimitCountScript = `
 local current = redis.call("INCRBY", KEYS[1], ARGV[1])
 local ttl = redis.call("TTL", KEYS[1])
@@ -389,6 +394,9 @@ func (p *Plugin) PostInit() error {
 		value := true
 		p.config.ShowLimitQuotaHeader = &value
 	}
+	if err := p.registerGroup(); err != nil {
+		return err
+	}
 	if p.counters == nil {
 		p.counters = make(map[string]*counter)
 	}
@@ -417,6 +425,28 @@ func (p *Plugin) counterNamespace() string {
 		return "route:" + p.routeID
 	}
 	return "route:unknown"
+}
+
+func (p *Plugin) registerGroup() error {
+	if p.config.Group == "" {
+		return nil
+	}
+	fingerprint, err := json.Marshal(p.config)
+	if err != nil {
+		return fmt.Errorf("marshal graphql-limit-count group config: %w", err)
+	}
+
+	graphqlLimitCountGroups.Lock()
+	defer graphqlLimitCountGroups.Unlock()
+	current, ok := graphqlLimitCountGroups.entries[p.config.Group]
+	if ok {
+		if current != string(fingerprint) {
+			return fmt.Errorf("group conf mismatched")
+		}
+		return nil
+	}
+	graphqlLimitCountGroups.entries[p.config.Group] = string(fingerprint)
+	return nil
 }
 
 func validateRules(rules []Rule) error {
@@ -957,6 +987,9 @@ func queryDepth(query string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := doc.validate(); err != nil {
+		return 0, err
+	}
 	return doc.depth(), nil
 }
 
@@ -994,6 +1027,47 @@ func templateVariables(template string) []string {
 type graphQLDocument struct {
 	operations []selectionSet
 	fragments  map[string]selectionSet
+}
+
+func (d graphQLDocument) validate() error {
+	for _, operation := range d.operations {
+		if err := validateSelectionSet(operation, d.fragments, map[string]bool{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSelectionSet(
+	selections selectionSet,
+	fragments map[string]selectionSet,
+	stack map[string]bool,
+) error {
+	for _, item := range selections {
+		if item.fragment != "" {
+			if stack[item.fragment] {
+				return fmt.Errorf("cyclic graphql fragment %q", item.fragment)
+			}
+			fragment, ok := fragments[item.fragment]
+			if !ok {
+				return fmt.Errorf("undefined graphql fragment %q", item.fragment)
+			}
+			stack[item.fragment] = true
+			if err := validateSelectionSet(fragment, fragments, stack); err != nil {
+				return err
+			}
+			delete(stack, item.fragment)
+		}
+		if item.inline {
+			if err := validateSelectionSet(item.child, fragments, stack); err != nil {
+				return err
+			}
+		}
+		if err := validateSelectionSet(item.child, fragments, stack); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d graphQLDocument) depth() int {

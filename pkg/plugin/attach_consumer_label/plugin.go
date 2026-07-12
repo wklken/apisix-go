@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -87,10 +88,13 @@ func labelValue(labels map[string]any, labelRef string) (string, bool) {
 		return "", false
 	}
 
-	s, ok := value.(string)
-	if !ok {
-		return "", false
+	if s, ok := value.(string); ok {
+		return s, true
 	}
 
-	return s, true
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
 }

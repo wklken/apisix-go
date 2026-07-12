@@ -3,51 +3,46 @@ package request_id
 import (
 	"net/http"
 	"net/http/httptest"
-	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
-func TestSchemaAcceptsSnowflakeAlgorithm(t *testing.T) {
+func TestSchemaAcceptsUUIDv7AndKSUIDAlgorithms(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	if err := util.Validate(map[string]any{"algorithm": "snowflake"}, p.GetSchema()); err != nil {
-		t.Fatalf("snowflake algorithm should validate: %v", err)
+	for _, algorithm := range []string{"uuidv7", "ksuid"} {
+		if err := util.Validate(map[string]any{"algorithm": algorithm}, p.GetSchema()); err != nil {
+			t.Fatalf("%s algorithm should validate: %v", algorithm, err)
+		}
 	}
 }
 
-func TestSnowflakeGeneratesRequestID(t *testing.T) {
-	p := newTestPlugin(t, Config{Algorithm: "snowflake"})
-
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := r.Header.Get("X-Request-Id")
-		if requestID == "" {
-			t.Fatal("upstream request is missing X-Request-Id")
-		}
-		if _, err := strconv.ParseUint(requestID, 10, 64); err != nil {
-			t.Fatalf("request id = %q, want unsigned decimal snowflake id: %v", requestID, err)
-		}
-		if got := r.Context().Value("request_id"); got != requestID {
-			t.Fatalf("context request_id = %#v, want %q", got, requestID)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/snowflake", nil))
-
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+func TestUUIDv7GeneratesVersionSevenRequestID(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "uuidv7"})
+	requestID := generatedRequestID(t, p)
+	if len(requestID) != 36 || requestID[14] != '7' {
+		t.Fatalf("request id = %q, want UUIDv7 format", requestID)
 	}
-	if got := rr.Header().Get("X-Request-Id"); got == "" {
-		t.Fatal("response is missing generated X-Request-Id")
+}
+
+func TestKSUIDGeneratesSortableBase62RequestID(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "ksuid"})
+	requestID := generatedRequestID(t, p)
+	if len(requestID) != 27 {
+		t.Fatalf("request id = %q, want 27-character KSUID", requestID)
+	}
+	if strings.Trim(requestID, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") != "" {
+		t.Fatalf("request id = %q, want base62 characters", requestID)
 	}
 }
 
 func TestHandlerPreservesIncomingRequestID(t *testing.T) {
-	p := newTestPlugin(t, Config{Algorithm: "snowflake"})
+	p := newTestPlugin(t, Config{Algorithm: "uuid"})
 	req := httptest.NewRequest(http.MethodGet, "/request-id", nil)
 	req.Header.Set("X-Request-Id", "client-provided")
 
@@ -82,6 +77,19 @@ func TestHandlerCanOmitResponseHeader(t *testing.T) {
 	if got := rr.Header().Get("X-Request-Id"); got != "" {
 		t.Fatalf("response request id = %q, want empty", got)
 	}
+}
+
+func generatedRequestID(t *testing.T, p *Plugin) string {
+	t.Helper()
+	var requestID string
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID = r.Header.Get("X-Request-Id")
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/request-id", nil))
+	if requestID == "" {
+		t.Fatal("request id is empty")
+	}
+	return requestID
 }
 
 func newTestPlugin(t *testing.T, config Config) *Plugin {

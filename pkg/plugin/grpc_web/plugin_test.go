@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -176,6 +178,187 @@ func TestHandlerTransformsBinaryRequestAndResponse(t *testing.T) {
 	wantBody := append([]byte("reply"), buildTrailerForTest("7", "denied")...)
 	if got := res.Body.Bytes(); string(got) != string(wantBody) {
 		t.Fatalf("response body = %q, want %q", got, wantBody)
+	}
+}
+
+func TestHandlerStreamsBinaryResponseBeforeUpstreamReturns(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseUpstream := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseUpstream)
+
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Grpc-Status", "0")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("grpc-web response writer does not expose http.Flusher")
+			return
+		}
+		_, _ = w.Write([]byte("first"))
+		flusher.Flush()
+		<-release
+		_, _ = w.Write([]byte("second"))
+	})))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/hello.Service/Method", strings.NewReader("hello"))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/grpc-web")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	first := make([]byte, len("first"))
+	readFirst := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadFull(resp.Body, first)
+		readFirst <- readErr
+	}()
+	select {
+	case readErr := <-readFirst:
+		if readErr != nil {
+			t.Fatalf("read first streamed chunk: %v", readErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first streamed chunk")
+	}
+	if string(first) != "first" {
+		t.Fatalf("first streamed chunk = %q, want first", first)
+	}
+
+	releaseUpstream()
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read remaining streamed response: %v", err)
+	}
+	wantRest := append([]byte("second"), buildTrailerForTest("0", "")...)
+	if string(rest) != string(wantRest) {
+		t.Fatalf("remaining response = %q, want %q", rest, wantRest)
+	}
+}
+
+func TestHandlerStreamingResponseObservesClientCancellation(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("grpc-web response writer does not expose http.Flusher")
+			return
+		}
+		_, _ = w.Write([]byte("first"))
+		flusher.Flush()
+		close(started)
+		<-r.Context().Done()
+		close(canceled)
+	})))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/hello.Service/Method", strings.NewReader("hello"))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/grpc-web")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do() error = %v", err)
+	}
+	first := make([]byte, len("first"))
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("read first streamed chunk: %v", err)
+	}
+	if string(first) != "first" {
+		_ = resp.Body.Close()
+		t.Fatalf("first streamed chunk = %q, want first", first)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		_ = resp.Body.Close()
+		t.Fatal("timed out waiting for upstream stream")
+	}
+	_ = resp.Body.Close()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream request context was not canceled after client disconnect")
+	}
+}
+
+func TestHandlerPreservesTrailersOnlyResponseMetadata(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "/hello.Service/Method", strings.NewReader("hello"))
+	req.Header.Set("Content-Type", "application/grpc-web")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Grpc-Status", "7")
+		w.Header().Set("Grpc-Message", "denied")
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+	if res.Body.Len() != 0 {
+		t.Fatalf("trailers-only response body = %q, want empty", res.Body.String())
+	}
+	if got := res.Header().Get("Grpc-Status"); got != "7" {
+		t.Fatalf("Grpc-Status header = %q, want 7", got)
+	}
+	if got := res.Header().Get("Grpc-Message"); got != "denied" {
+		t.Fatalf("Grpc-Message header = %q, want denied", got)
+	}
+}
+
+func TestHandlerConvertsUpstreamTrailerPrefixMetadata(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "/hello.Service/Method", strings.NewReader("hello"))
+	req.Header.Set("Content-Type", "application/grpc-web")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Trailer", "Grpc-Status, Grpc-Message")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("reply"))
+		w.Header().Set(http.TrailerPrefix+"Grpc-Status", "7")
+		w.Header().Set(http.TrailerPrefix+"Grpc-Message", "denied")
+	})).ServeHTTP(res, req)
+
+	wantBody := append([]byte("reply"), buildTrailerForTest("7", "denied")...)
+	if got := res.Body.Bytes(); string(got) != string(wantBody) {
+		t.Fatalf("response body = %q, want trailer metadata from upstream trailers: %q", got, wantBody)
+	}
+	if got := res.Header().Get("Grpc-Status"); got != "7" {
+		t.Fatalf("Grpc-Status = %q, want 7", got)
+	}
+	if got := res.Header().Get("Grpc-Message"); got != "denied" {
+		t.Fatalf("Grpc-Message = %q, want denied", got)
+	}
+	if got := res.Header().Get("Trailer"); got != "" {
+		t.Fatalf("Trailer header = %q, want grpc trailer declaration consumed", got)
+	}
+}
+
+func TestHandlerPreservesExistingCorsOrigin(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "/hello.Service/Method", strings.NewReader("hello"))
+	req.Header.Set("Content-Type", "application/grpc-web")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://client.example")
+		w.Header().Set("Grpc-Status", "0")
+	})).ServeHTTP(res, req)
+
+	if got := res.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want existing origin", got)
 	}
 }
 

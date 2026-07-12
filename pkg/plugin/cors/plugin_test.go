@@ -213,6 +213,31 @@ func TestHandlerSkipsTimingAllowOriginWhenNotMatched(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsCredentialsWithWildcardOptions(t *testing.T) {
+	p := &Plugin{config: Config{AllowCredential: true}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want wildcard credential rejection")
+	}
+}
+
+func TestHandlerDoesNotExposeHeadersByDefault(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Internal", "value")
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Expose-Headers"); got != "" {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want empty by default", got)
+	}
+}
+
 func stringPtr(v string) *string {
 	return &v
 }

@@ -40,6 +40,8 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
+	s.consumerMu.Lock()
+	defer s.consumerMu.Unlock()
 	key := util.BytesToString(id)
 
 	// clear old keys
@@ -158,6 +160,8 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 }
 
 func (s *Store) consumerKVDelete(id []byte) error {
+	s.consumerMu.Lock()
+	defer s.consumerMu.Unlock()
 	key := util.BytesToString(id)
 
 	// clear old keys
@@ -176,9 +180,11 @@ func (s *Store) consumerKVDelete(id []byte) error {
 
 func (s *Store) GetConsumerNameByPluginKey(pluginName string, key string) ([]byte, error) {
 	k := fmt.Sprintf("%s:%s", pluginName, key)
+	s.consumerMu.RLock()
+	defer s.consumerMu.RUnlock()
 	id, ok := s.consumerKV[k]
 	if !ok {
 		return []byte{}, ErrNotFound
 	}
-	return id, nil
+	return append([]byte(nil), id...), nil
 }

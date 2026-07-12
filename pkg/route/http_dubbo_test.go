@@ -36,6 +36,38 @@ func TestServeHTTPDubboIfConfiguredUsesRouteUpstreamTarget(t *testing.T) {
 	}
 }
 
+func TestServeHTTPDubboIfConfiguredUsesSafeUpstreamRetries(t *testing.T) {
+	upstream := startRouteDubboTestServer(t, routeDubboFrame("1\nretry-success\n"))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen retry target: %v", err)
+	}
+	failedTarget := listener.Addr().String()
+	_ = listener.Close()
+	lb := &sequenceLoadBalancer{targets: []string{"dubbo://" + failedTarget, "dubbo://" + upstream}}
+
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
+	req = http_dubbo.WithConfig(req, http_dubbo.Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "hello",
+	})
+	rr := httptest.NewRecorder()
+
+	if !serveHTTPDubboIfConfigured(rr, req, lb, 1) {
+		t.Fatal("serveHTTPDubboIfConfigured() = false, want true")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != "retry-success" {
+		t.Fatalf("response body = %q, want retry-success", rr.Body.String())
+	}
+	if lb.index != 2 {
+		t.Fatalf("selected targets = %d, want 2", lb.index)
+	}
+}
+
 func TestServeHTTPDubboIfConfiguredSkipsUnconfiguredRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", nil)
 	rr := httptest.NewRecorder()
@@ -66,6 +98,20 @@ func startRouteDubboTestServer(t *testing.T, response []byte) string {
 	}()
 
 	return ln.Addr().String()
+}
+
+type sequenceLoadBalancer struct {
+	targets []string
+	index   int
+}
+
+func (lb *sequenceLoadBalancer) Next() string {
+	if lb.index >= len(lb.targets) {
+		return lb.targets[len(lb.targets)-1]
+	}
+	target := lb.targets[lb.index]
+	lb.index++
+	return target
 }
 
 func discardDubboFrame(conn net.Conn) {

@@ -3,6 +3,9 @@ package rocketmq_logger
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 )
 
 type captureSender struct {
@@ -137,6 +142,54 @@ func TestPostInitAppliesDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{
+		config: Config{
+			NameServerList: []string{"127.0.0.1:9876"},
+			Topic:          "apisix-logs",
+			AccessKey:      "access",
+			SecretKey:      "not-a-ciphertext",
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted secret_key rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{
+		config: Config{
+			NameServerList: []string{"127.0.0.1:9876"},
+			Topic:          "apisix-logs",
+			AccessKey:      "access",
+			SecretKey:      encryptRocketMQLoggerTestValue(t, oldKey, "rocketmq-secret"),
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.SecretKey != "rocketmq-secret" {
+		t.Fatalf("secret_key = %q, want resolved plaintext", p.config.SecretKey)
 	}
 }
 
@@ -401,4 +454,20 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	if _, ok := payload["response"]; ok {
 		t.Fatalf("payload response = %#v, want no response body", payload["response"])
 	}
+}
+
+func encryptRocketMQLoggerTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }

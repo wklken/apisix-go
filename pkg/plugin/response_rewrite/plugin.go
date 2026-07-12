@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	brotlidec "github.com/andybalholm/brotli"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 )
@@ -83,9 +84,14 @@ const schema = `
         }
       ]
     },
-    "body": {
-      "type": "string"
-    },
+	    "body": {
+	      "type": "string"
+	    },
+	    "body_secret": {
+	      "type": "string",
+	      "minLength": 1,
+	      "description": "Go extension: explicitly opted-in APISIX data-encryption ciphertext"
+	    },
     "body_base64": {
       "type": "boolean",
       "default": false
@@ -139,6 +145,7 @@ const schema = `
 type Config struct {
 	Headers    Headers  `json:"headers,omitempty"`
 	Body       *string  `json:"body,omitempty"`
+	BodySecret *string  `json:"body_secret,omitempty"`
 	BodyBase64 *bool    `json:"body_base64,omitempty"`
 	StatusCode int      `json:"status_code,omitempty"`
 	Vars       []any    `json:"vars,omitempty"`
@@ -248,8 +255,25 @@ func (p *Plugin) PostInit() error {
 		b := false
 		p.config.BodyBase64 = &b
 	}
+	if p.config.Body != nil && p.config.BodySecret != nil {
+		return fmt.Errorf("response-rewrite body and body_secret cannot be configured together")
+	}
+	if p.config.BodySecret != nil && len(p.config.Filters) > 0 {
+		return fmt.Errorf("response-rewrite body_secret and filters cannot be configured together")
+	}
 	if p.config.Body != nil && len(p.config.Filters) > 0 {
 		return fmt.Errorf("response-rewrite body and filters cannot be configured together")
+	}
+	if p.config.BodySecret != nil {
+		if *p.config.BodySecret == "" {
+			return fmt.Errorf("response-rewrite body_secret must not be empty")
+		}
+		keyring, enabled := data_encryption.Keyring()
+		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(*p.config.BodySecret)
+		if err != nil {
+			return fmt.Errorf("response-rewrite body_secret: %w", err)
+		}
+		p.config.Body = &resolved
 	}
 	if *p.config.BodyBase64 {
 		if p.config.Body == nil || *p.config.Body == "" {

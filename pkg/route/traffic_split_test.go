@@ -27,3 +27,38 @@ func TestApplyTrafficSplitOverrideUpdatesProxyTarget(t *testing.T) {
 		t.Fatalf("Host = %q, want shadow.example.com:9443", req.Host)
 	}
 }
+
+func TestApplyTrafficSplitOverridePassesOriginalHost(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+	req = traffic_split.WithOverride(req, &traffic_split.Override{
+		Scheme:   "http",
+		Host:     "127.0.0.1:8080",
+		PassHost: "pass",
+	})
+
+	if !applyTrafficSplitOverride(req) {
+		t.Fatal("applyTrafficSplitOverride() = false, want true")
+	}
+	if req.URL.Host != "127.0.0.1:8080" {
+		t.Fatalf("URL host = %q, want 127.0.0.1:8080", req.URL.Host)
+	}
+	if req.Host != "route.example.com" {
+		t.Fatalf("Host = %q, want route.example.com", req.Host)
+	}
+}
+
+func TestApplyTrafficSplitOverrideRewritesHost(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil)
+	req = traffic_split.WithOverride(req, &traffic_split.Override{
+		Scheme:       "http",
+		Host:         "127.0.0.1:8080",
+		PassHost:     "rewrite",
+		UpstreamHost: "api.example.com",
+	})
+
+	applyTrafficSplitOverride(req)
+
+	if req.Host != "api.example.com" {
+		t.Fatalf("Host = %q, want api.example.com", req.Host)
+	}
+}

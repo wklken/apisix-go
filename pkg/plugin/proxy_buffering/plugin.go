@@ -35,6 +35,23 @@ type Config struct {
 
 type disableProxyBufferingKey struct{}
 
+type flushingResponseWriter struct {
+	http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (w *flushingResponseWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(body)
+	if err == nil {
+		w.flusher.Flush()
+	}
+	return n, err
+}
+
+func (w *flushingResponseWriter) Flush() {
+	w.flusher.Flush()
+}
+
 func (p *Plugin) Config() interface{} {
 	return &p.config
 }
@@ -53,6 +70,11 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		r = WithDisableProxyBuffering(r, p.config.DisableProxyBuffering)
+		if p.config.DisableProxyBuffering {
+			if flusher, ok := w.(http.Flusher); ok {
+				w = &flushingResponseWriter{ResponseWriter: w, flusher: flusher}
+			}
+		}
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)

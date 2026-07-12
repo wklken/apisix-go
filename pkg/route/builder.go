@@ -3,12 +3,17 @@ package route
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	stdjson "encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +25,11 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/plugin/dubbo_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
+	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
@@ -135,6 +143,11 @@ func (b *Builder) Stop() {
 }
 
 func (b *Builder) Build() *chi.Mux {
+	if err := proxy_cache.ValidateConfiguredZones(); err != nil {
+		logger.Errorf("validate proxy-cache zone registry fail: %s", err)
+		return nil
+	}
+
 	routes, err := store.ListRoutes()
 	if err != nil {
 		logger.Errorf("list routes fail: %s", err)
@@ -155,7 +168,11 @@ func (b *Builder) Build() *chi.Mux {
 		}
 
 		methods := r.Methods
-		handler := b.buildHandler(r)
+		handler, err := b.buildHandlerStrict(r)
+		if err != nil {
+			logger.Errorf("build route %s fail: %s", r.ID, err)
+			return nil
+		}
 
 		// if err != nil {
 		// 	// log error
@@ -196,6 +213,14 @@ func (b *Builder) Build() *chi.Mux {
 }
 
 func (b *Builder) buildHandler(r resource.Route) http.Handler {
+	handler, err := b.buildHandlerStrict(r)
+	if err != nil {
+		logger.Errorf("build route %s fail: %s", r.ID, err)
+	}
+	return handler
+}
+
+func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	resourcePlugins := r.Plugins
 	// handle plugin_config_id
 	// fmt.Println("r.Uri", r.Uri, "r.PluginConfigID", r.PluginConfigID)
@@ -204,7 +229,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		if err != nil {
 			// FIXME: should return 503
 			logger.Errorf("get plugin config rule fail: %s", err)
-			return nil
+			return nil, err
 		}
 		for name, config := range pluginConfigRule.Plugins {
 			// priority: Consumer > Route > Plugin Config > Service
@@ -222,7 +247,7 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 		service, err = store.GetService(r.ServiceID)
 		if err != nil {
 			logger.Errorf("get service fail: %s", err)
-			return nil
+			return nil, err
 		}
 	}
 
@@ -246,16 +271,27 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	routeContext := b.pluginRouteContext(r)
 	routeContext.service = service
 	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
-	localPlugins = append(localPlugins, b.initPlugins(resourcePlugins, routeContext)...)
-	localPlugins = append(localPlugins, b.initPlugins(systemPlugins, routeContext)...)
+	initialized, err := b.initPluginsStrict(resourcePlugins, routeContext)
+	if err != nil {
+		return nil, err
+	}
+	localPlugins = append(localPlugins, initialized...)
+	initialized, err = b.initPluginsStrict(systemPlugins, routeContext)
+	if err != nil {
+		return nil, err
+	}
+	localPlugins = append(localPlugins, initialized...)
 	localChain := plugin.BuildPluginChain(localPlugins...)
 
 	globalRules, err := store.ListGlobalRules()
 	if err != nil {
 		logger.Errorf("list global rules fail: %s", err)
-		return nil
+		return nil, err
 	}
-	globalPlugins := b.initGlobalPlugins(globalRules, routeContext)
+	globalPlugins, err := b.initGlobalPluginsStrict(globalRules, routeContext)
+	if err != nil {
+		return nil, err
+	}
 	if len(globalPlugins) > 0 {
 		globalChain := plugin.BuildPluginChain(globalPlugins...)
 
@@ -267,10 +303,10 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
 		logger.Errorf("build reverse handler fail: %s", err)
-		return nil
+		return nil, err
 	}
 
-	return withAIExecutionTerminal(chain, handler)
+	return withAIExecutionTerminal(chain, handler), nil
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
@@ -359,10 +395,25 @@ type pluginStopper interface {
 	Stop()
 }
 
+type strictPluginInitializer interface {
+	FailRouteOnInitError() bool
+}
+
 func (b *Builder) initPlugins(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
 ) []plugin.Plugin {
+	plugins, err := b.initPluginsStrict(pluginConfigs, routeContext)
+	if err != nil {
+		logger.Errorf("initialize strict plugin set fail: %s", err)
+	}
+	return plugins
+}
+
+func (b *Builder) initPluginsStrict(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) ([]plugin.Plugin, error) {
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
@@ -370,16 +421,33 @@ func (b *Builder) initPlugins(
 			logger.Warnf("plugin %s not supported yet", name)
 			continue
 		}
-		p.Init()
+		strict := false
+		if initializer, ok := p.(strictPluginInitializer); ok {
+			strict = initializer.FailRouteOnInitError()
+		}
+
+		if err := p.Init(); err != nil {
+			if strict {
+				return plugins, fmt.Errorf("initialize plugin %s: %w", name, err)
+			}
+			logger.Errorf("initialize plugin %s fail: %s", name, err)
+			continue
+		}
 
 		err := util.Validate(config, p.GetSchema())
 		if err != nil {
+			if strict {
+				return plugins, fmt.Errorf("validate plugin %s config: %w", name, err)
+			}
 			logger.Errorf("validate plugin %s config fail: %s", name, err)
 			continue
 		}
 
 		err = util.Parse(config, p.Config())
 		if err != nil {
+			if strict {
+				return plugins, fmt.Errorf("parse plugin %s config: %w", name, err)
+			}
 			logger.Errorf("parse plugin config fail: %s", err)
 			continue
 		}
@@ -392,6 +460,9 @@ func (b *Builder) initPlugins(
 		}
 
 		if err := p.PostInit(); err != nil {
+			if strict {
+				return plugins, fmt.Errorf("initialize plugin %s: %w", name, err)
+			}
 			logger.Errorf("initialize plugin %s fail: %s", name, err)
 			continue
 		}
@@ -401,18 +472,33 @@ func (b *Builder) initPlugins(
 
 		plugins = append(plugins, p)
 	}
-	return plugins
+	return plugins, nil
 }
 
 func (b *Builder) initGlobalPlugins(
 	globalRules []resource.GlobalRule,
 	routeContext pluginRouteContext,
 ) []plugin.Plugin {
-	plugins := make([]plugin.Plugin, 0, len(globalRules))
-	for _, rule := range globalRules {
-		plugins = append(plugins, b.initPlugins(rule.Plugins, routeContext)...)
+	plugins, err := b.initGlobalPluginsStrict(globalRules, routeContext)
+	if err != nil {
+		logger.Errorf("initialize strict global plugin set fail: %s", err)
 	}
 	return plugins
+}
+
+func (b *Builder) initGlobalPluginsStrict(
+	globalRules []resource.GlobalRule,
+	routeContext pluginRouteContext,
+) ([]plugin.Plugin, error) {
+	plugins := make([]plugin.Plugin, 0, len(globalRules))
+	for _, rule := range globalRules {
+		initialized, err := b.initPluginsStrict(rule.Plugins, routeContext)
+		if err != nil {
+			return plugins, err
+		}
+		plugins = append(plugins, initialized...)
+	}
+	return plugins, nil
 }
 
 func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service) (http.Handler, error) {
@@ -445,8 +531,15 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		servers[uri] = weight
 	}
 
+	if strings.EqualFold(scheme, "kafka") {
+		return buildKafkaPubSubProxyHandlerStrict(upstream, nil)
+	}
+
 	// FIXME: do service discovery here
-	lb := pxy.NewWeightedRRLoadBalance(servers)
+	lb, err := pxy.NewUpstreamLoadBalance(servers, upstream.Checks)
+	if err != nil {
+		return nil, fmt.Errorf("build upstream load balancer: %w", err)
+	}
 
 	director := func(req *http.Request) {
 		// 1. basic
@@ -488,6 +581,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			// traffic-split selected the upstream target for this request.
 		} else {
 			target := lb.Next()
+			pxy.SetSelectedTarget(req, target)
 			u, err := url.Parse(target)
 			if err != nil {
 				// log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
@@ -561,7 +655,11 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		-1*time.Second,
 	)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveHTTPDubboIfConfigured(w, r, lb) {
+		r = pxy.WithHealthReporter(r, healthReporter(lb))
+		if serveDubboIfConfigured(w, r, lb, upstream.Retries) {
+			return
+		}
+		if serveHTTPDubboIfConfigured(w, r, lb, upstream.Retries) {
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(r); err != nil {
@@ -572,27 +670,245 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	}), nil
 }
 
-func serveHTTPDubboIfConfigured(w http.ResponseWriter, r *http.Request, lb pxy.LoadBalancer) bool {
+func buildKafkaPubSubProxyHandler(upstream resource.Upstream, factory kafka_proxy.KafkaConsumerFactory) http.Handler {
+	handler, err := buildKafkaPubSubProxyHandlerStrict(upstream, factory)
+	if err == nil {
+		return handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "Kafka upstream configuration invalid", http.StatusBadGateway)
+	})
+}
+
+func buildKafkaPubSubProxyHandlerStrict(
+	upstream resource.Upstream,
+	factory kafka_proxy.KafkaConsumerFactory,
+) (http.Handler, error) {
+	return buildKafkaPubSubProxyHandlerStrictWithSSLResolver(upstream, factory, store.GetSSL)
+}
+
+type kafkaSSLResolver func(id string) (resource.SSL, error)
+
+func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
+	upstream resource.Upstream,
+	factory kafka_proxy.KafkaConsumerFactory,
+	resolveSSL kafkaSSLResolver,
+) (http.Handler, error) {
+	options := kafka_proxy.TransportOptions{}
+	if upstream.Timeout.Connect > 0 {
+		options.ConnectTimeout = time.Duration(upstream.Timeout.Connect) * time.Second
+	}
+	if upstream.Timeout.Send > 0 {
+		options.WriteTimeout = time.Duration(upstream.Timeout.Send) * time.Second
+	}
+	if upstream.Timeout.Read > 0 {
+		options.ReadTimeout = time.Duration(upstream.Timeout.Read) * time.Second
+	}
+	if upstream.TLS != nil {
+		clientCert := upstream.TLS.ClientCert
+		clientKey := upstream.TLS.ClientKey
+		if upstream.TLS.ClientCertID != nil {
+			if clientCert != "" || clientKey != "" {
+				return nil, fmt.Errorf(
+					"Kafka upstream client_cert_id cannot be combined with client_cert or client_key",
+				)
+			}
+			id, err := normalizeKafkaSSLID(upstream.TLS.ClientCertID)
+			if err != nil {
+				return nil, fmt.Errorf("invalid Kafka upstream client_cert_id: %w", err)
+			}
+			if resolveSSL == nil {
+				return nil, fmt.Errorf("Kafka upstream client_cert_id %q cannot be resolved", id)
+			}
+			ssl, err := resolveSSL(id)
+			if err != nil {
+				return nil, fmt.Errorf("resolve Kafka upstream client_cert_id %q: %w", id, err)
+			}
+			clientCert = ssl.Cert
+			clientKey = ssl.Key
+		}
+		if (clientCert == "") != (clientKey == "") {
+			return nil, fmt.Errorf("Kafka upstream client_cert and client_key must be configured together")
+		}
+		tlsConfig := &tls.Config{InsecureSkipVerify: !upstream.TLS.Verify} //nolint:gosec
+		if clientCert != "" {
+			certificate, err := tls.X509KeyPair(
+				[]byte(clientCert),
+				[]byte(clientKey),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("parse Kafka upstream client certificate: %w", err)
+			}
+			tlsConfig.Certificates = []tls.Certificate{certificate}
+		}
+		options.TLSConfig = tlsConfig
+	}
+	brokers := make([]string, 0, len(upstream.Nodes))
+	for _, node := range upstream.Nodes {
+		brokers = append(brokers, fmt.Sprintf("kafka://%s:%d", node.Host, node.Port))
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !kafka_proxy.IsWebSocketUpgrade(r) {
+			http.Error(w, kafka_proxy.ErrWebSocketUpgradeRequired.Error(), http.StatusUpgradeRequired)
+			return
+		}
+		if len(brokers) == 0 {
+			http.Error(w, "Kafka upstream has no configured nodes", http.StatusBadGateway)
+			return
+		}
+		if err := kafka_proxy.ServePubSubWebSocket(w, r, brokers, options, factory); err != nil {
+			if kafka_proxy.WebSocketWasHijacked(err) {
+				return
+			}
+			http.Error(w, "Kafka upstream proxy failed", http.StatusBadGateway)
+		}
+	}), nil
+}
+
+func normalizeKafkaSSLID(value any) (string, error) {
+	switch value := value.(type) {
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("must not be empty")
+		}
+		return value, nil
+	case stdjson.Number:
+		return normalizeKafkaSSLNumber(string(value))
+	case float64:
+		return normalizeKafkaSSLFloat(value)
+	case float32:
+		return normalizeKafkaSSLFloat(float64(value))
+	case int:
+		return strconv.Itoa(value), nil
+	case int8:
+		return strconv.FormatInt(int64(value), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(value), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(value), 10), nil
+	case int64:
+		return strconv.FormatInt(value, 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(value), 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(value), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(value), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(value), 10), nil
+	case uint64:
+		return strconv.FormatUint(value, 10), nil
+	default:
+		return "", fmt.Errorf("must be a string or integer")
+	}
+}
+
+func normalizeKafkaSSLNumber(value string) (string, error) {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return "", fmt.Errorf("must be a string or integer")
+	}
+	return normalizeKafkaSSLFloat(parsed)
+}
+
+func normalizeKafkaSSLFloat(value float64) (string, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value != math.Trunc(value) {
+		return "", fmt.Errorf("must be an integer")
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64), nil
+}
+
+// buildKafkaRawProxyHandler is retained for compatibility clients that speak
+// raw length-prefixed Kafka frames over WebSocket. APISIX parity uses the
+// PubSub handler above and never routes scheme:kafka through this extension.
+func buildKafkaRawProxyHandler(lb pxy.LoadBalancer, upstream resource.Upstream) http.Handler {
+	options := kafka_proxy.TransportOptions{}
+	if upstream.Timeout.Connect > 0 {
+		options.ConnectTimeout = time.Duration(upstream.Timeout.Connect) * time.Second
+	}
+	if upstream.Timeout.Send > 0 {
+		options.WriteTimeout = time.Duration(upstream.Timeout.Send) * time.Second
+	}
+	if upstream.Timeout.Read > 0 {
+		options.ReadTimeout = time.Duration(upstream.Timeout.Read) * time.Second
+	}
+	reporter := healthReporter(lb)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = pxy.WithHealthReporter(r, reporter)
+		if !kafka_proxy.IsWebSocketUpgrade(r) {
+			http.Error(w, kafka_proxy.ErrWebSocketUpgradeRequired.Error(), http.StatusUpgradeRequired)
+			return
+		}
+		target := lb.Next()
+		if target == "" {
+			http.Error(w, "Kafka upstream has no configured nodes", http.StatusBadGateway)
+			return
+		}
+		pxy.SetSelectedTarget(r, target)
+		if err := kafka_proxy.ServeWebSocket(w, r, target, options); err != nil {
+			pxy.ReportTCPFailureOutcome(r, false)
+			if kafka_proxy.WebSocketWasHijacked(err) {
+				return
+			}
+			http.Error(w, "Kafka upstream proxy failed", http.StatusBadGateway)
+		}
+	})
+}
+
+func serveDubboIfConfigured(
+	w http.ResponseWriter,
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	retries ...int,
+) bool {
+	cfg, ok := dubbo_proxy.GetConfig(r)
+	if !ok {
+		return false
+	}
+
+	retryCount := 0
+	if len(retries) > 0 {
+		retryCount = retries[0]
+	}
+	dubbo_proxy.ServeDubboWithRetries(w, r, func() (string, error) {
+		return selectHTTPDubboTarget(r, lb)
+	}, cfg, retryCount)
+	return true
+}
+
+func serveHTTPDubboIfConfigured(
+	w http.ResponseWriter,
+	r *http.Request,
+	lb pxy.LoadBalancer,
+	retries ...int,
+) bool {
 	cfg, ok := http_dubbo.GetConfig(r)
 	if !ok {
 		return false
 	}
 
-	target, err := selectHTTPDubboTarget(r, lb)
-	if err != nil {
-		render.New().JSON(w, http.StatusBadGateway, err.Error())
-		return true
+	retryCount := 0
+	if len(retries) > 0 {
+		retryCount = retries[0]
 	}
-	http_dubbo.ServeDubbo(w, r, target, cfg)
+	http_dubbo.ServeDubboWithRetries(w, r, func() (string, error) {
+		return selectHTTPDubboTarget(r, lb)
+	}, cfg, retryCount)
 	return true
 }
 
 func selectHTTPDubboTarget(r *http.Request, lb pxy.LoadBalancer) (string, error) {
 	if override := traffic_split.GetOverride(r); override != nil {
+		if override.HealthReporter != nil {
+			r = pxy.WithHealthReporter(r, override.HealthReporter)
+			pxy.SetSelectedTarget(r, override.HealthTarget)
+		}
 		return override.Host, nil
 	}
 
 	target := lb.Next()
+	pxy.SetSelectedTarget(r, target)
 	u, err := url.Parse(target)
 	if err != nil {
 		return "", fmt.Errorf("parse upstream target %q: %w", target, err)
@@ -608,6 +924,11 @@ func selectProxyHandler(r *http.Request, defaultHandler http.Handler, streamingH
 		return streamingHandler
 	}
 	return defaultHandler
+}
+
+func healthReporter(lb pxy.LoadBalancer) pxy.HealthReporter {
+	reporter, _ := lb.(pxy.HealthReporter)
+	return reporter
 }
 
 func bufferRequestBodyIfNeeded(r *http.Request) error {
@@ -632,8 +953,16 @@ func bufferRequestBodyIfNeeded(r *http.Request) error {
 }
 
 func applyProxyRewriteURI(req *http.Request, uri string) {
+	if parsed, err := url.ParseRequestURI(uri); err == nil && parsed.Scheme == "" && parsed.Host == "" {
+		req.URL.Path = parsed.Path
+		req.URL.RawPath = parsed.RawPath
+		req.URL.RawQuery = parsed.RawQuery
+		return
+	}
+
 	path, rawQuery, hasQuery := strings.Cut(uri, "?")
 	req.URL.Path = path
+	req.URL.RawPath = ""
 	if hasQuery {
 		req.URL.RawQuery = rawQuery
 	}
@@ -644,9 +973,29 @@ func applyTrafficSplitOverride(req *http.Request) bool {
 	if override == nil {
 		return false
 	}
+	if override.HealthReporter != nil {
+		req = pxy.WithHealthReporter(req, override.HealthReporter)
+		pxy.SetSelectedTarget(req, override.HealthTarget)
+	}
+	originalHost := req.Host
 	req.URL.Scheme = override.Scheme
 	req.URL.Host = override.Host
-	req.Host = override.Host
+	switch override.PassHost {
+	case "pass":
+		if originalHost != "" {
+			req.Host = originalHost
+		} else {
+			req.Host = req.URL.Host
+		}
+	case "rewrite":
+		if override.UpstreamHost != "" {
+			req.Host = override.UpstreamHost
+		} else {
+			req.Host = override.Host
+		}
+	default:
+		req.Host = override.Host
+	}
 	return true
 }
 
@@ -661,7 +1010,11 @@ func newModifyResponse() pxy.ModifyResponse {
 		// resp.Request = resp.Request.WithContext(ctx)
 
 		status := resp.StatusCode
-		ctx.RegisterRequestVar(resp.Request, "$status", status)
+		pxy.ReportHTTPOutcome(resp.Request, status)
+		if ctx.GetRequestVars(resp.Request) != nil {
+			ctx.RegisterRequestVar(resp.Request, "$status", status)
+			ctx.RegisterRequestVar(resp.Request, "$response_source", "upstream")
+		}
 		recordUpstreamLatency(resp.Request)
 
 		// FIXME: the status here is upstream status, not the http status finally
@@ -754,6 +1107,16 @@ func newErrorHandler() pxy.ErrorHandler {
 
 		// 4. check the error https://github.com/vulcand/oxy/blob/master/utils/handler.go
 		status := http.StatusInternalServerError
+		if !errors.Is(err, context.Canceled) {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				pxy.ReportTCPFailureOutcome(r, true)
+			} else {
+				pxy.ReportTCPFailureOutcome(r, false)
+			}
+		}
+		if ctx.GetRequestVars(r) != nil {
+			ctx.RegisterRequestVar(r, "$response_source", "apisix")
+		}
 
 		if e, ok := err.(net.Error); ok {
 			if e.Timeout() {

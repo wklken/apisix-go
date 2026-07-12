@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"sync"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -24,6 +25,25 @@ func TestParseConsumerDecryptsEncryptedAuthPluginFields(t *testing.T) {
 	keyAuth := consumer.Plugins["key-auth"].(map[string]any)
 	if got := keyAuth["key"]; got != "api-secret" {
 		t.Fatalf("key-auth.key = %v, want decrypted value", got)
+	}
+}
+
+func TestParseRoutePreservesStrictLoggerFieldsForPluginBoundary(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	encrypted := encryptForTest(t, key, "Bearer secret")
+	route, err := ParseRoute([]byte(`{
+        "uri":"/logs",
+        "plugins":{"http-logger":{"uri":"http://127.0.0.1/logs","auth_header":"` + encrypted + `"}}
+    }`))
+	if err != nil {
+		t.Fatalf("ParseRoute() error = %v", err)
+	}
+	loggerConfig := route.Plugins["http-logger"].(map[string]any)
+	if got := loggerConfig["auth_header"]; got != encrypted {
+		t.Fatalf("http-logger.auth_header = %v, want ciphertext preserved for strict plugin resolution", got)
 	}
 }
 
@@ -61,6 +81,33 @@ func TestDecodePluginMetadataPreservesUnregisteredLargeIntegers(t *testing.T) {
 	if metadata.Sequence != 9007199254740993 {
 		t.Fatalf("sequence = %d, want exact large integer", metadata.Sequence)
 	}
+}
+
+func TestConsumerKVConcurrentReadAndUpdate(t *testing.T) {
+	consumerStore := &Store{
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+	}
+	value := []byte(`{"username":"alice","plugins":{"key-auth":{"key":"api-key"}}}`)
+
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		for range 1000 {
+			if err := consumerStore.consumerKVAdd([]byte("alice"), value); err != nil {
+				t.Errorf("consumerKVAdd() error = %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer group.Done()
+		for range 1000 {
+			_, _ = consumerStore.GetConsumerNameByPluginKey("key-auth", "api-key")
+		}
+	}()
+	group.Wait()
 }
 
 func encryptForTest(t *testing.T, key string, value string) string {

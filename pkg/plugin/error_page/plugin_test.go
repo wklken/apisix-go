@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, metadata Metadata) *Plugin {
@@ -67,6 +69,28 @@ func TestHandlerKeepsUnconfiguredOrDisabledResponses(t *testing.T) {
 	})
 	if got := res.Body.String(); got != "bad request" {
 		t.Fatalf("unconfigured status body = %q, want original", got)
+	}
+}
+
+func TestHandlerDoesNotRewriteUpstreamErrorWhenSourceIsKnown(t *testing.T) {
+	p := newTestPlugin(t, Metadata{
+		Enable: true,
+		Error404: ErrorPage{
+			Body:        "custom",
+			ContentType: "text/plain",
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/missing", nil)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.RegisterRequestVar(req, "$response_source", "upstream")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("upstream error"))
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Body.String(); got != "upstream error" {
+		t.Fatalf("body = %q, want upstream error unchanged", got)
 	}
 }
 

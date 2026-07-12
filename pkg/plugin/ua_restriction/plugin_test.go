@@ -9,7 +9,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
-func TestSchemaAllowsAllowlistAndDenylistTogether(t *testing.T) {
+func TestSchemaRejectsAllowlistAndDenylistTogether(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -19,8 +19,35 @@ func TestSchemaAllowsAllowlistAndDenylistTogether(t *testing.T) {
 		"allowlist": []any{"allowed-bot"},
 		"denylist":  []any{"blocked-bot"},
 	}
-	if err := util.Validate(config, p.GetSchema()); err != nil {
-		t.Fatalf("allowlist and denylist should validate together: %v", err)
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("allowlist and denylist should not validate together")
+	}
+}
+
+func TestSchemaRejectsMissingAndConflictingUserAgentLists(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		config map[string]any
+	}{
+		{name: "missing lists", config: map[string]any{}},
+		{
+			name: "both lists",
+			config: map[string]any{
+				"allowlist": []any{"allowed-bot"},
+				"denylist":  []any{"blocked-bot"},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(test.config, p.GetSchema()); err == nil {
+				t.Fatal("schema validation error = nil, want official oneOf rejection")
+			}
+		})
 	}
 }
 

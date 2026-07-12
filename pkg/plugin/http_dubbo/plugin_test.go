@@ -2,7 +2,9 @@ package http_dubbo
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -101,6 +103,30 @@ func TestBuildDubboRequestSerializesGenericInvocationParams(t *testing.T) {
 	}
 }
 
+func TestBuildDubboRequestUsesFastJSONStringEscaping(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`["<tag>&","line\n"]`))
+	cfg := Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "render",
+	}
+
+	frame, err := buildDubboRequest(req, cfg)
+	if err != nil {
+		t.Fatalf("buildDubboRequest() error = %v", err)
+	}
+
+	payload := string(frame[16:])
+	want := "\"<tag>&\"\n\"line\\n\"\n"
+	if !strings.Contains(payload, want) {
+		t.Fatalf("payload = %q, want fastjson string escaping %q", payload, want)
+	}
+	if strings.Contains(payload, `\u003c`) || strings.Contains(payload, `\u003e`) ||
+		strings.Contains(payload, `\u0026`) {
+		t.Fatalf("payload = %q, must not HTML-escape fastjson string values", payload)
+	}
+}
+
 func TestBuildDubboRequestUsesSerializedBodyWhenHeaderIsTrue(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader("1\n2"))
 	req.Header.Set("X-Dubbo-Serialized", "true")
@@ -147,6 +173,22 @@ func TestServeDubboReturnsBodyForApplicationResponse(t *testing.T) {
 	}
 }
 
+func TestServeDubboReturnsApplicationExceptionPayload(t *testing.T) {
+	upstream, _ := startDubboTestServer(t, dubboFrame("4\napplication exception\n"))
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+
+	p.ServeDubbo(rr, req, upstream)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != "application exception" {
+		t.Fatalf("response body = %q, want application exception payload", rr.Body.String())
+	}
+}
+
 func TestServeDubboReturnsBadGatewayOnTCPFailure(t *testing.T) {
 	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
@@ -156,6 +198,134 @@ func TestServeDubboReturnsBadGatewayOnTCPFailure(t *testing.T) {
 
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("response code = %d, want 502", rr.Code)
+	}
+}
+
+func TestServeDubboWithRetriesRetriesConnectFailure(t *testing.T) {
+	upstream, _ := startDubboTestServer(t, dubboFrame("1\nrecovered\n"))
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+	targets := []string{"127.0.0.1:1", upstream}
+	index := 0
+
+	ServeDubboWithRetries(rr, req, func() (string, error) {
+		if index >= len(targets) {
+			return "", errors.New("target selector exhausted")
+		}
+		target := targets[index]
+		index++
+		return target, nil
+	}, p.config, 1)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != "recovered" {
+		t.Fatalf("response body = %q, want recovered", rr.Body.String())
+	}
+	if index != 2 {
+		t.Fatalf("target attempts = %d, want 2", index)
+	}
+}
+
+func TestServeDubboWithRetriesDoesNotRetryAfterRequestWrite(t *testing.T) {
+	upstream := startClosingDubboServer(t)
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+	attempts := 0
+
+	ServeDubboWithRetries(rr, req, func() (string, error) {
+		attempts++
+		return upstream, nil
+	}, p.config, 1)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	}
+	if attempts != 1 {
+		t.Fatalf("target attempts = %d, want 1 after request write", attempts)
+	}
+}
+
+func TestServeDubboReturnsGatewayTimeoutOnReadTimeout(t *testing.T) {
+	upstream, _ := startSilentDubboServer(t)
+	p := newTestPlugin(t, Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "hello",
+		ReadTimeout:    10,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+
+	p.ServeDubbo(rr, req, upstream)
+
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("response code = %d, want 504; body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeDubboReturnsBadGatewayOnMalformedResponse(t *testing.T) {
+	upstream, _ := startDubboTestServer(t, []byte("not-a-dubbo-frame"))
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+
+	p.ServeDubbo(rr, req, upstream)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
+	upstream, accepted := startSilentDubboServer(t)
+	p := newTestPlugin(t, Config{
+		ServiceName:    "svc",
+		ServiceVersion: "0.0.0",
+		Method:         "hello",
+		ReadTimeout:    1000,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`)).WithContext(ctx)
+	rr := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		p.ServeDubbo(rr, req, upstream)
+		close(done)
+	}()
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("silent Dubbo server did not accept the connection")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ServeDubbo did not stop after request cancellation")
+	}
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("response code = %d, want 504 after cancellation; body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestServeDubboReturnsBadGatewayOnOversizedResponse(t *testing.T) {
+	response := make([]byte, 16)
+	response[0], response[1], response[3] = 0xda, 0xbb, 20
+	binary.BigEndian.PutUint32(response[12:16], maxDubboResponsePayload+1)
+	upstream, _ := startDubboTestServer(t, response)
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+
+	p.ServeDubbo(rr, req, upstream)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
@@ -182,6 +352,47 @@ func startDubboTestServer(t *testing.T, response []byte) (string, <-chan []byte)
 	}()
 
 	return ln.Addr().String(), seen
+}
+
+func startSilentDubboServer(t *testing.T) (string, <-chan struct{}) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		close(accepted)
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	return ln.Addr().String(), accepted
+}
+
+func startClosingDubboServer(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		_ = readDubboFrameForTest(conn)
+	}()
+	return ln.Addr().String()
 }
 
 func readDubboFrameForTest(conn net.Conn) []byte {

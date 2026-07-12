@@ -132,3 +132,28 @@ func TestHandlerRejectsInvalidPOSTVariablesBody(t *testing.T) {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
 }
+
+func TestPostInitRejectsInvalidGraphQLQuery(t *testing.T) {
+	p := &Plugin{config: Config{Query: "query { viewer { id }"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid GraphQL query rejection")
+	}
+}
+
+func TestPostInitRequiresOperationNameForMultipleOperations(t *testing.T) {
+	p := &Plugin{config: Config{Query: "query First { viewer { id } } query Second { viewer { name } }"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want operation_name requirement")
+	}
+
+	p.config.OperationName = "Second"
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() with operation_name error = %v", err)
+	}
+}

@@ -138,8 +138,8 @@ func RegisterApisixVar(r *http.Request, key string, val any) {
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
 	RegisterApisixVar(r, "$consumer", consumer)
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
 	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
-	// FIXME: consumer_group_id / consumer_conf_version
 }
 
 func RecycleVars(r *http.Request) {

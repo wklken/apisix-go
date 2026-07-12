@@ -48,6 +48,22 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "ikey": {
+      "type": "number",
+      "minimum": 0
+    },
+    "skey": {
+      "type": "string"
+    }
+  },
+  "required": ["ikey", "skey"]
+}
+`
+
 type Config struct {
 	I    float64 `json:"i"`
 	S    string  `json:"s,omitempty"`
@@ -60,6 +76,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }

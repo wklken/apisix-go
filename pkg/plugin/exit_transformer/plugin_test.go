@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -106,6 +108,29 @@ func TestHandlerKeepsSuccessfulResponse(t *testing.T) {
 	}
 	if got := res.Body.String(); got != "ok" {
 		t.Fatalf("body = %q, want ok", got)
+	}
+}
+
+func TestHandlerDoesNotTransformKnownUpstreamResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Functions: []string{
+			`return (function(code, body, header) if code and code >= 400 then header = header or {} header["X-Error-Code"] = tostring(code) body = {error = true, status = code, message = "request failed"} end return code, body, header end)(...)`,
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/anything", nil)
+	req = apisixctx.WithRequestVars(req)
+	apisixctx.RegisterRequestVar(req, "$response_source", "upstream")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"message":"upstream failure"}`))
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Body.String(); got != `{"message":"upstream failure"}` {
+		t.Fatalf("body = %q, want upstream body unchanged", got)
+	}
+	if got := rr.Header().Get("X-Error-Code"); got != "" {
+		t.Fatalf("X-Error-Code = %q, want empty for upstream response", got)
 	}
 }
 

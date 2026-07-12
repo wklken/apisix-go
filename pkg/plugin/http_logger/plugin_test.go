@@ -1,6 +1,9 @@
 package http_logger
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -51,6 +55,39 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsInvalidEncryptedAuthHeader(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	authHeader := "not-a-ciphertext"
+	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted auth_header rejection")
+	}
+}
+
+func TestPostInitResolvesEncryptedAuthHeader(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	authHeader := encryptHTTPLoggerTestValue(t, key, "Bearer secret")
+	p := &Plugin{config: Config{URI: "http://127.0.0.1/logs", AuthHeader: &authHeader}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.AuthHeader == nil || *p.config.AuthHeader != "Bearer secret" {
+		t.Fatalf("auth_header = %v, want decrypted value", p.config.AuthHeader)
+	}
+}
+
 func TestSendPostsJSONLogWithAuthorizationHeader(t *testing.T) {
 	authHeader := "Bearer secret"
 	received := make(chan map[string]any, 1)
@@ -88,6 +125,22 @@ func TestSendPostsJSONLogWithAuthorizationHeader(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for http log request")
 	}
+}
+
+func encryptHTTPLoggerTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func TestPostInitSetsTextContentTypeForNewLineConcat(t *testing.T) {

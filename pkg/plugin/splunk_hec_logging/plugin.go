@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -157,6 +158,13 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Endpoint.Token)
+	if err != nil {
+		return fmt.Errorf("splunk-hec-logging endpoint.token: %w", err)
+	}
+	p.config.Endpoint.Token = resolved
+
 	if p.config.Endpoint.Timeout == 0 {
 		p.config.Endpoint.Timeout = 10
 	}

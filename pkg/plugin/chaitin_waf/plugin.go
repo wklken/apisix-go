@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -20,6 +22,8 @@ type Plugin struct {
 	config Config
 
 	client *http.Client
+	picker nodePicker
+	match  []*pluginexpr.Expression
 }
 
 const (
@@ -77,6 +81,29 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "mode": {"type": "string", "enum": ["off", "monitor", "block"]},
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "host": {"type": "string"},
+          "port": {"type": "integer", "minimum": 1, "default": 80}
+        },
+        "required": ["host"]
+      }
+    },
+    "config": {"type": "object"}
+  },
+  "required": ["nodes"]
+}
+`
+
 type Config struct {
 	Mode                 string      `json:"mode,omitempty"`
 	Match                []MatchRule `json:"match,omitempty"`
@@ -94,7 +121,7 @@ type Metadata struct {
 }
 
 type MatchRule struct {
-	Vars [][]any `json:"vars,omitempty"`
+	Vars any `json:"vars,omitempty"`
 }
 
 type Node struct {
@@ -124,16 +151,34 @@ type effectiveConfig struct {
 	Config WAFConfig
 }
 
+const unhealthyNodeCooldown = 5 * time.Minute
+
+type nodePicker struct {
+	mu          sync.Mutex
+	signature   string
+	next        int
+	unhealthyTo map[string]time.Time
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
 
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
+	p.match = p.match[:0]
+	for index, rule := range p.config.Match {
+		expression, err := pluginexpr.Compile(normalizeMatchVars(rule.Vars))
+		if err != nil {
+			return fmt.Errorf("chaitin-waf match %d vars validation failed: %w", index, err)
+		}
+		p.match = append(p.match, expression)
+	}
 	p.client = &http.Client{Timeout: time.Duration(p.config.Config.ReadTimeout) * time.Millisecond}
 
 	return nil
@@ -217,7 +262,12 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 		return http.StatusInternalServerError, "", headers
 	}
 
-	node := effective.Nodes[0]
+	node, ok := p.picker.pick(effective.Nodes)
+	if !ok {
+		headers[HeaderChaitinWAF] = "unhealthy"
+		headers[HeaderChaitinWAFError] = "no healthy nodes"
+		return http.StatusInternalServerError, "", headers
+	}
 	headers[HeaderChaitinWAFServer] = node.hostPort()
 
 	if effective.Mode == "off" {
@@ -232,6 +282,7 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 	decision, elapsed, err := p.askWAF(r, node, effective.Config)
 	headers[HeaderChaitinWAFTime] = fmt.Sprintf("%.0f", elapsed.Seconds()*1000)
 	if err != nil {
+		p.picker.markFailure(node)
 		headers[HeaderChaitinWAF] = "waf-err"
 		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
 			headers[HeaderChaitinWAF] = "timeout"
@@ -242,6 +293,7 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string) {
 		}
 		return http.StatusInternalServerError, "", headers
 	}
+	p.picker.markSuccess(node)
 
 	headers[HeaderChaitinWAF] = "yes"
 	headers[HeaderChaitinWAFAction] = "pass"
@@ -359,57 +411,31 @@ func (p *Plugin) askWAF(r *http.Request, node Node, cfg WAFConfig) (wafDecision,
 }
 
 func (p *Plugin) matches(r *http.Request) bool {
-	if len(p.config.Match) == 0 {
+	if len(p.match) == 0 {
 		return true
 	}
-	for _, rule := range p.config.Match {
-		if matchVars(rule.Vars, r) {
+	for _, expression := range p.match {
+		if expression.Eval(func(name string) any {
+			return pluginexpr.RequestValue(r, name)
+		}) {
 			return true
 		}
 	}
 	return false
 }
 
-func matchVars(vars [][]any, r *http.Request) bool {
-	for _, expr := range vars {
-		if len(expr) != 3 {
-			return false
+func normalizeMatchVars(vars any) []any {
+	switch typed := vars.(type) {
+	case []any:
+		return typed
+	case [][]any:
+		values := make([]any, len(typed))
+		for i, expression := range typed {
+			values[i] = expression
 		}
-		left, _ := expr[0].(string)
-		op, _ := expr[1].(string)
-		want := fmt.Sprint(expr[2])
-		got := requestVar(left, r)
-		switch op {
-		case "==":
-			if got != want {
-				return false
-			}
-		case "!=":
-			if got == want {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func requestVar(name string, r *http.Request) string {
-	switch name {
-	case "method", "request_method":
-		return r.Method
-	case "uri":
-		return r.URL.Path
-	case "request_uri":
-		return r.URL.RequestURI()
-	case "host":
-		return r.Host
+		return values
 	default:
-		if strings.HasPrefix(name, "http_") {
-			return r.Header.Get(strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-"))
-		}
-		return ""
+		return nil
 	}
 }
 
@@ -435,4 +461,61 @@ func (n Node) hostPort() string {
 		port = 80
 	}
 	return net.JoinHostPort(n.Host, strconv.Itoa(port))
+}
+
+func (p *nodePicker) pick(nodes []Node) (Node, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	signature := nodesSignature(nodes)
+	if signature != p.signature {
+		p.signature = signature
+		p.next = 0
+		p.unhealthyTo = make(map[string]time.Time)
+	}
+	if len(nodes) == 0 {
+		return Node{}, false
+	}
+	if p.unhealthyTo == nil {
+		p.unhealthyTo = make(map[string]time.Time)
+	}
+	now := time.Now()
+	for offset := 0; offset < len(nodes); offset++ {
+		index := (p.next + offset) % len(nodes)
+		node := nodes[index]
+		key := node.hostPort()
+		if until, ok := p.unhealthyTo[key]; ok {
+			if until.After(now) {
+				continue
+			}
+			delete(p.unhealthyTo, key)
+		}
+		p.next = (index + 1) % len(nodes)
+		return node, true
+	}
+	return Node{}, false
+}
+
+func (p *nodePicker) markFailure(node Node) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.unhealthyTo == nil {
+		p.unhealthyTo = make(map[string]time.Time)
+	}
+	p.unhealthyTo[node.hostPort()] = time.Now().Add(unhealthyNodeCooldown)
+}
+
+func (p *nodePicker) markSuccess(node Node) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.unhealthyTo, node.hostPort())
+}
+
+func nodesSignature(nodes []Node) string {
+	var builder strings.Builder
+	for _, node := range nodes {
+		builder.WriteString(node.hostPort())
+		builder.WriteByte('|')
+	}
+	return builder.String()
 }

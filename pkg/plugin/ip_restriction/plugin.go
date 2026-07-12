@@ -1,6 +1,7 @@
 package ip_restriction
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 
@@ -47,6 +48,12 @@ const schema = `
 		"maxLength": 1024,
 		"default": "Your IP address is not allowed"
 	  },
+	  "response_code": {
+		"type": "integer",
+		"minimum": 403,
+		"maximum": 404,
+		"default": 403
+	  },
 	  "whitelist": {
 		"type": "array",
 		"items": {
@@ -73,9 +80,10 @@ const schema = `
 }`
 
 type Config struct {
-	Message   string   `json:"message"`
-	Whitelist []string `json:"whitelist,omitempty"`
-	Blacklist []string `json:"blacklist,omitempty"`
+	Message      string   `json:"message"`
+	ResponseCode int      `json:"response_code,omitempty"`
+	Whitelist    []string `json:"whitelist,omitempty"`
+	Blacklist    []string `json:"blacklist,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -89,6 +97,15 @@ func (p *Plugin) Init() error {
 func (p *Plugin) PostInit() error {
 	if p.config.Message == "" {
 		p.config.Message = "Your IP address is not allowed"
+	}
+	if p.config.ResponseCode == 0 {
+		p.config.ResponseCode = http.StatusForbidden
+	}
+	if err := validateIPDefinitions(p.config.Whitelist); err != nil {
+		return fmt.Errorf("invalid whitelist: %w", err)
+	}
+	if err := validateIPDefinitions(p.config.Blacklist); err != nil {
+		return fmt.Errorf("invalid blacklist: %w", err)
 	}
 	body, _ := json.Marshal(map[string]string{"message": p.config.Message})
 	p.body = util.BytesToString(body)
@@ -123,7 +140,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		if p.filter != nil && !p.filter.Allowed(clientIP) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
+			w.WriteHeader(p.config.ResponseCode)
 			_, _ = w.Write([]byte(p.body))
 			return
 		}
@@ -131,4 +148,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func validateIPDefinitions(definitions []string) error {
+	for _, definition := range definitions {
+		if net.ParseIP(definition) != nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(definition); err != nil {
+			return fmt.Errorf("%q is not an IP address or CIDR", definition)
+		}
+	}
+	return nil
 }

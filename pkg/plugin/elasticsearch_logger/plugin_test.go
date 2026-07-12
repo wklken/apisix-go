@@ -2,6 +2,8 @@ package elasticsearch_logger
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -42,6 +45,49 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestPostInitRejectsInvalidEncryptedAuthPassword(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:9200"},
+		Field:         FieldConfig{Index: "apisix"},
+		Auth:          &AuthConfig{Username: "elastic", Password: "not-a-ciphertext"},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want strict encrypted auth.password rejection")
+	}
+}
+
+func TestPostInitResolvesRotatedEncryptedAuthPassword(t *testing.T) {
+	oldKey := "old-keyring-item"
+	newKey := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{newKey, oldKey})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{
+		EndpointAddrs: []string{"http://127.0.0.1:9200"},
+		Field:         FieldConfig{Index: "apisix"},
+		Auth: &AuthConfig{
+			Username: "elastic",
+			Password: encryptElasticsearchTestValue(t, oldKey, "elasticsearch-secret"),
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+	if p.config.Auth.Password != "elasticsearch-secret" {
+		t.Fatalf("auth.password = %q, want resolved plaintext", p.config.Auth.Password)
 	}
 }
 
@@ -538,6 +584,22 @@ func TestSchemaAcceptsEndpointAddrHeadersAndBodyFields(t *testing.T) {
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected config fields: %v", err)
 	}
+}
+
+func encryptElasticsearchTestValue(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), make([]byte, padding)...)
+	for i := len(padded) - padding; i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func extractBulkDocument(t *testing.T, body string) map[string]any {

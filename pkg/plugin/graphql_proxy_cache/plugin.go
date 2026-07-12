@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	proxy_cache "github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -26,9 +28,23 @@ type Plugin struct {
 	lock    sync.RWMutex
 	now     func() time.Time
 
+	memoryStore *proxy_cache.MemoryZoneStore
+	diskStore   *proxy_cache.DiskZoneStore
+
+	cleanupInterval time.Duration
+	cleanupMu       sync.Mutex
+	cleanupStop     chan struct{}
+	cleanupDone     chan struct{}
+
 	maxSize   int
 	routeID   string
 	serviceID string
+}
+
+// FailRouteOnInitError marks cache configuration errors as route-build
+// failures instead of allowing the builder to silently omit the cache plugin.
+func (p *Plugin) FailRouteOnInitError() bool {
+	return true
 }
 
 const (
@@ -91,6 +107,8 @@ type cacheEntry struct {
 	header    http.Header
 	body      []byte
 	status    int
+	storedAt  time.Time
+	ttl       time.Duration
 	expiresAt time.Time
 }
 
@@ -117,6 +135,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	p.Stop()
 	if p.config.CacheZone == "" {
 		p.config.CacheZone = "disk_cache_one"
 	}
@@ -130,15 +149,29 @@ func (p *Plugin) PostInit() error {
 		value := true
 		p.config.ConsumerIsolation = &value
 	}
-	if p.entries == nil {
-		p.entries = make(map[string]cacheEntry)
+	if err := proxy_cache.ValidateCacheZoneStrategy(p.config.CacheZone, p.config.CacheStrategy); err != nil {
+		return err
 	}
+	p.entries = make(map[string]cacheEntry)
 	if p.now == nil {
 		p.now = time.Now
 	}
 	p.maxSize = defaultMaxSize
 	if config.GlobalConfig != nil && config.GlobalConfig.GraphQL.MaxSize > 0 {
 		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
+	}
+	if p.config.CacheStrategy == "memory" && proxy_cache.CacheZoneDeclared(p.config.CacheZone) {
+		p.memoryStore = proxy_cache.AcquireMemoryZoneStore(p.config.CacheZone)
+	}
+	if p.config.CacheStrategy == "disk" {
+		store, configured, err := proxy_cache.NewDiskZoneStore(p.config.CacheZone)
+		if err != nil {
+			return err
+		}
+		if configured {
+			p.diskStore = store
+			p.startDiskCleanup()
+		}
 	}
 	if p.routeID != "" {
 		routeCaches.Lock()
@@ -157,6 +190,12 @@ func (p *Plugin) SetResourceContext(route resource.Route, service resource.Servi
 }
 
 func (p *Plugin) Stop() {
+	p.stopDiskCleanup()
+	if p.memoryStore != nil {
+		p.memoryStore.Close()
+		p.memoryStore = nil
+	}
+	p.diskStore = nil
 	if p.routeID == "" {
 		return
 	}
@@ -165,6 +204,58 @@ func (p *Plugin) Stop() {
 		delete(routeCaches.plugins, p.routeID)
 	}
 	routeCaches.Unlock()
+}
+
+func (p *Plugin) startDiskCleanup() {
+	if p.diskStore == nil {
+		return
+	}
+	p.cleanupMu.Lock()
+	if p.cleanupStop != nil {
+		p.cleanupMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	p.cleanupStop = stop
+	p.cleanupDone = done
+	interval := p.cleanupPeriod()
+	p.cleanupMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		defer close(done)
+		for {
+			select {
+			case now := <-ticker.C:
+				p.diskStore.Cleanup(now)
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (p *Plugin) stopDiskCleanup() {
+	p.cleanupMu.Lock()
+	stop := p.cleanupStop
+	done := p.cleanupDone
+	p.cleanupStop = nil
+	p.cleanupDone = nil
+	p.cleanupMu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+	<-done
+}
+
+func (p *Plugin) cleanupPeriod() time.Duration {
+	if p.cleanupInterval > 0 {
+		return p.cleanupInterval
+	}
+	return time.Minute
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -254,7 +345,9 @@ func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http
 		recorder.statusCode = http.StatusOK
 	}
 
-	if recorder.statusCode == http.StatusOK && (p.config.CacheSetCookie || recorder.header.Get("Set-Cookie") == "") {
+	if recorder.statusCode == http.StatusOK &&
+		!responseCacheControlSkipsStore(recorder.header) &&
+		(p.cacheSetCookieEnabled() || recorder.header.Get("Set-Cookie") == "") {
 		p.store(key, recorder)
 	}
 	recorder.header.Set(cacheStatusHeader, status)
@@ -262,7 +355,49 @@ func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http
 	recorder.writeTo(w)
 }
 
+func responseCacheControlSkipsStore(header http.Header) bool {
+	for _, value := range header.Values("Cache-Control") {
+		for _, rawDirective := range strings.Split(value, ",") {
+			directive := strings.TrimSpace(rawDirective)
+			if index := strings.IndexByte(directive, '='); index >= 0 {
+				directive = directive[:index]
+			}
+			switch strings.ToLower(strings.TrimSpace(directive)) {
+			case "private", "no-store", "no-cache":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *Plugin) cacheSetCookieEnabled() bool {
+	return p.config.CacheSetCookie && p.diskStore == nil
+}
+
 func (p *Plugin) lookup(key string) (cacheEntry, string) {
+	if p.memoryStore != nil {
+		shared, ok := p.memoryStore.Load(key)
+		if !ok {
+			return cacheEntry{}, "MISS"
+		}
+		entry := localCacheEntry(shared)
+		if p.now().After(entry.expiresAt) {
+			p.memoryStore.Delete(key)
+			return cacheEntry{}, "EXPIRED"
+		}
+		return entry, "HIT"
+	}
+	if p.diskStore != nil {
+		shared, found, expired := p.diskStore.Load(key, p.now())
+		if expired {
+			return cacheEntry{}, "EXPIRED"
+		}
+		if !found {
+			return cacheEntry{}, "MISS"
+		}
+		return localCacheEntry(shared), "HIT"
+	}
 	p.lock.RLock()
 	entry, ok := p.entries[key]
 	p.lock.RUnlock()
@@ -276,14 +411,29 @@ func (p *Plugin) lookup(key string) (cacheEntry, string) {
 }
 
 func (p *Plugin) store(key string, recorder *responseRecorder) {
-	entry := cacheEntry{
-		header:    cloneHeader(recorder.header),
-		body:      append([]byte(nil), recorder.body.Bytes()...),
-		status:    recorder.statusCode,
-		expiresAt: p.now().Add(time.Duration(p.config.CacheTTL) * time.Second),
+	ttl := time.Duration(p.config.CacheTTL) * time.Second
+	if p.diskStore != nil {
+		ttl = diskResponseTTL(recorder.header, ttl, p.now())
 	}
+	entry := cacheEntry{
+		header:   cloneHeader(recorder.header),
+		body:     append([]byte(nil), recorder.body.Bytes()...),
+		status:   recorder.statusCode,
+		storedAt: p.now(),
+		ttl:      ttl,
+	}
+	entry.expiresAt = entry.storedAt.Add(entry.ttl)
 	entry.header.Del(cacheStatusHeader)
 	entry.header.Del(cacheKeyHeader)
+	shared := sharedCacheEntry(entry)
+	if p.memoryStore != nil {
+		p.memoryStore.Store(key, shared)
+		return
+	}
+	if p.diskStore != nil {
+		_ = p.diskStore.Store(key, shared)
+		return
+	}
 
 	p.lock.Lock()
 	p.entries[key] = entry
@@ -318,6 +468,57 @@ func (p *Plugin) cacheKey(r *http.Request, body []byte) string {
 	}
 	sum := md5.Sum([]byte(strings.Join(parts, "\x01")))
 	return hex.EncodeToString(sum[:])
+}
+
+func sharedCacheEntry(entry cacheEntry) proxy_cache.SharedCacheEntry {
+	return proxy_cache.SharedCacheEntry{
+		Header:    cloneHeader(entry.header),
+		Body:      append([]byte(nil), entry.body...),
+		Status:    entry.status,
+		StoredAt:  entry.storedAt,
+		TTL:       entry.ttl,
+		ExpiresAt: entry.expiresAt,
+	}
+}
+
+func localCacheEntry(entry proxy_cache.SharedCacheEntry) cacheEntry {
+	return cacheEntry{
+		header:    cloneHeader(entry.Header),
+		body:      append([]byte(nil), entry.Body...),
+		status:    entry.Status,
+		storedAt:  entry.StoredAt,
+		ttl:       entry.TTL,
+		expiresAt: entry.ExpiresAt,
+	}
+}
+
+func diskResponseTTL(header http.Header, fallback time.Duration, now time.Time) time.Duration {
+	for _, value := range header.Values("Cache-Control") {
+		for _, rawDirective := range strings.Split(value, ",") {
+			parts := strings.SplitN(strings.TrimSpace(rawDirective), "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			name := strings.ToLower(strings.TrimSpace(parts[0]))
+			if name != "s-maxage" && name != "max-age" {
+				continue
+			}
+			seconds, err := strconv.Atoi(strings.Trim(strings.TrimSpace(parts[1]), `"`))
+			if err == nil && seconds > 0 {
+				return time.Duration(seconds) * time.Second
+			}
+		}
+	}
+
+	values := header.Values("Expires")
+	if len(values) > 0 {
+		if expires, err := http.ParseTime(values[len(values)-1]); err == nil {
+			if ttl := expires.Sub(now); ttl > 0 {
+				return ttl
+			}
+		}
+	}
+	return fallback
 }
 
 func (p *Plugin) configFingerprint() string {
@@ -383,10 +584,7 @@ func PurgeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plugin.lock.Lock()
-	_, found := plugin.entries[cacheKey]
-	delete(plugin.entries, cacheKey)
-	plugin.lock.Unlock()
+	found := plugin.purge(cacheKey)
 	if strategy == "disk" && !found {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -394,10 +592,27 @@ func PurgeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (p *Plugin) purge(key string) bool {
+	if p.memoryStore != nil {
+		return p.memoryStore.Delete(key)
+	}
+	if p.diskStore != nil {
+		return p.diskStore.Delete(key)
+	}
+	p.lock.Lock()
+	_, found := p.entries[key]
+	delete(p.entries, key)
+	p.lock.Unlock()
+	return found
+}
+
 func graphqlHasMutation(query string) (bool, error) {
-	tokens := tokenize(query)
+	tokens, err := tokenize(query)
+	if err != nil {
+		return false, err
+	}
 	parser := graphQLParser{tokens: tokens}
-	return parser.hasMutation()
+	return parser.parseDocument()
 }
 
 type graphQLParser struct {
@@ -405,63 +620,273 @@ type graphQLParser struct {
 	pos    int
 }
 
-func (p *graphQLParser) hasMutation() (bool, error) {
-	foundOperation := false
+func (p *graphQLParser) parseDocument() (bool, error) {
+	if !p.hasNext() {
+		return false, fmt.Errorf("empty graphql query")
+	}
+
+	hasMutation := false
 	for p.hasNext() {
 		switch p.peek() {
-		case "query", "subscription":
-			foundOperation = true
-			if err := p.skipOperation(); err != nil {
-				return false, err
-			}
-		case "mutation":
-			return true, nil
-		case "fragment":
-			if err := p.skipOperation(); err != nil {
-				return false, err
-			}
 		case "{":
-			foundOperation = true
-			if err := p.skipSelectionSet(); err != nil {
+			if err := p.parseSelectionSet(); err != nil {
+				return false, err
+			}
+		case "query", "mutation", "subscription":
+			operation := p.next()
+			if operation == "mutation" {
+				hasMutation = true
+			}
+			if err := p.parseOperationDefinition(); err != nil {
+				return false, err
+			}
+		case "fragment":
+			p.next()
+			if err := p.parseFragmentDefinition(); err != nil {
 				return false, err
 			}
 		default:
-			p.next()
+			return false, fmt.Errorf("unexpected graphql token %q", p.peek())
 		}
 	}
-	if !foundOperation {
-		return false, fmt.Errorf("empty graphql query")
-	}
-	return false, nil
+	return hasMutation, nil
 }
 
-func (p *graphQLParser) skipOperation() error {
-	for p.hasNext() && p.peek() != "{" {
+func (p *graphQLParser) parseOperationDefinition() error {
+	if p.hasNext() && isGraphQLName(p.peek()) {
 		p.next()
 	}
-	if !p.hasNext() {
-		return fmt.Errorf("missing selection set")
+	if p.consume("(") {
+		if err := p.parseVariableDefinitions(); err != nil {
+			return err
+		}
 	}
-	return p.skipSelectionSet()
+	if err := p.parseDirectives(); err != nil {
+		return err
+	}
+	return p.parseSelectionSet()
 }
 
-func (p *graphQLParser) skipSelectionSet() error {
+func (p *graphQLParser) parseFragmentDefinition() error {
+	name, err := p.requireName("fragment name")
+	if err != nil {
+		return err
+	}
+	if name == "on" || !p.consume("on") {
+		return fmt.Errorf("fragment %q is missing type condition", name)
+	}
+	if _, err := p.requireName("fragment type condition"); err != nil {
+		return err
+	}
+	if err := p.parseDirectives(); err != nil {
+		return err
+	}
+	return p.parseSelectionSet()
+}
+
+func (p *graphQLParser) parseVariableDefinitions() error {
+	count := 0
+	for p.hasNext() && p.peek() != ")" {
+		if !p.consume("$") {
+			return fmt.Errorf("graphql variable definition must start with $")
+		}
+		if _, err := p.requireName("variable name"); err != nil {
+			return err
+		}
+		if !p.consume(":") {
+			return fmt.Errorf("graphql variable definition is missing type")
+		}
+		if err := p.parseTypeReference(); err != nil {
+			return err
+		}
+		if p.consume("=") {
+			if err := p.parseValue(); err != nil {
+				return err
+			}
+		}
+		if err := p.parseDirectives(); err != nil {
+			return err
+		}
+		count++
+	}
+	if count == 0 {
+		return fmt.Errorf("graphql variable definitions cannot be empty")
+	}
+	if !p.consume(")") {
+		return fmt.Errorf("graphql variable definitions are missing closing parenthesis")
+	}
+	return nil
+}
+
+func (p *graphQLParser) parseSelectionSet() error {
 	if !p.consume("{") {
 		return fmt.Errorf("missing opening selection")
 	}
-	depth := 1
-	for p.hasNext() && depth > 0 {
-		switch p.next() {
-		case "{":
-			depth++
-		case "}":
-			depth--
+	count := 0
+	for p.hasNext() && p.peek() != "}" {
+		if err := p.parseSelection(); err != nil {
+			return err
 		}
+		count++
 	}
-	if depth != 0 {
+	if count == 0 {
+		return fmt.Errorf("graphql selection set cannot be empty")
+	}
+	if !p.consume("}") {
 		return fmt.Errorf("missing closing selection")
 	}
 	return nil
+}
+
+func (p *graphQLParser) parseSelection() error {
+	if p.consume("...") {
+		if p.consume("on") {
+			if _, err := p.requireName("inline fragment type condition"); err != nil {
+				return err
+			}
+			if err := p.parseDirectives(); err != nil {
+				return err
+			}
+			return p.parseSelectionSet()
+		}
+		if _, err := p.requireName("fragment spread name"); err != nil {
+			return err
+		}
+		return p.parseDirectives()
+	}
+
+	if _, err := p.requireName("field name"); err != nil {
+		return err
+	}
+	if p.consume(":") {
+		if _, err := p.requireName("aliased field name"); err != nil {
+			return err
+		}
+	}
+	if p.consume("(") {
+		if err := p.parseArguments(); err != nil {
+			return err
+		}
+	}
+	if err := p.parseDirectives(); err != nil {
+		return err
+	}
+	if p.hasNext() && p.peek() == "{" {
+		return p.parseSelectionSet()
+	}
+	return nil
+}
+
+func (p *graphQLParser) parseArguments() error {
+	count := 0
+	for p.hasNext() && p.peek() != ")" {
+		if _, err := p.requireName("argument name"); err != nil {
+			return err
+		}
+		if !p.consume(":") {
+			return fmt.Errorf("graphql argument is missing colon")
+		}
+		if err := p.parseValue(); err != nil {
+			return err
+		}
+		count++
+	}
+	if count == 0 {
+		return fmt.Errorf("graphql argument list cannot be empty")
+	}
+	if !p.consume(")") {
+		return fmt.Errorf("graphql argument list is missing closing parenthesis")
+	}
+	return nil
+}
+
+func (p *graphQLParser) parseDirectives() error {
+	for p.consume("@") {
+		if _, err := p.requireName("directive name"); err != nil {
+			return err
+		}
+		if p.consume("(") {
+			if err := p.parseArguments(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (p *graphQLParser) parseTypeReference() error {
+	if p.consume("[") {
+		if err := p.parseTypeReference(); err != nil {
+			return err
+		}
+		if !p.consume("]") {
+			return fmt.Errorf("graphql list type is missing closing bracket")
+		}
+	} else if _, err := p.requireName("type name"); err != nil {
+		return err
+	}
+	if p.consume("!") {
+		if p.hasNext() && p.peek() == "!" {
+			return fmt.Errorf("graphql type cannot contain repeated non-null marker")
+		}
+	}
+	return nil
+}
+
+func (p *graphQLParser) parseValue() error {
+	if !p.hasNext() {
+		return fmt.Errorf("graphql value is missing")
+	}
+	switch p.peek() {
+	case "$":
+		p.next()
+		_, err := p.requireName("variable name")
+		return err
+	case "[":
+		p.next()
+		for p.hasNext() && p.peek() != "]" {
+			if err := p.parseValue(); err != nil {
+				return err
+			}
+		}
+		if !p.consume("]") {
+			return fmt.Errorf("graphql list value is missing closing bracket")
+		}
+		return nil
+	case "{":
+		p.next()
+		for p.hasNext() && p.peek() != "}" {
+			if _, err := p.requireName("object field name"); err != nil {
+				return err
+			}
+			if !p.consume(":") {
+				return fmt.Errorf("graphql object field is missing colon")
+			}
+			if err := p.parseValue(); err != nil {
+				return err
+			}
+		}
+		if !p.consume("}") {
+			return fmt.Errorf("graphql object value is missing closing brace")
+		}
+		return nil
+	default:
+		token := p.next()
+		if strings.HasPrefix(token, "\"") || isGraphQLName(token) || isGraphQLNumber(token) {
+			return nil
+		}
+		return fmt.Errorf("unexpected graphql value token %q", token)
+	}
+}
+
+func (p *graphQLParser) requireName(description string) (string, error) {
+	if !p.hasNext() || !isGraphQLName(p.peek()) {
+		if p.hasNext() {
+			return "", fmt.Errorf("graphql %s is invalid near %q", description, p.peek())
+		}
+		return "", fmt.Errorf("graphql %s is missing", description)
+	}
+	return p.next(), nil
 }
 
 func (p *graphQLParser) consume(token string) bool {
@@ -486,52 +911,158 @@ func (p *graphQLParser) hasNext() bool {
 	return p.pos < len(p.tokens)
 }
 
-func tokenize(query string) []string {
+func tokenize(query string) ([]string, error) {
 	var tokens []string
 	for i := 0; i < len(query); {
+		if strings.HasPrefix(query[i:], "\xEF\xBB\xBF") {
+			i += len("\xEF\xBB\xBF")
+			continue
+		}
 		switch ch := query[i]; {
 		case ch == '#':
 			for i < len(query) && query[i] != '\n' {
 				i++
 			}
 		case ch == '"':
-			i = skipString(query, i)
+			token, next, err := readGraphQLString(query, i)
+			if err != nil {
+				return nil, err
+			}
+			tokens = append(tokens, token)
+			i = next
 		case strings.HasPrefix(query[i:], "..."):
 			tokens = append(tokens, "...")
 			i += 3
-		case strings.ContainsRune("{}()", rune(ch)):
+		case strings.ContainsRune("!$():=@[]{|}&", rune(ch)):
 			tokens = append(tokens, string(ch))
 			i++
-		case isNameChar(ch):
+		case isGraphQLNameStart(ch):
 			start := i
-			for i < len(query) && isNameChar(query[i]) {
+			for i < len(query) && isGraphQLNameContinue(query[i]) {
 				i++
 			}
 			tokens = append(tokens, query[start:i])
+		case ch == '-' || ch >= '0' && ch <= '9':
+			start := i
+			next, err := readGraphQLNumber(query, i)
+			if err != nil {
+				return nil, err
+			}
+			tokens = append(tokens, query[start:next])
+			i = next
+		case ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ',':
+			i++
 		default:
+			return nil, fmt.Errorf("invalid graphql character %q", ch)
+		}
+	}
+	return tokens, nil
+}
+
+func readGraphQLString(query string, start int) (string, int, error) {
+	if strings.HasPrefix(query[start:], "\"\"\"") {
+		for i := start + 3; i < len(query); i++ {
+			if query[i] == '\\' && i+1 < len(query) {
+				i++
+				continue
+			}
+			if strings.HasPrefix(query[i:], "\"\"\"") {
+				end := i + 3
+				return query[start:end], end, nil
+			}
+		}
+		return "", 0, fmt.Errorf("unterminated graphql block string")
+	}
+
+	for i := start + 1; i < len(query); i++ {
+		switch query[i] {
+		case '\\':
+			if i+1 >= len(query) {
+				return "", 0, fmt.Errorf("unterminated graphql string escape")
+			}
+			i++
+		case '"':
+			end := i + 1
+			return query[start:end], end, nil
+		case '\n', '\r':
+			return "", 0, fmt.Errorf("graphql string cannot contain an unescaped newline")
+		}
+	}
+	return "", 0, fmt.Errorf("unterminated graphql string")
+}
+
+func readGraphQLNumber(query string, start int) (int, error) {
+	i := start
+	if query[i] == '-' {
+		i++
+	}
+	if i >= len(query) || query[i] < '0' || query[i] > '9' {
+		return 0, fmt.Errorf("invalid graphql number")
+	}
+	if query[i] == '0' {
+		i++
+		if i < len(query) && query[i] >= '0' && query[i] <= '9' {
+			return 0, fmt.Errorf("graphql number cannot have a leading zero")
+		}
+	} else {
+		for i < len(query) && query[i] >= '0' && query[i] <= '9' {
 			i++
 		}
 	}
-	return tokens
-}
-
-func skipString(query string, start int) int {
-	i := start + 1
-	for i < len(query) {
-		if query[i] == '\\' {
-			i += 2
-			continue
-		}
-		if query[i] == '"' {
-			return i + 1
-		}
+	if i < len(query) && query[i] == '.' {
 		i++
+		fractionStart := i
+		for i < len(query) && query[i] >= '0' && query[i] <= '9' {
+			i++
+		}
+		if i == fractionStart {
+			return 0, fmt.Errorf("graphql number is missing fractional digits")
+		}
 	}
-	return i
+	if i < len(query) && (query[i] == 'e' || query[i] == 'E') {
+		i++
+		if i < len(query) && (query[i] == '+' || query[i] == '-') {
+			i++
+		}
+		exponentStart := i
+		for i < len(query) && query[i] >= '0' && query[i] <= '9' {
+			i++
+		}
+		if i == exponentStart {
+			return 0, fmt.Errorf("graphql number is missing exponent digits")
+		}
+	}
+	if i < len(query) && (isGraphQLNameStart(query[i]) || query[i] == '.') {
+		return 0, fmt.Errorf("invalid graphql number near %q", query[start:i+1])
+	}
+	return i, nil
 }
 
-func isNameChar(ch byte) bool {
-	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+func isGraphQLName(token string) bool {
+	if token == "" || !isGraphQLNameStart(token[0]) {
+		return false
+	}
+	for i := 1; i < len(token); i++ {
+		if !isGraphQLNameContinue(token[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isGraphQLNameStart(ch byte) bool {
+	return ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
+func isGraphQLNameContinue(ch byte) bool {
+	return isGraphQLNameStart(ch) || ch >= '0' && ch <= '9'
+}
+
+func isGraphQLNumber(token string) bool {
+	if token == "" || (token[0] != '-' && (token[0] < '0' || token[0] > '9')) {
+		return false
+	}
+	return true
 }
 
 func newResponseRecorder() *responseRecorder {
@@ -576,6 +1107,11 @@ func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus st
 			w.Header().Add(field, value)
 		}
 	}
+	age := time.Since(entry.storedAt) / time.Second
+	if age < 0 {
+		age = 0
+	}
+	w.Header().Set("Age", fmt.Sprintf("%d", age))
 	w.Header().Set(cacheStatusHeader, cacheStatus)
 	w.Header().Set(cacheKeyHeader, cacheKey)
 	w.WriteHeader(entry.status)

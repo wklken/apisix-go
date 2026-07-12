@@ -76,6 +76,34 @@ func TestHandlerPassesThroughWithoutAuthenticatedConsumer(t *testing.T) {
 	}
 }
 
+func TestHandlerSerializesNonStringConsumerLabels(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Headers: map[string]string{
+			"X-Consumer-Count":   "$count",
+			"X-Consumer-Enabled": "$enabled",
+			"X-Consumer-Roles":   "$roles",
+		},
+	})
+
+	var gotCount, gotEnabled, gotRoles string
+	res := performRequest(p, map[string]any{
+		"count":   int64(42),
+		"enabled": true,
+		"roles":   []any{"reader", "writer"},
+	}, func(r *http.Request) {
+		gotCount = r.Header.Get("X-Consumer-Count")
+		gotEnabled = r.Header.Get("X-Consumer-Enabled")
+		gotRoles = r.Header.Get("X-Consumer-Roles")
+	})
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+	if gotCount != "42" || gotEnabled != "true" || gotRoles != `["reader","writer"]` {
+		t.Fatalf("serialized labels = count=%q enabled=%q roles=%q", gotCount, gotEnabled, gotRoles)
+	}
+}
+
 func performRequest(p *Plugin, labels map[string]any, inspect func(*http.Request)) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})

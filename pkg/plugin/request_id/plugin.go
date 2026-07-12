@@ -2,10 +2,11 @@ package request_id
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
+	"math/big"
 	"math/rand"
 	"net/http"
-	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -16,11 +17,9 @@ import (
 )
 
 const (
-	// version  = "0.1"
-	priority              = 12015
-	name                  = "request-id"
-	snowflakeEpochMillis  = int64(1609459200000)
-	snowflakeSequenceMask = uint64(4095)
+	// version = "0.1"
+	priority = 12015
+	name     = "request-id"
 )
 
 const schema = `
@@ -38,7 +37,7 @@ const schema = `
 	  },
 	  "algorithm": {
 		"type": "string",
-		"enum": ["uuid", "snowflake", "nanoid", "range_id"],
+		"enum": ["uuid", "uuidv7", "nanoid", "ksuid", "range_id"],
 		"default": "uuid"
 	  },
 	  "range_id": {
@@ -65,8 +64,7 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	bytePool          *bpool.BytePool
-	snowflakeSequence atomic.Uint64
+	bytePool *bpool.BytePool
 }
 
 type Config struct {
@@ -129,12 +127,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if requestID == "" {
 			if p.config.Algorithm == "uuid" {
 				requestID = uuid.Must(uuid.NewV4()).String()
+			} else if p.config.Algorithm == "uuidv7" {
+				requestID = p.uuidv7ID()
 			} else if p.config.Algorithm == "nanoid" {
 				requestID, _ = gonanoid.New()
+			} else if p.config.Algorithm == "ksuid" {
+				requestID = p.ksuidID()
 			} else if p.config.Algorithm == "range_id" {
 				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
-			} else if p.config.Algorithm == "snowflake" {
-				requestID = p.snowflakeID()
 			}
 		}
 
@@ -163,14 +163,37 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 	return util.BytesToString(id)
 }
 
-func (p *Plugin) snowflakeID() string {
-	timestamp := time.Now().UnixMilli() - snowflakeEpochMillis
-	if timestamp < 0 {
-		timestamp = 0
+func (p *Plugin) uuidv7ID() string {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Must(uuid.NewV4()).String()
 	}
+	return value.String()
+}
 
-	sequence := p.snowflakeSequence.Add(1) & snowflakeSequenceMask
-	id := (uint64(timestamp) << 22) | sequence
+const (
+	ksuidEpochSeconds = 1400000000
+	ksuidAlphabet     = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 
-	return strconv.FormatUint(id, 10)
+func (p *Plugin) ksuidID() string {
+	value := make([]byte, 20)
+	binary.BigEndian.PutUint32(value[:4], uint32(time.Now().Unix()-ksuidEpochSeconds))
+	if _, err := crand.Read(value[4:]); err != nil {
+		fallback := uuid.Must(uuid.NewV4())
+		copy(value[4:], fallback[:])
+	}
+	return encodeBase62(value)
+}
+
+func encodeBase62(value []byte) string {
+	remaining := new(big.Int).SetBytes(value)
+	base := big.NewInt(int64(len(ksuidAlphabet)))
+	encoded := make([]byte, 27)
+	for index := len(encoded) - 1; index >= 0; index-- {
+		digit := new(big.Int)
+		remaining.QuoRem(remaining, base, digit)
+		encoded[index] = ksuidAlphabet[digit.Int64()]
+	}
+	return string(encoded)
 }

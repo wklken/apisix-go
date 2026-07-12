@@ -20,6 +20,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -240,6 +241,15 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.Auth != nil {
+		keyring, enabled := data_encryption.Keyring()
+		resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Auth.Password)
+		if err != nil {
+			return fmt.Errorf("elasticsearch-logger auth.password: %w", err)
+		}
+		p.config.Auth.Password = resolved
+	}
+
 	if p.config.Timeout == 0 {
 		p.config.Timeout = 10
 	}

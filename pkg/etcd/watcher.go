@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -14,6 +15,9 @@ type ConfigClient struct {
 	prefix string
 	// add a channel, receive the etcd change events
 	events chan *store.Event
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func NewConfigClient(
@@ -42,11 +46,14 @@ func NewConfigClient(
 	}, nil
 }
 
-func (c *ConfigClient) Watch() {
+func (c *ConfigClient) Watch(contexts ...context.Context) {
 	watcher := clientv3.NewWatcher(c.client)
+	defer watcher.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
 
 	watchChan := watcher.Watch(ctx, c.prefix, clientv3.WithPrefix())
 
@@ -75,6 +82,16 @@ func (c *ConfigClient) Watch() {
 			c.events <- e
 		}
 	}
+}
+
+func (c *ConfigClient) Close() error {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		c.closeErr = c.client.Close()
+	})
+	return c.closeErr
 }
 
 func (c *ConfigClient) FetchAll() error {

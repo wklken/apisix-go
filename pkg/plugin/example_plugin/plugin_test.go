@@ -9,6 +9,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -114,5 +115,19 @@ func TestControlAPIHelloReturnsJSON(t *testing.T) {
 	}
 	if body["msg"] != "world" {
 		t.Fatalf("msg = %q, want world", body["msg"])
+	}
+}
+
+func TestMetadataSchemaIsExposed(t *testing.T) {
+	p := newTestPlugin(t, Config{I: 1})
+	metadataSchema := p.GetMetadataSchema()
+	if metadataSchema == "" {
+		t.Fatal("metadata schema is empty")
+	}
+	if err := util.Validate(map[string]any{"ikey": 1, "skey": "value"}, metadataSchema); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	if err := util.Validate(map[string]any{"ikey": 1}, metadataSchema); err == nil {
+		t.Fatal("metadata without skey accepted")
 	}
 }

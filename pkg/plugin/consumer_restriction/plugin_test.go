@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func TestMissingConsumerReturnsOfficialMessage(t *testing.T) {
@@ -64,6 +66,57 @@ func TestCustomRejectMessage(t *testing.T) {
 
 	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"nope"}` {
 		t.Fatalf("body = %q", got)
+	}
+}
+
+func TestConsumerGroupRestrictionUsesAttachedConsumerGroupID(t *testing.T) {
+	whitelist := []string{"gold"}
+	p := newTestPlugin(t, Config{
+		Type:      "consumer_group_id",
+		Whitelist: &whitelist,
+	})
+	req := ctx.WithApisixVars(httptest.NewRequest(http.MethodGet, "/restricted", nil), map[string]string{})
+	ctx.AttachConsumer(req, resource.Consumer{Username: "alice", GroupID: "gold"})
+
+	nextCalled := false
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !nextCalled {
+		t.Fatal("consumer-restriction rejected an allowed consumer group")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestSchemaValidatesAllowedByMethodsEnum(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	valid := map[string]any{
+		"allowed_by_methods": []any{map[string]any{
+			"user":    "alice",
+			"methods": []any{"GET", "PURGE"},
+		}},
+	}
+	if err := util.Validate(valid, p.GetSchema()); err != nil {
+		t.Fatalf("valid methods should pass schema: %v", err)
+	}
+
+	invalid := map[string]any{
+		"allowed_by_methods": []any{map[string]any{
+			"user":    "alice",
+			"methods": []any{"INVALID"},
+		}},
+	}
+	if err := util.Validate(invalid, p.GetSchema()); err == nil {
+		t.Fatal("invalid method should fail schema")
 	}
 }
 

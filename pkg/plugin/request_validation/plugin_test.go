@@ -70,6 +70,68 @@ func TestHandlerAcceptsValidHeaders(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsInvalidNestedSchema(t *testing.T) {
+	p := &Plugin{config: Config{
+		HeaderSchema: map[string]any{"type": "not-a-json-schema-type"},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid nested header schema rejected")
+	}
+}
+
+func TestHandlerValidatesRepeatedHeaderValuesAsArray(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		HeaderSchema: map[string]any{
+			"type":     "object",
+			"required": []any{"x-tag"},
+			"properties": map[string]any{
+				"x-tag": map[string]any{
+					"type":     "array",
+					"minItems": 2,
+					"items":    map[string]any{"type": "string"},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Add("X-Tag", "one")
+	req.Header.Add("X-Tag", "two")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body = %q", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerUsesCustomRejectedMessageForMalformedBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{
+			"type": "object",
+		},
+		RejectedMsg: "invalid request body",
+	})
+
+	res := performRequest(p, http.MethodPost, "http://example.com/get", "{", map[string]string{
+		"Content-Type": "application/json",
+	})
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusBadRequest)
+	}
+	if got := strings.TrimSpace(res.Body.String()); got != "invalid request body" {
+		t.Fatalf("response body = %q, want custom rejected message", got)
+	}
+}
+
 func TestHandlerValidatesHeadersBeforeBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		HeaderSchema: map[string]any{

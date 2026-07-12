@@ -19,6 +19,7 @@ import (
 	"github.com/segmentio/kafka-go/sasl/scram"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -304,6 +305,9 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
+	if err := p.resolveSecrets(); err != nil {
+		return err
+	}
 
 	metadata := loadMetadata()
 	if len(p.config.LogFormat) > 0 {
@@ -334,6 +338,23 @@ func (p *Plugin) PostInit() error {
 		RouteID:           p.RouteID,
 		ServerAddr:        p.ServerAddr,
 	}, p.SendBatch)
+	return nil
+}
+
+func (p *Plugin) resolveSecrets() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolver := data_encryption.NewResolver(enabled, keyring)
+	for i := range p.config.Brokers {
+		config := p.config.Brokers[i].SASLConfig
+		if config == nil {
+			continue
+		}
+		resolved, err := resolver.Resolve(config.Password)
+		if err != nil {
+			return fmt.Errorf("kafka-logger brokers[%d].sasl_config.password: %w", i, err)
+		}
+		config.Password = resolved
+	}
 	return nil
 }
 

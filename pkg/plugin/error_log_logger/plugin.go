@@ -17,6 +17,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -147,6 +148,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if err := p.resolveSecrets(); err != nil {
+		return err
+	}
 	p.applyDefaults()
 	p.client = &http.Client{Timeout: time.Duration(p.config.Timeout) * time.Second}
 	if p.config.Kafka != nil && p.kafkaSender == nil {
@@ -165,6 +169,32 @@ func (p *Plugin) PostInit() error {
 		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
 	}, p.SendBatch)
 
+	return nil
+}
+
+func (p *Plugin) resolveSecrets() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolver := data_encryption.NewResolver(enabled, keyring)
+	if p.config.Clickhouse != nil {
+		resolved, err := resolver.Resolve(p.config.Clickhouse.Password)
+		if err != nil {
+			return fmt.Errorf("error-log-logger clickhouse.password: %w", err)
+		}
+		p.config.Clickhouse.Password = resolved
+	}
+	if p.config.Kafka != nil {
+		for i := range p.config.Kafka.Brokers {
+			config := p.config.Kafka.Brokers[i].SASLConfig
+			if config == nil {
+				continue
+			}
+			resolved, err := resolver.Resolve(config.Password)
+			if err != nil {
+				return fmt.Errorf("error-log-logger kafka.brokers[%d].sasl_config.password: %w", i, err)
+			}
+			config.Password = resolved
+		}
+	}
 	return nil
 }
 

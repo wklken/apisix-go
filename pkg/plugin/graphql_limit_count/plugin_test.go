@@ -265,6 +265,36 @@ func TestGraphQLDepthCountsNestedSelections(t *testing.T) {
 	}
 }
 
+func TestGraphQLDepthHandlesAliasesArgumentsAndDirectives(t *testing.T) {
+	depth, err := queryDepth(`query ($id: ID!) {
+  user: viewer(id: $id) @include(if: true) {
+    profile { name }
+    posts { id }
+  }
+}`)
+	if err != nil {
+		t.Fatalf("queryDepth() with alias/arguments/directive error = %v", err)
+	}
+	if depth != 3 {
+		t.Fatalf("depth = %d, want 3", depth)
+	}
+}
+
+func TestGraphQLDepthRejectsUndefinedFragment(t *testing.T) {
+	if _, err := queryDepth(`query { viewer { ...MissingFields } }`); err == nil {
+		t.Fatal("queryDepth() error = nil, want undefined fragment rejection")
+	}
+}
+
+func TestGraphQLDepthRejectsCyclicFragments(t *testing.T) {
+	query := `query { viewer { ...First } }
+fragment First on Viewer { ...Second }
+fragment Second on Viewer { ...First }`
+	if _, err := queryDepth(query); err == nil {
+		t.Fatal("queryDepth() error = nil, want cyclic fragment rejection")
+	}
+}
+
 func TestHandlerLimitsJSONGraphQLByDepthCost(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:                5,
@@ -567,6 +597,20 @@ func TestGroupSharesLocalQuotaAcrossPluginInstances(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsMismatchedGroupConfiguration(t *testing.T) {
+	resetGroupCountersForTest()
+	t.Cleanup(resetGroupCountersForTest)
+
+	newTestPlugin(t, Config{Count: 2, TimeWindow: 60, Group: "shared-group"})
+	p := &Plugin{config: Config{Count: 3, TimeWindow: 60, Group: "shared-group"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || err.Error() != "group conf mismatched" {
+		t.Fatalf("PostInit() error = %v, want group conf mismatched", err)
+	}
+}
+
 func TestCounterNamespaceUsesRouteUnlessGrouped(t *testing.T) {
 	p := newTestPlugin(t, Config{Count: 2, TimeWindow: 60})
 	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
@@ -642,6 +686,9 @@ func resetGroupCountersForTest() {
 	groupCounters.Lock()
 	groupCounters.entries = map[string]*counter{}
 	groupCounters.Unlock()
+	graphqlLimitCountGroups.Lock()
+	graphqlLimitCountGroups.entries = map[string]string{}
+	graphqlLimitCountGroups.Unlock()
 }
 
 type fakeRedisLimiter struct {

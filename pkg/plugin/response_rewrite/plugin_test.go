@@ -3,11 +3,16 @@ package response_rewrite
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	brotlienc "github.com/andybalholm/brotli"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -61,6 +66,87 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 
 	if got := res.Body.String(); got != "hello" {
 		t.Fatalf("body = %q, want hello", got)
+	}
+}
+
+func TestHandlerResolvesOptInBodySecret(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := newTestPlugin(t, Config{BodySecret: stringPtr(encryptResponseBodyForTest(t, key, "secret-body"))})
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+
+	if got := res.Body.String(); got != "secret-body" {
+		t.Fatalf("body = %q, want secret-body", got)
+	}
+}
+
+func TestPostInitRejectsInvalidOptInBodySecret(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := &Plugin{config: Config{BodySecret: stringPtr("not-a-ciphertext")}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want invalid body_secret rejection")
+	}
+	if strings.Contains(err.Error(), "not-a-ciphertext") {
+		t.Fatalf("PostInit() error leaks body_secret: %v", err)
+	}
+}
+
+func TestPostInitRejectsMixedBodySecretConfiguration(t *testing.T) {
+	data_encryption.Configure(false, nil)
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "body",
+			cfg: Config{
+				Body:       stringPtr("plain"),
+				BodySecret: stringPtr("secret"),
+			},
+		},
+		{
+			name: "filters",
+			cfg: Config{
+				BodySecret: stringPtr("secret"),
+				Filters:    []Filter{{Regex: "secret", Replace: "redacted"}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: test.cfg}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatal("PostInit() error = nil, want mixed body_secret rejection")
+			}
+		})
+	}
+}
+
+func TestPlainBodyRemainsCompatibleWhenEncryptionEnabled(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	p := newTestPlugin(t, Config{Body: stringPtr("plain-body")})
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("upstream"))
+	})
+	if got := res.Body.String(); got != "plain-body" {
+		t.Fatalf("body = %q, want plain-body", got)
 	}
 }
 
@@ -418,6 +504,19 @@ func stringPtr(v string) *string {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func encryptResponseBodyForTest(t *testing.T, key string, value string) string {
+	t.Helper()
+	padding := aes.BlockSize - len(value)%aes.BlockSize
+	padded := append([]byte(value), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func gzipBody(t *testing.T, value string) []byte {

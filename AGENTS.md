@@ -76,18 +76,18 @@ go test ./... -count=1
 - Plugin package directories use snake_case, while APISIX plugin names in config use hyphenated names such as `key-auth`.
 - Plugin implementations usually embed `base.BasePlugin`, define `priority`, `name`, and `schema`, expose a config struct through `Config()`, and fill defaults in `PostInit()`.
 - When adding or renaming a plugin, update `pkg/plugin/init.go` so `plugin.New()` can instantiate it.
-- If feature support changes, update the relevant README plugin checklist entry.
+- If feature support changes, update the relevant plugin row in [`docs/plugins.md`](docs/plugins.md).
 
 ## APISIX Plugin Parity Scope
 
-- The current parity snapshot is 100/104 registered default plugins, 89 checklist entries at the documented Go-native monitoring level, and 9 explicit native/runtime or separate-subsystem deferrals. The four missing registrations are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`.
-- The authoritative status artifacts are [`README.md`](README.md), [`docs/apisix-3.17-plugin-parity-checklist.md`](docs/apisix-3.17-plugin-parity-checklist.md), [`docs/apisix-3.17-plugin-parity-execution-todo.md`](docs/apisix-3.17-plugin-parity-execution-todo.md), and [`docs/apisix-3.17-remaining-plugin-todo.md`](docs/apisix-3.17-remaining-plugin-todo.md). Keep all four aligned when parity behavior changes.
+- The current parity snapshot is 100/104 registered default plugins, 89 plugin entries at the documented Go-native monitoring level, and 9 explicit native/runtime or separate-subsystem deferrals. The four missing registrations are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`.
+- The authoritative status artifact is [`docs/plugins.md`](docs/plugins.md), with [`README.md`](README.md) as the project entry point and [`docs/design.md`](docs/design.md) as the consolidated design record. Keep both documents aligned when parity behavior changes.
 - OpenResty-native, NGINX-native, and Lua-runtime-native parity is not required unless the user explicitly asks for a Go-native approximation.
 - Treat missing/deferred official defaults as native/runtime features that are not required for normal parity work. Current out-of-scope defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`; do not add placeholder Go implementations for them.
 - `serverless-pre-function` and `serverless-post-function` have bounded compatibility implementations, but full Lua/OpenResty parity is intentionally out of scope. Do not expand them into a general Lua runtime or claim full phase/streaming fidelity.
-- For native-only features, document the unsupported status in README/checklist/plan files instead of adding placeholder Go implementations.
+- For native-only features, document the unsupported status in README and [`docs/plugins.md`](docs/plugins.md) instead of adding placeholder Go implementations.
 - Examples of out-of-scope native behavior include OpenResty phase timing, `ngx_lua` APIs, Lua code execution, NGINX buffering internals, shared-dict/lrucache exactness, OCSP/TLS stapling internals, and external plugin runner protocol compatibility unless separately requested.
-- The canonical remaining-plugin backlog is `docs/apisix-3.17-remaining-plugin-todo.md`, grouped into Logger, Auth, AI, Observability, and Others.
+- The canonical remaining-plugin backlog is [`docs/plugins.md`](docs/plugins.md), grouped into Logger, Auth, AI, Observability, and Others.
 
 ## Configuration Notes
 

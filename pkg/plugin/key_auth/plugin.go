@@ -2,7 +2,6 @@ package key_auth
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -114,8 +113,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, `{"message": "Invalid API key in request"}`, http.StatusUnauthorized)
 			return
 		}
-
-		fmt.Printf("the consumer is %+v\n", consumer)
 
 		if *p.config.HideCredentials {
 			if fromHeader {

@@ -197,9 +197,9 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 	}
 }
 
-func TestInitPluginsSkipsPluginWhenPostInitFails(t *testing.T) {
+func TestInitPluginsStrictRejectsPluginWhenPostInitFails(t *testing.T) {
 	builder := NewBuilder(nil)
-	plugins := builder.initPlugins(
+	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
 			"limit-count": map[string]any{
 				"rules": []any{
@@ -211,12 +211,15 @@ func TestInitPluginsSkipsPluginWhenPostInitFails(t *testing.T) {
 		builder.pluginRouteContext(resource.Route{ID: "route-a"}),
 	)
 
+	if err == nil {
+		t.Fatal("initPluginsStrict() error = nil, want invalid plugin rejection")
+	}
 	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want invalid plugin skipped", len(plugins))
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
 	}
 }
 
-func TestInitPluginsSkipsInvalidProxyBufferingConfig(t *testing.T) {
+func TestInitPluginsStrictRejectsInvalidProxyBufferingConfig(t *testing.T) {
 	builder := NewBuilder(nil)
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
@@ -226,15 +229,15 @@ func TestInitPluginsSkipsInvalidProxyBufferingConfig(t *testing.T) {
 		},
 		builder.pluginRouteContext(resource.Route{ID: "invalid-proxy-buffering"}),
 	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v, want ordinary plugin validation to be skipped", err)
+	if err == nil {
+		t.Fatal("initPluginsStrict() error = nil, want invalid config rejection")
 	}
 	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no initialized plugins", len(plugins))
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
 	}
 }
 
-func TestInitPluginsSkipsInvalidProxyControlConfig(t *testing.T) {
+func TestInitPluginsStrictRejectsInvalidProxyControlConfig(t *testing.T) {
 	builder := NewBuilder(nil)
 	plugins, err := builder.initPluginsStrict(
 		map[string]resource.PluginConfig{
@@ -244,11 +247,173 @@ func TestInitPluginsSkipsInvalidProxyControlConfig(t *testing.T) {
 		},
 		builder.pluginRouteContext(resource.Route{ID: "invalid-proxy-control"}),
 	)
-	if err != nil {
-		t.Fatalf("initPluginsStrict() error = %v, want ordinary plugin validation to be skipped", err)
+	if err == nil {
+		t.Fatal("initPluginsStrict() error = nil, want invalid config rejection")
 	}
 	if len(plugins) != 0 {
-		t.Fatalf("plugins len = %d, want no initialized plugins", len(plugins))
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
+func TestClonePluginConfigsAllocatesForInheritedOnlyRoute(t *testing.T) {
+	cloned := clonePluginConfigs(nil)
+	if cloned == nil {
+		t.Fatal("clonePluginConfigs(nil) returned nil map")
+	}
+	cloned["key-auth"] = map[string]any{}
+	if len(cloned) != 1 {
+		t.Fatalf("cloned plugin count = %d, want 1 inherited-only plugin", len(cloned))
+	}
+	original := map[string]resource.PluginConfig{"route-plugin": map[string]any{}}
+	copied := clonePluginConfigs(original)
+	copied["inherited-plugin"] = map[string]any{}
+	if len(original) != 1 {
+		t.Fatalf("original plugin count = %d, want unchanged route plugin map", len(original))
+	}
+}
+
+func TestInitPluginsStrictAppliesMetaDisable(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"request-id": map[string]any{
+				"_meta": map[string]any{"disable": true},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "meta-disabled"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want disabled plugin omitted", len(plugins))
+	}
+}
+
+func TestInitPluginsStrictAppliesMetaPriority(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"request-id": map[string]any{
+				"_meta": map[string]any{"priority": 3210},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "meta-priority"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	}
+	if got := plugins[0].GetPriority(); got != 3210 {
+		t.Fatalf("plugin priority = %d, want 3210", got)
+	}
+}
+
+func TestInitPluginsStrictAppliesMetaFilter(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"request-id": map[string]any{
+				"_meta": map[string]any{
+					"filter": []any{[]any{"arg_enable_request_id", "==", "yes"}},
+				},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "meta-filter"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	}
+
+	handler := plugins[0].Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	withoutMatch := httptest.NewRecorder()
+	withoutMatchRequest := httptest.NewRequest(http.MethodGet, "/meta", nil)
+	withoutMatchRequest.URL.RawQuery = "enable_request_id=no"
+	handler.ServeHTTP(withoutMatch, withoutMatchRequest)
+	if got := withoutMatch.Header().Get("X-Request-Id"); got != "" {
+		t.Fatalf("filtered request id = %q, want no request id", got)
+	}
+
+	withMatch := httptest.NewRecorder()
+	withMatchRequest := httptest.NewRequest(http.MethodGet, "/meta?enable_request_id=yes", nil)
+	handler.ServeHTTP(withMatch, withMatchRequest)
+	if got := withMatch.Header().Get("X-Request-Id"); got == "" {
+		t.Fatal("matching request did not receive request id")
+	}
+}
+
+func TestInitPluginsStrictRejectsInvalidMetaFilter(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"request-id": map[string]any{
+				"_meta": map[string]any{"filter": []any{"not-an-expression"}},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "meta-invalid-filter"}),
+	)
+	if err == nil {
+		t.Fatal("initPluginsStrict() error = nil, want invalid metadata filter rejection")
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
+func TestInitPluginsStrictAppliesMetaErrorResponse(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"jwt-auth": map[string]any{
+				"_meta": map[string]any{
+					"error_response": map[string]any{"message": "custom auth failure"},
+				},
+			},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "meta-error-response"}),
+	)
+	if err != nil {
+		t.Fatalf("initPluginsStrict() error = %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("plugins len = %d, want 1", len(plugins))
+	}
+
+	handler := plugins[0].Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called after jwt-auth rejected request")
+	}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/meta", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if got := response.Header().Get("WWW-Authenticate"); got == "" {
+		t.Fatal("custom error response removed jwt-auth challenge header")
+	}
+	if got := strings.TrimSpace(response.Body.String()); got != `{"message":"custom auth failure"}` {
+		t.Fatalf("body = %q, want custom JSON response", got)
+	}
+}
+
+func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{"not-a-plugin": map[string]any{}},
+		builder.pluginRouteContext(resource.Route{ID: "unknown-plugin"}),
+	)
+	if err == nil {
+		t.Fatal("initPluginsStrict() error = nil, want unknown plugin rejection")
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
 	}
 }
 

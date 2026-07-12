@@ -59,13 +59,16 @@ type consumerConfig struct {
 }
 
 type jweToken struct {
-	header     jweHeader
-	iv         []byte
-	ciphertext []byte
-	tag        []byte
+	protectedHeader string
+	header          jweHeader
+	iv              []byte
+	ciphertext      []byte
+	tag             []byte
 }
 
 type jweHeader struct {
+	Alg string `json:"alg"`
+	Enc string `json:"enc"`
 	Kid string `json:"kid"`
 }
 
@@ -158,6 +161,16 @@ func parseCompactJWE(raw string) (jweToken, error) {
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return jweToken{}, err
 	}
+	if header.Alg != "dir" || header.Enc != "A256GCM" {
+		return jweToken{}, fmt.Errorf("unsupported JWE algorithm")
+	}
+	encryptedKey, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return jweToken{}, err
+	}
+	if len(encryptedKey) != 0 {
+		return jweToken{}, fmt.Errorf("JWE encrypted key must be empty for direct encryption")
+	}
 
 	iv, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
@@ -173,10 +186,11 @@ func parseCompactJWE(raw string) (jweToken, error) {
 	}
 
 	return jweToken{
-		header:     header,
-		iv:         iv,
-		ciphertext: ciphertext,
-		tag:        tag,
+		protectedHeader: parts[0],
+		header:          header,
+		iv:              iv,
+		ciphertext:      ciphertext,
+		tag:             tag,
 	}, nil
 }
 
@@ -208,5 +222,5 @@ func decryptJWE(token jweToken, rawConfig any) ([]byte, error) {
 	}
 
 	ciphertextAndTag := append(append([]byte{}, token.ciphertext...), token.tag...)
-	return gcm.Open(nil, token.iv, ciphertextAndTag, nil)
+	return gcm.Open(nil, token.iv, ciphertextAndTag, []byte(token.protectedHeader))
 }

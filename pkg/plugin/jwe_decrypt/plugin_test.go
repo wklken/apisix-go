@@ -203,6 +203,7 @@ func makeCompactJWE(t *testing.T, kid string, secret []byte, plaintext string) s
 	if err != nil {
 		t.Fatalf("marshal header: %v", err)
 	}
+	protectedHeader := base64.RawURLEncoding.EncodeToString(header)
 	iv := []byte("123456789012")
 
 	block, err := aes.NewCipher(secret)
@@ -213,11 +214,11 @@ func makeCompactJWE(t *testing.T, kid string, secret []byte, plaintext string) s
 	if err != nil {
 		t.Fatalf("new gcm: %v", err)
 	}
-	sealed := gcm.Seal(nil, iv, []byte(plaintext), nil)
+	sealed := gcm.Seal(nil, iv, []byte(plaintext), []byte(protectedHeader))
 	tagStart := len(sealed) - gcm.Overhead()
 
 	return strings.Join([]string{
-		base64.RawURLEncoding.EncodeToString(header),
+		protectedHeader,
 		"",
 		base64.RawURLEncoding.EncodeToString(iv),
 		base64.RawURLEncoding.EncodeToString(sealed[:tagStart]),

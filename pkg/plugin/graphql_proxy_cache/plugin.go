@@ -41,12 +41,6 @@ type Plugin struct {
 	serviceID string
 }
 
-// FailRouteOnInitError marks cache configuration errors as route-build
-// failures instead of allowing the builder to silently omit the cache plugin.
-func (p *Plugin) FailRouteOnInitError() bool {
-	return true
-}
-
 const (
 	priority = 1009
 	name     = "graphql-proxy-cache"

@@ -44,12 +44,6 @@ type Plugin struct {
 	cleanupDone     chan struct{}
 }
 
-// FailRouteOnInitError marks cache configuration errors as route-build
-// failures instead of allowing the builder to silently omit the cache plugin.
-func (p *Plugin) FailRouteOnInitError() bool {
-	return true
-}
-
 const (
 	priority          = 1085
 	name              = "proxy-cache"

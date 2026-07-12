@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/go-chi/chi/v5"
 	"github.com/justinas/alice"
 	"github.com/unrolled/render"
@@ -26,6 +27,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/dubbo_proxy"
+	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/plugin/http_dubbo"
 	"github.com/wklken/apisix-go/pkg/plugin/kafka_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
@@ -220,8 +222,16 @@ func (b *Builder) buildHandler(r resource.Route) http.Handler {
 	return handler
 }
 
+func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
+	cloned := make(map[string]resource.PluginConfig, len(source))
+	for name, config := range source {
+		cloned[name] = config
+	}
+	return cloned
+}
+
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
-	resourcePlugins := r.Plugins
+	resourcePlugins := clonePluginConfigs(r.Plugins)
 	// handle plugin_config_id
 	// fmt.Println("r.Uri", r.Uri, "r.PluginConfigID", r.PluginConfigID)
 	if r.PluginConfigID != "" {
@@ -391,12 +401,204 @@ type pluginResourceContextSetter interface {
 	SetResourceContext(route resource.Route, service resource.Service)
 }
 
-type pluginStopper interface {
-	Stop()
+type pluginPrioritySetter interface {
+	SetPriority(priority int)
 }
 
-type strictPluginInitializer interface {
-	FailRouteOnInitError() bool
+type metadataPlugin struct {
+	plugin.Plugin
+	filter        *pluginexpr.Expression
+	errorResponse any
+}
+
+func (p metadataPlugin) Handler(next http.Handler) http.Handler {
+	var handler http.Handler
+	if p.errorResponse != nil {
+		handler = p.errorResponseHandler(next)
+	} else {
+		handler = p.Plugin.Handler(next)
+	}
+	if p.filter == nil {
+		return handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !p.filter.Eval(func(name string) any {
+			return pluginexpr.RequestValue(r, name)
+		}) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (p metadataPlugin) errorResponseHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled := false
+		errorResponseWritten := false
+		responseHeaderWritten := false
+		wrappedNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nextCalled = true
+			next.ServeHTTP(w, r)
+		})
+		wrappedWriter := httpsnoop.Wrap(w, httpsnoop.Hooks{
+			WriteHeader: func(writeHeader httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+				return func(status int) {
+					if errorResponseWritten {
+						return
+					}
+					responseHeaderWritten = true
+					if !nextCalled && status >= http.StatusBadRequest {
+						errorResponseWritten = true
+						writeMetadataErrorResponse(w, status, p.errorResponse)
+						return
+					}
+					writeHeader(status)
+				}
+			},
+			Write: func(write httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+				return func(body []byte) (int, error) {
+					if errorResponseWritten {
+						return len(body), nil
+					}
+					if !responseHeaderWritten {
+						responseHeaderWritten = true
+					}
+					return write(body)
+				}
+			},
+		})
+		p.Plugin.Handler(wrappedNext).ServeHTTP(wrappedWriter, r)
+	})
+}
+
+func writeMetadataErrorResponse(w http.ResponseWriter, status int, value any) {
+	var body []byte
+	contentType := "text/plain; charset=utf-8"
+	if object, ok := value.(map[string]any); ok {
+		body, _ = stdjson.Marshal(object)
+		contentType = "application/json"
+	} else if text, ok := value.(string); ok {
+		body = []byte(text)
+	} else {
+		body, _ = stdjson.Marshal(value)
+		contentType = "application/json"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+type pluginMetadata struct {
+	disabled      bool
+	priority      *int
+	filter        *pluginexpr.Expression
+	errorResponse any
+}
+
+func parsePluginMetadata(config resource.PluginConfig) (resource.PluginConfig, pluginMetadata, error) {
+	values, ok := config.(map[string]any)
+	if !ok {
+		return config, pluginMetadata{}, nil
+	}
+	rawMetadata, ok := values["_meta"]
+	if !ok {
+		return config, pluginMetadata{}, nil
+	}
+	metadataValues, ok := rawMetadata.(map[string]any)
+	if !ok {
+		return nil, pluginMetadata{}, fmt.Errorf("_meta must be an object")
+	}
+
+	pluginConfig := make(map[string]any, len(values)-1)
+	for name, value := range values {
+		if name != "_meta" {
+			pluginConfig[name] = value
+		}
+	}
+	metadata := pluginMetadata{}
+	if value, ok := metadataValues["disable"]; ok {
+		disabled, ok := value.(bool)
+		if !ok {
+			return nil, pluginMetadata{}, fmt.Errorf("_meta.disable must be a boolean")
+		}
+		metadata.disabled = disabled
+	}
+	if value, ok := metadataValues["priority"]; ok {
+		priority, err := parsePluginPriority(value)
+		if err != nil {
+			return nil, pluginMetadata{}, err
+		}
+		metadata.priority = &priority
+	}
+	if value, ok := metadataValues["filter"]; ok {
+		filter, err := pluginexpr.Compile(value)
+		if err != nil {
+			return nil, pluginMetadata{}, fmt.Errorf("_meta.filter: %w", err)
+		}
+		metadata.filter = filter
+	}
+	if value, ok := metadataValues["error_response"]; ok {
+		switch value.(type) {
+		case string, map[string]any:
+			metadata.errorResponse = value
+		default:
+			return nil, pluginMetadata{}, fmt.Errorf("_meta.error_response must be a string or object")
+		}
+	}
+	return pluginConfig, metadata, nil
+}
+
+func parsePluginPriority(value any) (int, error) {
+	switch number := value.(type) {
+	case int:
+		return number, nil
+	case int8:
+		return int(number), nil
+	case int16:
+		return int(number), nil
+	case int32:
+		return int(number), nil
+	case int64:
+		priority := int(number)
+		if int64(priority) == number {
+			return priority, nil
+		}
+	case uint:
+		if uint64(number) <= uint64(^uint(0)>>1) {
+			return int(number), nil
+		}
+	case uint8:
+		return int(number), nil
+	case uint16:
+		return int(number), nil
+	case uint32:
+		if uint64(number) <= uint64(^uint(0)>>1) {
+			return int(number), nil
+		}
+	case uint64:
+		if number <= uint64(^uint(0)>>1) {
+			return int(number), nil
+		}
+	case float64:
+		if math.Trunc(number) == number {
+			priority := int(number)
+			if float64(priority) == number {
+				return priority, nil
+			}
+		}
+	case stdjson.Number:
+		priority, err := strconv.ParseInt(string(number), 10, 64)
+		if err == nil {
+			return parsePluginPriority(priority)
+		}
+	}
+	return 0, fmt.Errorf("_meta.priority must be an integer")
+}
+
+type pluginStopper interface {
+	Stop()
 }
 
 func (b *Builder) initPlugins(
@@ -418,38 +620,28 @@ func (b *Builder) initPluginsStrict(
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
 		if p == nil {
-			logger.Warnf("plugin %s not supported yet", name)
-			continue
+			return nil, fmt.Errorf("plugin %s is not supported", name)
 		}
-		strict := false
-		if initializer, ok := p.(strictPluginInitializer); ok {
-			strict = initializer.FailRouteOnInitError()
+		config, metadata, err := parsePluginMetadata(config)
+		if err != nil {
+			return nil, fmt.Errorf("parse plugin %s metadata: %w", name, err)
+		}
+		if metadata.disabled {
+			continue
 		}
 
 		if err := p.Init(); err != nil {
-			if strict {
-				return plugins, fmt.Errorf("initialize plugin %s: %w", name, err)
-			}
-			logger.Errorf("initialize plugin %s fail: %s", name, err)
-			continue
+			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
 
-		err := util.Validate(config, p.GetSchema())
+		err = util.Validate(config, p.GetSchema())
 		if err != nil {
-			if strict {
-				return plugins, fmt.Errorf("validate plugin %s config: %w", name, err)
-			}
-			logger.Errorf("validate plugin %s config fail: %s", name, err)
-			continue
+			return nil, fmt.Errorf("validate plugin %s config: %w", name, err)
 		}
 
 		err = util.Parse(config, p.Config())
 		if err != nil {
-			if strict {
-				return plugins, fmt.Errorf("parse plugin %s config: %w", name, err)
-			}
-			logger.Errorf("parse plugin config fail: %s", err)
-			continue
+			return nil, fmt.Errorf("parse plugin %s config: %w", name, err)
 		}
 
 		if setter, ok := p.(pluginRouteContextSetter); ok {
@@ -458,19 +650,30 @@ func (b *Builder) initPluginsStrict(
 		if setter, ok := p.(pluginResourceContextSetter); ok {
 			setter.SetResourceContext(routeContext.route, routeContext.service)
 		}
+		if metadata.priority != nil {
+			setter, ok := p.(pluginPrioritySetter)
+			if !ok {
+				return nil, fmt.Errorf("plugin %s does not support _meta.priority", name)
+			}
+			setter.SetPriority(*metadata.priority)
+		}
 
 		if err := p.PostInit(); err != nil {
-			if strict {
-				return plugins, fmt.Errorf("initialize plugin %s: %w", name, err)
-			}
-			logger.Errorf("initialize plugin %s fail: %s", name, err)
-			continue
+			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
 		if stopper, ok := p.(pluginStopper); ok {
 			b.stoppers = append(b.stoppers, stopper)
 		}
 
-		plugins = append(plugins, p)
+		initialized := plugin.Plugin(p)
+		if metadata.filter != nil || metadata.errorResponse != nil {
+			initialized = metadataPlugin{
+				Plugin:        p,
+				filter:        metadata.filter,
+				errorResponse: metadata.errorResponse,
+			}
+		}
+		plugins = append(plugins, initialized)
 	}
 	return plugins, nil
 }
@@ -494,7 +697,7 @@ func (b *Builder) initGlobalPluginsStrict(
 	for _, rule := range globalRules {
 		initialized, err := b.initPluginsStrict(rule.Plugins, routeContext)
 		if err != nil {
-			return plugins, err
+			return nil, err
 		}
 		plugins = append(plugins, initialized...)
 	}

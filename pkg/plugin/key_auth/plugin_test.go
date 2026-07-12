@@ -1,8 +1,10 @@
 package key_auth
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -124,6 +126,48 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
+}
+
+func TestHandlerDoesNotWriteConsumerToStdout(t *testing.T) {
+	addKeyAuthConsumer(t, "quiet-key-user", "quiet-key")
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("apikey", "quiet-key")
+	output := captureStdout(t, func() {
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(httptest.NewRecorder(), req)
+	})
+
+	if output != "" {
+		t.Fatalf("handler wrote consumer data to stdout: %q", output)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	old := os.Stdout
+	os.Stdout = writer
+	fn()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdout pipe: %v", err)
+	}
+	os.Stdout = old
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read stdout pipe: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
+	return string(output)
 }
 
 func TestHandlerRejectsMissingKey(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gofrs/uuid"
+	"github.com/samber/lo"
 	"github.com/wklken/apisix-go/pkg/json"
 )
 
@@ -110,13 +111,9 @@ func ExtractMessages(protocol Protocol, body map[string]any) []Message {
 
 func ExtractRequestContent(protocol Protocol, body map[string]any) []string {
 	messages := ExtractMessages(protocol, body)
-	contents := make([]string, 0, len(messages))
-	for _, message := range messages {
-		if strings.TrimSpace(message.Content) != "" {
-			contents = append(contents, message.Content)
-		}
-	}
-	return contents
+	return lo.FilterMap(messages, func(message Message, _ int) (string, bool) {
+		return message.Content, strings.TrimSpace(message.Content) != ""
+	})
 }
 
 func PrependMessages(protocol Protocol, body map[string]any, messages []Message) {
@@ -645,11 +642,9 @@ func bedrockMessage(message Message) map[string]any {
 }
 
 func joinMessageContent(messages []Message) string {
-	parts := make([]string, 0, len(messages))
-	for _, message := range messages {
-		parts = append(parts, message.Content)
-	}
-	return strings.Join(parts, "\n")
+	return strings.Join(lo.Map(messages, func(message Message, _ int) string {
+		return message.Content
+	}), "\n")
 }
 
 func stringValue(value any) string {

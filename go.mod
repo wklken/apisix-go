@@ -37,6 +37,7 @@ require (
 	github.com/redis/rueidis v1.0.76
 	github.com/riandyrn/otelchi v0.12.3
 	github.com/rs/cors v1.11.1
+	github.com/samber/lo v1.53.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a

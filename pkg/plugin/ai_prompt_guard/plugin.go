@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -157,23 +158,15 @@ func lastMessage(messages []ai_protocols.Message) []ai_protocols.Message {
 }
 
 func userMessages(messages []ai_protocols.Message) []ai_protocols.Message {
-	filtered := make([]ai_protocols.Message, 0, len(messages))
-	for _, msg := range messages {
-		if msg.Role == "user" {
-			filtered = append(filtered, msg)
-		}
-	}
-	return filtered
+	return lo.Filter(messages, func(msg ai_protocols.Message, _ int) bool {
+		return msg.Role == "user"
+	})
 }
 
 func joinContent(messages []ai_protocols.Message) string {
-	parts := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		if msg.Content != "" {
-			parts = append(parts, msg.Content)
-		}
-	}
-	return strings.Join(parts, " ")
+	return strings.Join(lo.FilterMap(messages, func(msg ai_protocols.Message, _ int) (string, bool) {
+		return msg.Content, msg.Content != ""
+	}), " ")
 }
 
 func matchesAny(patterns []*regexp.Regexp, content string) bool {

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samber/lo"
 	"github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl"
 	"github.com/segmentio/kafka-go/sasl/plain"
@@ -319,14 +320,10 @@ func (p *Plugin) filterLogs(lines []string) []string {
 		threshold = levelOrder["WARN"]
 	}
 
-	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
+	return lo.Filter(lines, func(line string, _ int) bool {
 		level, ok := logLineLevel(line)
-		if !ok || level <= threshold {
-			filtered = append(filtered, line)
-		}
-	}
-	return filtered
+		return !ok || level <= threshold
+	})
 }
 
 func logLineLevel(line string) (int, bool) {

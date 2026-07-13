@@ -49,6 +49,7 @@ The complete APISIX 3.17 comparison, category summary, per-plugin supported/unsu
 ## Runtime boundaries
 
 - HTTP routes listen on `:8080` by default and are built from the bbolt store populated by the etcd watcher.
+- A `data_plane` deployment with `role_data_plane.config_provider: yaml` or `json` loads `conf/apisix.yaml` or `conf/apisix.json` and hot-reloads resource changes without etcd.
 - Traditional etcd deployments with `server-info` enabled periodically publish `<etcd-prefix>/data_plane/server_info/<apisix-id>` and renew the lease until shutdown.
 - TCP stream routing is enabled through `apisix.proxy_mode` and `apisix.stream_proxy.tcp`; the current main-server stream owner is `mqtt-proxy`, with weighted/chash upstream selection, route reload, cancellation, and lifecycle tests.
 - Kafka PubSub uses the dedicated WebSocket/protobuf owner; Dubbo and HTTP-Dubbo use route-terminal TCP owners. General stream-plugin chains, stream mTLS, active upstream probes, exact OpenResty phase timing, and full Lua runtime compatibility remain deferred.
@@ -57,7 +58,7 @@ The complete APISIX 3.17 comparison, category summary, per-plugin supported/unsu
 
 The APISIX 3.17 plugin parity backlog is maintained in [docs/plugins.md](docs/plugins.md). The legacy project TODOs below are separate repository-level work and are not plugin parity claims.
 
-- [ ] standalone mode
+- [x] standalone mode
 - [ ] handle etcd compact
 - [x] github action: go releaser
 - [ ] logforamt change didn't take effect immediately

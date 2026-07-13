@@ -46,9 +46,10 @@ type Server struct {
 	streamRuntime   streamRuntimeOwner
 	reloadEventChan chan struct{}
 
-	events     chan *store.Event
-	storage    *store.Store
-	etcdClient *etcd.ConfigClient
+	events            chan *store.Event
+	storage           *store.Store
+	etcdClient        *etcd.ConfigClient
+	standaloneWatcher *config.StandaloneFileWatcher
 }
 
 func NewServer() (*Server, error) {
@@ -118,7 +119,7 @@ func (s *Server) Start() {
 
 	logger.Info("Starting storage")
 	s.storage.Start()
-	s.startEtcdWatcher(ctx)
+	s.startConfigProvider(ctx)
 
 	logger.Info("build the routes")
 	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
@@ -302,6 +303,34 @@ func logStreamResult(result streamruntime.Result) {
 		result.Remote,
 		result.ClientID,
 	)
+}
+
+func (s *Server) startConfigProvider(ctx context.Context) {
+	provider := standaloneConfigProvider(config.GlobalConfig)
+	if provider != "" {
+		path := config.StandaloneConfigFile(provider)
+		watcher := config.NewStandaloneFileWatcher(path, provider, s.events)
+		if err := watcher.Reload(); err != nil {
+			panic(fmt.Errorf("load standalone config: %w", err))
+		}
+		s.storage.Sync()
+		watcher.Watch()
+		s.standaloneWatcher = watcher
+		logger.Infof("watch standalone config %s", path)
+		return
+	}
+	s.startEtcdWatcher(ctx)
+}
+
+func standaloneConfigProvider(cfg *config.Config) string {
+	if cfg == nil || !strings.EqualFold(cfg.Deployment.Role, "data_plane") {
+		return ""
+	}
+	provider := strings.ToLower(strings.TrimSpace(cfg.Deployment.RoleDataPlane.ConfigProvider))
+	if provider != "yaml" && provider != "json" {
+		return ""
+	}
+	return provider
 }
 
 func (s *Server) startEtcdWatcher(ctx context.Context) {

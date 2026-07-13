@@ -1,6 +1,62 @@
 package server
 
-import "testing"
+import (
+	"net/http"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/wklken/apisix-go/pkg/config"
+)
+
+func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{
+		Apisix: config.Apisix{NodeListen: []config.NodeListen{
+			{Port: 9080},
+			{Ip: "127.0.0.2", Port: 9081},
+		}},
+		NginxConfig: config.NginxConfig{HTTP: config.NginxHTTP{
+			KeepaliveTimeout:    60 * time.Second,
+			ClientHeaderTimeout: 5 * time.Second,
+			ClientBodyTimeout:   10 * time.Second,
+			SendTimeout:         3 * time.Second,
+		}},
+	}
+
+	if got, want := configuredListenAddresses(), []string{
+		"0.0.0.0:9080",
+		"127.0.0.2:9081",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("configuredListenAddresses() = %#v, want %#v", got, want)
+	}
+
+	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	if server.IdleTimeout != 60*time.Second {
+		t.Fatalf("IdleTimeout = %s, want 1m0s", server.IdleTimeout)
+	}
+	if server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 5s", server.ReadHeaderTimeout)
+	}
+	if server.ReadTimeout != 15*time.Second {
+		t.Fatalf("ReadTimeout = %s, want 15s", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 3*time.Second {
+		t.Fatalf("WriteTimeout = %s, want 3s", server.WriteTimeout)
+	}
+}
+
+func TestEtcdTLSIsNotEnabledForHTTPEndpoints(t *testing.T) {
+	verify := true
+	settings := config.EtcdTLS{Verify: &verify}
+	if etcdTLSRequired([]string{"http://127.0.0.1:2379"}, settings) {
+		t.Fatal("etcdTLSRequired() = true for an HTTP endpoint")
+	}
+	if !etcdTLSRequired([]string{"https://127.0.0.1:2379"}, settings) {
+		t.Fatal("etcdTLSRequired() = false for an HTTPS endpoint")
+	}
+}
 
 func TestPrometheusExportServerConfigDefaults(t *testing.T) {
 	cfg := newPrometheusExportServerConfig(nil)

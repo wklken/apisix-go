@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	stdjson "encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ type streamRuntimeOwner interface {
 
 type Server struct {
 	addr            string
+	addrs           []string
 	server          *http.Server
 	routes          *routeHandler
 	streamRuntime   streamRuntimeOwner
@@ -57,15 +59,39 @@ func NewServer() (*Server, error) {
 	if pluginConfigured("node-status") {
 		handler = node_status.Track(handler)
 	}
+	addrs := configuredListenAddresses()
 	return &Server{
-		// FIXME: listen to multiple address from global config
-		addr:            ":8080",
-		server:          &http.Server{Handler: handler},
+		addr:            addrs[0],
+		addrs:           addrs,
+		server:          newConfiguredHTTPServer(handler),
 		routes:          routes,
 		reloadEventChan: make(chan struct{}, 1),
 		events:          events,
 		storage:         storage,
 	}, nil
+}
+
+func configuredListenAddresses() []string {
+	if config.GlobalConfig == nil {
+		return []string{":8080"}
+	}
+	return config.GlobalConfig.Apisix.ListenAddresses()
+}
+
+func newConfiguredHTTPServer(handler http.Handler) *http.Server {
+	server := &http.Server{Handler: handler}
+	if config.GlobalConfig == nil {
+		return server
+	}
+
+	httpConfig := config.GlobalConfig.NginxConfig.HTTP
+	server.IdleTimeout = httpConfig.KeepaliveTimeout
+	server.ReadHeaderTimeout = httpConfig.ClientHeaderTimeout
+	server.WriteTimeout = httpConfig.SendTimeout
+	if httpConfig.ClientBodyTimeout > 0 {
+		server.ReadTimeout = httpConfig.ClientBodyTimeout + httpConfig.ClientHeaderTimeout
+	}
+	return server
 }
 
 func pluginConfigured(name string) bool {
@@ -276,15 +302,45 @@ func logStreamResult(result streamruntime.Result) {
 }
 
 func (s *Server) startEtcdWatcher(ctx context.Context) {
-	// prefix := "/apisix"
-	// endpoints := []string{"127.0.0.1:2379"}
-	prefix := config.GlobalConfig.Deployment.Etcd.Prefix
-	endpoints := config.GlobalConfig.Deployment.Etcd.Host
-	username := config.GlobalConfig.Deployment.Etcd.User
-	password := config.GlobalConfig.Deployment.Etcd.Password
+	etcdConfig := config.GlobalConfig.Deployment.Etcd
+	prefix := etcdConfig.Prefix
+	endpoints := etcdConfig.Host
+	username := etcdConfig.User
+	password := etcdConfig.Password
+
+	var tlsConfig *tls.Config
+	var err error
+	if etcdTLSRequired(endpoints, etcdConfig.TLS) {
+		tlsConfig, err = etcd.NewTLSConfig(
+			etcdConfig.TLS.Cert,
+			etcdConfig.TLS.Key,
+			etcdConfig.TLS.SNI,
+			etcdConfig.TLS.Verify,
+		)
+		if err != nil {
+			logger.Errorf("build etcd TLS config fail: %s", err)
+			return
+		}
+	}
+	requestTimeout := 5 * time.Second
+	if etcdConfig.Timeout > 0 {
+		requestTimeout = time.Duration(etcdConfig.Timeout) * time.Second
+	}
 
 	logger.Info("Starting etcd client")
-	etcdClient, err := etcd.NewConfigClient(endpoints, username, password, prefix, s.events)
+	etcdClient, err := etcd.NewConfigClientWithOptions(
+		endpoints,
+		username,
+		password,
+		prefix,
+		s.events,
+		etcd.ClientOptions{
+			DialTimeout:    requestTimeout,
+			RequestTimeout: requestTimeout,
+			StartupRetry:   etcdConfig.StartupRetry,
+			TLS:            tlsConfig,
+		},
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -312,6 +368,18 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 	go etcdClient.Watch(ctx)
 }
 
+func etcdTLSRequired(endpoints []string, tlsConfig config.EtcdTLS) bool {
+	if tlsConfig.Cert != "" || tlsConfig.Key != "" || tlsConfig.SNI != "" {
+		return true
+	}
+	for _, endpoint := range endpoints {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(endpoint)), "https://") {
+			return true
+		}
+	}
+	return false
+}
+
 func serverInfoReportingEnabled() bool {
 	if !pluginConfigured("server-info") || config.GlobalConfig == nil {
 		return false
@@ -323,14 +391,21 @@ func serverInfoReportingEnabled() bool {
 }
 
 func (s *Server) startServer(ctx context.Context) {
-	logger.Infof("listening on %s", s.addr)
-	listener, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		logger.Fatalf("error opening listener: %w", err)
+	addrs := s.addrs
+	if len(addrs) == 0 {
+		addrs = []string{s.addr}
 	}
-	err = s.server.Serve(listener)
-	if err != nil && err != http.ErrServerClosed {
-		logger.Fatalf("error serve: %w", err)
+	for _, addr := range addrs {
+		logger.Infof("listening on %s", addr)
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			logger.Fatalf("error opening listener: %w", err)
+		}
+		go func(listener net.Listener) {
+			if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				logger.Errorf("error serve: %s", err)
+			}
+		}(listener)
 	}
 
 	<-ctx.Done()

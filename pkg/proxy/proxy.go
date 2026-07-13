@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"net/http/httputil"
+	"time"
 
 	"github.com/oxtoacart/bpool"
 )
@@ -28,13 +29,23 @@ func init() {
 func NewProxyHandler(transport http.RoundTripper, director Director,
 	modifyResponse ModifyResponse, errorHandler ErrorHandler,
 ) http.Handler {
+	return NewProxyHandlerWithFlushInterval(transport, director, modifyResponse, errorHandler, 0)
+}
+
+func NewProxyHandlerWithFlushInterval(
+	transport http.RoundTripper,
+	director Director,
+	modifyResponse ModifyResponse,
+	errorHandler ErrorHandler,
+	flushInterval time.Duration,
+) http.Handler {
 	return &httputil.ReverseProxy{
 		Director:       director,
 		Transport:      transport,
 		ModifyResponse: modifyResponse,
 		BufferPool:     bufferPool,
 		ErrorHandler:   errorHandler,
-		// FlushInterval
+		FlushInterval:  flushInterval,
 		// ErrorLog
 	}
 }

@@ -1,37 +1,55 @@
 package config
 
-import "time"
+import (
+	"net"
+	"strconv"
+	"strings"
+	"time"
+)
 
 type Config struct {
-	Debug  bool   `mapstructure:"debug"`
-	Apisix Apisix `mapstructure:"apisix"`
+	Debug       bool        `mapstructure:"debug"`
+	Apisix      Apisix      `mapstructure:"apisix"`
+	NginxConfig NginxConfig `mapstructure:"nginx_config"`
 
-	// NOTE: the section nginx_config is not supported in this version
-	// use proxy instead
+	// NGINX-only directives are retained for config compatibility; the Go server
+	// applies the HTTP timeout settings that have direct net/http equivalents.
 	Proxy Proxy `mapstructure:"proxy"`
 
 	Discovery     Discovery `mapstructure:"discovery"`
 	GraphQL       GraphQL   `mapstructure:"graphql"`
+	ExtPlugin     ExtPlugin `mapstructure:"ext-plugin"`
+	Wasm          Wasm      `mapstructure:"wasm"`
+	XRPC          XRPC      `mapstructure:"xrpc"`
+	Events        Events    `mapstructure:"events"`
 	Plugins       []string  `mapstructure:"plugins"`
 	StreamPlugins []string  `mapstructure:"stream_plugins"`
 	// PluginAttr    PluginAttr `mapstructure:"plugin_attr"`
-	PluginAttr map[string]map[string]interface{} `mapstructure:"plugin_attr"`
-	Deployment Deployment                        `mapstructure:"deployment"`
+	PluginAttr map[string]map[string]any `mapstructure:"plugin_attr"`
+	Deployment Deployment                `mapstructure:"deployment"`
 }
 
 // section: apisix
 
 type Apisix struct {
-	NodeListen                         []NodeListen `mapstructure:"node_listen"`
-	EnableAdmin                        bool         `mapstructure:"enable_admin"`
-	EnableDevMode                      bool         `mapstructure:"enable_dev_mode"`
-	EnableReuseport                    bool         `mapstructure:"enable_reuseport"`
-	ShowUpstreamStatusInResponseHeader bool         `mapstructure:"show_upstream_status_in_response_header"`
-	EnableIpv6                         bool         `mapstructure:"enable_ipv6"`
-	EnableServerTokens                 bool         `mapstructure:"enable_server_tokens"`
-	ProxyCache                         ProxyCache   `mapstructure:"proxy_cache"`
-
-	// NOTE: no need extra_lua_path/extra_lua_cpath
+	ID                                 string        `mapstructure:"id"`
+	NodeListen                         []NodeListen  `mapstructure:"node_listen"`
+	EnableAdmin                        bool          `mapstructure:"enable_admin"`
+	EnableDevMode                      bool          `mapstructure:"enable_dev_mode"`
+	EnableReuseport                    bool          `mapstructure:"enable_reuseport"`
+	ShowUpstreamStatusInResponseHeader bool          `mapstructure:"show_upstream_status_in_response_header"`
+	EnableIpv6                         bool          `mapstructure:"enable_ipv6"`
+	EnableHttp2                        bool          `mapstructure:"enable_http2"`
+	EnableServerTokens                 bool          `mapstructure:"enable_server_tokens"`
+	ExtraLuaPath                       string        `mapstructure:"extra_lua_path"`
+	ExtraLuaCpath                      string        `mapstructure:"extra_lua_cpath"`
+	LuaModuleHook                      string        `mapstructure:"lua_module_hook"`
+	ProxyProtocol                      ProxyProtocol `mapstructure:"proxy_protocol"`
+	ProxyCache                         ProxyCache    `mapstructure:"proxy_cache"`
+	DeleteURITailSlash                 bool          `mapstructure:"delete_uri_tail_slash"`
+	NormalizeURILikeServlet            bool          `mapstructure:"normalize_uri_like_servlet"`
+	MatchURIEncodedSlash               bool          `mapstructure:"match_uri_encoded_slash"`
+	MaxPostArgsReadableSize            int           `mapstructure:"max_post_args_readable_size"`
 
 	Router                              Router         `mapstructure:"router"`
 	ProxyMode                           string         `mapstructure:"proxy_mode"`
@@ -44,8 +62,20 @@ type Apisix struct {
 	EnableControl                       bool           `mapstructure:"enable_control"`
 	Control                             Control        `mapstructure:"control"`
 	DisableSyncConfigurationDuringStart bool           `mapstructure:"disable_sync_configuration_during_start"`
+	WorkerStartupTimeThreshold          int            `mapstructure:"worker_startup_time_threshold"`
 	DataEncryption                      DataEncryption `mapstructure:"data_encryption"`
-	// NOTE: no need `events` here
+	LRU                                 LRU            `mapstructure:"lru"`
+	Tracing                             bool           `mapstructure:"tracing"`
+	Status                              Status         `mapstructure:"status"`
+	DisableUpstreamHealthcheck          bool           `mapstructure:"disable_upstream_healthcheck"`
+	TrustedAddresses                    []string       `mapstructure:"trusted_addresses"`
+}
+
+type ProxyProtocol struct {
+	ListenHTTPPort        int  `mapstructure:"listen_http_port"`
+	ListenHTTPSPort       int  `mapstructure:"listen_https_port"`
+	EnableTCPPP           bool `mapstructure:"enable_tcp_pp"`
+	EnableTCPPPToUpstream bool `mapstructure:"enable_tcp_pp_to_upstream"`
 }
 
 type ProxyCache struct {
@@ -62,9 +92,11 @@ type Zone struct {
 }
 
 type NodeListen struct {
-	Ip          string `mapstructure:"ip"`
-	Port        int    `mapstructure:"port"`
-	EnableHttp2 bool   `mapstructure:"enable_http2"`
+	Ip                      string `mapstructure:"ip"`
+	Port                    int    `mapstructure:"port"`
+	EnableHttp2             bool   `mapstructure:"enable_http2"`
+	ProxyProtocol           bool   `mapstructure:"proxy_protocol"`
+	ProxyProtocolToUpstream bool   `mapstructure:"proxy_protocol_to_upstream"`
 }
 
 type Router struct {
@@ -78,23 +110,28 @@ type StreamProxy struct {
 }
 
 type TcpListen struct {
-	Addr string `mapstructure:"addr"`
-	Tls  bool   `mapstructure:"tls"`
+	Addr                    string `mapstructure:"addr"`
+	Tls                     bool   `mapstructure:"tls"`
+	ProxyProtocol           bool   `mapstructure:"proxy_protocol"`
+	ProxyProtocolToUpstream bool   `mapstructure:"proxy_protocol_to_upstream"`
 }
 
 type Ssl struct {
 	Enable                bool     `mapstructure:"enable"`
 	Listen                []Listen `mapstructure:"listen"`
 	SslTrustedCertificate string   `mapstructure:"ssl_trusted_certificate"`
-	SslProtocols          []string `mapstructure:"ssl_protocols"`
+	SslProtocols          string   `mapstructure:"ssl_protocols"`
 	SslCiphers            string   `mapstructure:"ssl_ciphers"`
 	SslSessionTickets     bool     `mapstructure:"ssl_session_tickets"`
+	FallbackSNI           string   `mapstructure:"fallback_sni"`
 }
 
 type Listen struct {
-	Port        int  `mapstructure:"port"`
-	EnableHttp2 bool `mapstructure:"enable_http2"`
-	EnableQuic  bool `mapstructure:"enable_quic"`
+	Ip          string `mapstructure:"ip"`
+	Port        int    `mapstructure:"port"`
+	EnableHttp2 bool   `mapstructure:"enable_http2"`
+	EnableQuic  bool   `mapstructure:"enable_quic"`
+	EnableHttp3 bool   `mapstructure:"enable_http3"`
 }
 
 type Control struct {
@@ -105,6 +142,22 @@ type Control struct {
 type DataEncryption struct {
 	EnableEncryptFields bool     `mapstructure:"enable_encrypt_fields"`
 	Keyring             []string `mapstructure:"keyring"`
+}
+
+type LRU struct {
+	Secret LRUCache `mapstructure:"secret"`
+}
+
+type LRUCache struct {
+	TTL      int `mapstructure:"ttl"`
+	Count    int `mapstructure:"count"`
+	NegTTL   int `mapstructure:"neg_ttl"`
+	NegCount int `mapstructure:"neg_count"`
+}
+
+type Status struct {
+	IP   string `mapstructure:"ip"`
+	Port int    `mapstructure:"port"`
 }
 
 // section: proxy
@@ -136,19 +189,118 @@ type Proxy struct {
 	// variables_hash_max_size
 }
 
+type NginxConfig struct {
+	ErrorLog                               string        `mapstructure:"error_log"`
+	ErrorLogLevel                          string        `mapstructure:"error_log_level"`
+	WorkerProcesses                        string        `mapstructure:"worker_processes"`
+	EnableCPUAffinity                      bool          `mapstructure:"enable_cpu_affinity"`
+	WorkerRlimitNofile                     int           `mapstructure:"worker_rlimit_nofile"`
+	WorkerShutdownTimeout                  time.Duration `mapstructure:"worker_shutdown_timeout"`
+	MaxPendingTimers                       int           `mapstructure:"max_pending_timers"`
+	MaxRunningTimers                       int           `mapstructure:"max_running_timers"`
+	Event                                  NginxEvent    `mapstructure:"event"`
+	Meta                                   NginxMeta     `mapstructure:"meta"`
+	Stream                                 NginxStream   `mapstructure:"stream"`
+	MainConfigurationSnippet               string        `mapstructure:"main_configuration_snippet"`
+	HTTPConfigurationSnippet               string        `mapstructure:"http_configuration_snippet"`
+	HTTPServerConfigurationSnippet         string        `mapstructure:"http_server_configuration_snippet"`
+	HTTPServerLocationConfigurationSnippet string        `mapstructure:"http_server_location_configuration_snippet"`
+	HTTPAdminConfigurationSnippet          string        `mapstructure:"http_admin_configuration_snippet"`
+	HTTPEndConfigurationSnippet            string        `mapstructure:"http_end_configuration_snippet"`
+	StreamConfigurationSnippet             string        `mapstructure:"stream_configuration_snippet"`
+	HTTP                                   NginxHTTP     `mapstructure:"http"`
+}
+
+type NginxEvent struct {
+	WorkerConnections int `mapstructure:"worker_connections"`
+}
+
+type NginxMeta struct {
+	LuaSharedDict map[string]string `mapstructure:"lua_shared_dict"`
+}
+
+type NginxStream struct {
+	EnableAccessLog       bool              `mapstructure:"enable_access_log"`
+	AccessLog             string            `mapstructure:"access_log"`
+	AccessLogFormat       string            `mapstructure:"access_log_format"`
+	AccessLogFormatEscape string            `mapstructure:"access_log_format_escape"`
+	LuaSharedDict         map[string]string `mapstructure:"lua_shared_dict"`
+}
+
+type NginxHTTP struct {
+	EnableAccessLog       bool              `mapstructure:"enable_access_log"`
+	AccessLog             string            `mapstructure:"access_log"`
+	AccessLogBuffer       int               `mapstructure:"access_log_buffer"`
+	AccessLogFormat       string            `mapstructure:"access_log_format"`
+	AccessLogFormatEscape string            `mapstructure:"access_log_format_escape"`
+	KeepaliveTimeout      time.Duration     `mapstructure:"keepalive_timeout"`
+	ClientHeaderTimeout   time.Duration     `mapstructure:"client_header_timeout"`
+	ClientBodyTimeout     time.Duration     `mapstructure:"client_body_timeout"`
+	ClientMaxBodySize     int64             `mapstructure:"client_max_body_size"`
+	SendTimeout           time.Duration     `mapstructure:"send_timeout"`
+	UnderscoresInHeaders  string            `mapstructure:"underscores_in_headers"`
+	RealIPHeader          string            `mapstructure:"real_ip_header"`
+	RealIPRecursive       string            `mapstructure:"real_ip_recursive"`
+	RealIPFrom            []string          `mapstructure:"real_ip_from"`
+	ProxySSLServerName    bool              `mapstructure:"proxy_ssl_server_name"`
+	Upstream              NginxUpstream     `mapstructure:"upstream"`
+	Charset               string            `mapstructure:"charset"`
+	VariablesHashMaxSize  int               `mapstructure:"variables_hash_max_size"`
+	LuaSharedDict         map[string]string `mapstructure:"lua_shared_dict"`
+	CustomLuaSharedDict   map[string]string `mapstructure:"custom_lua_shared_dict"`
+	IPCSharedDict         map[string]string `mapstructure:"ipc_shared_dict"`
+}
+
+type NginxUpstream struct {
+	Keepalive         int           `mapstructure:"keepalive"`
+	KeepaliveRequests int           `mapstructure:"keepalive_requests"`
+	KeepaliveTimeout  time.Duration `mapstructure:"keepalive_timeout"`
+}
+
+type ExtPlugin struct {
+	Cmd []string `mapstructure:"cmd"`
+}
+
+type Wasm struct {
+	Plugins []WasmPlugin `mapstructure:"plugins"`
+}
+
+type WasmPlugin struct {
+	Name     string `mapstructure:"name"`
+	Priority int    `mapstructure:"priority"`
+	File     string `mapstructure:"file"`
+}
+
+type XRPC struct {
+	Protocols []XRPCProtocol `mapstructure:"protocols"`
+}
+
+type XRPCProtocol struct {
+	Name string `mapstructure:"name"`
+}
+
+type Events struct {
+	Module string `mapstructure:"module"`
+}
+
 // section: plugin_attr
 
-type PluginAttr map[string]interface{}
+type PluginAttr map[string]any
 
 // section: deployment
 
 type Deployment struct {
 	// TODO: add validation here
-	Role            string                `mapstructure:"role"`
-	RoleTraditional RoleTraditionalConfig `mapstructure:"role_traditional"`
-	// TODO: role_data_plane, role_control_plane
-	Admin Admin `mapstructure:"admin"`
-	Etcd  Etcd  `mapstructure:"etcd"`
+	Role             string                `mapstructure:"role"`
+	RoleTraditional  RoleTraditionalConfig `mapstructure:"role_traditional"`
+	RoleDataPlane    RoleConfig            `mapstructure:"role_data_plane"`
+	RoleControlPlane RoleConfig            `mapstructure:"role_control_plane"`
+	Admin            Admin                 `mapstructure:"admin"`
+	Etcd             Etcd                  `mapstructure:"etcd"`
+}
+
+type RoleConfig struct {
+	ConfigProvider string `mapstructure:"config_provider"`
 }
 
 type RoleTraditionalConfig struct {
@@ -157,7 +309,7 @@ type RoleTraditionalConfig struct {
 
 // section: discovery
 
-type Discovery map[string]interface{}
+type Discovery map[string]any
 
 // section: graphql
 
@@ -168,13 +320,15 @@ type GraphQL struct {
 // section: deployment.admin
 
 type Admin struct {
-	AdminKeyRequired bool        `mapstructure:"admin_key_required"`
-	AdminKey         []AdminKey  `mapstructure:"admin_key"`
-	EnableAdminCORS  bool        `mapstructure:"enable_admin_cors"`
-	AllowAdmin       []string    `mapstructure:"allow_admin"`
-	AdminListen      AdminListen `mapstructure:"admin_listen"`
-	AdminAPIVersion  string      `mapstructure:"admin_api_version"`
-	// TODO: https_admin, admin_api_mtls
+	AdminKeyRequired bool         `mapstructure:"admin_key_required"`
+	AdminKey         []AdminKey   `mapstructure:"admin_key"`
+	EnableAdminCORS  bool         `mapstructure:"enable_admin_cors"`
+	EnableAdminUI    bool         `mapstructure:"enable_admin_ui"`
+	AllowAdmin       []string     `mapstructure:"allow_admin"`
+	AdminListen      AdminListen  `mapstructure:"admin_listen"`
+	HTTPSAdmin       bool         `mapstructure:"https_admin"`
+	AdminAPIMTLS     AdminAPIMTLS `mapstructure:"admin_api_mtls"`
+	AdminAPIVersion  string       `mapstructure:"admin_api_version"`
 }
 
 type AdminKey struct {
@@ -186,6 +340,12 @@ type AdminKey struct {
 type AdminListen struct {
 	IP   string `mapstructure:"ip"`
 	Port int    `mapstructure:"port"`
+}
+
+type AdminAPIMTLS struct {
+	AdminSSLCert    string `mapstructure:"admin_ssl_cert"`
+	AdminSSLCertKey string `mapstructure:"admin_ssl_cert_key"`
+	AdminSSLCA      string `mapstructure:"admin_ssl_ca_cert"`
 }
 
 // section: deployment.etcd
@@ -211,6 +371,24 @@ type Etcd struct {
 type EtcdTLS struct {
 	Cert   string `mapstructure:"cert"`
 	Key    string `mapstructure:"key"`
-	Verify bool   `mapstructure:"verify"`
-	// TODO: sni
+	Verify *bool  `mapstructure:"verify"`
+	SNI    string `mapstructure:"sni"`
+}
+
+func (a Apisix) ListenAddresses() []string {
+	addresses := make([]string, 0, len(a.NodeListen))
+	for _, listen := range a.NodeListen {
+		if listen.Port < 1 || listen.Port > 65535 {
+			continue
+		}
+		host := strings.TrimSpace(listen.Ip)
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		addresses = append(addresses, net.JoinHostPort(host, strconv.Itoa(listen.Port)))
+	}
+	if len(addresses) == 0 {
+		return []string{":8080"}
+	}
+	return addresses
 }

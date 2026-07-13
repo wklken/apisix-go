@@ -12,6 +12,7 @@ import (
 	cgzip "compress/gzip"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -85,6 +86,8 @@ type maybeCompressResponseWriter struct {
 	contentTypes map[string]struct{}
 	level        int
 	wroteHeader  bool
+	wildcardType bool
+	minLength    int
 }
 
 func (w *maybeCompressResponseWriter) WriteHeader(code int) {
@@ -106,7 +109,25 @@ func (w *maybeCompressResponseWriter) WriteHeader(code int) {
 	}
 
 	// Is the content type compressable?
-	if _, ok := w.contentTypes[contentType]; !ok {
+	if !w.wildcardType {
+		if _, ok := w.contentTypes[contentType]; !ok {
+			return
+		}
+	}
+
+	contentLength := w.ResponseWriter.Header().Get("Content-Length")
+	if contentLength != "" {
+		length, err := strconv.Atoi(contentLength)
+		if err == nil && length < w.minLength {
+			return
+		}
+	}
+
+	if w.encoding != encodingNone {
+		w.ResponseWriter.Header().Del("Content-Length")
+	}
+
+	if w.encoding == encodingNone {
 		return
 	}
 

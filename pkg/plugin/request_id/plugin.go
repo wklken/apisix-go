@@ -2,19 +2,24 @@ package request_id
 
 import (
 	"context"
-	"fmt"
+	crand "crypto/rand"
+	"encoding/binary"
+	"math/big"
 	"math/rand"
 	"net/http"
+	"slices"
+	"time"
 
 	"github.com/gofrs/uuid"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/oxtoacart/bpool"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 const (
-	// version  = "0.1"
+	// version = "0.1"
 	priority = 12015
 	name     = "request-id"
 )
@@ -34,7 +39,7 @@ const schema = `
 	  },
 	  "algorithm": {
 		"type": "string",
-		"enum": ["uuid", "nanoid", "range_id"],
+		"enum": ["uuid", "uuidv7", "nanoid", "ksuid", "range_id"],
 		"default": "uuid"
 	  },
 	  "range_id": {
@@ -76,7 +81,7 @@ type RangeID struct {
 	CharSet string `json:"char_set"`
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -122,23 +127,27 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		requestID := r.Header.Get(p.config.HeaderName)
 		if requestID == "" {
-			if p.config.Algorithm == "uuid" {
+			switch p.config.Algorithm {
+			case "uuid":
 				requestID = uuid.Must(uuid.NewV4()).String()
-			} else if p.config.Algorithm == "nanoid" {
+			case "uuidv7":
+				requestID = p.uuidv7ID()
+			case "nanoid":
 				requestID, _ = gonanoid.New()
-			} else if p.config.Algorithm == "range_id" {
+			case "ksuid":
+				requestID = p.ksuidID()
+			case "range_id":
 				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
 			}
 		}
 
 		r.Header.Set(p.config.HeaderName, requestID)
 
-		fmt.Printf("the include_in_response: %+v\n", *p.config.IncludeInResponse)
 		if *p.config.IncludeInResponse {
 			w.Header().Set(p.config.HeaderName, requestID)
 		}
 
-		ctx = context.WithValue(ctx, "request_id", requestID)
+		ctx = context.WithValue(ctx, apisixctx.RequestIDKey, requestID)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
@@ -150,9 +159,44 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 	id := p.bytePool.Get()
 	defer p.bytePool.Put(id)
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		id[i] = charSet[rand.Intn(len(charSet))]
 	}
 
 	return util.BytesToString(id)
+}
+
+func (p *Plugin) uuidv7ID() string {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Must(uuid.NewV4()).String()
+	}
+	return value.String()
+}
+
+const (
+	ksuidEpochSeconds = 1400000000
+	ksuidAlphabet     = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
+
+func (p *Plugin) ksuidID() string {
+	value := make([]byte, 20)
+	binary.BigEndian.PutUint32(value[:4], uint32(time.Now().Unix()-ksuidEpochSeconds))
+	if _, err := crand.Read(value[4:]); err != nil {
+		fallback := uuid.Must(uuid.NewV4())
+		copy(value[4:], fallback[:])
+	}
+	return encodeBase62(value)
+}
+
+func encodeBase62(value []byte) string {
+	remaining := new(big.Int).SetBytes(value)
+	base := big.NewInt(int64(len(ksuidAlphabet)))
+	encoded := make([]byte, 27)
+	for index := range slices.Backward(encoded) {
+		digit := new(big.Int)
+		remaining.QuoRem(remaining, base, digit)
+		encoded[index] = ksuidAlphabet[digit.Int64()]
+	}
+	return string(encoded)
 }

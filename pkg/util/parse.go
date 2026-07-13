@@ -2,7 +2,7 @@ package util
 
 import "github.com/wklken/apisix-go/pkg/json"
 
-func Parse(source interface{}, dest interface{}) error {
+func Parse(source any, dest any) error {
 	j, err := json.Marshal(source)
 	if err != nil {
 		return err

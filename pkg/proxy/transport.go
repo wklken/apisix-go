@@ -116,7 +116,7 @@ func NewTransport(t TransportOption) *http.Transport {
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: t.insecureSkipVerify},
 	}
 
-	http2.ConfigureTransport(tr)
+	_ = http2.ConfigureTransport(tr)
 
 	return tr
 }

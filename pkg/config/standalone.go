@@ -7,6 +7,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -43,11 +44,11 @@ func ReadAndReload(path string, events chan *store.Event) {
 }
 
 type ApisixConfigurationStandalone struct {
-	Routes          []*Route          `json:"routes,omitempty" yaml:"routes,omitempty"`
-	Services        []*Service        `json:"services,omitempty" yaml:"services,omitempty"`
-	PluginMetadatas []*PluginMetadata `json:"plugin_metadata,omitempty" yaml:"plugin_metadata,omitempty"`
-	SSLs            []*SSL            `json:"ssls,omitempty" yaml:"ssls,omitempty"`
-	// StreamRoutes    []*StreamRoute    `json:"stream_routes,omitempty" yaml:"stream_routes,omitempty"`
+	Routes          []*Route                `json:"routes,omitempty" yaml:"routes,omitempty"`
+	StreamRoutes    []*resource.StreamRoute `json:"stream_routes,omitempty" yaml:"stream_routes,omitempty"`
+	Services        []*Service              `json:"services,omitempty" yaml:"services,omitempty"`
+	PluginMetadatas []*PluginMetadata       `json:"plugin_metadata,omitempty" yaml:"plugin_metadata,omitempty"`
+	SSLs            []*SSL                  `json:"ssls,omitempty" yaml:"ssls,omitempty"`
 }
 
 type Service struct {
@@ -76,7 +77,7 @@ type Upstream struct {
 	PassHost      *string                       `json:"pass_host,omitempty" yaml:"pass_host,omitempty"`
 	UpstreamHost  *string                       `json:"upstream_host,omitempty" yaml:"upstream_host,omitempty"`
 	Timeout       *apisixv1.UpstreamTimeout     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
-	// TLS           *apisixv1.                `json:"tls,omitempty" yaml:"tls,omitempty"`
+	TLS           *resource.UpstreamTLS         `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 type Route struct {
@@ -104,20 +105,22 @@ type PluginMetadata struct {
 }
 
 // MarshalYAML is serializing method for plugin_metadata
-func (pm *PluginMetadata) MarshalYAML() (interface{}, error) {
+func (pm *PluginMetadata) MarshalYAML() (any, error) {
 	by, err := json.Marshal(pm.RawExtension)
 	if err != nil {
 		return nil, err
 	}
-	var resMap map[string]interface{}
-	json.Unmarshal(by, &resMap)
+	var resMap map[string]any
+	if err := json.Unmarshal(by, &resMap); err != nil {
+		return nil, err
+	}
 	resMap["id"] = pm.ID
 	return resMap, nil
 }
 
 // UnmarshalYAML is serializing method for plugin_metadata
-func (pm *PluginMetadata) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var resMap map[string]interface{}
+func (pm *PluginMetadata) UnmarshalYAML(unmarshal func(any) error) error {
+	var resMap map[string]any
 	err := unmarshal(&resMap)
 	if err != nil {
 		return err

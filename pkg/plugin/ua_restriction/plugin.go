@@ -1,9 +1,9 @@
 package ua_restriction
 
 import (
-	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -58,12 +58,8 @@ const schema = `
 	  }
 	},
 	"oneOf": [
-	  {
-		"required": ["allowlist"]
-	  },
-	  {
-		"required": ["denylist"]
-	  }
+	  {"required": ["allowlist"]},
+	  {"required": ["denylist"]}
 	]
 }`
 
@@ -120,12 +116,10 @@ func (p *Plugin) PostInit() error {
 	message, _ := json.Marshal(map[string]string{"message": p.config.Message})
 	p.message = util.BytesToString(message)
 
-	fmt.Printf("after init, the config is %+v\n", p.config)
-
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -150,34 +144,48 @@ func (p *Plugin) inAllowList(host string) bool {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		// get the ua
-		ua := r.Header.Get("User-Agent")
-
-		if ua == "" {
+		userAgents := r.Header.Values("User-Agent")
+		if len(userAgents) == 0 {
 			if !*p.config.BypassMissing {
-				http.Error(w, p.message, http.StatusForbidden)
+				writeJSON(w, p.message)
 				return
-			} else {
-				// do nothing
-				next.ServeHTTP(w, r)
 			}
-		} else {
-			if len(p.config.AllowList) > 0 {
-				if !p.inAllowList(ua) {
-					http.Error(w, p.message, http.StatusForbidden)
-					return
-				}
-			}
-
-			if len(p.config.DenyList) > 0 {
-				if p.inDenyList(ua) {
-					http.Error(w, p.message, http.StatusForbidden)
-					return
-				}
-			}
-
 			next.ServeHTTP(w, r)
+			return
 		}
+
+		for _, ua := range userAgents {
+			match := p.matchUserAgent(ua)
+			if match == matchDeny {
+				writeJSON(w, p.message)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+const (
+	matchNone = iota
+	matchAllow
+	matchDeny
+)
+
+func (p *Plugin) matchUserAgent(userAgent string) int {
+	userAgent = strings.TrimSpace(userAgent)
+	if len(p.config.AllowList) > 0 && p.inAllowList(userAgent) {
+		return matchAllow
+	}
+	if len(p.config.DenyList) > 0 && p.inDenyList(userAgent) {
+		return matchDeny
+	}
+	return matchNone
+}
+
+func writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(body))
 }

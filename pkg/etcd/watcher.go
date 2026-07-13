@@ -2,6 +2,8 @@ package etcd
 
 import (
 	"context"
+	"crypto/tls"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -14,6 +16,18 @@ type ConfigClient struct {
 	prefix string
 	// add a channel, receive the etcd change events
 	events chan *store.Event
+
+	closeOnce      sync.Once
+	closeErr       error
+	requestTimeout time.Duration
+	startupRetry   int
+}
+
+type ClientOptions struct {
+	DialTimeout    time.Duration
+	RequestTimeout time.Duration
+	StartupRetry   int
+	TLS            *tls.Config
 }
 
 func NewConfigClient(
@@ -23,11 +37,32 @@ func NewConfigClient(
 	prefix string,
 	events chan *store.Event,
 ) (*ConfigClient, error) {
+	return NewConfigClientWithOptions(endpoints, username, password, prefix, events, ClientOptions{})
+}
+
+func NewConfigClientWithOptions(
+	endpoints []string,
+	username string,
+	password string,
+	prefix string,
+	events chan *store.Event,
+	options ClientOptions,
+) (*ConfigClient, error) {
+	if options.DialTimeout <= 0 {
+		options.DialTimeout = 5 * time.Second
+	}
+	if options.RequestTimeout <= 0 {
+		options.RequestTimeout = 5 * time.Second
+	}
+	if options.StartupRetry < 0 {
+		options.StartupRetry = 0
+	}
 	config := clientv3.Config{
 		Endpoints:   endpoints,
-		DialTimeout: 5 * time.Second,
+		DialTimeout: options.DialTimeout,
 		Username:    username,
 		Password:    password,
+		TLS:         options.TLS,
 	}
 
 	client, err := clientv3.New(config)
@@ -36,17 +71,40 @@ func NewConfigClient(
 	}
 
 	return &ConfigClient{
-		client: client,
-		prefix: prefix,
-		events: events,
+		client:         client,
+		prefix:         prefix,
+		events:         events,
+		requestTimeout: options.RequestTimeout,
+		startupRetry:   options.StartupRetry,
 	}, nil
 }
 
-func (c *ConfigClient) Watch() {
-	watcher := clientv3.NewWatcher(c.client)
+func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Config, error) {
+	if certPath == "" && keyPath == "" && serverName == "" && verify == nil {
+		return nil, nil
+	}
+	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
+	if verify != nil {
+		config.InsecureSkipVerify = !*verify
+	}
+	if certPath != "" || keyPath != "" {
+		certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return nil, err
+		}
+		config.Certificates = []tls.Certificate{certificate}
+	}
+	return config, nil
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func (c *ConfigClient) Watch(contexts ...context.Context) {
+	watcher := clientv3.NewWatcher(c.client)
+	defer func() { _ = watcher.Close() }()
+
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
 
 	watchChan := watcher.Watch(ctx, c.prefix, clientv3.WithPrefix())
 
@@ -77,23 +135,38 @@ func (c *ConfigClient) Watch() {
 	}
 }
 
+func (c *ConfigClient) Close() error {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		c.closeErr = c.client.Close()
+	})
+	return c.closeErr
+}
+
 func (c *ConfigClient) FetchAll() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	var err error
+	for attempt := 0; attempt <= c.startupRetry; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
+		var resp *clientv3.GetResponse
+		resp, err = c.client.Get(ctx, c.prefix, clientv3.WithPrefix())
+		cancel()
+		if err == nil {
+			logger.Info("got response")
+			for _, kv := range resp.Kvs {
+				e := store.NewEvent()
+				e.Type = store.EventTypePut
+				e.Key = kv.Key
+				e.Value = kv.Value
 
-	resp, err := c.client.Get(ctx, c.prefix, clientv3.WithPrefix())
-	if err != nil {
-		return err
+				c.events <- e
+			}
+			return nil
+		}
+		if attempt < c.startupRetry {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
-	logger.Info("got response")
-
-	for _, kv := range resp.Kvs {
-		e := store.NewEvent()
-		e.Type = store.EventTypePut
-		e.Key = kv.Key
-		e.Value = kv.Value
-
-		c.events <- e
-	}
-	return nil
+	return err
 }

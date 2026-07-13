@@ -2,11 +2,10 @@ package referer_restriction
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Shopify/goreferrer"
-	"github.com/gobwas/glob"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -15,8 +14,8 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	whitelist []glob.Glob
-	blacklist []glob.Glob
+	whitelist hostMatcher
+	blacklist hostMatcher
 	message   string
 }
 
@@ -37,14 +36,16 @@ const schema = `
 	  "whitelist": {
 		"type": "array",
 		"items": {
-		  "type": "string"
+		  "type": "string",
+		  "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
 		},
 		"minItems": 1
 	  },
 	  "blacklist": {
 		"type": "array",
 		"items": {
-		  "type": "string"
+		  "type": "string",
+		  "pattern": "^\\*$|^\\*?[0-9a-zA-Z-._\\[\\]:]+$"
 		},
 		"minItems": 1
 	  },
@@ -91,28 +92,10 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if len(p.config.Whitelist) > 0 {
-		p.whitelist = make([]glob.Glob, 0, len(p.config.Whitelist))
-		for _, pattern := range p.config.Whitelist {
-			g, err := glob.Compile(pattern)
-			if err != nil {
-				logger.Warnf("failed to compile whitelist pattern: %s", pattern)
-				continue
-				// return err
-			}
-			p.whitelist = append(p.whitelist, g)
-		}
+		p.whitelist = newHostMatcher(p.config.Whitelist)
 	}
 	if len(p.config.Blacklist) > 0 {
-		p.blacklist = make([]glob.Glob, 0, len(p.config.Blacklist))
-		for _, pattern := range p.config.Blacklist {
-			g, err := glob.Compile(pattern)
-			if err != nil {
-				logger.Warnf("failed to compile blacklist pattern: %s", pattern)
-				continue
-				// return err
-			}
-			p.blacklist = append(p.blacklist, g)
-		}
+		p.blacklist = newHostMatcher(p.config.Blacklist)
 	}
 
 	message, _ := json.Marshal(map[string]string{"message": p.config.Message})
@@ -121,27 +104,17 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
 // FIXME: add lrucache here? it's O(n)
 func (p *Plugin) inBlackList(host string) bool {
-	for _, g := range p.blacklist {
-		if g.Match(host) {
-			return true
-		}
-	}
-	return false
+	return p.blacklist.match(host)
 }
 
 func (p *Plugin) inWhiteList(host string) bool {
-	for _, g := range p.whitelist {
-		if g.Match(host) {
-			return true
-		}
-	}
-	return false
+	return p.whitelist.match(host)
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -152,7 +125,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		host := referer.Host()
 		if host == "" {
 			if !*p.config.BypassMissing {
-				http.Error(w, p.message, http.StatusForbidden)
+				writeJSON(w, p.message)
 				return
 			} else {
 				// do nothing
@@ -161,14 +134,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		} else {
 			if len(p.config.Whitelist) > 0 {
 				if !p.inWhiteList(host) {
-					http.Error(w, p.message, http.StatusForbidden)
+					writeJSON(w, p.message)
 					return
 				}
 			}
 
 			if len(p.config.Blacklist) > 0 {
 				if p.inBlackList(host) {
-					http.Error(w, p.message, http.StatusForbidden)
+					writeJSON(w, p.message)
 					return
 				}
 			}
@@ -177,4 +150,41 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 	}
 	return http.HandlerFunc(fn)
+}
+
+type hostMatcher struct {
+	exact    map[string]struct{}
+	suffixes []string
+}
+
+func newHostMatcher(hosts []string) hostMatcher {
+	matcher := hostMatcher{
+		exact: make(map[string]struct{}, len(hosts)),
+	}
+	for _, host := range hosts {
+		if after, ok := strings.CutPrefix(host, "*"); ok {
+			matcher.suffixes = append(matcher.suffixes, after)
+			continue
+		}
+		matcher.exact[host] = struct{}{}
+	}
+	return matcher
+}
+
+func (m hostMatcher) match(host string) bool {
+	if _, ok := m.exact[host]; ok {
+		return true
+	}
+	for _, suffix := range m.suffixes {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(body))
 }

@@ -3,6 +3,7 @@ package consumer_restriction
 import (
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -57,7 +58,8 @@ const schema = `
 			  "type": "array",
 			  "minItems": 1,
 			  "items": {
-				"type": "string"
+				"type": "string",
+				"enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE", "PURGE"]
 			  }
 			}
 		  },
@@ -137,9 +139,7 @@ func (p *Plugin) PostInit() error {
 		p.config.key = "$route_id"
 	}
 
-	p.config.emptyValueErrorMessage = util.BuildMessageResponse(
-		fmt.Sprintf("The request is rejected, please check the %s for this request", p.config.Type),
-	)
+	p.config.emptyValueErrorMessage = util.BuildMessageResponse("Missing authentication or identity verification.")
 
 	if p.config.Blacklist != nil {
 		p.config.blacklistMap = make(map[string]struct{})
@@ -159,14 +159,14 @@ func (p *Plugin) PostInit() error {
 
 	rejectMsg := p.config.RejectedMsg
 	if rejectMsg == "" {
-		rejectMsg = fmt.Sprintf("The %s is forbidden", p.config.Type)
+		rejectMsg = fmt.Sprintf("The %s is forbidden.", p.config.Type)
 	}
 	p.config.rejectBody = util.BuildMessageResponse(rejectMsg)
 
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -174,14 +174,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		value := ctx.GetApisixVar(r, p.config.key).(string)
 		if value == "" {
-			http.Error(w, p.config.emptyValueErrorMessage, http.StatusUnauthorized)
+			writeJSON(w, http.StatusUnauthorized, p.config.emptyValueErrorMessage)
 			return
 		}
 
 		// check blacklist
 		if p.config.blacklistOn {
 			if _, ok := p.config.blacklistMap[value]; ok {
-				http.Error(w, p.config.rejectBody, p.config.RejectedCode)
+				writeJSON(w, p.config.RejectedCode, p.config.rejectBody)
 				return
 			}
 		}
@@ -204,7 +204,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if block {
-			http.Error(w, p.config.rejectBody, p.config.RejectedCode)
+			writeJSON(w, p.config.RejectedCode, p.config.rejectBody)
 			return
 		}
 
@@ -213,16 +213,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
+func writeJSON(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
 func isMethodAllowed(methods []AllowedByMethodsItem, method string, user string) bool {
 	for _, m := range methods {
 		if m.User == user {
 			// FIXME: use map for better performance
-			for _, v := range m.Methods {
-				if v == method {
-					return true
-				}
-			}
-			return false
+			return slices.Contains(m.Methods, method)
 		}
 	}
 

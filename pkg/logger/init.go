@@ -25,7 +25,7 @@ func Info(msg string, fields ...zap.Field) {
 	logger.Info(msg, fields...)
 }
 
-func Infof(template string, args ...interface{}) {
+func Infof(template string, args ...any) {
 	sugarLogger.Infof(template, args)
 }
 
@@ -33,7 +33,7 @@ func Warn(msg string, fields ...zap.Field) {
 	logger.Warn(msg, fields...)
 }
 
-func Warnf(template string, args ...interface{}) {
+func Warnf(template string, args ...any) {
 	sugarLogger.Warnf(template, args)
 }
 
@@ -41,7 +41,7 @@ func Error(msg string, fields ...zap.Field) {
 	logger.Error(msg, fields...)
 }
 
-func Errorf(template string, args ...interface{}) {
+func Errorf(template string, args ...any) {
 	sugarLogger.Errorf(template, args...)
 }
 
@@ -49,7 +49,7 @@ func Debug(msg string, fields ...zap.Field) {
 	logger.Debug(msg, fields...)
 }
 
-func Debugf(template string, args ...interface{}) {
+func Debugf(template string, args ...any) {
 	sugarLogger.Debugf(template, args...)
 }
 
@@ -57,12 +57,12 @@ func Fatal(msg string, fields ...zap.Field) {
 	logger.Fatal(msg, fields...)
 }
 
-func Fatalf(template string, args ...interface{}) {
+func Fatalf(template string, args ...any) {
 	sugarLogger.Fatalf(template, args...)
 }
 
 type DebugLogger struct{}
 
-func (d *DebugLogger) Printf(template string, args ...interface{}) {
+func (d *DebugLogger) Printf(template string, args ...any) {
 	fmt.Printf(template+"\n", args...)
 }

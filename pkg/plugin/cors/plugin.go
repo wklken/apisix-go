@@ -3,6 +3,7 @@ package cors
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/rs/cors"
@@ -12,9 +13,12 @@ import (
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
+	config   Config
+	metadata Metadata
 
-	cors *cors.Cors
+	cors              *cors.Cors
+	originRegex       []*regexp.Regexp
+	timingOriginRegex []*regexp.Regexp
 }
 
 const (
@@ -22,6 +26,18 @@ const (
 	priority = 4000
 	name     = "cors"
 )
+
+var allMethods = []string{
+	http.MethodGet,
+	http.MethodPost,
+	http.MethodPut,
+	http.MethodDelete,
+	http.MethodPatch,
+	http.MethodHead,
+	http.MethodOptions,
+	http.MethodConnect,
+	http.MethodTrace,
+}
 
 const schema = `
 {
@@ -107,11 +123,15 @@ type Config struct {
 	MaxAge          int    `json:"max_age"`
 	AllowCredential bool   `json:"allow_credential"`
 
+	AllowOriginsByRegex []string `json:"allow_origins_by_regex"`
 	// FIXME: not supported yet
-	AllowOriginsByRegex       []string `json:"allow_origins_by_regex"`
 	AllowOriginsByMetadata    []string `json:"allow_origins_by_metadata"`
 	TimingAllowOrigins        *string  `json:"timing_allow_origins,omitempty"`
 	TimingAllowOriginsByRegex []string `json:"timing_allow_origins_by_regex"`
+}
+
+type Metadata struct {
+	AllowOrigins map[string]string `json:"allow_origins"`
 }
 
 func (p *Plugin) Init() error {
@@ -135,41 +155,163 @@ func (p *Plugin) PostInit() error {
 		p.config.AllowHeaders = "*"
 	}
 
-	if p.config.ExposeHeaders == "" {
-		p.config.ExposeHeaders = "*"
-	}
-
 	if p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
 	}
+	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
+		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
+	}
+	if len(p.config.AllowOriginsByMetadata) > 0 && len(p.metadata.AllowOrigins) == 0 {
+		p.metadata = base.LoadPluginMetadata[Metadata](name)
+	}
 
-	fmt.Printf("config: %+v\n", p.config)
+	for _, rule := range p.config.AllowOriginsByRegex {
+		compiled, err := regexp.Compile(rule)
+		if err != nil {
+			return fmt.Errorf("compile allow_origins_by_regex %q: %w", rule, err)
+		}
+		p.originRegex = append(p.originRegex, compiled)
+	}
+	for _, rule := range p.config.TimingAllowOriginsByRegex {
+		compiled, err := regexp.Compile(rule)
+		if err != nil {
+			return fmt.Errorf("compile timing_allow_origins_by_regex %q: %w", rule, err)
+		}
+		p.timingOriginRegex = append(p.timingOriginRegex, compiled)
+	}
 
-	p.cors = cors.New(cors.Options{
+	var exposedHeaders []string
+	if p.config.ExposeHeaders != "" {
+		exposedHeaders = strings.Split(p.config.ExposeHeaders, ",")
+	}
+	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
-		AllowedMethods:   strings.Split(p.config.AllowMethods, ","),
-		AllowedHeaders:   strings.Split(p.config.AllowHeaders, ","),
-		ExposedHeaders:   strings.Split(p.config.ExposeHeaders, ","),
+		AllowedMethods:   allowedMethods(p.config.AllowMethods),
+		AllowedHeaders:   allowedHeaders(p.config.AllowHeaders),
+		ExposedHeaders:   exposedHeaders,
 		MaxAge:           p.config.MaxAge,
 		AllowCredentials: p.config.AllowCredential,
+		// APISIX exits successful preflight OPTIONS requests with 200.
+		OptionsSuccessStatus: http.StatusOK,
 		// Enable Debugging for testing, consider disabling in production
 		// Debug: true,
-	})
+	}
+	if p.config.AllowOrigins == "**" || len(p.originRegex) > 0 || len(p.config.AllowOriginsByMetadata) > 0 {
+		options.AllowOriginFunc = p.allowOrigin
+	}
+	p.cors = cors.New(options)
 	p.cors.Log = new(logger.DebugLogger)
 
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func wildcardCredentialOption(config Config) bool {
+	if config.AllowOrigins == "*" || config.AllowMethods == "*" || config.AllowHeaders == "*" ||
+		config.ExposeHeaders == "*" {
+		return true
+	}
+	return config.TimingAllowOrigins != nil && *config.TimingAllowOrigins == "*"
+}
+
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	// fn := func(w http.ResponseWriter, r *http.Request) {
-	// 	fmt.Println("cors handler, do nothing")
-	// 	next.ServeHTTP(w, r)
-	// }
-	// return http.HandlerFunc(fn)
+	handler := p.cors.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin, ok := p.timingAllowOrigin(r.Header.Get("Origin")); ok {
+			w.Header().Set("Timing-Allow-Origin", origin)
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
 
-	return p.cors.Handler(next)
+func (p *Plugin) allowOrigin(origin string) bool {
+	if len(p.config.AllowOriginsByMetadata) > 0 {
+		if p.allowOriginFromMetadata(origin) {
+			return true
+		}
+		if p.config.AllowOrigins == "" || p.config.AllowOrigins == "*" {
+			return false
+		}
+	}
+	for allowedOrigin := range strings.SplitSeq(p.config.AllowOrigins, ",") {
+		if allowedOrigin == "*" || allowedOrigin == origin {
+			return true
+		}
+		if allowedOrigin == "**" && origin != "" {
+			return true
+		}
+	}
+	for _, rule := range p.originRegex {
+		if rule.MatchString(origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Plugin) allowOriginFromMetadata(origin string) bool {
+	for _, key := range p.config.AllowOriginsByMetadata {
+		configured, ok := p.metadata.AllowOrigins[key]
+		if !ok {
+			continue
+		}
+		if _, ok := matchConfiguredOrigin(origin, configured); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Plugin) timingAllowOrigin(origin string) (string, bool) {
+	if len(p.timingOriginRegex) > 0 {
+		if origin == "" {
+			return "", false
+		}
+		for _, rule := range p.timingOriginRegex {
+			if rule.MatchString(origin) {
+				return origin, true
+			}
+		}
+		return "", false
+	}
+	if p.config.TimingAllowOrigins == nil {
+		return "", false
+	}
+	return matchConfiguredOrigin(origin, *p.config.TimingAllowOrigins)
+}
+
+func matchConfiguredOrigin(origin string, configured string) (string, bool) {
+	for allowedOrigin := range strings.SplitSeq(configured, ",") {
+		switch allowedOrigin {
+		case "*":
+			return "*", true
+		case "**":
+			if origin == "" {
+				return "*", true
+			}
+			return origin, true
+		case origin:
+			if origin != "" {
+				return origin, true
+			}
+		}
+	}
+	return "", false
+}
+
+func allowedMethods(methods string) []string {
+	if methods == "*" || methods == "**" {
+		return allMethods
+	}
+	return strings.Split(methods, ",")
+}
+
+func allowedHeaders(headers string) []string {
+	if headers == "**" {
+		return []string{"*"}
+	}
+	return strings.Split(headers, ",")
 }

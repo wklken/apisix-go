@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -21,8 +22,9 @@ type Plugin struct {
 
 const (
 	// version  = "0.1"
-	priority = 2980
-	name     = "csrf"
+	priority           = 2980
+	name               = "csrf"
+	defaultCSRFExpires = 7200
 )
 
 const schema = `
@@ -49,7 +51,7 @@ const schema = `
 
 type Config struct {
 	Key     string `json:"key"`
-	Expires int64  `json:"expires,omitempty"`
+	Expires *int64 `json:"expires,omitempty"`
 	Name    string `json:"name,omitempty"`
 
 	safeMethods map[string]struct{}
@@ -64,14 +66,22 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	keyring, enabled := data_encryption.Keyring()
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Key)
+	if err != nil {
+		return fmt.Errorf("csrf key: %w", err)
+	}
+	p.config.Key = resolved
+
 	p.config.safeMethods = map[string]struct{}{
 		http.MethodGet:     {},
 		http.MethodHead:    {},
 		http.MethodOptions: {},
 	}
 
-	if p.config.Expires == 0 {
-		p.config.Expires = 7200
+	if p.config.Expires == nil {
+		expires := int64(defaultCSRFExpires)
+		p.config.Expires = &expires
 	}
 	if p.config.Name == "" {
 		p.config.Name = "apisix-csrf-token"
@@ -80,7 +90,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -91,28 +101,28 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			headerToken := r.Header.Get(p.config.Name)
 			if headerToken == "" {
 				// token not found
-				http.Error(w, "no csrf token in headers", http.StatusUnauthorized)
+				writeCSRFError(w, "no csrf token in headers")
 				return
 			}
 			// read token from cookie
 			cookie, err := r.Cookie(p.config.Name)
 			if err != nil {
 				// 如果 Cookie 不存在
-				http.Error(w, "no csrf cookie", http.StatusUnauthorized)
+				writeCSRFError(w, "no csrf cookie")
 				return
 			}
 			cookieToken := cookie.Value
 
 			if headerToken != cookieToken {
 				// token not match
-				http.Error(w, "csrf token mismatch", http.StatusUnauthorized)
+				writeCSRFError(w, "csrf token mismatch")
 				return
 			}
 
 			// check token expires
-			ok := checkCSRFToken(cookieToken, p.config.Key, p.config.Expires)
+			ok := checkCSRFToken(cookieToken, p.config.Key, p.expires())
 			if !ok {
-				http.Error(w, "Failed to verify the csrf token signature", http.StatusUnauthorized)
+				writeCSRFError(w, "Failed to verify the csrf token signature")
 				return
 			}
 		}
@@ -124,12 +134,25 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			Value:    csrfToken,
 			Path:     "/",
 			SameSite: http.SameSiteLaxMode,
-			Expires:  time.Now().Add(time.Duration(p.config.Expires) * time.Second),
+			Expires:  time.Now().Add(time.Duration(p.expires()) * time.Second),
 		})
 
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) expires() int64 {
+	if p.config.Expires == nil {
+		return defaultCSRFExpires
+	}
+	return *p.config.Expires
+}
+
+func writeCSRFError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error_msg": message})
 }
 
 type csrfToken struct {
@@ -156,7 +179,7 @@ func checkCSRFToken(token string, key string, expires int64) bool {
 	}
 
 	// 检查 Token 是否过期
-	if time.Now().Unix()-csrfToken.Expires > expires {
+	if expires > 0 && time.Now().Unix()-csrfToken.Expires > expires {
 		logger.Error("token has expired")
 		return false
 	}

@@ -16,7 +16,7 @@ func NewRetriever[V any](retrieve Retrieve[V]) *Retriever[V] {
 }
 
 func (r *Retriever[V]) Get(key string) (V, error) {
-	v, err, _ := r.g.Do(key, func() (interface{}, error) {
+	v, err, _ := r.g.Do(key, func() (any, error) {
 		return r.retrieve(key)
 	})
 	if err != nil {

@@ -2,11 +2,12 @@ package real_ip
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -84,73 +85,164 @@ func (p *Plugin) PostInit() error {
 		var err error
 		p.trustedCIDRs, err = prepareTrustedCIDRs(p.config.TrustedAddresses)
 		if err != nil {
-			logger.Warn("prepareTrustedCIDRs fail")
+			return err
 		}
 	}
 
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("1")
 		if len(p.config.TrustedAddresses) > 0 {
-			remoteAddr := r.RemoteAddr
-
-			ip, _, err := net.SplitHostPort(remoteAddr)
-			if err != nil {
-				// do nothing
-			}
+			ip, _, _ := parseAddr(r.RemoteAddr)
 			if !p.isTrustedProxy(net.ParseIP(ip)) {
-				fmt.Println("1-a")
 				next.ServeHTTP(w, r)
 				return
 			}
 		}
 
-		fmt.Println("2")
 		ctx := r.Context()
-		// "X-Forwarded-For", "X-Real-IP"
-		var clientIP string
-		if p.config.Source == "http_x_forwarded_for" {
-			headerClientIP, valid := p.validateHeader("X-Forwarded-For")
-			if valid {
-				clientIP = headerClientIP
-			}
-			fmt.Println("31")
-		} else {
-			// arg_realip
-			if strings.HasPrefix(p.config.Source, "arg_") {
-				clientIP = r.URL.Query().Get(p.config.Source[4:])
-			}
-			fmt.Println("32")
-		}
+		clientIP := p.sourceValue(r)
 		if clientIP != "" {
-			fmt.Println("clientIP", clientIP)
-			// parse to ip and port
-			ip, port, err := net.SplitHostPort(clientIP)
-			if err != nil {
-				logger.Warnf("Failed to parse client IP: %s", err)
+			ip, port, ok := parseAddr(clientIP)
+			if !ok {
+				logger.Warnf("bad real address: %s", clientIP)
+				next.ServeHTTP(w, r)
+				return
 			}
-			fmt.Println("ip", ip)
-			fmt.Println("port", port)
 
-			// TODO
-			// local ok, err = client.set_real_ip(ip, port)
-			ctx = context.WithValue(ctx, "remote_addr", ip)
-			ctx = context.WithValue(ctx, "remote_port", port)
-
-			fmt.Println("4")
-		} else {
-			fmt.Println("missing real address")
+			ctx = context.WithValue(ctx, apisixctx.RemoteAddrKey, ip)
+			ctx = context.WithValue(ctx, apisixctx.RemotePortKey, port)
 		}
 
-		// next.ServeHTTP(w, r)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) sourceValue(r *http.Request) string {
+	source := strings.TrimPrefix(p.config.Source, "$")
+	if strings.HasPrefix(source, "arg_") {
+		return r.URL.Query().Get(source[4:])
+	}
+
+	if strings.HasPrefix(source, "http_") {
+		header := httpHeaderName(source[5:])
+		values := r.Header.Values(header)
+		if len(values) == 0 {
+			return ""
+		}
+		value := values[len(values)-1]
+		if strings.EqualFold(source, "http_x_forwarded_for") {
+			return p.forwardedFor(value)
+		}
+		return value
+	}
+
+	if strings.HasPrefix(source, "cookie_") {
+		cookie, err := r.Cookie(source[7:])
+		if err == nil {
+			return cookie.Value
+		}
+		return ""
+	}
+
+	switch source {
+	case "remote_addr", "realip_remote_addr":
+		if value := apisixctx.GetString(r.Context(), source); value != "" {
+			return value
+		}
+		ip, _, _ := parseAddr(r.RemoteAddr)
+		return ip
+	case "remote_port", "realip_remote_port":
+		if value := apisixctx.GetString(r.Context(), source); value != "" {
+			return value
+		}
+		_, port, _ := parseAddr(r.RemoteAddr)
+		return port
+	case "host":
+		return r.Host
+	case "request_method":
+		return r.Method
+	case "request_uri":
+		return r.URL.RequestURI()
+	case "uri":
+		return r.URL.Path
+	case "scheme":
+		if r.TLS != nil {
+			return "https"
+		}
+		return "http"
+	}
+
+	if value, ok := apisixctx.GetRequestVar(r, "$"+source).(string); ok {
+		return value
+	}
+
+	return ""
+}
+
+func (p *Plugin) forwardedFor(value string) string {
+	if value == "" {
+		return ""
+	}
+	items := strings.Split(value, ",")
+	if len(items) == 0 {
+		return ""
+	}
+
+	if p.config.Recursive != nil && *p.config.Recursive && len(p.trustedCIDRs) > 0 {
+		for i := len(items) - 1; i >= 1; i-- {
+			item := strings.TrimSpace(items[i])
+			ip, _, ok := parseAddr(item)
+			if !ok || !p.isTrustedProxy(net.ParseIP(ip)) {
+				return item
+			}
+		}
+		return strings.TrimSpace(items[0])
+	}
+
+	return strings.TrimSpace(items[len(items)-1])
+}
+
+func httpHeaderName(name string) string {
+	parts := strings.Split(name, "_")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "-")
+}
+
+func parseAddr(addr string) (string, string, bool) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", "", false
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		host = strings.Trim(host, "[]")
+		if net.ParseIP(host) == nil {
+			return "", "", false
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return "", "", false
+		}
+		return host, port, true
+	}
+
+	host = strings.Trim(addr, "[]")
+	if net.ParseIP(host) == nil {
+		return "", "", false
+	}
+	return host, "", true
 }

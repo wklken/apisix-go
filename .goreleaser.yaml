@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: apisix
+
+builds:
+  - id: apisix
+    main: .
+    binary: apisix
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    files:
+      - conf/config-default.yaml
+
+checksum:
+  name_template: checksums.txt

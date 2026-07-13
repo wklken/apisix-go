@@ -3,6 +3,9 @@ package api_breaker
 import (
 	"fmt"
 	"net/http"
+	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -189,21 +192,23 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
+
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		if p.cb.State() == gobreaker.StateOpen {
-			w.WriteHeader(p.config.BreakResponseCode)
 			if p.config.BreakResponseHeaders != nil {
 				for _, h := range p.config.BreakResponseHeaders {
-					w.Header().Set(h.Key, h.Value)
+					w.Header().Set(h.Key, resolveHeaderValue(r, h.Value))
 				}
 			}
+			w.WriteHeader(p.config.BreakResponseCode)
 			if p.config.BreakResponseBody != nil {
-				w.Write([]byte(*p.config.BreakResponseBody))
+				_, _ = w.Write([]byte(*p.config.BreakResponseBody))
 			}
 			return
 		}
@@ -215,19 +220,26 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		status := ww.Status()
 		// stats the status code
-		p.cb.Execute(func() (interface{}, error) {
-			for _, s := range p.config.Unhealthy.HTTPStatuses {
-				if status == s {
-					return nil, fmt.Errorf("unhealthy status")
-				}
-			}
-			// for _, s := range p.config.Healthy.HTTPStatuses {
-			// 	if status == s {
-			// 		return nil, nil
-			// 	}
-			// }
-			return nil, nil
-		})
+		switch {
+		case containsStatus(p.config.Unhealthy.HTTPStatuses, status):
+			_, _ = p.cb.Execute(func() (any, error) {
+				return nil, fmt.Errorf("unhealthy status")
+			})
+		case containsStatus(p.config.Healthy.HTTPStatuses, status):
+			_, _ = p.cb.Execute(func() (any, error) {
+				return nil, nil
+			})
+		}
 	}
 	return http.HandlerFunc(fn)
+}
+
+func containsStatus(statuses []int, status int) bool {
+	return slices.Contains(statuses, status)
+}
+
+func resolveHeaderValue(r *http.Request, value string) string {
+	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
+		return base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
+	})
 }

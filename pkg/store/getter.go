@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -15,11 +16,26 @@ var ErrNotFound = fmt.Errorf("not found")
 
 func GetPluginMetadata(id string, v any) error {
 	config := s.GetFromBucket("plugin_metadata", []byte(id))
+	return decodePluginMetadata(config, id, v)
+}
 
-	// FIXME: add cache here? or unmarshal at sync? should not do unmarshal here
+func decodePluginMetadata(config []byte, id string, v any) error {
+	keyring, enabled := data_encryption.Keyring()
+	if !enabled || !data_encryption.HasEncryptedPluginMetadata(id) {
+		return json.Unmarshal(config, v)
+	}
 
-	err := json.Unmarshal(config, v)
-	return err
+	var metadata map[string]any
+	if err := json.Unmarshal(config, &metadata); err != nil {
+		return err
+	}
+	data_encryption.DecryptPluginMetadata(id, metadata, keyring)
+
+	decoded, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(decoded, v)
 }
 
 func GetUpstream(id string) (resource.Upstream, error) {
@@ -29,6 +45,27 @@ func GetUpstream(id string) (resource.Upstream, error) {
 	}
 
 	return ParseUpstream(config)
+}
+
+func GetSSL(id string) (resource.SSL, error) {
+	if s == nil {
+		return resource.SSL{}, ErrNotFound
+	}
+	config := s.GetFromBucket("ssls", util.StringToBytes(id))
+	if config == nil {
+		return resource.SSL{}, ErrNotFound
+	}
+
+	return ParseSSL(config)
+}
+
+func GetStreamRoute(id string) (resource.StreamRoute, error) {
+	config := s.GetFromBucket("stream_routes", util.StringToBytes(id))
+	if config == nil {
+		return resource.StreamRoute{}, ErrNotFound
+	}
+
+	return ParseStreamRoute(config)
 }
 
 func GetService(id string) (resource.Service, error) {
@@ -67,6 +104,15 @@ func GetPluginConfigRule(id string) (resource.PluginConfigRule, error) {
 	return ParsePluginConfigRule(config)
 }
 
+func GetProto(id string) (resource.Proto, error) {
+	config := s.GetFromBucket("protos", util.StringToBytes(id))
+	if config == nil {
+		return resource.Proto{}, ErrNotFound
+	}
+
+	return ParseProto(config)
+}
+
 func ListRoutes() ([]resource.Route, error) {
 	var routes []resource.Route
 	data := s.GetBucketData("routes")
@@ -80,6 +126,19 @@ func ListRoutes() ([]resource.Route, error) {
 			// return nil, err
 		}
 		routes = append(routes, r)
+	}
+	return routes, nil
+}
+
+func ListStreamRoutes() ([]resource.StreamRoute, error) {
+	var routes []resource.StreamRoute
+	data := s.GetBucketData("stream_routes")
+	for _, d := range data {
+		route, err := ParseStreamRoute(d)
+		if err != nil {
+			return nil, fmt.Errorf("parse stream route error: %w", err)
+		}
+		routes = append(routes, route)
 	}
 	return routes, nil
 }
@@ -103,7 +162,17 @@ func ParseRoute(config []byte) (resource.Route, error) {
 	if err != nil {
 		return r, err
 	}
+	decryptPluginConfigs(r.Plugins)
 	return r, nil
+}
+
+func ParseStreamRoute(config []byte) (resource.StreamRoute, error) {
+	var route resource.StreamRoute
+	if err := json.Unmarshal(config, &route); err != nil {
+		return route, err
+	}
+	decryptPluginConfigs(route.Plugins)
+	return route, nil
 }
 
 func ParseService(config []byte) (resource.Service, error) {
@@ -112,6 +181,7 @@ func ParseService(config []byte) (resource.Service, error) {
 	if err != nil {
 		return s, err
 	}
+	decryptPluginConfigs(s.Plugins)
 	return s, nil
 }
 
@@ -124,12 +194,21 @@ func ParseUpstream(config []byte) (resource.Upstream, error) {
 	return u, nil
 }
 
+func ParseSSL(config []byte) (resource.SSL, error) {
+	var ssl resource.SSL
+	if err := json.Unmarshal(config, &ssl); err != nil {
+		return ssl, err
+	}
+	return ssl, nil
+}
+
 func ParseConsumer(config []byte) (resource.Consumer, error) {
 	var c resource.Consumer
 	err := json.Unmarshal(config, &c)
 	if err != nil {
 		return c, err
 	}
+	decryptPluginConfigs(c.Plugins)
 	return c, nil
 }
 
@@ -139,6 +218,7 @@ func ParseConsumerGroup(config []byte) (resource.ConsumerGroup, error) {
 	if err != nil {
 		return c, err
 	}
+	decryptPluginConfigs(c.Plugins)
 	return c, nil
 }
 
@@ -148,6 +228,7 @@ func ParseGlobalRule(config []byte) (resource.GlobalRule, error) {
 	if err != nil {
 		return s, err
 	}
+	decryptPluginConfigs(s.Plugins)
 	return s, nil
 }
 
@@ -157,7 +238,29 @@ func ParsePluginConfigRule(config []byte) (resource.PluginConfigRule, error) {
 	if err != nil {
 		return s, err
 	}
+	decryptPluginConfigs(s.Plugins)
 	return s, nil
+}
+
+func decryptPluginConfigs(configs map[string]resource.PluginConfig) {
+	keyring, enabled := data_encryption.Keyring()
+	if !enabled {
+		return
+	}
+	values := make(map[string]any, len(configs))
+	for name, value := range configs {
+		values[name] = value
+	}
+	data_encryption.DecryptPluginConfigs(values, keyring)
+}
+
+func ParseProto(config []byte) (resource.Proto, error) {
+	var p resource.Proto
+	err := json.Unmarshal(config, &p)
+	if err != nil {
+		return p, err
+	}
+	return p, nil
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {

@@ -2,7 +2,6 @@ package key_auth
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -36,14 +35,19 @@ const schema = `
 	  "hide_credentials": {
 		"type": "boolean",
 		"default": false
+	  },
+	  "anonymous_consumer": {
+		"type": "string",
+		"minLength": 1
 	  }
 	}
 }`
 
 type Config struct {
-	Header          string `json:"header"`
-	Query           string `json:"query"`
-	HideCredentials *bool  `json:"hide_credentials"`
+	Header            string `json:"header"`
+	Query             string `json:"query"`
+	HideCredentials   *bool  `json:"hide_credentials"`
+	AnonymousConsumer string `json:"anonymous_consumer,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -71,13 +75,8 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
-}
-
-type basicAuth struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -90,24 +89,33 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if key == "" {
-			http.Error(w, `{"message": "Missing API key in request"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			http.Error(w, `{"message": "Missing API key found in request"}`, http.StatusUnauthorized)
 			return
 		}
 
 		// note: here it's  unique key => consumer, it's different from basic-auth
 		consumer, err := store.GetConsumerByPluginKey(name, key)
 		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, `{"message": "Missing related consumer"}`, http.StatusUnauthorized)
+			if p.config.AnonymousConsumer != "" {
+				p.hideAllCredentials(r)
+				if p.attachAnonymousConsumer(w, r, next) {
+					return
+				}
+			}
+			http.Error(w, `{"message": "Invalid API key in request"}`, http.StatusUnauthorized)
 			return
 		}
-
-		fmt.Printf("the consumer is %+v\n", consumer)
 
 		if *p.config.HideCredentials {
 			if fromHeader {
 				r.Header.Del(p.config.Header)
 			} else {
-				r.URL.Query().Del(p.config.Query)
+				query := r.URL.Query()
+				query.Del(p.config.Query)
+				r.URL.RawQuery = query.Encode()
 			}
 		}
 
@@ -116,4 +124,31 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	if p.config.AnonymousConsumer == "" {
+		return false
+	}
+
+	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
+	if err != nil {
+		http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+		return true
+	}
+
+	ctx.AttachConsumer(r, consumer)
+	next.ServeHTTP(w, r)
+	return true
+}
+
+func (p *Plugin) hideAllCredentials(r *http.Request) {
+	if !*p.config.HideCredentials {
+		return
+	}
+
+	r.Header.Del(p.config.Header)
+	query := r.URL.Query()
+	query.Del(p.config.Query)
+	r.URL.RawQuery = query.Encode()
 }

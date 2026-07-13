@@ -3,6 +3,7 @@ package basic_auth
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -54,7 +55,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -65,12 +66,20 @@ type basicAuth struct {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
 			w.Header().Add("WWW-Authenticate", `Basic realm='.'`)
 			http.Error(w, `{"message": "Missing authorization in request"}`, http.StatusUnauthorized)
 			return
 		}
+
+		user, pass, ok := r.BasicAuth()
+		if !ok {
+			http.Error(w, `{"message": "Invalid authorization in request"}`, http.StatusUnauthorized)
+			return
+		}
+		user = normalizeCredential(user)
+		pass = normalizeCredential(pass)
 
 		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 		if errors.Is(err, store.ErrNotFound) {
@@ -105,4 +114,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func normalizeCredential(value string) string {
+	return strings.Join(strings.Fields(value), "")
 }

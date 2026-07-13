@@ -9,7 +9,7 @@ import (
 
 var globalClients sync.Map
 
-func LoadOrStoreClient(pluginName string, uid *ConfigUID, client interface{}) (actual any) {
+func LoadOrStoreClient(pluginName string, uid *ConfigUID, client any) (actual any) {
 	key := fmt.Sprintf("%s:%s", pluginName, uid.String())
 	actual, _ = globalClients.LoadOrStore(key, client)
 	return

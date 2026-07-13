@@ -6,7 +6,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
-func Validate(config interface{}, schema string) error {
+func Validate(config any, schema string) error {
 	// return nil
 	sch, err := jsonschema.CompileString("schema.json", schema)
 	if err != nil {

@@ -13,9 +13,25 @@ import (
 
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
 
+type ContextKey string
+
+const (
+	ProxyRewriteKey ContextKey = "proxy-rewrite"
+	RequestIDKey    ContextKey = "request_id"
+	RemoteAddrKey   ContextKey = "remote_addr"
+	RemotePortKey   ContextKey = "remote_port"
+)
+
+func contextValue(c context.Context, key string) any {
+	if value := c.Value(key); value != nil {
+		return value
+	}
+	return c.Value(ContextKey(key))
+}
+
 // GetString returns the value associated with the key as a string.
 func GetString(c context.Context, key string) (s string) {
-	if val := c.Value(key); val != nil {
+	if val := contextValue(c, key); val != nil {
 		s, _ = val.(string)
 	}
 	return
@@ -105,7 +121,7 @@ func GetDuration(c context.Context, key string) (d time.Duration) {
 // 	return r
 // }
 
-const ApisixVarsKey = "apisix_vars"
+const ApisixVarsKey ContextKey = "apisix_vars"
 
 func WithApisixVars(r *http.Request, vars map[string]string) *http.Request {
 	apisixVars := newVars()
@@ -138,8 +154,8 @@ func RegisterApisixVar(r *http.Request, key string, val any) {
 func AttachConsumer(r *http.Request, consumer resource.Consumer) {
 	RegisterApisixVar(r, "$consumer", consumer)
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
+	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
 	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
-	// FIXME: consumer_group_id / consumer_conf_version
 }
 
 func RecycleVars(r *http.Request) {
@@ -148,7 +164,7 @@ func RecycleVars(r *http.Request) {
 	putBack(GetRequestVars(r))
 }
 
-const RequestVarsKey = "request_vars"
+const RequestVarsKey ContextKey = "request_vars"
 
 func WithRequestVars(r *http.Request) *http.Request {
 	vars := newVars()

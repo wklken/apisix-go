@@ -5,12 +5,14 @@ import (
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/log"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
 type BasePlugin struct {
-	Name     string
-	Priority int
-	Schema   string
+	Name           string
+	Priority       int
+	Schema         string
+	MetadataSchema string
 }
 
 func (p *BasePlugin) GetName() string {
@@ -21,8 +23,16 @@ func (p *BasePlugin) GetPriority() int {
 	return p.Priority
 }
 
+func (p *BasePlugin) SetPriority(priority int) {
+	p.Priority = priority
+}
+
 func (p *BasePlugin) GetSchema() string {
 	return p.Schema
+}
+
+func (p *BasePlugin) GetMetadataSchema() string {
+	return p.MetadataSchema
 }
 
 // type LoggerPlugin interface {
@@ -44,10 +54,24 @@ type BaseLoggerPlugin struct {
 
 	LogFormat map[string]string
 
-	SendFunc func(log map[string]any)
+	SendFunc       func(log map[string]any)
+	BatchProcessor *logger_batch.Processor
+	RouteID        string
+	ServerAddr     string
 
 	IncludeRequestBody  bool
 	IncludeResponseBody bool
+}
+
+func (p *BaseLoggerPlugin) SetRouteContext(routeID string, serverAddr string) {
+	p.RouteID = routeID
+	p.ServerAddr = serverAddr
+}
+
+func (p *BaseLoggerPlugin) Stop() {
+	if p.BatchProcessor != nil {
+		p.BatchProcessor.Stop()
+	}
 }
 
 // func getRequest(r *http.Request, includeRequestBody bool) map[string]any {
@@ -68,12 +92,17 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 		// logFields["request"] = getRequest(r, p.IncludeRequestBody)
 		// logFields["response"] = getResponse(w, p.IncludeResponseBody)
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
 
 func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
+	if p.BatchProcessor != nil {
+		p.BatchProcessor.Push(entry)
+		return nil
+	}
+
 	select {
 	case p.FireChan <- entry: // try and put into chan, if fail will to default
 	default:
@@ -90,12 +119,13 @@ func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
 
 // add a http log consumer here, to consume the log via a channel
 func (p *BaseLoggerPlugin) Consume() {
+	if p.BatchProcessor != nil {
+		return
+	}
+
 	go func() {
-		for {
-			select {
-			case log := <-p.FireChan:
-				p.SendFunc(log)
-			}
+		for log := range p.FireChan {
+			p.SendFunc(log)
 		}
 	}()
 }

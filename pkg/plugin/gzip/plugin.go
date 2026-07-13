@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -85,7 +86,7 @@ type Buffers struct {
 }
 
 type Config struct {
-	Types          []string `json:"types"` // 使用 interface{} 以支持 string 数组和 "*" 枚举两种类型
+	Types          []string `json:"types"`
 	MinLength      *int     `json:"min_length"`
 	CompLevel      *int     `json:"comp_level"`
 	HTTPVersion    *float64 `json:"http_version"`
@@ -93,6 +94,42 @@ type Config struct {
 	Vary           *bool    `json:"vary,omitempty"`
 	HTTPVersionStr string
 	ConfigTypes    map[string]struct{}
+	WildcardType   bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configJSON struct {
+		Types       any      `json:"types,omitempty"`
+		MinLength   *int     `json:"min_length,omitempty"`
+		CompLevel   *int     `json:"comp_level,omitempty"`
+		HTTPVersion *float64 `json:"http_version,omitempty"`
+		Buffers     *Buffers `json:"buffers,omitempty"`
+		Vary        *bool    `json:"vary,omitempty"`
+	}
+
+	var decoded configJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	switch types := decoded.Types.(type) {
+	case nil:
+	case string:
+		c.Types = []string{types}
+	case []any:
+		c.Types = make([]string, 0, len(types))
+		for _, value := range types {
+			if stringValue, ok := value.(string); ok {
+				c.Types = append(c.Types, stringValue)
+			}
+		}
+	}
+	c.MinLength = decoded.MinLength
+	c.CompLevel = decoded.CompLevel
+	c.HTTPVersion = decoded.HTTPVersion
+	c.Buffers = decoded.Buffers
+	c.Vary = decoded.Vary
+	return nil
 }
 
 func (p *Plugin) Init() error {
@@ -132,11 +169,19 @@ func (p *Plugin) PostInit() error {
 			Size:   4096,
 		}
 	}
+	if p.config.Vary == nil {
+		defaultValue := false
+		p.config.Vary = &defaultValue
+	}
 
 	contentTypes := defaultContentTypes
 	if len(p.config.Types) > 0 {
 		contentTypes = make(map[string]struct{}, len(p.config.Types))
 		for _, t := range p.config.Types {
+			if t == "*" {
+				p.config.WildcardType = true
+				continue
+			}
 			contentTypes[t] = struct{}{}
 		}
 	}
@@ -145,7 +190,7 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Config() interface{} {
+func (p *Plugin) Config() any {
 	return &p.config
 }
 
@@ -161,10 +206,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				ResponseWriter: w,
 				w:              w,
 				contentTypes:   p.config.ConfigTypes,
+				wildcardType:   p.config.WildcardType,
 				encoding:       selectEncoding(r.Header),
 				level:          *p.config.CompLevel,
+				minLength:      *p.config.MinLength,
 			}
-			defer mcw.Close()
+			defer func() { _ = mcw.Close() }()
 
 			if *p.config.Vary {
 				mcw.Header().Add("Vary", "Accept-Encoding")

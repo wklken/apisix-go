@@ -229,7 +229,7 @@ func (p *Plugin) detectToxicContent(r *http.Request, body string) (comprehendRes
 	if err != nil {
 		return result, fmt.Errorf("failed to send request to %s: %w", endpoint, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

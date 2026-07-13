@@ -209,7 +209,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			w.WriteHeader(p.config.BreakResponseCode)
 			if p.config.BreakResponseBody != nil {
-				w.Write([]byte(*p.config.BreakResponseBody))
+				_, _ = w.Write([]byte(*p.config.BreakResponseBody))
 			}
 			return
 		}
@@ -223,11 +223,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		// stats the status code
 		switch {
 		case containsStatus(p.config.Unhealthy.HTTPStatuses, status):
-			p.cb.Execute(func() (any, error) {
+			_, _ = p.cb.Execute(func() (any, error) {
 				return nil, fmt.Errorf("unhealthy status")
 			})
 		case containsStatus(p.config.Healthy.HTTPStatuses, status):
-			p.cb.Execute(func() (any, error) {
+			_, _ = p.cb.Execute(func() (any, error) {
 				return nil, nil
 			})
 		}

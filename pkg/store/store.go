@@ -80,7 +80,7 @@ var builtInBuckets = [][]byte{
 
 func (s *Store) InitBuckets() {
 	for _, bucket := range builtInBuckets {
-		s.db.Update(func(tx *bolt.Tx) error {
+		_ = s.db.Update(func(tx *bolt.Tx) error {
 			b := tx.Bucket(bucket)
 			if b != nil {
 				return nil
@@ -98,12 +98,12 @@ func (s *Store) InitBuckets() {
 
 func (s *Store) GetBucketData(bucketName string) [][]byte {
 	var data [][]byte
-	s.db.View(func(tx *bolt.Tx) error {
+	_ = s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
 			return errBucketNotFound
 		}
-		b.ForEach(func(_, v []byte) error {
+		_ = b.ForEach(func(_, v []byte) error {
 			data = append(data, v)
 			return nil
 		})
@@ -115,7 +115,7 @@ func (s *Store) GetBucketData(bucketName string) [][]byte {
 // get specific key from bucket
 func (s *Store) GetFromBucket(bucketName string, id []byte) []byte {
 	var value []byte
-	s.db.View(func(tx *bolt.Tx) error {
+	_ = s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
 			return errBucketNotFound
@@ -134,7 +134,7 @@ func (s *Store) Start() {
 func (s *Store) Stop() {
 	// Close events channel
 	close(s.events)
-	s.db.Close()
+	_ = s.db.Close()
 }
 
 // []byte{}  get the last part split by / in the key
@@ -149,10 +149,9 @@ func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 func (s *Store) processEvents() {
 	for event := range s.events {
 		bucketName, id := getTypeAndIDFromKey(event.Key)
-		defer PutBack(event)
-
-		if event.Type == EventTypePut {
-			s.db.Update(func(tx *bolt.Tx) error {
+		switch event.Type {
+		case EventTypePut:
+			_ = s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
 					return errBucketNotFound
@@ -170,8 +169,8 @@ func (s *Store) processEvents() {
 
 				return nil
 			})
-		} else if event.Type == EventTypeDelete {
-			s.db.Update(func(tx *bolt.Tx) error {
+		case EventTypeDelete:
+			_ = s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
 					return errBucketNotFound
@@ -196,6 +195,7 @@ func (s *Store) processEvents() {
 			bytes.Equal(bucketName, []byte("upstreams")) || bytes.Equal(bucketName, []byte("stream_routes")) {
 			s.triggerEventUpdateHooks(event)
 		}
+		PutBack(event)
 	}
 }
 

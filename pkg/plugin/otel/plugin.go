@@ -195,10 +195,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 	opts := []otelchi.Option{
 		otelchi.WithFilter(func(r *http.Request) bool {
-			if r.URL.Path == "/healthz" {
-				return false
-			}
-			return true
+			return r.URL.Path != "/healthz"
 		}),
 		otelchi.WithRequestMethodInSpanName(true),
 		otelchi.WithTracerProvider(p.tracerProvider),

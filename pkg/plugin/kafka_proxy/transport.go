@@ -97,7 +97,7 @@ func (t *Transport) RoundTrip(ctx context.Context, target string, request []byte
 	}
 	stopCloseOnCancel := closeOnContextDone(ctx, conn)
 	defer stopCloseOnCancel()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := setDeadline(ctx, conn, t.writeTimeout, conn.SetWriteDeadline); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

@@ -147,8 +147,3 @@ func TestDefaultsMatchOfficialPluginAttr(t *testing.T) {
 		t.Fatal("enable_compression = true, want false")
 	}
 }
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
-}

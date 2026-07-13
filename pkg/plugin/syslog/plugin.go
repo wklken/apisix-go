@@ -219,7 +219,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	metadata := loadMetadata()
-	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
+	if len(p.config.LogFormat) == 0 {
 		p.LogFormat = metadata.LogFormat
 	} else {
 		p.LogFormat = p.config.LogFormat
@@ -287,7 +287,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -513,7 +513,7 @@ func (p *Plugin) sendBody(body []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to syslog server: %s", err)
 	}
-	defer sysLog.Close()
+	defer func() { _ = sysLog.Close() }()
 
 	if _, err = sysLog.Write(body); err != nil {
 		return fmt.Errorf("failed to send log message: %s in syslog", err)

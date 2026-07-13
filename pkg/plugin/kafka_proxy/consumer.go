@@ -42,7 +42,7 @@ type kafkaConsumer struct {
 
 func newKafkaConsumer(ctx context.Context, brokers []string, options ConsumerOptions) (KafkaConsumer, error) {
 	if len(brokers) == 0 {
-		return nil, fmt.Errorf("Kafka upstream has no configured brokers")
+		return nil, fmt.Errorf("kafka upstream has no configured brokers")
 	}
 	if options.ConnectTimeout <= 0 {
 		options.ConnectTimeout = defaultKafkaConnectTimeout
@@ -66,10 +66,10 @@ func newKafkaConsumer(ctx context.Context, brokers []string, options ConsumerOpt
 
 func (c *kafkaConsumer) ListOffset(ctx context.Context, topic string, partition int32, timestamp int64) (int64, error) {
 	if topic == "" {
-		return 0, fmt.Errorf("Kafka topic is empty")
+		return 0, fmt.Errorf("kafka topic is empty")
 	}
 	if partition < 0 {
-		return 0, fmt.Errorf("Kafka partition %d is negative", partition)
+		return 0, fmt.Errorf("kafka partition %d is negative", partition)
 	}
 	var offset int64
 	err := c.withConn(ctx, topic, partition, func(conn *kafka.Conn) error {
@@ -83,14 +83,14 @@ func (c *kafkaConsumer) ListOffset(ctx context.Context, topic string, partition 
 			offset, err = conn.ReadOffset(time.UnixMilli(0))
 		default:
 			if timestamp < 0 {
-				return fmt.Errorf("Kafka timestamp %d is unsupported", timestamp)
+				return fmt.Errorf("kafka timestamp %d is unsupported", timestamp)
 			}
 			offset, err = conn.ReadOffset(time.UnixMilli(timestamp))
 		}
 		return err
 	})
 	if err != nil {
-		return 0, fmt.Errorf("Kafka list offset: %w", err)
+		return 0, fmt.Errorf("kafka list offset: %w", err)
 	}
 	return offset, nil
 }
@@ -102,13 +102,13 @@ func (c *kafkaConsumer) Fetch(
 	offset int64,
 ) ([]KafkaMessage, error) {
 	if topic == "" {
-		return nil, fmt.Errorf("Kafka topic is empty")
+		return nil, fmt.Errorf("kafka topic is empty")
 	}
 	if partition < 0 {
-		return nil, fmt.Errorf("Kafka partition %d is negative", partition)
+		return nil, fmt.Errorf("kafka partition %d is negative", partition)
 	}
 	if offset < 0 {
-		return nil, fmt.Errorf("Kafka offset %d is negative", offset)
+		return nil, fmt.Errorf("kafka offset %d is negative", offset)
 	}
 	var messages []KafkaMessage
 	err := c.withConn(ctx, topic, partition, func(conn *kafka.Conn) error {
@@ -138,7 +138,7 @@ func (c *kafkaConsumer) Fetch(
 		}
 	})
 	if err != nil {
-		return nil, fmt.Errorf("Kafka fetch: %w", err)
+		return nil, fmt.Errorf("kafka fetch: %w", err)
 	}
 	return messages, nil
 }
@@ -182,7 +182,7 @@ func (c *kafkaConsumer) withConn(
 		lastErr = err
 	}
 	if lastErr == nil {
-		return fmt.Errorf("Kafka upstream has no usable brokers")
+		return fmt.Errorf("kafka upstream has no usable brokers")
 	}
 	return lastErr
 }

@@ -280,7 +280,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	metadata := loadMetadata()
-	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
+	if len(p.config.LogFormat) == 0 {
 		p.LogFormat = metadata.LogFormat
 	} else {
 		p.LogFormat = p.config.LogFormat
@@ -338,7 +338,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 		logFields[elasticsearchIndexField] = resolveIndexVars(p.config.Field.Index, r)
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -551,7 +551,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to send log message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.IsError() {
 		return 0, fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
 	}
@@ -596,10 +596,6 @@ func (p *Plugin) clientForEndpoint(endpoint string) (*elasticsearch.Client, erro
 	clientUID := shared.NewConfigUID()
 	clientUID.Add(endpoint, username, password, p.config.Headers, p.config.Timeout, *p.config.SslVerify)
 	return shared.LoadOrStoreClient(name, clientUID, c).(*elasticsearch.Client), nil
-}
-
-func (p *Plugin) bulkBody(log map[string]any) ([]byte, error) {
-	return p.bulkBodyEntries([]map[string]any{log})
 }
 
 func (p *Plugin) bulkBodyEntries(entries []map[string]any) ([]byte, error) {
@@ -694,7 +690,7 @@ func (p *Plugin) getMajorVersion(endpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("server returned status: %d", resp.StatusCode)
 	}

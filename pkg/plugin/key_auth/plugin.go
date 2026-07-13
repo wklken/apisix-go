@@ -79,11 +79,6 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-type basicAuth struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		fromHeader := true

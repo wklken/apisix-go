@@ -214,6 +214,10 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.UseTLS {
+		return fmt.Errorf("rocketmq-logger use_tls is not supported by rocketmq-client-go/v2")
+	}
+
 	keyring, enabled := data_encryption.Keyring()
 	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.SecretKey)
 	if err != nil {
@@ -281,7 +285,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(writer, r)
 		if p.config.MetaFormat == "origin" {
-			p.Fire(map[string]any{
+			_ = p.Fire(map[string]any{
 				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
 			})
 			return
@@ -300,7 +304,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

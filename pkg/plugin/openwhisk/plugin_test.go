@@ -41,7 +41,7 @@ func TestHandlerInvokesOpenWhiskActionAndUsesJSONResult(t *testing.T) {
 		gotBody = string(body)
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"statusCode":202,"headers":{"X-Action":"done"},"body":"action body"}`))
+		_, _ = w.Write([]byte(`{"statusCode":202,"headers":{"X-Action":"done"},"body":"action body"}`))
 	}))
 	defer api.Close()
 
@@ -87,7 +87,7 @@ func TestHandlerInvokesOpenWhiskActionAndUsesJSONResult(t *testing.T) {
 func TestHandlerReturnsServiceUnavailableForInvalidOpenWhiskJSON(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`not-json`))
+		_, _ = w.Write([]byte(`not-json`))
 	}))
 	defer api.Close()
 
@@ -108,7 +108,7 @@ func TestHandlerReturnsServiceUnavailableForInvalidOpenWhiskJSON(t *testing.T) {
 func TestHandlerRelaysScalarAndListResultHeaders(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"headers":{"X-Rate-Limit":7,"X-Values":["one","two"]},"body":{"ok":true}}`))
+		_, _ = w.Write([]byte(`{"headers":{"X-Rate-Limit":7,"X-Values":["one","two"]},"body":{"ok":true}}`))
 	}))
 	defer api.Close()
 
@@ -153,7 +153,7 @@ func TestSchemaRejectsInvalidOpenWhiskNames(t *testing.T) {
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	api := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"statusCode":201,"body":"tls ok"}`))
+		_, _ = w.Write([]byte(`{"statusCode":201,"body":"tls ok"}`))
 	}))
 	defer api.Close()
 
@@ -179,7 +179,7 @@ func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 func TestHandlerRejectsSelfSignedAPIWhenSSLVerifyDefaultsTrue(t *testing.T) {
 	api := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"statusCode":204}`))
+		_, _ = w.Write([]byte(`{"statusCode":204}`))
 	}))
 	defer api.Close()
 

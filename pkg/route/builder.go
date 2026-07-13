@@ -50,32 +50,6 @@ const (
 	upstreamLatencyVar        = "$upstream_latency"
 )
 
-// FIXME: build the route incrementally in the future
-// currently, we build the route in one shot
-var dummyResource = []byte(`{
-	"id": "123",
-	"uri": "/get",
-	"name": "dummy_get",
-	"plugins": {
-		"request_id": {"header_name": "X-Request-ID", "set_in_response": true},
-		"file_logger": {"level": "info", "filename": "test.log"},
-		"otel": {"server_name": "dummy_server"}
-	},
-	"service": {},
-	"upstream": {
-		"nodes": [
-		{
-			"host": "httpbin.org",
-			"port": 80,
-			"weight": 100
-		}
-		],
-		"type": "roundrobin",
-		"scheme": "http",
-		"pass_host": "pass"
-	}
-}`)
-
 var parameterInPathRegexp = regexp.MustCompile(`:(\w+)`)
 
 // ConvertURI convert the apisix uri to chi compatible uri
@@ -158,8 +132,6 @@ func (b *Builder) Build() *chi.Mux {
 	}
 	fmt.Printf("routes: %+v\n", routes)
 
-	// routes = append(routes, dummyResource)
-
 	mux := chi.NewRouter()
 
 	for _, r := range routes {
@@ -213,14 +185,6 @@ func (b *Builder) Build() *chi.Mux {
 	registerExtraRoutes(mux)
 
 	return mux
-}
-
-func (b *Builder) buildHandler(r resource.Route) http.Handler {
-	handler, err := b.buildHandlerStrict(r)
-	if err != nil {
-		logger.Errorf("build route %s fail: %s", r.ID, err)
-	}
-	return handler
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
@@ -754,8 +718,8 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// 2. host: use RR/Weighted-RR to select target host
 		// target is like: http://127.0.0.1 => schema + host
 
-		ctx := req.Context()
-		rewriteValue := ctx.Value("proxy-rewrite")
+		requestCtx := req.Context()
+		rewriteValue := requestCtx.Value(ctx.ProxyRewriteKey)
 		uri := ""
 		method := ""
 		host := ""
@@ -865,7 +829,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			return
 		}
 		if err := bufferRequestBodyIfNeeded(r); err != nil {
-			render.New().JSON(w, http.StatusBadRequest, err.Error())
+			_ = render.New().JSON(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
@@ -912,7 +876,7 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 		if upstream.TLS.ClientCertID != nil {
 			if clientCert != "" || clientKey != "" {
 				return nil, fmt.Errorf(
-					"Kafka upstream client_cert_id cannot be combined with client_cert or client_key",
+					"kafka upstream client_cert_id cannot be combined with client_cert or client_key",
 				)
 			}
 			id, err := normalizeKafkaSSLID(upstream.TLS.ClientCertID)
@@ -920,7 +884,7 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 				return nil, fmt.Errorf("invalid Kafka upstream client_cert_id: %w", err)
 			}
 			if resolveSSL == nil {
-				return nil, fmt.Errorf("Kafka upstream client_cert_id %q cannot be resolved", id)
+				return nil, fmt.Errorf("kafka upstream client_cert_id %q cannot be resolved", id)
 			}
 			ssl, err := resolveSSL(id)
 			if err != nil {
@@ -930,7 +894,7 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 			clientKey = ssl.Key
 		}
 		if (clientCert == "") != (clientKey == "") {
-			return nil, fmt.Errorf("Kafka upstream client_cert and client_key must be configured together")
+			return nil, fmt.Errorf("kafka upstream client_cert and client_key must be configured together")
 		}
 		tlsConfig := &tls.Config{InsecureSkipVerify: !upstream.TLS.Verify} //nolint:gosec
 		if clientCert != "" {
@@ -1340,6 +1304,6 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! do not the raw response?
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
-		render.New().JSON(w, status, err.Error())
+		_ = render.New().JSON(w, status, err.Error())
 	}
 }

@@ -499,8 +499,3 @@ func mustParseQuery(t *testing.T, raw string) url.Values {
 	}
 	return values
 }
-
-//go:fix inline
-func intPtr(v int) *int {
-	return new(v)
-}

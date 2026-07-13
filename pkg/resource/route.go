@@ -300,7 +300,7 @@ type Service struct {
 
 // {"username":"foo","plugins":{"basic-auth":{"_meta":{"disable":false},"password":"bar","username":"foo"}},"create_time":1712331168,"update_time":1712331168}
 type Consumer struct {
-	Username string `json:"username,required"`
+	Username string `json:"username"`
 	GroupID  string `json:"group_id,omitempty"`
 	Plugins  map[string]PluginConfig
 	Labels   map[string]any `json:"labels,omitempty"`

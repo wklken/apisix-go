@@ -260,7 +260,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -466,7 +466,7 @@ func (p *Plugin) sendMessage(message string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to SLS TLS endpoint %s: %w", p.addr, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := conn.Write([]byte(message)); err != nil {
 		return fmt.Errorf("failed to send SLS log message: %w", err)

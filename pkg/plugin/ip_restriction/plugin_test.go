@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -99,7 +100,7 @@ func TestRemoteAddrContextOverridesRequestRemoteAddr(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodGet, "/ip", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
-	req = req.WithContext(context.WithValue(req.Context(), "remote_addr", "203.0.113.8"))
+	req = req.WithContext(context.WithValue(req.Context(), apisixctx.RemoteAddrKey, "203.0.113.8"))
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -165,7 +165,7 @@ func dubboResponseStatus(response map[string]any) int {
 func serveDubboAttempt(r *http.Request, target string, cfg Config, frame []byte) dubboAttemptResult {
 	acquired, release := acquireTargetSlot(r.Context(), target, cfg.MultiplexCount)
 	if !acquired {
-		return dubboAttemptResult{err: fmt.Errorf("Dubbo upstream concurrency limit was canceled")}
+		return dubboAttemptResult{err: fmt.Errorf("dubbo upstream concurrency limit was canceled")}
 	}
 	defer release()
 
@@ -176,7 +176,7 @@ func serveDubboAttempt(r *http.Request, target string, cfg Config, frame []byte)
 			retryable: true,
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	stopClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
 	defer stopClose()
 
@@ -274,17 +274,17 @@ func readDubboResponse(conn net.Conn) (map[string]any, error) {
 		return nil, fmt.Errorf("unexpected Dubbo response magic %x%02x", header[0], header[1])
 	}
 	if header[2]&0x80 != 0 {
-		return nil, fmt.Errorf("Dubbo upstream returned a request frame")
+		return nil, fmt.Errorf("dubbo upstream returned a request frame")
 	}
 	if header[2]&0x1f != dubboHessian2Serialization {
 		return nil, fmt.Errorf("unsupported Dubbo serialization id %d", header[2]&0x1f)
 	}
 	if header[3] != dubboResponseOK {
-		return nil, fmt.Errorf("Dubbo response status %d", header[3])
+		return nil, fmt.Errorf("dubbo response status %d", header[3])
 	}
 	payloadLength := binary.BigEndian.Uint32(header[12:16])
 	if payloadLength == 0 || payloadLength > maxDubboResponsePayload {
-		return nil, fmt.Errorf("Dubbo response payload length %d is outside the supported range", payloadLength)
+		return nil, fmt.Errorf("dubbo response payload length %d is outside the supported range", payloadLength)
 	}
 	payload := make([]byte, payloadLength)
 	if _, err := io.ReadFull(conn, payload); err != nil {
@@ -306,7 +306,7 @@ func readDubboResponse(conn net.Conn) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("Dubbo provider exception: %v", exception)
+		return nil, fmt.Errorf("dubbo provider exception: %v", exception)
 	case dubboResponseNullValue, dubboResponseNullAttach:
 		return map[string]any{}, nil
 	case dubboResponseValue, dubboResponseValueAttach:
@@ -367,14 +367,14 @@ func hessianStringMap(value any) (map[string]any, error) {
 		for key, item := range typed {
 			name, ok := key.(string)
 			if !ok {
-				return nil, fmt.Errorf("Dubbo response map key %T is not a string", key)
+				return nil, fmt.Errorf("dubbo response map key %T is not a string", key)
 			}
 			result[name] = item
 		}
 	case map[string]any:
 		maps.Copy(result, typed)
 	default:
-		return nil, fmt.Errorf("Dubbo response is %T, want a map", value)
+		return nil, fmt.Errorf("dubbo response is %T, want a map", value)
 	}
 	return result, nil
 }

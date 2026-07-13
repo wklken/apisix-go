@@ -3,10 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -59,9 +57,6 @@ func Execute() {
 
 func Start() {
 	fmt.Println("It's apisix")
-
-	// random seed init here
-	rand.Seed(time.Now().UnixNano())
 
 	// FIXME: merge config.yaml and config-default.yaml
 	// load global config

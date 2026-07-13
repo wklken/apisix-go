@@ -86,7 +86,7 @@ func TestSendLogsFiltersByLevelAndWritesTCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	received := make(chan string, 1)
 	go func() {
@@ -94,7 +94,7 @@ func TestSendLogsFiltersByLevelAndWritesTCP(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 512)
 		n, _ := conn.Read(buf)
 		received <- string(buf[:n])
@@ -347,7 +347,7 @@ func TestSendUsesBatchProcessor(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 1024)
 		n, _ := conn.Read(buf)
 		received <- string(buf[:n])

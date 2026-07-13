@@ -331,7 +331,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -545,7 +545,7 @@ func (p *Plugin) sendUDPMessage(message string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to Loggly UDP endpoint %s:%d: %w", p.config.Host, p.config.Port, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := conn.Write([]byte(message)); err != nil {
 		return fmt.Errorf("failed to send loggly message: %w", err)
@@ -576,7 +576,7 @@ func (p *Plugin) sendHTTPBulk(entries []map[string]any, batchMaxSize int) error 
 	if err != nil {
 		return fmt.Errorf("failed to send loggly bulk message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("failed to send loggly bulk message: status %d", resp.StatusCode)
 	}

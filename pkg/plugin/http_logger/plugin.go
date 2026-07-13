@@ -157,8 +157,6 @@ type Config struct {
 	BufferDuration    int `json:"buffer_duration,omitempty"`
 	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
-
-	contentType string
 }
 
 func (p *Plugin) Config() any {
@@ -238,7 +236,7 @@ func (p *Plugin) PostInit() error {
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	metadata := loadMetadata()
-	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
+	if len(p.config.LogFormat) == 0 {
 		p.LogFormat = metadata.LogFormat
 	} else {
 		p.LogFormat = p.config.LogFormat
@@ -303,7 +301,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

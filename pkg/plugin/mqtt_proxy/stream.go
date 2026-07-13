@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -54,7 +55,7 @@ func (p *Plugin) ServeListener(
 				active.Wait()
 				return nil
 			}
-			if temporary, ok := err.(net.Error); ok && temporary.Temporary() {
+			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			active.Wait()
@@ -123,7 +124,7 @@ func (p *Plugin) ServeStream(
 		_ = client.Close()
 		return StreamInfo{}, fmt.Errorf("mqtt upstream dial returned nil connection")
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 	stopBothCancel := closeStreamOnContextDone(ctx, client, upstream)
 	defer stopBothCancel()
 

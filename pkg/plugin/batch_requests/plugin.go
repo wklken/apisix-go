@@ -256,7 +256,7 @@ func dispatchPipelineRequest(
 		}
 	}
 	result := recorder.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	body, err := io.ReadAll(result.Body)
 	resp := PipelineResponse{

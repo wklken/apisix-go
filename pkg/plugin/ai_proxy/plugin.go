@@ -395,7 +395,7 @@ func (p *Plugin) executeProviderRequest(
 		writeJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p.writeProviderResponse(w, r, prepared, started, resp)
 }

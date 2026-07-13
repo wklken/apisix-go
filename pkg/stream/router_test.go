@@ -19,7 +19,7 @@ import (
 
 func TestRouterForwardsMatchingRouteAndPublishesResult(t *testing.T) {
 	upstream, upstreamAddr := startStreamUpstream(t, []byte("stream-response"))
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -158,7 +158,7 @@ func TestRouterMQTTForwardsAndPublishesClientID(t *testing.T) {
 	payload := []byte("publish-before-connect-ack")
 	response := []byte("broker-response")
 	upstream, upstreamAddr := startStreamMQTTUpstream(t, append(packet, payload...), response)
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 	upstreamHost, upstreamPort, err := net.SplitHostPort(upstreamAddr)
 	if err != nil {
 		t.Fatalf("split upstream address: %v", err)
@@ -404,7 +404,7 @@ func startStreamUpstream(t *testing.T, response []byte) (net.Listener, string) {
 		if acceptErr != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		request := make([]byte, len("stream-request"))
 		if _, readErr := io.ReadFull(conn, request); readErr != nil {
 			return
@@ -425,7 +425,7 @@ func startStreamMQTTUpstream(t *testing.T, request, response []byte) (net.Listen
 		if acceptErr != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		got := make([]byte, len(request))
 		if _, readErr := io.ReadFull(conn, got); readErr != nil || !bytes.Equal(got, request) {
 			return

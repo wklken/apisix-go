@@ -211,7 +211,7 @@ func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptR
 			retryable: true,
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	stopClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
 	defer stopClose()
 
@@ -415,7 +415,7 @@ func readDubboResponse(conn net.Conn) (int, string, error) {
 		return 0, "", fmt.Errorf("empty Dubbo response payload")
 	}
 	if payloadLength > maxDubboResponsePayload {
-		return 0, "", fmt.Errorf("Dubbo response payload exceeds %d bytes", maxDubboResponsePayload)
+		return 0, "", fmt.Errorf("dubbo response payload exceeds %d bytes", maxDubboResponsePayload)
 	}
 	payload := make([]byte, payloadLength)
 	if _, err := io.ReadFull(conn, payload); err != nil {

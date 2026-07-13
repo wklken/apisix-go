@@ -120,7 +120,7 @@ func TestHandlerRejectsAndCopiesClientHeaders(t *testing.T) {
 	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Forward-Auth", "deny")
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte("nope"))
+		_, _ = w.Write([]byte("nope"))
 	}))
 	defer auth.Close()
 

@@ -350,7 +350,7 @@ func startTCPServer(t *testing.T) (string, <-chan string) {
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	received := make(chan string, 1)
 	go acceptMessage(ln, received)
@@ -372,7 +372,7 @@ func startTLSServer(t *testing.T) (string, <-chan string, <-chan string) {
 	if err != nil {
 		t.Fatalf("listen tls: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	received := make(chan string, 1)
 	go acceptMessage(ln, received)
@@ -384,7 +384,7 @@ func acceptMessage(ln net.Listener, received chan<- string) {
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	buf := make([]byte, 4096)
 	n, err := conn.Read(buf)

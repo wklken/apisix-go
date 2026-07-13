@@ -310,7 +310,7 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to request LLM: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {

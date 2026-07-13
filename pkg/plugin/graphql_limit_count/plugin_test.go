@@ -678,11 +678,6 @@ func TestWindowResetsAfterTimeWindow(t *testing.T) {
 	}
 }
 
-//go:fix inline
-func boolPtr(value bool) *bool {
-	return new(value)
-}
-
 func resetGroupCountersForTest() {
 	groupCounters.Lock()
 	groupCounters.entries = map[string]*counter{}

@@ -40,7 +40,7 @@ func TestHandlerPostsUMADecisionWithStaticPermissions(t *testing.T) {
 		forms <- r.PostForm
 		authHeaders <- r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result":true}`))
+		_, _ = w.Write([]byte(`{"result":true}`))
 	}))
 	t.Cleanup(keycloak.Close)
 
@@ -138,7 +138,7 @@ func TestPasswordGrantEndpointProxiesTokenResponse(t *testing.T) {
 		}
 		forms <- r.PostForm
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"access_token":"token-a"}`))
+		_, _ = w.Write([]byte(`{"access_token":"token-a"}`))
 	}))
 	t.Cleanup(keycloak.Close)
 
@@ -182,7 +182,7 @@ func TestLazyLoadDiscoversEndpointsAndResolvesResourcePermissions(t *testing.T) 
 	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token_endpoint":                 "http://" + r.Host + "/token",
 				"resource_registration_endpoint": "http://" + r.Host + "/resources",
 			})
@@ -193,7 +193,7 @@ func TestLazyLoadDiscoversEndpointsAndResolvesResourcePermissions(t *testing.T) 
 			switch r.PostForm.Get("grant_type") {
 			case "client_credentials":
 				serviceAccountRequested = true
-				json.NewEncoder(w).Encode(map[string]any{"access_token": "sa-token", "expires_in": 300})
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "sa-token", "expires_in": 300})
 			case defaultGrantType:
 				umaForm <- r.PostForm
 				w.WriteHeader(http.StatusOK)
@@ -211,7 +211,7 @@ func TestLazyLoadDiscoversEndpointsAndResolvesResourcePermissions(t *testing.T) 
 			if r.URL.Query().Get("matchingUri") != "true" {
 				t.Fatalf("matchingUri = %q, want true", r.URL.Query().Get("matchingUri"))
 			}
-			json.NewEncoder(w).Encode([]string{"orders"})
+			_ = json.NewEncoder(w).Encode([]string{"orders"})
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -262,7 +262,7 @@ func TestLazyLoadRefreshesExpiredServiceAccountToken(t *testing.T) {
 				if got := r.PostForm.Get("refresh_token"); got != "refresh-a" {
 					t.Fatalf("refresh_token = %q, want refresh-a", got)
 				}
-				w.Write([]byte(
+				_, _ = w.Write([]byte(
 					`{"access_token":"sa-token-b","expires_in":300,"refresh_token":"refresh-b","refresh_expires_in":3600}`,
 				))
 			case defaultGrantType:
@@ -274,7 +274,7 @@ func TestLazyLoadRefreshesExpiredServiceAccountToken(t *testing.T) {
 			if got := r.Header.Get("Authorization"); got != "Bearer sa-token-b" {
 				t.Fatalf("resource Authorization = %q, want refreshed token", got)
 			}
-			w.Write([]byte(`["orders"]`))
+			_, _ = w.Write([]byte(`["orders"]`))
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -350,7 +350,7 @@ func TestServiceAccountTokenIsSharedByEndpointAndClientID(t *testing.T) {
 			t.Fatalf("grant_type = %q, want client_credentials", grantType)
 		}
 		clientCredentialsRequests++
-		w.Write([]byte(`{"access_token":"sa-token","expires_in":300}`))
+		_, _ = w.Write([]byte(`{"access_token":"sa-token","expires_in":300}`))
 	}))
 	t.Cleanup(keycloak.Close)
 
@@ -378,7 +378,7 @@ func TestDiscoveryIsSharedUntilCacheTTLExpires(t *testing.T) {
 	var discoveryRequests int
 	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		discoveryRequests++
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"token_endpoint":                 "http://" + r.Host + "/token",
 			"resource_registration_endpoint": "http://" + r.Host + "/resources",
 		})

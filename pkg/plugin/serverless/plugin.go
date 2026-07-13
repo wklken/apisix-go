@@ -181,7 +181,7 @@ func newLuaRunner(r *http.Request, resp *responseRecorder) *luaRunner {
 		resp:  resp,
 	}
 	if resp != nil {
-		runner.originalBody = string(resp.body.Bytes())
+		runner.originalBody = resp.body.String()
 	}
 
 	runner.registerCJSON()
@@ -488,7 +488,7 @@ func writeResult(w http.ResponseWriter, result luaResult) {
 		status = http.StatusOK
 	}
 	w.WriteHeader(status)
-	w.Write(result.body)
+	_, _ = w.Write(result.body)
 }
 
 type responseRecorder struct {
@@ -531,7 +531,7 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 		}
 	}
 	w.WriteHeader(r.statusCode)
-	w.Write(r.body.Bytes())
+	_, _ = w.Write(r.body.Bytes())
 }
 
 func luaValueToStatus(value lua.LValue) (int, bool) {

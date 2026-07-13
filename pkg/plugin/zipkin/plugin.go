@@ -398,7 +398,7 @@ func localIPv4() string {
 	if err != nil {
 		return ""
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	addr, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok {

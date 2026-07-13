@@ -237,8 +237,3 @@ func TestHandlerDoesNotExposeHeadersByDefault(t *testing.T) {
 		t.Fatalf("Access-Control-Expose-Headers = %q, want empty by default", got)
 	}
 }
-
-//go:fix inline
-func stringPtr(v string) *string {
-	return new(v)
-}

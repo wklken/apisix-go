@@ -145,15 +145,10 @@ func TestCheckCSRFTokenAllowsExpiredTokenWhenExpiresIsZero(t *testing.T) {
 func TestPostInitPreservesExplicitZeroExpires(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Key:     "secret",
-		Expires: int64Ptr(0),
+		Expires: new(int64(0)),
 	})
 
 	if got := p.expires(); got != 0 {
 		t.Fatalf("expires = %d, want explicit zero preserved", got)
 	}
-}
-
-//go:fix inline
-func int64Ptr(v int64) *int64 {
-	return new(v)
 }

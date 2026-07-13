@@ -211,7 +211,7 @@ func TestHandlerStreamsBinaryResponseBeforeUpstreamReturns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client.Do() error = %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	first := make([]byte, len("first"))
 	readFirst := make(chan error, 1)

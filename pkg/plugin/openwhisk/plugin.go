@@ -173,7 +173,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, "failed to process openwhisk action", http.StatusServiceUnavailable)
 			return
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		p.writeActionResponse(w, res)
 	})
@@ -239,7 +239,7 @@ func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response) 
 		status = result.StatusCode
 	}
 	w.WriteHeader(status)
-	w.Write(resultBody(result.Body, body))
+	_, _ = w.Write(resultBody(result.Body, body))
 }
 
 func setResultHeader(header http.Header, field string, value any) {

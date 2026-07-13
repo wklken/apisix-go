@@ -433,7 +433,7 @@ func decodeFilterBody(resp *responseRecorder) ([]byte, bool) {
 		if err != nil {
 			return nil, false
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		decoded, err := io.ReadAll(reader)
 		if err != nil {
 			return nil, false
@@ -549,7 +549,7 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 		}
 	}
 	w.WriteHeader(r.statusCode)
-	w.Write(r.body)
+	_, _ = w.Write(r.body)
 }
 
 func jsonUnmarshal(data []byte, v any) error {

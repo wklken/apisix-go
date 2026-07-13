@@ -384,7 +384,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(writer, r)
 		if p.config.MetaFormat == "origin" {
-			p.Fire(map[string]any{
+			_ = p.Fire(map[string]any{
 				originLogKey: buildOriginRequestLog(r, requestBody, p.config.IncludeReqBody),
 			})
 			return
@@ -403,7 +403,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

@@ -36,7 +36,7 @@ func TestHandlerPassesAllowedRequestAndRestoresBody(t *testing.T) {
 			t.Fatalf("read waf body: %v", err)
 		}
 		wafBody = string(body)
-		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -80,7 +80,7 @@ func TestHandlerPassesAllowedRequestAndRestoresBody(t *testing.T) {
 
 func TestHandlerBlocksRejectedRequest(t *testing.T) {
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-1"})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-1"})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -113,7 +113,7 @@ func TestHandlerBlocksRejectedRequest(t *testing.T) {
 
 func TestHandlerMonitorModeDoesNotBlockRejectedRequest(t *testing.T) {
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-2"})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusForbidden, EventID: "evt-2"})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -197,7 +197,7 @@ func TestHandlerSupportsNestedMatchExpression(t *testing.T) {
 	wafCalls := 0
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wafCalls++
-		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -244,7 +244,7 @@ func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
 	healthyCalls := 0
 	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		healthyCalls++
-		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
 	t.Cleanup(healthy.Close)
 
@@ -279,7 +279,7 @@ func TestHandlerMovesPastFailedWAFNode(t *testing.T) {
 func TestHandlerTimesOutWAFNodeInMonitorMode(t *testing.T) {
 	waf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
-		json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
+		_ = json.NewEncoder(w).Encode(wafDecision{Status: http.StatusOK})
 	}))
 	t.Cleanup(waf.Close)
 
@@ -323,11 +323,6 @@ func TestPostInitDefaults(t *testing.T) {
 	if p.config.Config.RealClientIP == nil || *p.config.Config.RealClientIP {
 		t.Fatal("real_client_ip = true, want explicit false")
 	}
-}
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
 }
 
 func nodeFromURL(t *testing.T, rawURL string) Node {

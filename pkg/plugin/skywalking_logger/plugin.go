@@ -293,7 +293,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if trace, ok := parseTraceContext(r.Header.Get("sw8")); ok {
 			logFields[internalSkyWalkingTraceContext] = trace
 		}
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

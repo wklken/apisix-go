@@ -59,5 +59,5 @@ The APISIX 3.17 plugin parity backlog is maintained in [docs/plugins.md](docs/pl
 
 - [ ] standalone mode
 - [ ] handle etcd compact
-- [ ] github action: go releaser
+- [x] github action: go releaser
 - [ ] logforamt change didn't take effect immediately

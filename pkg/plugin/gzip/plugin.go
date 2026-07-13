@@ -211,7 +211,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				level:          *p.config.CompLevel,
 				minLength:      *p.config.MinLength,
 			}
-			defer mcw.Close()
+			defer func() { _ = mcw.Close() }()
 
 			if *p.config.Vary {
 				mcw.Header().Add("Vary", "Accept-Encoding")

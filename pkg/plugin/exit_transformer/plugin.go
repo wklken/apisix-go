@@ -180,5 +180,5 @@ func writeResponse(w http.ResponseWriter, resp exitResponse) {
 		}
 	}
 	w.WriteHeader(resp.status)
-	w.Write(resp.body)
+	_, _ = w.Write(resp.body)
 }

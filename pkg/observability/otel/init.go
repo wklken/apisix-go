@@ -10,10 +10,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
-	oteltrace "go.opentelemetry.io/otel/trace"
 )
-
-var tracer oteltrace.Tracer
 
 func init() {
 	// initialize trace provider
@@ -28,8 +25,6 @@ func init() {
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
 	)
-	// initialize tracer
-	tracer = otel.Tracer("mux-server")
 }
 
 func InitTracerProvider(serviceName string) *sdktrace.TracerProvider {

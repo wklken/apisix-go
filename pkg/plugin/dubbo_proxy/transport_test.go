@@ -250,7 +250,7 @@ func startHessianDubboServer(t *testing.T, handler func(net.Conn)) (string, chan
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		handler(conn)
 	}()
 	return listener.Addr().String(), requests

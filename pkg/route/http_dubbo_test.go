@@ -91,7 +91,7 @@ func startRouteDubboTestServer(t *testing.T, response []byte) string {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		discardDubboFrame(conn)
 		_, _ = conn.Write(response)

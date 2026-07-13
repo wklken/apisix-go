@@ -106,7 +106,7 @@ func (p *Plugin) loadMetadata() (metadata Metadata) {
 			metadata = Metadata{}
 		}
 	}()
-	store.GetPluginMetadata(name, &metadata)
+	_ = store.GetPluginMetadata(name, &metadata)
 	return metadata
 }
 
@@ -172,5 +172,5 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 		}
 	}
 	w.WriteHeader(r.statusCode)
-	w.Write(r.body.Bytes())
+	_, _ = w.Write(r.body.Bytes())
 }

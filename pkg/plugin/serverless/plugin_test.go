@@ -91,7 +91,7 @@ func TestPostFunctionCanRewriteBodyFilterJSONBody(t *testing.T) {
 		w.Header().Set("Content-Length", "29")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"origin":"127.0.0.1","ok":true}`))
+		_, _ = w.Write([]byte(`{"origin":"127.0.0.1","ok":true}`))
 	})
 
 	if res.Code != http.StatusOK {

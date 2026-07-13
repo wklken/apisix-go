@@ -184,8 +184,3 @@ func decodeBrotli(t *testing.T, body []byte) string {
 	}
 	return string(decoded)
 }
-
-//go:fix inline
-func intPtr(v int) *int {
-	return new(v)
-}

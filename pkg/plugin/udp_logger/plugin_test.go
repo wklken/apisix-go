@@ -336,7 +336,7 @@ func startUDPServer(t *testing.T) (string, <-chan string) {
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 
 	received := make(chan string, 1)
 	go func() {

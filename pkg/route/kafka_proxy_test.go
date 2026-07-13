@@ -63,7 +63,7 @@ func TestBuildKafkaPubSubHandlerFetchesKafkaMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
 		Sequence: 7, Command: kafka_proxy.CmdKafkaFetch, Topic: "topic", Partition: 2, Position: 10,
@@ -107,7 +107,7 @@ func TestBuildKafkaPubSubHandlerListsOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
 		Sequence: 8, Command: kafka_proxy.CmdKafkaListOffset, Topic: "topic", Partition: 1, Position: -2,
@@ -150,7 +150,7 @@ func TestBuildKafkaPubSubHandlerPassesUpstreamTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	var receivedTLS *tls.Config
 	select {
@@ -203,7 +203,7 @@ func TestBuildKafkaPubSubHandlerResolvesTLSClientCertID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
 		Sequence: 9, Command: kafka_proxy.CmdPing,
@@ -308,7 +308,7 @@ func TestBuildKafkaPubSubHandlerClosesMalformedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	if err := writeRouteMaskedWebSocketFrame(conn, []byte{0x8a, 0x02, 0x05, 0x08, 0x01}); err != nil {
 		t.Fatalf("write malformed PubSub request: %v", err)
@@ -335,7 +335,7 @@ func TestBuildKafkaPubSubHandlerMapsKafkaAuthError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
 		Sequence: 9, Command: kafka_proxy.CmdKafkaFetch, Topic: "topic", Partition: 0, Position: 0,
@@ -373,7 +373,7 @@ func TestBuildKafkaPubSubHandlerMapsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	writeRouteWebSocketHandshake(t, conn)
 	request, err := kafka_proxy.MarshalPubSubRequest(kafka_proxy.PubSubRequest{
 		Sequence: 10, Command: kafka_proxy.CmdKafkaListOffset, Topic: "topic", Partition: 0, Position: -2,
@@ -420,7 +420,7 @@ func TestBuildKafkaRawCompatibilityHandlerProxiesWebSocketFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen Kafka broker: %v", err)
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 
 	request := routeKafkaFrame([]byte("request"))
 	response := routeKafkaFrame([]byte("response"))
@@ -431,7 +431,7 @@ func TestBuildKafkaRawCompatibilityHandlerProxiesWebSocketFrames(t *testing.T) {
 			brokerResult <- acceptErr
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		got, readErr := readRouteKafkaFrame(conn)
 		if readErr != nil {
 			brokerResult <- readErr
@@ -461,7 +461,7 @@ func TestBuildKafkaRawCompatibilityHandlerProxiesWebSocketFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	const websocketKey = "dGhlIHNhbXBsZSBub25jZQ=="
 	_, _ = fmt.Fprintf(
@@ -517,7 +517,7 @@ func TestBuildKafkaRawCompatibilityHandlerRejectsMalformedWebSocketFrame(t *test
 	if err != nil {
 		t.Fatalf("listen Kafka broker: %v", err)
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 	brokerClosed := make(chan struct{})
 	go func() {
 		conn, acceptErr := broker.Accept()
@@ -542,7 +542,7 @@ func TestBuildKafkaRawCompatibilityHandlerRejectsMalformedWebSocketFrame(t *test
 	if err != nil {
 		t.Fatalf("dial route: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, _ = fmt.Fprintf(
 		conn,
 		"GET /kafka HTTP/1.1\r\nHost: gateway.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",

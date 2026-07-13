@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/proxy"
 )
 
 type Plugin struct {
@@ -74,7 +75,8 @@ func (p *Plugin) PostInit() error {
 		p.config.SampleRatio = 1
 	}
 	p.client = &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout:   5 * time.Second,
+		Transport: proxy.NewTransport((&proxy.TransportOptionBuilder{}).Build()),
 	}
 
 	return nil
@@ -160,6 +162,6 @@ func (p *Plugin) sendMirror(req *http.Request) {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 }

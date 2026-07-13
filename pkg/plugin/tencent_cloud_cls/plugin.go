@@ -264,7 +264,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if rand.Float64() >= p.config.SampleRatio {
 			return
 		}
-		p.Fire(apisixlog.GetFields(r, p.LogFormat))
+		_ = p.Fire(apisixlog.GetFields(r, p.LogFormat))
 	})
 }
 
@@ -306,7 +306,7 @@ func (p *Plugin) bodyAwareHandler(next http.Handler) http.Handler {
 		if recorder != nil && recorder.body.Len() > 0 && exprMatched(r, p.config.IncludeRespBodyExpr, status) {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -515,7 +515,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 	}
 	if resp.StatusCode() >= 300 {
 		return 0, fmt.Errorf(
-			"Tencent Cloud CLS endpoint returned status code [%d] uri [%s], body [%s]",
+			"tencent Cloud CLS endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			p.endpointURL(),
 			resp.String(),
@@ -585,10 +585,6 @@ func (p *Plugin) authorization() string {
 		"&q-header-list=" +
 		"&q-url-param-list=" +
 		"&q-signature=" + signature
-}
-
-func (p *Plugin) buildPayload(log map[string]any) []byte {
-	return p.buildBatchPayload([]map[string]any{log})
 }
 
 func (p *Plugin) buildBatchPayload(logs []map[string]any) []byte {

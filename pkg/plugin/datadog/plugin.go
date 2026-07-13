@@ -258,7 +258,7 @@ func (p *Plugin) send(entry metricEntry) error {
 	if err != nil {
 		return fmt.Errorf("connect to DogStatsD endpoint %s: %w", addr, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	for _, line := range p.metricLines(entry) {
 		if _, err := conn.Write([]byte(line)); err != nil {

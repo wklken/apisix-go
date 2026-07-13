@@ -301,7 +301,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			recorder.status = http.StatusOK
 		}
 
-		p.Fire(p.defaultLogFields(r, recorder, time.Since(start)))
+		_ = p.Fire(p.defaultLogFields(r, recorder, time.Since(start)))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -412,7 +412,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	}
 	if resp.StatusCode() != http.StatusOK {
 		return 0, fmt.Errorf(
-			"Google Cloud Logging endpoint returned status code [%d], body [%s]",
+			"google Cloud Logging endpoint returned status code [%d], body [%s]",
 			resp.StatusCode(),
 			resp.String(),
 		)
@@ -526,14 +526,6 @@ func parsePrivateKey(privateKey string) (*rsa.PrivateKey, error) {
 		return rsaKey, nil
 	}
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
-}
-
-func (p *Plugin) generateAccessToken(auth *AuthConfig) (string, string, error) {
-	token, err := p.fetchAccessToken(auth)
-	if err != nil {
-		return "", "", err
-	}
-	return token.AccessToken, token.TokenType, nil
 }
 
 func (p *Plugin) accessTokenFor(auth *AuthConfig) (string, string, error) {

@@ -203,7 +203,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if code != 0 {
 			w.WriteHeader(code)
 			if body != "" {
-				w.Write([]byte(body))
+				_, _ = w.Write([]byte(body))
 			}
 			return
 		}
@@ -345,7 +345,7 @@ func (p *Plugin) loadMetadata() (metadata Metadata) {
 			metadata = Metadata{}
 		}
 	}()
-	store.GetPluginMetadata(name, &metadata)
+	_ = store.GetPluginMetadata(name, &metadata)
 	return metadata
 }
 
@@ -398,7 +398,7 @@ func (p *Plugin) askWAF(r *http.Request, node Node, cfg WAFConfig) (wafDecision,
 	if err != nil {
 		return wafDecision{}, elapsed, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var decision wafDecision
 	if err := json.NewDecoder(resp.Body).Decode(&decision); err != nil {

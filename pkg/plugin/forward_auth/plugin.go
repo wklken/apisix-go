@@ -197,12 +197,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, http.StatusText(p.config.StatusOnError), p.config.StatusOnError)
 			return
 		}
-		defer authResp.Body.Close()
+		defer func() { _ = authResp.Body.Close() }()
 
 		if authResp.StatusCode >= http.StatusMultipleChoices {
 			p.copyConfiguredHeaders(w.Header(), authResp.Header, p.config.ClientHeaders)
 			w.WriteHeader(authResp.StatusCode)
-			io.Copy(w, authResp.Body)
+			_, _ = io.Copy(w, authResp.Body)
 			return
 		}
 

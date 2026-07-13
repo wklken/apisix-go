@@ -213,7 +213,7 @@ func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, int, er
 	if err != nil {
 		return "", 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var token tokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {

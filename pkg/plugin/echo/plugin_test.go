@@ -30,7 +30,7 @@ func TestHandlerReplacesResponseBody(t *testing.T) {
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "8")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if res.Code != http.StatusAccepted {
@@ -52,7 +52,7 @@ func TestHandlerAddsBeforeAndAfterBody(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if got := res.Body.String(); got != "before-upstream-after" {
@@ -70,7 +70,7 @@ func TestHandlerSetsResponseHeaders(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if got := res.Header().Get("X-Echo"); got != "yes" {

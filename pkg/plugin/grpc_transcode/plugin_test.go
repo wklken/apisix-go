@@ -22,7 +22,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -1430,16 +1429,6 @@ func unframeGRPCMessageForTest(t *testing.T, frame []byte) []byte {
 		t.Fatalf("frame payload length = %d, want %d", len(frame)-5, size)
 	}
 	return frame[5:]
-}
-
-func jsonFromProto(t *testing.T, msg proto.Message) string {
-	t.Helper()
-
-	out, err := protojson.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal proto json: %v", err)
-	}
-	return string(out)
 }
 
 var _ = protoregistry.NotFound

@@ -97,6 +97,72 @@ func TestHandlerMirrorsRequestAndPreservesUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestPostInitConfiguresHTTP2Transport(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "https://mirror.example.com"})
+
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport = %T, want *http.Transport", p.client.Transport)
+	}
+	if len(transport.TLSNextProto) == 0 {
+		t.Fatal("client transport has no configured HTTP/2 protocol")
+	}
+}
+
+func TestHandlerMirrorsUnaryGRPCOverHTTP2(t *testing.T) {
+	seen := make(chan struct{}, 1)
+	mirror := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Errorf("mirror protocol = HTTP/%d, want HTTP/2", r.ProtoMajor)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/grpc" {
+			t.Errorf("mirror content type = %q, want application/grpc", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read mirrored gRPC body: %v", err)
+		}
+		if got := string(body); got != "\x00\x00\x00\x00\x03abc" {
+			t.Errorf("mirrored gRPC body = %q, want unary frame", got)
+		}
+		seen <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mirror.EnableHTTP2 = true
+	mirror.StartTLS()
+	t.Cleanup(mirror.Close)
+
+	p := newTestPlugin(t, Config{Host: mirror.URL})
+	p.client = mirror.Client()
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/greeter.SayHello",
+		strings.NewReader("\x00\x00\x00\x00\x03abc"),
+	)
+	req.Header.Set("Content-Type", "application/grpc")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read main gRPC body: %v", err)
+		}
+		if got := string(body); got != "\x00\x00\x00\x00\x03abc" {
+			t.Fatalf("main gRPC body = %q, want unary frame", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	select {
+	case <-seen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mirrored gRPC request")
+	}
+}
+
 func TestHandlerReplacesMirrorPath(t *testing.T) {
 	mirror, seen := newMirrorServer(t)
 	defer mirror.Close()

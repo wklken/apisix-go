@@ -57,7 +57,7 @@ func TestHandlerAllowsRequestAndSendsOPAInput(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"result":{"allow":true}}`))
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
 	}))
 	defer opa.Close()
 
@@ -78,7 +78,7 @@ func TestHandlerAllowsRequestAndSendsOPAInput(t *testing.T) {
 func TestHandlerRejectsWithOPAStatusReasonAndHeaders(t *testing.T) {
 	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(
+		_, _ = w.Write(
 			[]byte(
 				`{"result":{"allow":false,"status_code":401,"reason":"no token","headers":{"WWW-Authenticate":"Bearer"}}}`,
 			),
@@ -109,7 +109,7 @@ func TestHandlerRejectsWithOPAStatusReasonAndHeaders(t *testing.T) {
 func TestHandlerCopiesAllowedHeadersToUpstreamAndClearsAbsentOnes(t *testing.T) {
 	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"result":{"allow":true,"headers":{"X-User":"alice"}}}`))
+		_, _ = w.Write([]byte(`{"result":{"allow":true,"headers":{"X-User":"alice"}}}`))
 	}))
 	defer opa.Close()
 
@@ -141,7 +141,7 @@ func TestHandlerCopiesAllowedHeadersToUpstreamAndClearsAbsentOnes(t *testing.T) 
 func TestHandlerReturns503ForInvalidDecision(t *testing.T) {
 	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer opa.Close()
 
@@ -174,7 +174,7 @@ func TestHandlerIncludesRouteAndServiceContextWhenConfigured(t *testing.T) {
 		if !ok || service["id"] != "service-1" || service["name"] != "orders-service" {
 			t.Fatalf("input.service = %#v, want local service context", input["service"])
 		}
-		w.Write([]byte(`{"result":{"allow":true}}`))
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
 	}))
 	t.Cleanup(opa.Close)
 
@@ -217,7 +217,7 @@ func TestHandlerIncludesFullRouteAndServiceResourcesWhenAvailable(t *testing.T) 
 		if service["id"] != "service-1" || service["name"] != "orders" || service["enable_websocket"] != true {
 			t.Fatalf("input.service = %#v, want full service resource", service)
 		}
-		w.Write([]byte(`{"result":{"allow":true}}`))
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
 	}))
 	t.Cleanup(opa.Close)
 

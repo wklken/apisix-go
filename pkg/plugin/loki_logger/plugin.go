@@ -335,7 +335,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
 		}
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -543,7 +543,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, batchMaxSize int) (int, err
 
 	if resp.StatusCode() >= 300 {
 		return 0, fmt.Errorf(
-			"Loki endpoint returned status code [%d] uri [%s], body [%s]",
+			"loki endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			endpoint,
 			resp.String(),

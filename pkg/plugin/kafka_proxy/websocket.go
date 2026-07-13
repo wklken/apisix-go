@@ -85,7 +85,7 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 		}
 		return fmt.Errorf("kafka dial %s: %w", address, err)
 	}
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -95,7 +95,7 @@ func ServeWebSocket(w http.ResponseWriter, r *http.Request, target string, optio
 	if err != nil {
 		return fmt.Errorf("hijack Kafka WebSocket: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if err := writeWebSocketHandshake(rw, r.Header.Get("Sec-WebSocket-Key")); err != nil {
 		return &websocketProxyError{hijacked: true, err: fmt.Errorf("write Kafka WebSocket handshake: %w", err)}
 	}
@@ -154,7 +154,7 @@ func ServePubSubWebSocket(
 	if err != nil {
 		return fmt.Errorf("hijack Kafka PubSub WebSocket: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if err := writeWebSocketHandshake(rw, r.Header.Get("Sec-WebSocket-Key")); err != nil {
 		return &websocketProxyError{hijacked: true, err: fmt.Errorf("write Kafka PubSub handshake: %w", err)}
 	}
@@ -217,7 +217,7 @@ func ServePubSubWebSocket(
 			_ = bridge.writeClose(1009, "Kafka PubSub response is too large")
 			return &websocketProxyError{
 				hijacked: true,
-				err:      fmt.Errorf("Kafka PubSub response exceeds max frame size %d", transport.maxFrameSize),
+				err:      fmt.Errorf("kafka PubSub response exceeds max frame size %d", transport.maxFrameSize),
 			}
 		}
 		if err := setDeadline(ctx, client, transport.writeTimeout, client.SetWriteDeadline); err != nil {
@@ -345,15 +345,15 @@ func writeKafkaPayload(
 	}
 	for len(payload) > 0 {
 		if len(payload) < 4 {
-			return fmt.Errorf("Kafka WebSocket message has an incomplete frame header")
+			return fmt.Errorf("kafka WebSocket message has an incomplete frame header")
 		}
 		size := binary.BigEndian.Uint32(payload[:4])
 		if uint64(size) > uint64(maxFrameSize) {
-			return fmt.Errorf("Kafka frame size %d exceeds max frame size %d", size, maxFrameSize)
+			return fmt.Errorf("kafka frame size %d exceeds max frame size %d", size, maxFrameSize)
 		}
 		frameSize := 4 + int(size)
 		if frameSize > len(payload) {
-			return fmt.Errorf("Kafka WebSocket message has an incomplete frame payload")
+			return fmt.Errorf("kafka WebSocket message has an incomplete frame payload")
 		}
 		if err := setDeadline(ctx, conn, timeout, conn.SetWriteDeadline); err != nil {
 			return err
@@ -451,13 +451,14 @@ func (b *websocketBridge) readFrame() (websocketFrame, error) {
 		return websocketFrame{}, b.protocolError(1002, "client WebSocket frame is not masked")
 	}
 	payloadLength := uint64(header[1] & 0x7f)
-	if payloadLength == 126 {
+	switch payloadLength {
+	case 126:
 		var extended [2]byte
 		if _, err := io.ReadFull(b.client, extended[:]); err != nil {
 			return websocketFrame{}, err
 		}
 		payloadLength = uint64(binary.BigEndian.Uint16(extended[:]))
-	} else if payloadLength == 127 {
+	case 127:
 		var extended [8]byte
 		if _, err := io.ReadFull(b.client, extended[:]); err != nil {
 			return websocketFrame{}, err

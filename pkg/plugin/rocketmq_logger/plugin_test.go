@@ -145,6 +145,28 @@ func TestPostInitAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsUnsupportedTLS(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			NameServerList: []string{"127.0.0.1:9876"},
+			Topic:          "apisix-logs",
+			UseTLS:         true,
+		},
+		sender: &captureSender{},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want unsupported use_tls rejection")
+	}
+	if !strings.Contains(err.Error(), "use_tls") || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("PostInit() error = %q, want use_tls unsupported message", err)
+	}
+}
+
 func TestPostInitRejectsInvalidEncryptedSecretKey(t *testing.T) {
 	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })

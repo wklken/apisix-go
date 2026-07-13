@@ -344,7 +344,7 @@ func startDubboTestServer(t *testing.T, response []byte) (string, <-chan []byte)
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		request := readDubboFrameForTest(conn)
 		seen <- request
@@ -369,7 +369,7 @@ func startSilentDubboServer(t *testing.T) (string, <-chan struct{}) {
 			return
 		}
 		close(accepted)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _ = io.Copy(io.Discard, conn)
 	}()
 	return ln.Addr().String(), accepted
@@ -388,7 +388,7 @@ func startClosingDubboServer(t *testing.T) string {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		_ = readDubboFrameForTest(conn)
 	}()

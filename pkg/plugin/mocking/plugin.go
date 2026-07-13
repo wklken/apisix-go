@@ -158,10 +158,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			responseContent = string(body)
 		}
 		_, _ = w.Write([]byte(resolveValue(r, responseContent)))
-
-		// return without calling next.ServeHTTP
-		return
-		// next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
 }

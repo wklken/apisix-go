@@ -39,7 +39,7 @@ func TestHandlerRewritesStatusAndBody(t *testing.T) {
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "8")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if res.Code != http.StatusCreated {
@@ -61,7 +61,7 @@ func TestHandlerDecodesBase64Body(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if got := res.Body.String(); got != "hello" {
@@ -163,7 +163,7 @@ func TestHandlerAppliesHeaderOperations(t *testing.T) {
 		w.Header().Set("X-Mode", "upstream")
 		w.Header().Set("X-Remove", "delete-me")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if got := res.Header().Get("X-Mode"); got != "rewritten" {
@@ -189,7 +189,7 @@ func TestHandlerSupportsOldHeaderSetForm(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if got := res.Header().Get("X-Legacy"); got != "yes" {
@@ -223,7 +223,7 @@ func TestHandlerSkipsRewriteWhenVarsDoNotMatch(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})
 
 	if res.Code != http.StatusOK {
@@ -243,7 +243,7 @@ func TestHandlerAppliesRewriteWhenVarsMatchResponseStatus(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("missing"))
+		_, _ = w.Write([]byte("missing"))
 	})
 
 	if res.Code != http.StatusAccepted {
@@ -265,7 +265,7 @@ func TestHandlerAppliesResponseBodyFilters(t *testing.T) {
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "42")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("token=abc token=def secret secret"))
+		_, _ = w.Write([]byte("token=abc token=def secret secret"))
 	})
 
 	if got := res.Body.String(); got != "token=hidden token=def redacted redacted" {
@@ -288,7 +288,7 @@ func TestHandlerDecodesGzipBodyBeforeFilters(t *testing.T) {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Content-Length", "42")
 		w.WriteHeader(http.StatusOK)
-		w.Write(body)
+		_, _ = w.Write(body)
 	})
 
 	if got := res.Body.String(); got != "redacted token" {
@@ -314,7 +314,7 @@ func TestHandlerDecodesBrotliBodyBeforeFilters(t *testing.T) {
 		w.Header().Set("Content-Encoding", "br")
 		w.Header().Set("Content-Length", "42")
 		w.WriteHeader(http.StatusOK)
-		w.Write(body)
+		_, _ = w.Write(body)
 	})
 
 	if got := res.Body.String(); got != "redacted token" {
@@ -342,7 +342,7 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Encoding", tt.encoding)
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("secret token"))
+				_, _ = w.Write([]byte("secret token"))
 			})
 
 			if got := res.Body.String(); got != "secret token" {
@@ -381,7 +381,7 @@ func TestHandlerSupportsNestedRestyExpressionOperators(t *testing.T) {
 		w.Header().Add("Set-Cookie", "theme=dark")
 		w.Header().Add("Set-Cookie", "session=ok")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("upstream"))
+		_, _ = w.Write([]byte("upstream"))
 	})).ServeHTTP(res, req)
 
 	if got := res.Body.String(); got != "matched" {
@@ -496,16 +496,6 @@ func performRequest(p *Plugin, upstream func(http.ResponseWriter, *http.Request)
 
 	p.Handler(http.HandlerFunc(upstream)).ServeHTTP(rr, req)
 	return rr
-}
-
-//go:fix inline
-func stringPtr(v string) *string {
-	return new(v)
-}
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
 }
 
 func encryptResponseBodyForTest(t *testing.T, key string, value string) string {

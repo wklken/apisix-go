@@ -237,7 +237,7 @@ func (p *Plugin) checkPermission(
 			resp = response
 			break
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 		if attempt+1 == wolfRetryMax {
 			return http.StatusInternalServerError,
 				fmt.Sprintf("request to wolf-server failed, status:%d", response.StatusCode), nil, nil
@@ -247,7 +247,7 @@ func (p *Plugin) checkPermission(
 	if resp == nil {
 		return http.StatusInternalServerError, "request to wolf-server failed", nil, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var body permissionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -473,7 +473,7 @@ func (p *Plugin) requestWolf(
 	if err != nil {
 		return wolfPublicResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return wolfPublicResponse{}, fmt.Errorf("wolf server returned %d", resp.StatusCode)
 	}

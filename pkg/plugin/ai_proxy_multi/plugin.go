@@ -699,7 +699,7 @@ func (p *Plugin) executeInstanceRequest(
 			continue
 		}
 
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		p.writeProviderResponse(w, r, prepared, instanceModel(instance, body), instance, started, resp)
 		doneMetric()
 		if prepared.cancel != nil {

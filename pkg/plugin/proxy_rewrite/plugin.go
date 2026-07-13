@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -180,7 +181,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			"headers": p.config.Headers,
 		}
 
-		ctx = context.WithValue(ctx, "proxy-rewrite", data)
+		ctx = context.WithValue(ctx, apisixctx.ProxyRewriteKey, data)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}

@@ -421,7 +421,8 @@ func (p *Plugin) PostInit() error {
 
 	p.applyRootRedisConfig()
 	p.applyRootRedisClusterConfig()
-	if p.config.Policy == "redis" {
+	switch p.config.Policy {
+	case "redis":
 		if p.config.Redis.RedisPort == 0 {
 			p.config.Redis.RedisPort = 6379
 		}
@@ -443,7 +444,7 @@ func (p *Plugin) PostInit() error {
 			b := false
 			p.config.Redis.RedisSSLVerify = &b
 		}
-	} else if p.config.Policy == "redis-cluster" {
+	case "redis-cluster":
 		if len(p.config.RedisCluster.RedisClusterNodes) == 0 {
 			return fmt.Errorf("redis_cluster_nodes is required")
 		}
@@ -650,9 +651,10 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 	}
 
 	var store limiter.Store
-	if p.config.Policy == "local" {
+	switch p.config.Policy {
+	case "local":
 		store = p.localStore()
-	} else if p.config.Policy == "redis" {
+	case "redis":
 		// each route has its own limit => we should share the redis client
 		configUID := shared.NewConfigUID()
 		configUID.Add(p.config.Redis.String())
@@ -677,7 +679,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		if err != nil {
 			return nil, err
 		}
-	} else if p.config.Policy == "redis-cluster" {
+	case "redis-cluster":
 		configUID := shared.NewConfigUID()
 		configUID.Add(
 			p.config.RedisCluster.RedisClusterName,

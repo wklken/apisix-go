@@ -183,7 +183,7 @@ func (p *Plugin) probeInstance(ctx context.Context, instance Instance) healthPro
 	if err != nil {
 		return healthProbeResult{err: err, timeout: probeContext.Err() == context.DeadlineExceeded}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	return healthProbeResult{status: response.StatusCode}
 }
 
@@ -205,9 +205,10 @@ func healthTarget(instance Instance, check ActiveHealthCheck) (*url.URL, error) 
 	if err != nil {
 		return nil, err
 	}
-	if check.Type == "tcp" {
+	switch check.Type {
+	case "tcp":
 		base.Scheme = "tcp"
-	} else if check.Type == "http" || check.Type == "https" {
+	case "http", "https":
 		base.Scheme = check.Type
 	}
 	if check.Port > 0 {

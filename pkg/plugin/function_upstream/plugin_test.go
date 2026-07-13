@@ -16,7 +16,7 @@ import (
 func TestHandlerHonorsDisabledSSLVerify(t *testing.T) {
 	function := newQuietTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("function ok"))
+		_, _ = w.Write([]byte("function ok"))
 	}))
 	defer function.Close()
 

@@ -90,7 +90,7 @@ func startRouteHessianDubboTestServer(t *testing.T) string {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 		if !discardRouteHessianFrame(conn) {
 			return

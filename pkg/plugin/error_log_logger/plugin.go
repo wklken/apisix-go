@@ -357,7 +357,7 @@ func (p *Plugin) sendToTCP(lines []string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, err = conn.Write([]byte(strings.Join(lines, "\n") + "\n"))
 	return err
@@ -454,7 +454,7 @@ func (p *Plugin) do(req *http.Request) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("server returned status code %d", resp.StatusCode)
 	}

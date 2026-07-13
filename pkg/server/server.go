@@ -143,7 +143,9 @@ func (s *Server) Start() {
 			go func(exportConfig prometheusExportServerConfig) {
 				mux := chi.NewRouter()
 				mux.Get(exportConfig.ExportURI, promhttp.Handler().ServeHTTP)
-				http.ListenAndServe(exportConfig.Address(), mux)
+				if err := http.ListenAndServe(exportConfig.Address(), mux); err != nil {
+					logger.Errorf("prometheus export server stopped: %s", err)
+				}
 			}(exportConfig)
 		}
 	}
@@ -156,7 +158,8 @@ func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.C
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
 		<-sig
-		shutdownCtx, _ := context.WithTimeout(ctx, 30*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
 		go func() {
 			<-shutdownCtx.Done()
 			if shutdownCtx.Err() == context.DeadlineExceeded {

@@ -246,7 +246,7 @@ func retrieveSignatureParams(r *http.Request) (signatureParams, error) {
 		return signatureParams{}, errors.New("missing Authorization header")
 	}
 	if !strings.HasPrefix(auth, "Signature") {
-		return signatureParams{}, errors.New("Authorization header does not start with 'Signature'")
+		return signatureParams{}, errors.New("authorization header does not start with 'Signature'")
 	}
 
 	fields := strings.Split(strings.TrimSpace(strings.TrimPrefix(auth, "Signature")), ",")
@@ -284,7 +284,7 @@ func (p *Plugin) validateClockSkew(date string) error {
 		return nil
 	}
 	if date == "" {
-		return errors.New("Date header missing")
+		return errors.New("date header missing")
 	}
 
 	parsed, err := http.ParseTime(date)
@@ -292,7 +292,7 @@ func (p *Plugin) validateClockSkew(date string) error {
 		return err
 	}
 	if time.Since(parsed).Abs() > time.Duration(p.config.ClockSkew)*time.Second {
-		return errors.New("Clock skew exceeded")
+		return errors.New("clock skew exceeded")
 	}
 	return nil
 }
@@ -322,7 +322,7 @@ func validateSignature(r *http.Request, secretKey string, params signatureParams
 		return err
 	}
 	if subtle.ConstantTimeCompare(requestSignature, generatedSignature) != 1 {
-		return errors.New("Invalid signature")
+		return errors.New("invalid signature")
 	}
 	return nil
 }
@@ -373,7 +373,7 @@ var errBodyTooLarge = errors.New("request body too large")
 
 func (p *Plugin) validateBodyDigest(r *http.Request, digestHeader string) error {
 	if digestHeader == "" {
-		return errors.New("Invalid digest")
+		return errors.New("invalid digest")
 	}
 
 	body, err := readAndRestoreBody(r, p.config.MaxReqBodySize)
@@ -383,7 +383,7 @@ func (p *Plugin) validateBodyDigest(r *http.Request, digestHeader string) error 
 	sum := sha256.Sum256(body)
 	expected := "SHA-256=" + base64.StdEncoding.EncodeToString(sum[:])
 	if subtle.ConstantTimeCompare([]byte(expected), []byte(digestHeader)) != 1 {
-		return errors.New("Invalid digest")
+		return errors.New("invalid digest")
 	}
 	return nil
 }

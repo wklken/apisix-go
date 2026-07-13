@@ -92,7 +92,7 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 		// logFields["request"] = getRequest(r, p.IncludeRequestBody)
 		// logFields["response"] = getResponse(w, p.IncludeResponseBody)
 
-		p.Fire(logFields)
+		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -124,11 +124,8 @@ func (p *BaseLoggerPlugin) Consume() {
 	}
 
 	go func() {
-		for {
-			select {
-			case log := <-p.FireChan:
-				p.SendFunc(log)
-			}
+		for log := range p.FireChan {
+			p.SendFunc(log)
 		}
 	}()
 }

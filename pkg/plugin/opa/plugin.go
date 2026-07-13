@@ -197,7 +197,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			w.WriteHeader(decision.StatusCode)
 			if decision.Reason != nil {
-				w.Write([]byte(reasonString(decision.Reason)))
+				_, _ = w.Write([]byte(reasonString(decision.Reason)))
 			}
 			return
 		}
@@ -224,7 +224,7 @@ func (p *Plugin) queryOPA(r *http.Request) (*opaDecision, int, error) {
 	if err != nil {
 		return nil, http.StatusForbidden, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var opaResp opaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&opaResp); err != nil {

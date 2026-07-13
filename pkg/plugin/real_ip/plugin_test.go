@@ -132,7 +132,7 @@ func TestRemoteAddressSourceUsesExistingContextValue(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "remote_addr"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
 	req.RemoteAddr = "192.0.2.10:1234"
-	req = req.WithContext(context.WithValue(req.Context(), "remote_addr", "198.51.100.20"))
+	req = req.WithContext(context.WithValue(req.Context(), apisixctx.RemoteAddrKey, "198.51.100.20"))
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

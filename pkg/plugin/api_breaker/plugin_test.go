@@ -9,11 +9,6 @@ import (
 	"github.com/sony/gobreaker"
 )
 
-//go:fix inline
-func intPtr(value int) *int {
-	return new(value)
-}
-
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
@@ -60,7 +55,7 @@ func TestHandlerResolvesBreakResponseHeaders(t *testing.T) {
 	secondReq.RemoteAddr = "192.0.2.10:12345"
 	handler.ServeHTTP(second, secondReq)
 	result := second.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	if result.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("blocked response code = %d, want %d", result.StatusCode, http.StatusTooManyRequests)

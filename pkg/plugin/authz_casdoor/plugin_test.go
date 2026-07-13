@@ -87,7 +87,7 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
 		tokenForm = r.PostForm
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "token-a",
 			"expires_in":   3600,
 		})
@@ -193,7 +193,7 @@ func TestCallbackRejectsInvalidState(t *testing.T) {
 
 func TestInvalidTokenResponseReturnsServiceUnavailable(t *testing.T) {
 	casdoor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "token-a",
 			"expires_in":   0,
 		})

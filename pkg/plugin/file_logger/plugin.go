@@ -158,7 +158,7 @@ func (p *Plugin) PostInit() error {
 		zapcore.NewCore(enc, syncWriter, cfg.Level),
 	)
 
-	if p.config.LogFormat == nil || len(p.config.LogFormat) == 0 {
+	if len(p.config.LogFormat) == 0 {
 		p.logFormat = metadata.LogFormat
 	} else {
 		p.logFormat = p.config.LogFormat
@@ -237,7 +237,7 @@ func (w *appendFileWriteSyncer) Write(data []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return file.Write(data)
 }

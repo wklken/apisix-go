@@ -13,6 +13,7 @@ import (
 	"github.com/gofrs/uuid"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/oxtoacart/bpool"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -126,15 +127,16 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		requestID := r.Header.Get(p.config.HeaderName)
 		if requestID == "" {
-			if p.config.Algorithm == "uuid" {
+			switch p.config.Algorithm {
+			case "uuid":
 				requestID = uuid.Must(uuid.NewV4()).String()
-			} else if p.config.Algorithm == "uuidv7" {
+			case "uuidv7":
 				requestID = p.uuidv7ID()
-			} else if p.config.Algorithm == "nanoid" {
+			case "nanoid":
 				requestID, _ = gonanoid.New()
-			} else if p.config.Algorithm == "ksuid" {
+			case "ksuid":
 				requestID = p.ksuidID()
-			} else if p.config.Algorithm == "range_id" {
+			case "range_id":
 				requestID = p.rangeID(p.config.RangeID.CharSet, p.config.RangeID.Length)
 			}
 		}
@@ -145,7 +147,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			w.Header().Set(p.config.HeaderName, requestID)
 		}
 
-		ctx = context.WithValue(ctx, "request_id", requestID)
+		ctx = context.WithValue(ctx, apisixctx.RequestIDKey, requestID)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}

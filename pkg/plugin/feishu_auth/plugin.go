@@ -243,7 +243,7 @@ func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
 	}
@@ -270,7 +270,7 @@ func (p *Plugin) fetchUserInfo(r *http.Request, accessToken string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected http response status: %d", resp.StatusCode)
 	}

@@ -120,7 +120,7 @@ func serveKafkaTLSFixture(listener net.Listener, authPayload chan<- []byte, fixt
 		fixtureErr <- err
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := serveKafkaFixtureConnection(conn, authPayload); err != nil {
 		fixtureErr <- err
 	}

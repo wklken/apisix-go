@@ -215,8 +215,3 @@ func moderationServer(t *testing.T, body string, status int) *httptest.Server {
 		_, _ = w.Write([]byte(body))
 	}))
 }
-
-//go:fix inline
-func floatPtr(v float64) *float64 {
-	return new(v)
-}

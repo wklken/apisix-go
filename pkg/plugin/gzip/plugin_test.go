@@ -100,15 +100,10 @@ func decodeGzip(t *testing.T, body []byte) string {
 	if err != nil {
 		t.Fatalf("create gzip reader: %v", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	decoded, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("decode gzip body: %v", err)
 	}
 	return string(decoded)
-}
-
-//go:fix inline
-func intPtr(v int) *int {
-	return new(v)
 }

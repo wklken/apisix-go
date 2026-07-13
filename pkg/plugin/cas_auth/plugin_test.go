@@ -69,7 +69,7 @@ func TestCallbackValidatesTicketAndCreatesSession(t *testing.T) {
 		}
 		validateQuery = r.URL.Query()
 		w.WriteHeader(http.StatusOK)
-		w.Write(
+		_, _ = w.Write(
 			[]byte(
 				`<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>`,
 			),
@@ -222,11 +222,6 @@ func TestLogoutDeletesSessionAndRedirectsToCASLogout(t *testing.T) {
 	if _, ok := p.sessions[p.sessionKey("ST-1")]; ok {
 		t.Fatal("session still exists after logout")
 	}
-}
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
 }
 
 func findSetCookie(cookies []*http.Cookie, name string) *http.Cookie {

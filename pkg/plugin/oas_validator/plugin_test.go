@@ -1159,8 +1159,7 @@ func TestHandlerResolvesRelativeExternalSchemaRefFromSpecURL(t *testing.T) {
 }
 
 func TestHandlerRejectsExternalSchemaRefCycle(t *testing.T) {
-	var specServer *httptest.Server
-	specServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/a.json":
@@ -1229,11 +1228,6 @@ func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
 		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
 	}
-}
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
 }
 
 func testSpec() string {

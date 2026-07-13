@@ -752,7 +752,7 @@ func TestHandlerForwardsBedrockConverseEventStream(t *testing.T) {
 		t.Fatal("next handler called for Bedrock stream")
 	})).ServeHTTP(rr, req)
 
-	if string(rr.Body.Bytes()) != string(streamBody) || !rr.Flushed {
+	if rr.Body.String() != string(streamBody) || !rr.Flushed {
 		t.Fatalf("Bedrock EventStream was not preserved and flushed")
 	}
 	assertLLMRequestVar(t, req, "$request_type", "ai_stream")
@@ -1205,11 +1205,6 @@ func TestPostInitRejectsOpenAICompatibleWithoutEndpoint(t *testing.T) {
 	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "override.endpoint is required") {
 		t.Fatalf("PostInit() error = %v, want override endpoint error", err)
 	}
-}
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
 }
 
 func testAWSEventStreamFrame(headers map[string]string, payload string) []byte {

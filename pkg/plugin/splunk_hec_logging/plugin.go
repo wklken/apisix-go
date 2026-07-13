@@ -251,7 +251,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 		if err := json.Unmarshal(resp.Body(), &errorBody); err == nil && errorBody.Text != "" {
 			message = errorBody.Text
 		}
-		return 0, fmt.Errorf("Splunk HEC endpoint returned status code [%d] uri [%s], body [%s]",
+		return 0, fmt.Errorf("splunk HEC endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(), p.config.Endpoint.URI, message)
 	}
 	return 0, nil

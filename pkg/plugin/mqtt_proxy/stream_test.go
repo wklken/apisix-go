@@ -182,7 +182,7 @@ func TestServeListenerPublishesStreamInfo(t *testing.T) {
 			brokerDone <- acceptErr
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		got := make([]byte, len(packet)+len(extra))
 		if _, readErr := io.ReadFull(conn, got); readErr != nil {
 			brokerDone <- readErr

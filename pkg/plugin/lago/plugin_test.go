@@ -299,7 +299,7 @@ func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("created"))
+		_, _ = w.Write([]byte("created"))
 	})).ServeHTTP(rr, req)
 
 	select {

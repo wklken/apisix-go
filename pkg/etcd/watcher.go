@@ -99,7 +99,7 @@ func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Conf
 
 func (c *ConfigClient) Watch(contexts ...context.Context) {
 	watcher := clientv3.NewWatcher(c.client)
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 
 	ctx := context.Background()
 	if len(contexts) > 0 && contexts[0] != nil {

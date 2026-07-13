@@ -14,9 +14,9 @@ import (
 
 func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
 	firstUpstream, firstAddr := startStreamUpstream(t, []byte("first-response"))
-	defer firstUpstream.Close()
+	defer func() { _ = firstUpstream.Close() }()
 	secondUpstream, secondAddr := startStreamUpstream(t, []byte("second-response"))
-	defer secondUpstream.Close()
+	defer func() { _ = secondUpstream.Close() }()
 
 	ctx := t.Context()
 	results := make(chan Result, 2)
@@ -58,7 +58,7 @@ func TestRuntimeServesConfiguredListenerAndReloadsRoutes(t *testing.T) {
 
 func TestRuntimeCloseCancelsActiveStream(t *testing.T) {
 	upstream, upstreamAddr := startBlockingStreamUpstream(t)
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	runtime, err := NewRuntime(
 		context.Background(),
@@ -93,7 +93,7 @@ func TestRuntimeCloseCancelsActiveStream(t *testing.T) {
 
 func TestRuntimeCancellationBoundsBackpressure(t *testing.T) {
 	upstream, upstreamAddr, accepted, release := startNonReadingStreamUpstream(t)
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -219,7 +219,7 @@ func startBlockingStreamUpstream(t *testing.T) (net.Listener, string) {
 		if acceptErr != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _ = io.Copy(io.Discard, conn)
 	}()
 	return listener, listener.Addr().String()
@@ -238,7 +238,7 @@ func startNonReadingStreamUpstream(t *testing.T) (net.Listener, string, <-chan s
 		if acceptErr != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		close(accepted)
 		<-release
 	}()

@@ -111,7 +111,9 @@ func (pm *PluginMetadata) MarshalYAML() (any, error) {
 		return nil, err
 	}
 	var resMap map[string]any
-	json.Unmarshal(by, &resMap)
+	if err := json.Unmarshal(by, &resMap); err != nil {
+		return nil, err
+	}
 	resMap["id"] = pm.ID
 	return resMap, nil
 }

@@ -17,7 +17,7 @@ func TestTransportRoundTripPreservesKafkaFrames(t *testing.T) {
 	response := kafkaTestFrame([]byte("response-frame"))
 	brokerErrors := make(chan error, 1)
 	addr := startKafkaTestBroker(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		got, err := io.ReadAll(io.LimitReader(conn, int64(len(request))))
 		if err != nil {
 			brokerErrors <- err
@@ -47,7 +47,7 @@ func TestTransportRoundTripPreservesKafkaFrames(t *testing.T) {
 func TestTransportRoundTripRejectsOversizedResponse(t *testing.T) {
 	brokerErrors := make(chan error, 1)
 	addr := startKafkaTestBroker(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		var header [4]byte
 		if _, err := io.ReadFull(conn, header[:]); err != nil {
 			brokerErrors <- err
@@ -94,7 +94,7 @@ func TestTransportRoundTripHonorsCancellation(t *testing.T) {
 			return
 		}
 		close(accepted)
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _ = io.Copy(io.Discard, conn)
 	}()
 

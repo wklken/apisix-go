@@ -338,7 +338,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			responseBody = recorder.body.String()
 		}
 
-		p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()))
+		_ = p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -384,7 +384,7 @@ func (p *Plugin) SendBatch(entries []map[string]any, _ int) (int, error) {
 	}
 	if resp.StatusCode() >= 300 {
 		return 0, fmt.Errorf(
-			"Lago endpoint returned status code [%d] uri [%s], body [%s]",
+			"lago endpoint returned status code [%d] uri [%s], body [%s]",
 			resp.StatusCode(),
 			endpoint,
 			resp.String(),

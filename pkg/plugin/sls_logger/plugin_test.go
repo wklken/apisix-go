@@ -476,7 +476,7 @@ func startTLSServer(t *testing.T) (string, <-chan string) {
 		t.Fatalf("listen tls: %v", err)
 	}
 	t.Cleanup(func() {
-		ln.Close()
+		_ = ln.Close()
 	})
 
 	received := make(chan string, 1)
@@ -485,7 +485,7 @@ func startTLSServer(t *testing.T) (string, <-chan string) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		buf := make([]byte, 4096)
 		n, err := conn.Read(buf)

@@ -371,7 +371,7 @@ func TestHandlerCachesGraphQLPOSTResponses(t *testing.T) {
 		calls++
 		w.Header().Set("X-Origin", "upstream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data":{"persons":[]}}`))
+		_, _ = w.Write([]byte(`{"data":{"persons":[]}}`))
 	}))
 
 	first := performGraphQLRequest(
@@ -423,7 +423,7 @@ func TestHandlerCachesGraphQLGETResponses(t *testing.T) {
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		w.Write([]byte("get-response"))
+		_, _ = w.Write([]byte("get-response"))
 	}))
 
 	first := performGraphQLRequest(
@@ -462,7 +462,7 @@ func TestHandlerBypassesMutationOperations(t *testing.T) {
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		w.Write([]byte("mutation-response"))
+		_, _ = w.Write([]byte("mutation-response"))
 	}))
 
 	first := performGraphQLRequest(
@@ -612,7 +612,7 @@ func TestHandlerRefreshesExpiredGraphQLCacheEntries(t *testing.T) {
 	p.now = func() time.Time { return base }
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		w.Write([]byte("response"))
+		_, _ = w.Write([]byte("response"))
 	}))
 
 	_ = performGraphQLRequest(
@@ -719,7 +719,7 @@ func TestPurgeHandlerRemovesRouteCacheEntry(t *testing.T) {
 	calls := 0
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		w.Write([]byte("response"))
+		_, _ = w.Write([]byte("response"))
 	}))
 	first := performGraphQLRequest(
 		t,

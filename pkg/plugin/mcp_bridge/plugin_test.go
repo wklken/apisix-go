@@ -42,7 +42,7 @@ func TestSSEStartsProcessAndAdvertisesMessageEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /mcp/sse: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -93,7 +93,7 @@ func TestMessageEndpointWritesToSessionStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /sse: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	reader := bufio.NewReader(resp.Body)
 	_, endpointData := readSSEEvent(t, reader)
 	event, data := readSSEEvent(t, reader)
@@ -108,7 +108,7 @@ func TestMessageEndpointWritesToSessionStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /message: %v", err)
 	}
-	defer postResp.Body.Close()
+	defer func() { _ = postResp.Body.Close() }()
 	if postResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("message status = %d, want 202", postResp.StatusCode)
 	}
@@ -136,7 +136,7 @@ func TestStderrIsForwardedAsMCPNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /sse: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	reader := bufio.NewReader(resp.Body)
 	readSSEEvent(t, reader)
 	event, data := readSSEEvent(t, reader)
@@ -177,7 +177,7 @@ func TestSSEEmitsPeriodicPingRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /sse: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	reader := bufio.NewReader(resp.Body)
 	readSSEEvent(t, reader)
 

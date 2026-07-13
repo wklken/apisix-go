@@ -156,5 +156,5 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 		}
 	}
 	w.WriteHeader(r.statusCode)
-	w.Write(r.body)
+	_, _ = w.Write(r.body)
 }

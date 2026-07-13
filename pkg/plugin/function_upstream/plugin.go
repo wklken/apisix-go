@@ -87,7 +87,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			http.Error(w, "failed to process "+p.Name, http.StatusServiceUnavailable)
 			return
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 
 		writeResponse(w, res, r.ProtoMajor >= 2)
 	})
@@ -148,5 +148,5 @@ func writeResponse(w http.ResponseWriter, res *http.Response, http2 bool) {
 		}
 	}
 	w.WriteHeader(res.StatusCode)
-	io.Copy(w, res.Body)
+	_, _ = io.Copy(w, res.Body)
 }

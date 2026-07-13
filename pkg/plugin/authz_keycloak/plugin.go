@@ -298,7 +298,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			if body != "" {
 				w.WriteHeader(status)
-				w.Write([]byte(body))
+				_, _ = w.Write([]byte(body))
 				return
 			}
 			w.WriteHeader(status)
@@ -722,7 +722,7 @@ func (p *Plugin) generateTokenUsingPasswordGrant(w http.ResponseWriter, r *http.
 		}
 	}
 	w.WriteHeader(resp.StatusCode())
-	w.Write(resp.Body())
+	_, _ = w.Write(resp.Body())
 }
 
 func fetchJWTToken(r *http.Request) string {
@@ -758,5 +758,5 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	if err := json.NewEncoder(&buf).Encode(value); err != nil {
 		return
 	}
-	w.Write(buf.Bytes())
+	_, _ = w.Write(buf.Bytes())
 }

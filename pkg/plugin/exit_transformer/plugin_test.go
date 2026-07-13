@@ -32,7 +32,7 @@ func TestHandlerRemapsStatusWithDocumentedLuaPattern(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"message":"Missing API key in request"}`))
+		_, _ = w.Write([]byte(`{"message":"Missing API key in request"}`))
 	})
 
 	if res.Code != http.StatusForbidden {
@@ -52,7 +52,7 @@ func TestHandlerNormalizesErrorBodyAndHeaderWithDocumentedLuaPattern(t *testing.
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"message":"Missing API key in request"}`))
+		_, _ = w.Write([]byte(`{"message":"Missing API key in request"}`))
 	})
 
 	if res.Code != http.StatusUnauthorized {
@@ -80,7 +80,7 @@ func TestHandlerChainsTransformers(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"message":"Missing API key in request"}`))
+		_, _ = w.Write([]byte(`{"message":"Missing API key in request"}`))
 	})
 
 	if res.Code != http.StatusForbidden {
@@ -100,7 +100,7 @@ func TestHandlerKeepsSuccessfulResponse(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	if res.Code != http.StatusOK {
@@ -123,7 +123,7 @@ func TestHandlerDoesNotTransformKnownUpstreamResponse(t *testing.T) {
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"message":"upstream failure"}`))
+		_, _ = w.Write([]byte(`{"message":"upstream failure"}`))
 	})).ServeHTTP(rr, req)
 
 	if got := rr.Body.String(); got != `{"message":"upstream failure"}` {

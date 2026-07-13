@@ -659,7 +659,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		if !requiredScopesPresent(p.config.RequiredScopes, claims) {
 			w.WriteHeader(http.StatusForbidden)
-			w.Write(
+			_, _ = w.Write(
 				util.StringToBytes(
 					`{"error":"required scopes ` + strings.Join(p.config.RequiredScopes, ", ") + ` not present"}`,
 				),
@@ -668,7 +668,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		if statusCode, responseBody := p.validateConfiguredClaims(claims); statusCode != 0 {
 			w.WriteHeader(statusCode)
-			w.Write(util.StringToBytes(responseBody))
+			_, _ = w.Write(util.StringToBytes(responseBody))
 			return
 		}
 		if err := p.validateClaimSchema(claims); err != nil {
@@ -904,7 +904,7 @@ func (p *Plugin) requestTokens(r *http.Request, form url.Values) (tokenResponse,
 	if err != nil {
 		return tokenResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return tokenResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 	}
@@ -1046,7 +1046,7 @@ func (p *Plugin) userinfo(r *http.Request, accessToken string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return "", fmt.Errorf("userinfo endpoint returned %d", resp.StatusCode)
 	}
@@ -1110,7 +1110,7 @@ func (p *Plugin) revokeToken(r *http.Request, endpoint, tokenTypeHint, token str
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("revocation endpoint returned %d", resp.StatusCode)
 	}
@@ -1742,7 +1742,7 @@ func (p *Plugin) jwksPublicKey(r *http.Request, token jwtToken) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("jwks endpoint returned %d", resp.StatusCode)
 	}
@@ -1818,7 +1818,7 @@ func (p *Plugin) introspect(r *http.Request, token string) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("introspection endpoint returned %d", resp.StatusCode)
@@ -1862,7 +1862,7 @@ func (p *Plugin) discoveryDoc() (discoveryData, error) {
 	if err != nil {
 		return discoveryData{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return discoveryData{}, fmt.Errorf("discovery endpoint returned %d", resp.StatusCode)

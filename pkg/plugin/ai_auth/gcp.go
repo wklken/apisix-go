@@ -115,7 +115,7 @@ func (s *GCPTokenSource) Token(ctx context.Context, client *http.Client, config 
 	if err != nil {
 		return "", fmt.Errorf("request GCP access token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("read GCP token response: %w", err)

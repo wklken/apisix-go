@@ -2,11 +2,13 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -117,7 +119,7 @@ func (r *Runtime) serveListener(listener net.Listener) {
 			if r.ctx.Err() != nil {
 				return
 			}
-			if temporary, ok := err.(net.Error); ok && temporary.Temporary() {
+			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			return

@@ -145,7 +145,7 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 		if acceptErr != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 1024)
 		n, _ := conn.Read(buf)
 		received <- string(buf[:n])

@@ -38,7 +38,7 @@ func TestHandlerInvokesAzureFunctionAndRelaysResponse(t *testing.T) {
 
 		w.Header().Set("X-Function-Result", "azure")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("hello from azure"))
+		_, _ = w.Write([]byte("hello from azure"))
 	}))
 	defer function.Close()
 

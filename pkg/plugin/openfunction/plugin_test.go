@@ -26,7 +26,7 @@ func TestHandlerInvokesOpenFunctionWithBasicAuthorization(t *testing.T) {
 		gotAuthorization = r.Header.Get("Authorization")
 		w.Header().Set("X-Function-Result", "openfunction")
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("hello from openfunction"))
+		_, _ = w.Write([]byte("hello from openfunction"))
 	}))
 	defer function.Close()
 

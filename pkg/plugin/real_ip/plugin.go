@@ -116,8 +116,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			ctx = context.WithValue(ctx, "remote_addr", ip)
-			ctx = context.WithValue(ctx, "remote_port", port)
+			ctx = context.WithValue(ctx, apisixctx.RemoteAddrKey, ip)
+			ctx = context.WithValue(ctx, apisixctx.RemotePortKey, port)
 		}
 
 		next.ServeHTTP(w, r.WithContext(ctx))

@@ -336,11 +336,6 @@ func TestHandlerTracksSeparateKeys(t *testing.T) {
 	}
 }
 
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
-}
-
 type fakeRedisLimiter struct {
 	key     string
 	rate    float64

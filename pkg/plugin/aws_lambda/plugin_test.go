@@ -41,7 +41,7 @@ func TestHandlerInvokesAWSLambdaWithAPIKey(t *testing.T) {
 
 		w.Header().Set("X-Lambda-Result", "ok")
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("lambda body"))
+		_, _ = w.Write([]byte("lambda body"))
 	}))
 	defer lambda.Close()
 
@@ -122,7 +122,7 @@ func TestHandlerSignsIAMRequestWithAWSV4(t *testing.T) {
 		}
 		gotBody = string(body)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("signed"))
+		_, _ = w.Write([]byte("signed"))
 	}))
 	defer lambda.Close()
 

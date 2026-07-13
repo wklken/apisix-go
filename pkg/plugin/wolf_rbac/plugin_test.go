@@ -88,7 +88,7 @@ func TestHandlerChecksWolfPermissionAndAttachesConsumer(t *testing.T) {
 		if r.URL.Path != "/wolf/rbac/access_check" {
 			t.Fatalf("path = %q, want access_check", r.URL.Path)
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
 			"data": map[string]any{
 				"userInfo": map[string]any{
@@ -178,7 +178,7 @@ func TestHandlerRejectsMissingAndInvalidToken(t *testing.T) {
 func TestHandlerPropagatesWolfDenial(t *testing.T) {
 	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":     false,
 			"reason": "permission denied",
 		})
@@ -212,7 +212,7 @@ func TestFetchTokenFromQueryAndCookie(t *testing.T) {
 
 func TestCheckPermissionHonorsSSLVerifyFalse(t *testing.T) {
 	wolf := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
 	t.Cleanup(wolf.Close)
 
@@ -238,7 +238,7 @@ func TestHandlerRetriesTransientWolfServerFailure(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
 	t.Cleanup(wolf.Close)
 	addWolfConsumer(t, "wolf-retry-user", "app-retry", wolf.URL)
@@ -291,7 +291,7 @@ func TestWolfRBACLoginPublicAPIForwardsCredentialsAndWrapsToken(t *testing.T) {
 		if body["username"] != "alice" || body["password"] != "secret" {
 			t.Fatalf("body = %#v, want login credentials", body)
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
 			"data": map[string]any{
 				"token":    "wolf-token",
@@ -326,11 +326,6 @@ func TestWolfRBACLoginPublicAPIForwardsCredentialsAndWrapsToken(t *testing.T) {
 	if response["rbac_token"] != "V1#app-login#wolf-token" {
 		t.Fatalf("rbac_token = %v, want wrapped Wolf token", response["rbac_token"])
 	}
-}
-
-//go:fix inline
-func boolPtr(value bool) *bool {
-	return new(value)
 }
 
 func performRequest(t *testing.T, p *Plugin, token string) *httptest.ResponseRecorder {

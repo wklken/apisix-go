@@ -321,7 +321,7 @@ func (p *Plugin) fetchSpec() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("spec URL returned status %d", res.StatusCode)
@@ -376,10 +376,6 @@ func (p *Plugin) validateRequest(spec *compiledSpec, r *http.Request) error {
 	}
 
 	return nil
-}
-
-func compileSpec(spec string) (*compiledSpec, error) {
-	return compileSpecWithResolver(spec, nil, nil)
 }
 
 func compileSpecWithResolver(spec string, resolver *specResolver, baseURL *url.URL) (*compiledSpec, error) {
@@ -523,7 +519,7 @@ func (r *specResolver) fetchDocument(refURL *url.URL) (any, *url.URL, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return nil, nil, fmt.Errorf("external $ref URL returned status %d", res.StatusCode)
 	}

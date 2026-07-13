@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -51,7 +52,7 @@ func TestHandlerPreservesIncomingRequestID(t *testing.T) {
 		if got := r.Header.Get("X-Request-Id"); got != "client-provided" {
 			t.Fatalf("request id = %q, want client-provided", got)
 		}
-		if got := r.Context().Value("request_id"); got != "client-provided" {
+		if got := r.Context().Value(apisixctx.RequestIDKey); got != "client-provided" {
 			t.Fatalf("context request_id = %#v, want client-provided", got)
 		}
 		w.WriteHeader(http.StatusNoContent)

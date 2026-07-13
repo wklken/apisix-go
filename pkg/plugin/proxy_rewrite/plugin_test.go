@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -28,7 +30,7 @@ func TestHandlerDerivesURIFromRegexURI(t *testing.T) {
 	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/users/42/profile", nil)
@@ -46,7 +48,7 @@ func TestHandlerUsesFirstMatchingRegexURIPair(t *testing.T) {
 	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/orders/7", nil)
@@ -65,7 +67,7 @@ func TestHandlerURIHasPriorityOverRegexURI(t *testing.T) {
 	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
@@ -83,7 +85,7 @@ func TestHandlerUsesRealRequestURIUnsafeAsRewriteSource(t *testing.T) {
 	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/files/%2Fraw?download=1", nil)
@@ -102,7 +104,7 @@ func TestHandlerRegexURIMatchesRealRequestURIUnsafe(t *testing.T) {
 	var rewrite map[string]any
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rewrite = r.Context().Value("proxy-rewrite").(map[string]any)
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1?token=abc", nil)

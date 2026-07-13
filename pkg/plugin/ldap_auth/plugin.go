@@ -182,7 +182,7 @@ func defaultLDAPAuthenticate(username, password string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	userDN := cfg.UID + "=" + username + "," + cfg.BaseDN
 	return conn.Bind(userDN, password)

@@ -35,7 +35,7 @@ func TestHandlerRewritesConfiguredErrorPage(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("Content-Length", "8")
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("original"))
+		_, _ = w.Write([]byte("original"))
 	})
 
 	if res.Code != http.StatusNotFound {
@@ -56,7 +56,7 @@ func TestHandlerKeepsUnconfiguredOrDisabledResponses(t *testing.T) {
 	disabled := newTestPlugin(t, Metadata{Enable: false, Error404: ErrorPage{Body: "custom"}})
 	res := performRequest(disabled, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("original"))
+		_, _ = w.Write([]byte("original"))
 	})
 	if got := res.Body.String(); got != "original" {
 		t.Fatalf("disabled body = %q, want original", got)
@@ -65,7 +65,7 @@ func TestHandlerKeepsUnconfiguredOrDisabledResponses(t *testing.T) {
 	enabled := newTestPlugin(t, Metadata{Enable: true})
 	res = performRequest(enabled, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("bad request"))
+		_, _ = w.Write([]byte("bad request"))
 	})
 	if got := res.Body.String(); got != "bad request" {
 		t.Fatalf("unconfigured status body = %q, want original", got)
@@ -86,7 +86,7 @@ func TestHandlerDoesNotRewriteUpstreamErrorWhenSourceIsKnown(t *testing.T) {
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("upstream error"))
+		_, _ = w.Write([]byte("upstream error"))
 	})).ServeHTTP(rr, req)
 
 	if got := rr.Body.String(); got != "upstream error" {
@@ -99,7 +99,7 @@ func TestHandlerKeepsSuccessfulResponses(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	if res.Code != http.StatusOK {
@@ -115,7 +115,7 @@ func TestDefaultErrorPageBody(t *testing.T) {
 
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("original"))
+		_, _ = w.Write([]byte("original"))
 	})
 
 	if res.Code != http.StatusInternalServerError {

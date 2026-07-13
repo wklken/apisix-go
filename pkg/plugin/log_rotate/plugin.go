@@ -331,7 +331,7 @@ func compressFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := os.Create(path + ".tar.gz")
 	if err != nil {
@@ -343,29 +343,29 @@ func compressFile(path string) error {
 
 	info, err := src.Stat()
 	if err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return err
 	}
 	header, err := tar.FileInfoHeader(info, "")
 	if err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return err
 	}
 	header.Name = filepath.Base(path)
 	if err := tw.WriteHeader(header); err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return err
 	}
 	if _, err := io.Copy(tw, src); err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return err
 	}
 	if err := tw.Close(); err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return err
 	}
 	if err := gz.Close(); err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return err
 	}
 	if err := dst.Close(); err != nil {

@@ -358,8 +358,8 @@ func bridge(ctx context.Context, client net.Conn, upstream net.Conn) error {
 	}
 	closeDone := closeOnContextDone(ctx, client, upstream)
 	defer closeDone()
-	defer client.Close()
-	defer upstream.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = upstream.Close() }()
 
 	results := make(chan error, 2)
 	go copyDirection(upstream, client, results)

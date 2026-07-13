@@ -959,7 +959,7 @@ func TestHandlerForwardsSelectedBedrockEventStreamInstance(t *testing.T) {
 		t.Fatal("next handler called for multi Bedrock stream")
 	})).ServeHTTP(rr, req)
 
-	if string(rr.Body.Bytes()) != string(metadata) || !rr.Flushed {
+	if rr.Body.String() != string(metadata) || !rr.Flushed {
 		t.Fatal("multi Bedrock EventStream was not preserved and flushed")
 	}
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
@@ -1135,16 +1135,6 @@ func serveChatWithBody(t *testing.T, p *Plugin, body string, tenant ...string) s
 	}
 
 	return strings.TrimSpace(rr.Body.String())
-}
-
-//go:fix inline
-func intPtr(v int) *int {
-	return new(v)
-}
-
-//go:fix inline
-func boolPtr(v bool) *bool {
-	return new(v)
 }
 
 func testAWSEventStreamFrame(headers map[string]string, payload string) []byte {

@@ -11,10 +11,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/config"
 )
 
-const (
-	serviceName = "apisix-go"
-)
-
 var defaultLatencyBuckets = []float64{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000}
 
 // FIXME: how to set etcd reachable?
@@ -223,8 +219,10 @@ func Init() {
 		}),
 	)
 
-	hostName := "unknown"
-	hostName, _ = os.Hostname()
+	hostName, err := os.Hostname()
+	if err != nil || hostName == "" {
+		hostName = "unknown"
+	}
 	HostInfo.WithLabelValues(hostName).Set(1)
 
 	prometheus.MustRegister(

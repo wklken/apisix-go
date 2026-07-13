@@ -199,10 +199,6 @@ func consumerLabels(r *http.Request) (map[string]any, bool) {
 	return nil, false
 }
 
-func containsLabel(wantLabels map[string][]string, labels map[string]any) bool {
-	return containsLabelWithParser(wantLabels, labels, "", "")
-}
-
 func containsLabelWithParser(wantLabels map[string][]string, labels map[string]any, parser, separator string) bool {
 	if labels == nil {
 		return false
@@ -214,10 +210,6 @@ func containsLabelWithParser(wantLabels map[string][]string, labels map[string]a
 		}
 	}
 	return false
-}
-
-func containsValue(wantValues []string, value any) bool {
-	return containsValueWithParser(wantValues, value, "", "")
 }
 
 func containsValueWithParser(wantValues []string, value any, parser, separator string) bool {

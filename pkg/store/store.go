@@ -15,6 +15,7 @@ type EventUpdateHook func(event *Event)
 
 type Store struct {
 	events chan *Event
+	flush  chan chan struct{}
 	// Add other fields for kv storage in memory
 	db *bolt.DB
 
@@ -45,6 +46,7 @@ func NewStore(dbPath string, events chan *Event) *Store {
 
 		s = &Store{
 			events: events,
+			flush:  make(chan chan struct{}),
 			// Initialize other fields for kv storage in memory
 			db: db,
 
@@ -131,6 +133,13 @@ func (s *Store) Start() {
 	go s.processEvents()
 }
 
+// Sync waits until all events sent before the call have been processed.
+func (s *Store) Sync() {
+	done := make(chan struct{})
+	s.flush <- done
+	<-done
+}
+
 func (s *Store) Stop() {
 	// Close events channel
 	close(s.events)
@@ -147,7 +156,19 @@ func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 }
 
 func (s *Store) processEvents() {
-	for event := range s.events {
+	for {
+		var event *Event
+		select {
+		case done := <-s.flush:
+			close(done)
+			continue
+		case next, ok := <-s.events:
+			if !ok {
+				return
+			}
+			event = next
+		}
+
 		bucketName, id := getTypeAndIDFromKey(event.Key)
 		switch event.Type {
 		case EventTypePut:

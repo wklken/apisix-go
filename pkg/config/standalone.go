@@ -1,7 +1,14 @@
 package config
 
 import (
+	"bytes"
+	stdjson "encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
 
 	apisixv1 "github.com/apache/apisix-ingress-controller/pkg/types/apisix/v1"
 	"github.com/fsnotify/fsnotify"
@@ -9,38 +16,257 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
+	"go.yaml.in/yaml/v3"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // for standalone mode: https://apisix.apache.org/docs/apisix/deployment-modes/#standalone
 
-// watch the config file change
+const (
+	standaloneProviderYAML = "yaml"
+	standaloneProviderJSON = "json"
+)
 
-func InitStandaloneFileWatcher(path string, events chan *store.Event) {
+var standaloneBuckets = []string{
+	"routes",
+	"upstreams",
+	"services",
+	"plugin_metadata",
+	"ssls",
+	"stream_routes",
+	"consumers",
+	"consumer_groups",
+	"global_rules",
+	"plugin_configs",
+	"protos",
+}
+
+type standaloneSnapshot map[string]map[string][]byte
+
+// StandaloneFileWatcher loads the APISIX file-driven configuration and emits
+// store events for added, updated, and removed resources.
+type StandaloneFileWatcher struct {
+	path     string
+	provider string
+	events   chan *store.Event
+
+	mu      sync.Mutex
+	current standaloneSnapshot
+}
+
+func StandaloneConfigFile(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case standaloneProviderJSON:
+		return "conf/apisix.json"
+	case standaloneProviderYAML:
+		return "conf/apisix.yaml"
+	default:
+		return ""
+	}
+}
+
+func NewStandaloneFileWatcher(path, provider string, events chan *store.Event) *StandaloneFileWatcher {
+	return &StandaloneFileWatcher{
+		path:     path,
+		provider: strings.ToLower(strings.TrimSpace(provider)),
+		events:   events,
+		current:  make(standaloneSnapshot),
+	}
+}
+
+func (w *StandaloneFileWatcher) Reload() error {
+	next, err := readStandaloneSnapshot(w.path, w.provider)
+	if err != nil {
+		return err
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, bucket := range standaloneBuckets {
+		previous := w.current[bucket]
+		updated := next[bucket]
+
+		for _, id := range sortedSnapshotIDs(previous) {
+			if _, ok := updated[id]; !ok {
+				w.emit(store.EventTypeDelete, bucket, id, nil)
+			}
+		}
+		for _, id := range sortedSnapshotIDs(updated) {
+			if previousValue, ok := previous[id]; ok && bytes.Equal(previousValue, updated[id]) {
+				continue
+			}
+			w.emit(store.EventTypePut, bucket, id, updated[id])
+		}
+	}
+	w.current = next
+	return nil
+}
+
+func (w *StandaloneFileWatcher) Watch() {
 	v := viper.New()
-	v.SetConfigFile(path)
-	v.OnConfigChange(func(e fsnotify.Event) {
-		fmt.Println("Config file changed:", e.Name)
-		ReadAndReload(path, events)
+	v.SetConfigFile(w.path)
+	v.OnConfigChange(func(event fsnotify.Event) {
+		if err := w.Reload(); err != nil {
+			fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+		}
 	})
 	v.WatchConfig()
 }
 
+func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) {
+	event := store.NewEvent()
+	event.Type = eventType
+	event.Key = []byte("/apisix/" + bucket + "/" + id)
+	event.Value = append([]byte(nil), value...)
+	w.events <- event
+}
+
+func InitStandaloneFileWatcher(path string, events chan *store.Event) {
+	watcher := NewStandaloneFileWatcher(path, standaloneProviderFromPath(path), events)
+	if err := watcher.Reload(); err != nil {
+		fmt.Printf("load standalone config %q failed: %s\n", path, err)
+		return
+	}
+	watcher.Watch()
+}
+
 func ReadAndReload(path string, events chan *store.Event) {
-	// how to cmp the current config and the new config?
-	// store the latest file content?
+	watcher := NewStandaloneFileWatcher(path, standaloneProviderFromPath(path), events)
+	if err := watcher.Reload(); err != nil {
+		fmt.Printf("load standalone config %q failed: %s\n", path, err)
+	}
+}
 
-	// save the previous config => diff => send event
+func standaloneProviderFromPath(path string) string {
+	return strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+}
 
-	// read the config file
-	// v := viper.New()
-	// v.SetConfigFile(path)
-	// err := v.ReadInConfig()
-	// if err != nil {
-	// 	fmt.Println("read config file error", err)
-	// 	return
-	// }
-	// v.AllKeys()
+func readStandaloneSnapshot(path, provider string) (standaloneSnapshot, error) {
+	if provider != standaloneProviderYAML && provider != standaloneProviderJSON {
+		return nil, fmt.Errorf("unsupported standalone config provider %q", provider)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read standalone config %q: %w", path, err)
+	}
+	if provider == standaloneProviderYAML && !strings.HasSuffix(strings.TrimSpace(string(data)), "#END") {
+		return nil, fmt.Errorf("standalone YAML config %q must end with #END", path)
+	}
+
+	var encoded []byte
+	if provider == standaloneProviderYAML {
+		var document any
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			return nil, fmt.Errorf("parse standalone YAML config %q: %w", path, err)
+		}
+		encoded, err = stdjson.Marshal(document)
+		if err != nil {
+			return nil, fmt.Errorf("normalize standalone config %q: %w", path, err)
+		}
+	} else {
+		var document map[string]stdjson.RawMessage
+		if err := stdjson.Unmarshal(data, &document); err != nil {
+			return nil, fmt.Errorf("parse standalone JSON config %q: %w", path, err)
+		}
+		encoded = data
+	}
+
+	var sections map[string]stdjson.RawMessage
+	if err := stdjson.Unmarshal(encoded, &sections); err != nil {
+		return nil, fmt.Errorf("decode standalone resources %q: %w", path, err)
+	}
+
+	snapshot := make(standaloneSnapshot)
+	for _, bucket := range standaloneBuckets {
+		raw, ok := sections[bucket]
+		if !ok {
+			continue
+		}
+		var resources []stdjson.RawMessage
+		if err := stdjson.Unmarshal(raw, &resources); err != nil {
+			return nil, fmt.Errorf("decode standalone %s: %w", bucket, err)
+		}
+		for _, resource := range resources {
+			id, value, err := normalizeStandaloneResource(bucket, resource)
+			if err != nil {
+				return nil, fmt.Errorf("decode standalone %s resource: %w", bucket, err)
+			}
+			if snapshot[bucket] == nil {
+				snapshot[bucket] = make(map[string][]byte)
+			}
+			snapshot[bucket][id] = value
+		}
+	}
+	return snapshot, nil
+}
+
+func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string, []byte, error) {
+	var fields map[string]stdjson.RawMessage
+	if err := stdjson.Unmarshal(raw, &fields); err != nil {
+		return "", nil, err
+	}
+
+	keys := []string{"id"}
+	if bucket == "consumers" {
+		keys = []string{"username", "id"}
+	}
+	var idKey string
+	var idRaw stdjson.RawMessage
+	for _, key := range keys {
+		if value, ok := fields[key]; ok {
+			idKey = key
+			idRaw = value
+			break
+		}
+	}
+	if idKey == "" {
+		return "", nil, fmt.Errorf("missing id")
+	}
+	id, err := standaloneResourceID(idRaw)
+	if err != nil {
+		return "", nil, err
+	}
+	if idKey == "id" {
+		fields[idKey], err = stdjson.Marshal(id)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	value, err := stdjson.Marshal(fields)
+	if err != nil {
+		return "", nil, err
+	}
+	return id, value, nil
+}
+
+func standaloneResourceID(raw stdjson.RawMessage) (string, error) {
+	decoder := stdjson.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", err
+	}
+	switch value := value.(type) {
+	case string:
+		if value == "" {
+			return "", fmt.Errorf("id is empty")
+		}
+		return value, nil
+	case stdjson.Number:
+		return value.String(), nil
+	default:
+		return "", fmt.Errorf("id must be a string or number")
+	}
+}
+
+func sortedSnapshotIDs(snapshot map[string][]byte) []string {
+	ids := make([]string, 0, len(snapshot))
+	for id := range snapshot {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 type ApisixConfigurationStandalone struct {

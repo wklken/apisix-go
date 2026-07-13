@@ -19,6 +19,24 @@ object so an official file can be loaded without being rewritten.
 | `nginx_config.http.client_header_timeout` and `client_body_timeout` | Map to the corresponding Go read timeouts; the body timeout uses the combined header/body deadline because `net/http` has no body-only server timeout. |
 | `nginx_config.http.send_timeout` | Maps to `http.Server.WriteTimeout`. |
 | `deployment.etcd.host`, `prefix`, `user`, `password`, `timeout`, `startup_retry`, and `tls` | Configure the etcd client endpoints, prefix, credentials, dial/request timeout, startup retries, client certificate, verification, and SNI. |
+| `deployment.role: data_plane` with `role_data_plane.config_provider: yaml` or `json` | Loads resource snapshots from `conf/apisix.yaml` or `conf/apisix.json`, watches the file, and applies additions, updates, and removals through the local store. |
+
+## Standalone file-driven mode
+
+Set the deployment role and provider in `conf/config.yaml`:
+
+```yaml
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+```
+
+The YAML provider reads `conf/apisix.yaml` and requires the file to end with
+`#END`. The JSON provider reads `conf/apisix.json` and does not require the
+marker. Both providers use the existing APISIX resource shapes for routes,
+upstreams, services, plugin metadata, SSLs, stream routes, consumers, consumer
+groups, global rules, plugin configs, and protos.
 
 The loader also recognizes the remaining official top-level sections and
 nested fields, including `nginx_config`, `ext-plugin`, `wasm`, `xrpc`, `events`,

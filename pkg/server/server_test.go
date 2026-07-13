@@ -58,6 +58,32 @@ func TestEtcdTLSIsNotEnabledForHTTPEndpoints(t *testing.T) {
 	}
 }
 
+func TestStandaloneConfigProviderSelection(t *testing.T) {
+	tests := []struct {
+		name     string
+		role     string
+		provider string
+		want     bool
+	}{
+		{name: "yaml data plane", role: "data_plane", provider: "yaml", want: true},
+		{name: "json data plane", role: "data_plane", provider: "json", want: true},
+		{name: "etcd data plane", role: "data_plane", provider: "etcd", want: false},
+		{name: "yaml traditional", role: "traditional", provider: "yaml", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{Deployment: config.Deployment{
+				Role:          tt.role,
+				RoleDataPlane: config.RoleConfig{ConfigProvider: tt.provider},
+			}}
+			if got := standaloneConfigProvider(cfg) != ""; got != tt.want {
+				t.Fatalf("standaloneConfigProvider() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPrometheusExportServerConfigDefaults(t *testing.T) {
 	cfg := newPrometheusExportServerConfig(nil)
 

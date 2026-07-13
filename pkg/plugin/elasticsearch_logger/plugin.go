@@ -5,19 +5,15 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/rand"
 	"net"
 	"net/http"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -25,7 +21,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 const (
@@ -279,7 +274,7 @@ func (p *Plugin) PostInit() error {
 		p.config.EndpointAddrs = []string{p.config.EndpointAddr}
 	}
 
-	metadata := loadMetadata()
+	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
 		p.LogFormat = metadata.LogFormat
 	} else {
@@ -307,219 +302,37 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
-		if p.config.IncludeReqBody && exprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
+			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
 			}
 		}
 
 		writer := w
-		var recorder *elasticsearchResponseRecorder
+		var recorder *base.ResponseRecorder
 		if p.config.IncludeRespBody {
-			recorder = &elasticsearchResponseRecorder{
-				ResponseWriter: w,
-				limit:          p.config.MaxRespBodyBytes,
-			}
+			recorder = base.NewResponseRecorder(w, p.config.MaxRespBodyBytes)
 			writer = recorder
 		}
 
 		next.ServeHTTP(writer, r)
 		status := 0
 		if recorder != nil {
-			status = recorder.status
+			status = recorder.StatusCode()
 		}
 
 		logFields := apisixlog.GetFields(r, p.LogFormat)
 		if requestBody != "" {
-			nestedLogMap(logFields, "request")["body"] = requestBody
+			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.body.Len() > 0 && exprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			nestedLogMap(logFields, "response")["body"] = recorder.body.String()
+		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
+			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
 		logFields[elasticsearchIndexField] = resolveIndexVars(p.config.Field.Index, r)
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
-}
-
-type elasticsearchResponseRecorder struct {
-	http.ResponseWriter
-	body   bytes.Buffer
-	limit  int
-	status int
-}
-
-func (w *elasticsearchResponseRecorder) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *elasticsearchResponseRecorder) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	w.capture(body)
-	return w.ResponseWriter.Write(body)
-}
-
-func (w *elasticsearchResponseRecorder) capture(body []byte) {
-	if w.limit <= 0 || w.body.Len() >= w.limit {
-		return
-	}
-	remaining := w.limit - w.body.Len()
-	if len(body) > remaining {
-		body = body[:remaining]
-	}
-	_, _ = w.body.Write(body)
-}
-
-func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
-	if r.Body == nil {
-		return "", nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "", err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if limit > 0 && len(body) > limit {
-		body = body[:limit]
-	}
-	return string(body), nil
-}
-
-func nestedLogMap(fields map[string]any, key string) map[string]any {
-	if value, ok := fields[key].(map[string]any); ok {
-		return value
-	}
-	value := map[string]any{}
-	fields[key] = value
-	return value
-}
-
-func exprMatched(r *http.Request, exprs [][]any, status int) bool {
-	if len(exprs) == 0 {
-		return true
-	}
-
-	pendingOp := "AND"
-	hasResult := false
-	result := true
-	for _, condition := range exprs {
-		if len(condition) == 1 {
-			if op, ok := condition[0].(string); ok {
-				switch strings.ToUpper(op) {
-				case "AND", "OR":
-					pendingOp = strings.ToUpper(op)
-				default:
-					return false
-				}
-				continue
-			}
-		}
-
-		matched := matchCondition(r, condition, status)
-		if !hasResult {
-			result = matched
-			hasResult = true
-			continue
-		}
-
-		if pendingOp == "OR" {
-			result = result || matched
-		} else {
-			result = result && matched
-		}
-		pendingOp = "AND"
-	}
-	return hasResult && result
-}
-
-func matchCondition(r *http.Request, condition []any, status int) bool {
-	if len(condition) != 3 {
-		return false
-	}
-
-	left := fmt.Sprint(condition[0])
-	op := fmt.Sprint(condition[1])
-	right := fmt.Sprint(condition[2])
-	actual := requestVar(r, left, status)
-
-	switch op {
-	case "==":
-		return actual == right
-	case "!=":
-		return actual != right
-	case ">":
-		return compareNumber(actual, right, func(a, b float64) bool { return a > b })
-	case ">=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a >= b })
-	case "<":
-		return compareNumber(actual, right, func(a, b float64) bool { return a < b })
-	case "<=":
-		return compareNumber(actual, right, func(a, b float64) bool { return a <= b })
-	case "~":
-		matched, _ := regexp.MatchString(right, actual)
-		return matched
-	case "!~":
-		matched, _ := regexp.MatchString(right, actual)
-		return !matched
-	default:
-		return false
-	}
-}
-
-func compareNumber(left string, right string, compare func(float64, float64) bool) bool {
-	l, err := strconv.ParseFloat(left, 64)
-	if err != nil {
-		return false
-	}
-	r, err := strconv.ParseFloat(right, 64)
-	if err != nil {
-		return false
-	}
-	return compare(l, r)
-}
-
-func requestVar(r *http.Request, name string, status int) string {
-	name = strings.TrimPrefix(name, "$")
-	switch {
-	case name == "status", name == "status_code":
-		if status > 0 {
-			return strconv.Itoa(status)
-		}
-		return fmt.Sprint(apisixctx.GetRequestVar(r, "$status"))
-	case name == "uri":
-		return r.URL.Path
-	case name == "request_uri":
-		return r.URL.RequestURI()
-	case name == "method", name == "request_method":
-		return r.Method
-	case name == "host":
-		return r.Host
-	case name == "scheme":
-		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
-			return scheme
-		}
-		if r.TLS != nil {
-			return "https"
-		}
-		return "http"
-	case name == "remote_addr":
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
-	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
-	case strings.HasPrefix(name, "http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return r.Header.Get(header)
-	default:
-		return ""
-	}
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -820,17 +633,4 @@ func headerFromMap(headers map[string]string) http.Header {
 		out.Set(key, value)
 	}
 	return out
-}
-
-func loadMetadata() (metadata pluginMetadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = pluginMetadata{}
-		}
-	}()
-
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return pluginMetadata{}
-	}
-	return metadata
 }

@@ -336,7 +336,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if strings.Contains(err.Error(), "max_req_body_size") {
 				status = http.StatusRequestEntityTooLarge
 			}
-			writeJSONMessage(w, status, err.Error())
+			base.WriteJSONMessage(w, status, err.Error())
 			return
 		}
 		r = ai_runtime.WithExecution(r, "ai-proxy-"+p.config.Provider, func(
@@ -371,12 +371,12 @@ func (p *Plugin) executeProviderRequest(
 	defer doneMetric()
 	prepared, err := p.prepareProviderRequest(body, protocol)
 	if err != nil {
-		writeJSONMessage(w, http.StatusBadGateway, err.Error())
+		base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	proxyReq, err := p.buildProviderRequest(r, prepared.providerBody, prepared.providerProtocol)
 	if err != nil {
-		writeJSONMessage(w, http.StatusBadGateway, err.Error())
+		base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	if prepared.anthropicConversion {
@@ -392,7 +392,7 @@ func (p *Plugin) executeProviderRequest(
 	}
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
-		writeJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
+		base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -881,11 +881,11 @@ func (p *Plugin) writeProviderResponse(
 	}
 	body, err := io.ReadAll(bodyReader)
 	if err != nil {
-		writeJSONMessage(w, http.StatusBadGateway, "failed to read LLM response body: "+err.Error())
+		base.WriteJSONMessage(w, http.StatusBadGateway, "failed to read LLM response body: "+err.Error())
 		return
 	}
 	if p.config.MaxResponseBytes > 0 && int64(len(body)) > p.config.MaxResponseBytes {
-		writeJSONMessage(w, http.StatusBadGateway, "max_response_bytes exceeded")
+		base.WriteJSONMessage(w, http.StatusBadGateway, "max_response_bytes exceeded")
 		return
 	}
 	ai_runtime.MarkFirstToken(r, started)
@@ -894,7 +894,7 @@ func (p *Plugin) writeProviderResponse(
 		p.config.Provider == "vertex-ai" && prepared.clientProtocol == ai_protocols.OpenAIEmbeddings {
 		body, err = ai_protocols.ConvertVertexEmbeddingsToOpenAI(body, p.requestModel(prepared.clientBody))
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadGateway, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		convertedResponse = true
@@ -902,7 +902,7 @@ func (p *Plugin) writeProviderResponse(
 	if prepared.anthropicConversion {
 		body, err = ai_protocols.ConvertOpenAIChatToAnthropic(body, "", prepared.toolNameMap)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadGateway, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		convertedResponse = true
@@ -1034,10 +1034,4 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

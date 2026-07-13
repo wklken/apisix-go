@@ -9,7 +9,6 @@ import (
 	"github.com/rs/cors"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -163,7 +162,7 @@ func (p *Plugin) PostInit() error {
 		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
 	}
 	if len(p.config.AllowOriginsByMetadata) > 0 && len(p.metadata.AllowOrigins) == 0 {
-		p.metadata = loadMetadata()
+		p.metadata = base.LoadPluginMetadata[Metadata](name)
 	}
 
 	for _, rule := range p.config.AllowOriginsByRegex {
@@ -301,18 +300,6 @@ func matchConfiguredOrigin(origin string, configured string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func loadMetadata() (metadata Metadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{}
-		}
-	}()
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return Metadata{}
-	}
-	return metadata
 }
 
 func allowedMethods(methods string) []string {

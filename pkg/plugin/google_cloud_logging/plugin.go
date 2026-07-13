@@ -11,7 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,7 +27,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -350,7 +348,7 @@ func (p *Plugin) PostInit() error {
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.sslVerify()})
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
-	metadata := loadMetadata()
+	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
@@ -630,7 +628,7 @@ func (p *Plugin) defaultLogFields(r *http.Request, recorder *responseRecorder, l
 		defaultStatusField:        recorder.status,
 		defaultResponseSizeField:  recorder.size,
 		defaultUserAgentField:     r.UserAgent(),
-		defaultRemoteIPField:      remoteIP(r.RemoteAddr),
+		defaultRemoteIPField:      base.RemoteIP(r.RemoteAddr),
 		defaultServerIPField:      r.Host,
 		defaultLatencyField:       strconv.FormatFloat(latency.Seconds(), 'f', 3, 64) + "s",
 		defaultInsertIDField:      r.Header.Get("X-Request-ID"),
@@ -664,14 +662,6 @@ func requestSize(r *http.Request) int64 {
 		return r.ContentLength
 	}
 	return 0
-}
-
-func remoteIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err == nil {
-		return host
-	}
-	return remoteAddr
 }
 
 func isDefaultEntry(log map[string]any) bool {
@@ -720,17 +710,4 @@ func int64FromAny(value any) int64 {
 	default:
 		return 0
 	}
-}
-
-func loadMetadata() (metadata pluginMetadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = pluginMetadata{}
-		}
-	}()
-
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return pluginMetadata{}
-	}
-	return metadata
 }

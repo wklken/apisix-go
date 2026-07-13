@@ -18,7 +18,6 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/store"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -211,7 +210,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.RejectionStatusCode == 0 {
 		p.config.RejectionStatusCode = http.StatusBadRequest
 	}
-	p.metadata = loadMetadata()
+	p.metadata = base.LoadPluginMetadata[Metadata](name)
 	return nil
 }
 
@@ -219,7 +218,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		validator, err := p.validator()
 		if err != nil {
-			writeJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
+			base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
 			return
 		}
 
@@ -229,7 +228,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if p.config.VerboseErrors {
 					msg += err.Error()
 				}
-				writeJSONMessage(w, p.config.RejectionStatusCode, msg)
+				base.WriteJSONMessage(w, p.config.RejectionStatusCode, msg)
 				return
 			}
 		}
@@ -294,18 +293,6 @@ func (p *Plugin) specURLTTL() time.Duration {
 		return time.Duration(p.metadata.SpecURLTTL) * time.Second
 	}
 	return defaultSpecURLTTL * time.Second
-}
-
-func loadMetadata() (metadata Metadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{}
-		}
-	}()
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return Metadata{}
-	}
-	return metadata
 }
 
 func (p *Plugin) fetchSpec() (string, error) {
@@ -1526,7 +1513,7 @@ func validateBody(body *requestBody, r *http.Request) error {
 		return nil
 	}
 
-	rawBody, err := readBody(r)
+	rawBody, err := base.ReadRequestBody(r)
 	if err != nil {
 		return fmt.Errorf("error reading the request body. err: %w", err)
 	}
@@ -1805,18 +1792,6 @@ func coerceBodyValue(value any, schema map[string]any) any {
 	}
 }
 
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
-}
-
 func validateValue(value any, schema map[string]any) error {
 	return validateAny(coerceParameterValue(value, schema), schema)
 }
@@ -1850,10 +1825,4 @@ func coerceValue(value string, schema map[string]any) any {
 		}
 	}
 	return value
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

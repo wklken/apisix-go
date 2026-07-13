@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -17,11 +16,9 @@ import (
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/ulule/limiter/v3/drivers/store/memory"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
-	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -484,7 +481,7 @@ func (p *Plugin) PostInit() error {
 		p.config.rejectBody = util.BytesToString(body)
 	}
 	if p.metadata == (Metadata{}) {
-		p.metadata = loadMetadata()
+		p.metadata = base.LoadPluginMetadata[Metadata](name)
 	}
 
 	if len(p.config.Rules) > 0 {
@@ -760,7 +757,7 @@ func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
 		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
 			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			varName = strings.TrimSuffix(varName, "}")
-			return requestVar(r, varName)
+			return base.RequestVarFromNginx(r, varName)
 		})
 		parsed, err := strconv.ParseInt(resolved, 10, 64)
 		if err != nil {
@@ -977,7 +974,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
-			value := requestVar(r, name)
+			value := base.RequestVarFromNginx(r, name)
 			if value != "" {
 				resolved++
 			}
@@ -987,11 +984,11 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 			key = ""
 		}
 	default:
-		key = requestVar(r, p.config.Key)
+		key = base.RequestVarFromNginx(r, p.config.Key)
 	}
 
 	if key == "" {
-		key = requestVar(r, "remote_addr")
+		key = base.RequestVarFromNginx(r, "remote_addr")
 	}
 	return key
 }
@@ -1001,7 +998,7 @@ func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
 	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 		name = strings.TrimSuffix(name, "}")
-		value := requestVar(r, name)
+		value := base.RequestVarFromNginx(r, name)
 		if value != "" {
 			resolved++
 		}
@@ -1041,18 +1038,6 @@ func applyMetadataDefaults(metadata Metadata) Metadata {
 	return metadata
 }
 
-func loadMetadata() (metadata Metadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{}
-		}
-	}()
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return Metadata{}
-	}
-	return metadata
-}
-
 func ruleHeaders(rule Rule, index int) quotaHeaders {
 	prefix := rule.HeaderPrefix
 	if prefix == "" {
@@ -1063,22 +1048,4 @@ func ruleHeaders(rule Rule, index int) quotaHeaders {
 		remaining: "X-" + prefix + "-RateLimit-Remaining",
 		reset:     "X-" + prefix + "-RateLimit-Reset",
 	}
-}
-
-func requestVar(r *http.Request, key string) string {
-	key = strings.TrimPrefix(key, "$")
-
-	if after, ok := strings.CutPrefix(key, "http_"); ok {
-		header := strings.ReplaceAll(after, "_", "-")
-		return r.Header.Get(header)
-	}
-
-	value := v.GetNginxVar(r, "$"+key)
-	if key == "remote_addr" {
-		if host, _, err := net.SplitHostPort(value); err == nil {
-			return host
-		}
-	}
-
-	return value
 }

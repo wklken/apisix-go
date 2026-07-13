@@ -130,7 +130,7 @@ func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Confi
 	result := serveDubboAttempt(r, target, cfg)
 	reportDubboOutcome(r, result)
 	if result.err != nil {
-		writeJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
+		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
 	writeDubboResponse(w, result.status, result.body)
@@ -167,7 +167,7 @@ func ServeDubboWithRetries(
 	}
 
 	if result.err != nil {
-		writeJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
+		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
 	writeDubboResponse(w, result.status, result.body)
@@ -269,7 +269,7 @@ func applyDefaults(cfg *Config) {
 }
 
 func buildDubboRequest(r *http.Request, cfg Config) ([]byte, error) {
-	body, err := readBody(r)
+	body, err := base.ReadRequestBody(r)
 	if err != nil {
 		return nil, err
 	}
@@ -458,22 +458,4 @@ func dubboErrorStatus(ctx context.Context, err error) int {
 		return http.StatusGatewayTimeout
 	}
 	return http.StatusBadGateway
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

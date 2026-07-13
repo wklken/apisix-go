@@ -20,7 +20,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -408,7 +407,7 @@ func (p *Plugin) PostInit() error {
 		p.maxSize = config.GlobalConfig.GraphQL.MaxSize
 	}
 	if p.metadata == (Metadata{}) {
-		p.metadata = loadMetadata()
+		p.metadata = base.LoadPluginMetadata[Metadata]("limit-count")
 	}
 	return nil
 }
@@ -573,18 +572,6 @@ func defaultQuotaHeaders(metadata Metadata) quotaHeaders {
 		remaining: metadata.RemainingHeader,
 		reset:     metadata.ResetHeader,
 	}
-}
-
-func loadMetadata() (metadata Metadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = Metadata{}
-		}
-	}()
-	if err := store.GetPluginMetadata("limit-count", &metadata); err != nil {
-		return Metadata{}
-	}
-	return metadata
 }
 
 func ruleQuotaHeaders(rule Rule, index int) quotaHeaders {

@@ -230,7 +230,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 func (p *Plugin) rewritePOST(r *http.Request) error {
 	var body map[string]any
 	if len(p.config.Variables) > 0 {
-		raw, err := readBody(r)
+		raw, err := base.ReadRequestBody(r)
 		if err != nil {
 			return err
 		}
@@ -292,16 +292,4 @@ func (p *Plugin) pickVariables(body map[string]any) map[string]any {
 		variables[name] = body[name]
 	}
 	return variables
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
 }

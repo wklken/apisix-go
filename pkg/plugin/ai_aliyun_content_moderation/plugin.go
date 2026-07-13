@@ -268,11 +268,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err := r.Body.Close(); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -282,14 +282,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		if checkRequest {
 			if err := validateJSONContentType(r); err != nil {
-				writeJSONMessage(w, http.StatusBadRequest, err.Error())
+				base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}
 
 		bodyTab, protocol, content, err := extractRequestContent(r.URL.Path, body)
 		if err != nil && checkRequest {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err != nil {
@@ -817,7 +817,7 @@ func writeProtocolDeny(
 		ai_protocols.IsStreaming(protocol, body),
 	)
 	if err != nil {
-		writeJSONMessage(w, http.StatusInternalServerError, err.Error())
+		base.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
@@ -861,10 +861,4 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

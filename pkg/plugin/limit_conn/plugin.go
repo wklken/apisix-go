@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -590,7 +588,7 @@ func resolveLimitValue(r *http.Request, value any, name string, allowZero bool) 
 		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
 			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			varName = strings.TrimSuffix(varName, "}")
-			return requestVar(r, varName)
+			return base.RequestVarFromNginx(r, varName)
 		})
 		return parseLimitInt(resolved, name, allowZero)
 	}
@@ -919,7 +917,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
-			value := requestVar(r, name)
+			value := base.RequestVarFromNginx(r, name)
 			if value != "" {
 				resolved++
 			}
@@ -929,11 +927,11 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 			key = ""
 		}
 	} else {
-		key = requestVar(r, p.config.Key)
+		key = base.RequestVarFromNginx(r, p.config.Key)
 	}
 
 	if key == "" {
-		key = requestVar(r, "remote_addr")
+		key = base.RequestVarFromNginx(r, "remote_addr")
 	}
 	return key
 }
@@ -944,29 +942,11 @@ func (p *Plugin) resolveRuleKey(r *http.Request, index int, rule Rule) (string, 
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 		name = strings.TrimSuffix(name, "}")
 		resolved++
-		return requestVar(r, name)
+		return base.RequestVarFromNginx(r, name)
 	})
 	if resolved == 0 {
 		return "", false
 	}
 
 	return fmt.Sprintf("rule:%d:%s", index, key), true
-}
-
-func requestVar(r *http.Request, key string) string {
-	key = strings.TrimPrefix(key, "$")
-
-	if after, ok := strings.CutPrefix(key, "http_"); ok {
-		header := strings.ReplaceAll(after, "_", "-")
-		return r.Header.Get(header)
-	}
-
-	value := v.GetNginxVar(r, "$"+key)
-	if key == "remote_addr" {
-		if host, _, err := net.SplitHostPort(value); err == nil {
-			return host
-		}
-	}
-
-	return value
 }

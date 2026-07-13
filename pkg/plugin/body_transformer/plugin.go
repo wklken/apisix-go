@@ -154,7 +154,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) transformRequest(r *http.Request) (*http.Request, error) {
-	body, err := readBody(r)
+	body, err := base.ReadRequestBody(r)
 	if err != nil {
 		return r, err
 	}
@@ -948,18 +948,6 @@ func flattenMultipartValues(body []byte, contentType string, out map[string]stri
 		}
 		indices[name] = index + 1
 	}
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
 }
 
 func newResponseRecorder() *responseRecorder {

@@ -237,19 +237,19 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := readBody(r)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			writeJSONMessage(w, http.StatusBadRequest, "missing request body")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "missing request body")
 			return
 		}
 
 		llmResp, err := p.requestLLM(r, string(body))
 		if err != nil {
-			writeJSONMessage(w, http.StatusInternalServerError, err.Error())
+			base.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -441,22 +441,4 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -212,7 +211,7 @@ func (p *Plugin) checkPermission(
 	values.Set("appID", token.AppID)
 	values.Set("resName", r.URL.Path)
 	values.Set("action", r.Method)
-	values.Set("clientIP", remoteIP(r))
+	values.Set("clientIP", base.RemoteIP(r.RemoteAddr))
 
 	req, err := http.NewRequestWithContext(
 		r.Context(),
@@ -335,14 +334,6 @@ func (cfg consumerConfig) headerPrefix() string {
 		return "X-"
 	}
 	return cfg.HeaderPrefix
-}
-
-func remoteIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {

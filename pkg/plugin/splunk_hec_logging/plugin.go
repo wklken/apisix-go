@@ -14,7 +14,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -202,7 +201,7 @@ func (p *Plugin) PostInit() error {
 	}
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
-	metadata := loadMetadata()
+	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) > 0 {
 		p.LogFormat = p.config.LogFormat
 	} else {
@@ -286,17 +285,4 @@ func (p *Plugin) buildEvent(log map[string]any) splunkEvent {
 
 func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
-}
-
-func loadMetadata() (metadata pluginMetadata) {
-	defer func() {
-		if recover() != nil {
-			metadata = pluginMetadata{}
-		}
-	}()
-
-	if err := store.GetPluginMetadata(name, &metadata); err != nil {
-		return pluginMetadata{}
-	}
-	return metadata
 }

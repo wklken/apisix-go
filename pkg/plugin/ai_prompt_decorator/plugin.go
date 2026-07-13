@@ -92,25 +92,25 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := readBody(r)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
 			return
 		}
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
 			return
 		}
 
 		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		ai_protocols.PrependMessages(protocol, bodyTab, p.config.Prepend)
@@ -118,7 +118,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		rewritten, err := json.Marshal(bodyTab)
 		if err != nil {
-			writeJSONMessage(
+			base.WriteJSONMessage(
 				w,
 				http.StatusInternalServerError,
 				"failed to parse modified JSON request body: "+err.Error(),
@@ -136,22 +136,4 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

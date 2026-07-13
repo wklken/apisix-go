@@ -116,38 +116,38 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := readBody(r)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
 			return
 		}
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
 			return
 		}
 
 		templateName, _ := bodyTab["template_name"].(string)
 		if templateName == "" {
-			writeJSONMessage(w, http.StatusBadRequest, "template name is missing in request.")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "template name is missing in request.")
 			return
 		}
 
 		template, ok := p.findTemplate(templateName)
 		if !ok {
-			writeJSONMessage(w, http.StatusBadRequest, "template: "+templateName+" not configured.")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "template: "+templateName+" not configured.")
 			return
 		}
 
 		rendered := renderTemplate(template, bodyTab)
 		rewritten, err := json.Marshal(rendered)
 		if err != nil {
-			writeJSONMessage(
+			base.WriteJSONMessage(
 				w,
 				http.StatusInternalServerError,
 				"failed to parse modified JSON request body: "+err.Error(),
@@ -174,18 +174,6 @@ func (p *Plugin) findTemplate(name string) (Template, bool) {
 		}
 	}
 	return Template{}, false
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
 }
 
 func renderTemplate(template Template, values map[string]any) Template {
@@ -270,10 +258,4 @@ func parseSegment(segment string) (string, []int, bool) {
 		rest = rest[end+1:]
 	}
 	return key, indexes, true
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

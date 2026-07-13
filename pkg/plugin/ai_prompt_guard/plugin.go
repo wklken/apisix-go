@@ -3,7 +3,6 @@ package ai_prompt_guard
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -89,19 +88,19 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := readBody(r)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "Empty request body")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "Empty request body")
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			writeJSONMessage(w, http.StatusBadRequest, "Empty request body")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "Empty request body")
 			return
 		}
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -125,11 +124,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		content := joinContent(messages)
 		if len(p.config.allowPatterns) > 0 && !matchesAny(p.config.allowPatterns, content) {
-			writeJSONMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
 			return
 		}
 		if matchesAny(p.config.denyPatterns, content) {
-			writeJSONMessage(w, http.StatusBadRequest, "Request contains prohibited content")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "Request contains prohibited content")
 			return
 		}
 
@@ -148,18 +147,6 @@ func compilePatterns(kind string, patterns []string) ([]*regexp.Regexp, error) {
 		compiled = append(compiled, re)
 	}
 	return compiled, nil
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
 }
 
 func lastMessage(messages []ai_protocols.Message) []ai_protocols.Message {
@@ -196,10 +183,4 @@ func matchesAny(patterns []*regexp.Regexp, content string) bool {
 		}
 	}
 	return false
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

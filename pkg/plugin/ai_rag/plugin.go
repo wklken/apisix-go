@@ -117,37 +117,37 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := readBody(r)
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
-			writeJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: request body is empty")
 			return
 		}
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
 			return
 		}
 
 		embeddingsReq, fields, ok := parseAIRAG(bodyTab)
 		if !ok {
-			writeJSONMessage(w, http.StatusBadRequest, `request body must have "ai_rag" field`)
+			base.WriteJSONMessage(w, http.StatusBadRequest, `request body must have "ai_rag" field`)
 			return
 		}
 
 		embedding, status, message := p.requestEmbeddings(r, embeddingsReq)
 		if status != http.StatusOK {
-			writeJSONMessage(w, status, message)
+			base.WriteJSONMessage(w, status, message)
 			return
 		}
 
 		searchResult, status, message := p.requestVectorSearch(r, fields, embedding)
 		if status != http.StatusOK {
-			writeJSONMessage(w, status, message)
+			base.WriteJSONMessage(w, status, message)
 			return
 		}
 
@@ -156,7 +156,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		rewritten, err := json.Marshal(bodyTab)
 		if err != nil {
-			writeJSONMessage(
+			base.WriteJSONMessage(
 				w,
 				http.StatusInternalServerError,
 				"failed to parse modified JSON request body: "+err.Error(),
@@ -299,22 +299,4 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil, nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if closeErr := r.Body.Close(); closeErr != nil && err == nil {
-		err = closeErr
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return body, err
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

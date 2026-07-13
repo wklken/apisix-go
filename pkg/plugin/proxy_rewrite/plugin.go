@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -233,7 +232,7 @@ var (
 func resolveHeaderValue(r *http.Request, value string, captures []string) string {
 	value = resolveCaptureValue(value, captures)
 	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
-		return requestVar(r, strings.TrimPrefix(variable, "$"))
+		return base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
 	})
 }
 
@@ -252,38 +251,4 @@ func resolveCaptureValue(value string, captures []string) string {
 		}
 		return captures[index]
 	})
-}
-
-func requestVar(r *http.Request, name string) string {
-	switch {
-	case name == "remote_addr":
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			return host
-		}
-		return r.RemoteAddr
-	case name == "request_uri":
-		return r.URL.RequestURI()
-	case name == "uri":
-		return r.URL.Path
-	case name == "method", name == "request_method":
-		return r.Method
-	case name == "host":
-		return r.Host
-	case name == "scheme":
-		if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
-			return scheme
-		}
-		if r.TLS != nil {
-			return "https"
-		}
-		return "http"
-	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
-	case strings.HasPrefix(name, "http_"):
-		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return r.Header.Get(header)
-	default:
-		return ""
-	}
 }

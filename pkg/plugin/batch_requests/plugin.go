@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -320,18 +319,10 @@ func mergeHeaders(outer http.Header, common map[string]string, item map[string]s
 	for key, value := range item {
 		headers.Set(key, value)
 	}
-	if remoteIP := remoteIP(remoteAddr); remoteIP != "" {
+	if remoteIP := base.RemoteIP(remoteAddr); remoteIP != "" {
 		headers.Set("X-Real-IP", remoteIP)
 	}
 	return headers
-}
-
-func remoteIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err == nil {
-		return host
-	}
-	return remoteAddr
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, value any) {

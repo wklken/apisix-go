@@ -154,11 +154,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err := r.Body.Close(); err != nil {
-			writeJSONMessage(w, http.StatusBadRequest, err.Error())
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -167,13 +167,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if len(body) == 0 {
-			writeJSONMessage(w, http.StatusBadRequest, "missing request body")
+			base.WriteJSONMessage(w, http.StatusBadRequest, "missing request body")
 			return
 		}
 
 		code, message := p.checkContent(r, string(body))
 		if code != 0 {
-			writeJSONMessage(w, code, message)
+			base.WriteJSONMessage(w, code, message)
 			return
 		}
 
@@ -361,10 +361,4 @@ func (p *Plugin) transport() http.RoundTripper {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
 	return transport
-}
-
-func writeJSONMessage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"message":%q}`, message)
 }

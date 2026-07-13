@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"regexp"
@@ -314,7 +313,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var requestBody string
 		if p.config.IncludeReqBody {
-			body, err := readAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
+			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
 			if err == nil && body != "" {
 				requestBody = body
 			}
@@ -341,21 +340,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()))
 	}
 	return http.HandlerFunc(fn)
-}
-
-func readAndRestoreRequestBody(r *http.Request, limit int) (string, error) {
-	if r.Body == nil {
-		return "", nil
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "", err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if limit > 0 && len(body) > limit {
-		body = body[:limit]
-	}
-	return string(body), nil
 }
 
 func (p *Plugin) Send(fields map[string]any) {

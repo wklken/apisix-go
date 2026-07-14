@@ -185,6 +185,37 @@ cases:
 	}
 }
 
+func TestManifestAcceptsFixtureRequestBodyEcho(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: echo
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            echo_request_body: true
+    steps:
+      - name: request
+        input:
+          path: /hello
+        output:
+          status: 200
+`)
+
+	if _, err := loadManifest("echo.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
 func TestManifestAcceptsHTTP2InputWithFrontendTLS(t *testing.T) {
 	data := []byte(`source:
   repository: https://github.com/apache/apisix

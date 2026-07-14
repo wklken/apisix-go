@@ -108,10 +108,11 @@ type HTTPAssertion struct {
 }
 
 type HTTPResponse struct {
-	Status  int               `yaml:"status,omitempty"`
-	Headers map[string]string `yaml:"headers,omitempty"`
-	Body    string            `yaml:"body,omitempty"`
-	Chunks  []string          `yaml:"chunks,omitempty"`
+	Status          int               `yaml:"status,omitempty"`
+	Headers         map[string]string `yaml:"headers,omitempty"`
+	Body            string            `yaml:"body,omitempty"`
+	Chunks          []string          `yaml:"chunks,omitempty"`
+	EchoRequestBody bool              `yaml:"echo_request_body,omitempty"`
 }
 
 type HTTPOutput struct {
@@ -517,6 +518,9 @@ func (r HTTPResponse) validate() error {
 	}
 	if r.Body != "" && len(r.Chunks) > 0 {
 		return errors.New("body and chunks must not both be configured")
+	}
+	if r.EchoRequestBody && (r.Body != "" || len(r.Chunks) > 0) {
+		return errors.New("echo_request_body must not be combined with body or chunks")
 	}
 	return nil
 }

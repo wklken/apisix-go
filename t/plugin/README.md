@@ -7,23 +7,16 @@ CLI in a fresh child process, writes temporary `conf/config.yaml` and
 uses a fresh loopback upstream fixture.
 
 The corpus is pinned to Apache APISIX commit
-`c3d7d5ec69774121f53d2e20d29d09c816795dd7`:
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The current checkpoint contains
+32 manifests for 31 plugins, mapping 595 upstream `TEST` blocks exactly once
+into 360 isolated case/variant process runs, 451 request/assertion steps, and
+1,456 actual requests after repeats. The target is all 98 source-backed plugins
+marked Supported in `docs/plugins.md`.
 
-| Manifest | Upstream blocks | Local groups | Executable runs | Skipped groups |
-| --- | ---: | ---: | ---: | ---: |
-| `redirect.yaml` | 48 | 30 | 29 | 1 |
-| `redirect2.yaml` | 3 | 2 | 2 | 0 |
-| `proxy-rewrite.yaml` | 57 | 36 | 35 | 1 |
-| `referer-restriction.yaml` | 13 | 10 | 11 | 0 |
-| `response-rewrite.yaml` | 27 | 20 | 19 | 1 |
-| `uri-blocker.yaml` | 22 | 16 | 17 | 0 |
-| Total | 170 | 114 | 113 | 3 |
-
-The three skipped groups remain in the manifests with concrete reasons. They
-cover redirect frontend TLS tests 28-29 and the Admin API/etcd serialization
-tests in proxy-rewrite 35 and response-rewrite 15. A generic placeholder such
-as "requires setup or an external dependency" is not accepted as test
-coverage.
+The schema rejects `skip` fields. A source block counts as covered only when it
+belongs to an executable standalone scenario with a request and an assertion;
+placeholder reasons such as "requires setup or an external dependency" are not
+accepted as coverage.
 
 ## Run
 
@@ -51,8 +44,9 @@ number from `1..source.tests` must occur exactly once. The validator fails on a
 missing, duplicated, or out-of-range number before starting a child process.
 
 Setup-only source blocks are grouped with the request block that exercises the
-setup. Unsupported blocks must use a non-empty `skip` reason; they must not be
-deleted from the mapping.
+setup. When upstream setup depends on the Admin API, Lua, or an external
+service, the manifest provides an equivalent standalone resource or local
+fixture so the behavior remains executable.
 
 An HTTP case contains:
 
@@ -94,8 +88,8 @@ headers, and fixture bodies. `absent` is valid only for headers.
 
 1. Pin the exact upstream repository commit and count every `=== TEST` block.
 2. Create `t/plugin/<plugin>.yaml`; pair setup blocks with their behavior block.
-3. Convert all blocks, including explicit skips for behavior that cannot run in
-   standalone mode.
+3. Convert all blocks into executable standalone scenarios; `skip` fields and
+   placeholder cases are rejected.
 4. Prefer fixture request assertions for request-mutating plugins and response
    assertions for response plugins.
 5. Run the focused manifest. If it exposes a parity bug, add a focused failing

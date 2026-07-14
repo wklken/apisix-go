@@ -17,8 +17,10 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
+	"go.yaml.in/yaml/v3"
 )
 
 type Plugin struct {
@@ -40,7 +42,7 @@ const schema = `
       "properties": {
         "input_format": {
           "type": "string",
-          "enum": ["xml", "json", "encoded", "args", "plain", "multipart"]
+          "enum": ["xml", "json", "yaml", "encoded", "args", "plain", "multipart"]
         },
         "template": {
           "type": "string"
@@ -56,7 +58,7 @@ const schema = `
       "properties": {
         "input_format": {
           "type": "string",
-          "enum": ["xml", "json", "encoded", "args", "plain", "multipart"]
+          "enum": ["xml", "json", "yaml", "encoded", "args", "plain", "multipart"]
         },
         "template": {
           "type": "string"
@@ -91,10 +93,11 @@ type Transform struct {
 }
 
 type templateContext struct {
-	values map[string]string
-	body   string
-	req    *http.Request
-	format string
+	values     map[string]string
+	structured map[string]any
+	body       string
+	req        *http.Request
+	format     string
 }
 
 type responseRecorder struct {
@@ -107,9 +110,18 @@ type responseRecorder struct {
 var (
 	templateExprPattern    = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 	templateRawExprPattern = regexp.MustCompile(`\{\*\s*([^{}]+?)\s*\*\}`)
+	templateCallPattern    = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_.]*)\s*\(`)
 )
 
 var reservedTemplateValues = [...]string{"_ctx", "_body", "_escape_json", "_escape_xml", "_multipart"}
+
+type templateRenderingError struct {
+	err error
+}
+
+func (e *templateRenderingError) Error() string {
+	return e.err.Error()
+}
 
 func (p *Plugin) Config() any {
 	return &p.config
@@ -132,6 +144,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.config.Request != nil {
 			r, err = p.transformRequest(r)
 			if err != nil {
+				var renderingError *templateRenderingError
+				if errors.As(err, &renderingError) {
+					logger.Errorf("transform(): request template rendering: %s", renderingError)
+					http.Error(w, renderingError.Error(), http.StatusServiceUnavailable)
+					return
+				}
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -233,10 +251,11 @@ func (p *Plugin) buildTemplateContext(
 	contentType string,
 ) (templateContext, error) {
 	ctx := templateContext{
-		values: map[string]string{},
-		body:   string(body),
-		req:    r,
-		format: format,
+		values:     map[string]string{},
+		structured: map[string]any{},
+		body:       string(body),
+		req:        r,
+		format:     format,
 	}
 
 	switch format {
@@ -246,6 +265,15 @@ func (p *Plugin) buildTemplateContext(
 		}
 		var data any
 		if err := json.Unmarshal(body, &data); err != nil {
+			return ctx, fmt.Errorf("%s body decode: %w", phase, err)
+		}
+		flattenValues("", data, ctx.values)
+	case "yaml":
+		if len(bytes.TrimSpace(body)) == 0 {
+			return ctx, nil
+		}
+		var data any
+		if err := yaml.Unmarshal(body, &data); err != nil {
 			return ctx, fmt.Errorf("%s body decode: %w", phase, err)
 		}
 		flattenValues("", data, ctx.values)
@@ -265,7 +293,8 @@ func (p *Plugin) buildTemplateContext(
 		if len(bytes.TrimSpace(body)) == 0 {
 			return ctx, nil
 		}
-		if err := flattenXMLValues(body, ctx.values); err != nil {
+		if err := flattenXMLValues(body, ctx.values, ctx.structured); err != nil {
+			logger.Errorf("Error Parsing XML: %s", err)
 			return ctx, fmt.Errorf("%s body decode: %w", phase, err)
 		}
 	case "multipart":
@@ -294,6 +323,9 @@ func renderTemplate(transform *Transform, ctx templateContext) (string, error) {
 	if err := validateTemplate(text); err != nil {
 		return "", err
 	}
+	if err := validateTemplateFunctionCalls(text); err != nil {
+		return "", &templateRenderingError{err: err}
+	}
 
 	text = templateRawExprPattern.ReplaceAllStringFunc(text, func(match string) string {
 		parts := templateRawExprPattern.FindStringSubmatch(match)
@@ -307,15 +339,49 @@ func renderTemplate(transform *Transform, ctx templateContext) (string, error) {
 		if len(parts) != 2 {
 			return match
 		}
-		return resolveExpression(strings.TrimSpace(parts[1]), ctx)
+		return escapeTemplateHTML(resolveExpression(strings.TrimSpace(parts[1]), ctx))
 	}), nil
 }
 
+func escapeTemplateHTML(value string) string {
+	return strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&#34;",
+		"'", "&#39;",
+		"/", "&#47;",
+	).Replace(value)
+}
+
+func validateTemplateFunctionCalls(text string) error {
+	for _, pattern := range []*regexp.Regexp{templateRawExprPattern, templateExprPattern} {
+		for _, expression := range pattern.FindAllStringSubmatch(text, -1) {
+			if len(expression) != 2 {
+				continue
+			}
+			for _, call := range templateCallPattern.FindAllStringSubmatch(expression[1], -1) {
+				if len(call) != 2 {
+					continue
+				}
+				switch call[1] {
+				case "_escape_json", "_escape_xml", "string.gsub":
+					continue
+				}
+				name := strings.Split(call[1], ".")[0]
+				return fmt.Errorf("attempt to call global '%s' (a string value)", name)
+			}
+		}
+	}
+	return nil
+}
+
 func validateTemplate(text string) error {
-	if err := validateTemplateDelimiter(text, "{{", "}}", "expression"); err != nil {
+	if err := validateTemplateDelimiter(text, "{*", "*}", "raw expression"); err != nil {
 		return err
 	}
-	return validateTemplateDelimiter(text, "{*", "*}", "raw expression")
+	withoutRawExpressions := templateRawExprPattern.ReplaceAllString(text, "")
+	return validateTemplateDelimiter(withoutRawExpressions, "{{", "}}", "expression")
 }
 
 func validateTemplateDelimiter(text, openDelimiter, closeDelimiter, kind string) error {
@@ -612,8 +678,27 @@ func splitTemplateKeyword(expr, keyword string) []string {
 
 func resolveExpression(expr string, ctx templateContext) string {
 	expr = strings.TrimSpace(expr)
+	if strings.HasPrefix(expr, "string.gsub(") && strings.HasSuffix(expr, ")") {
+		arguments := splitTemplateArguments(strings.TrimSuffix(strings.TrimPrefix(expr, "string.gsub("), ")"))
+		if len(arguments) != 3 {
+			return ""
+		}
+		return strings.ReplaceAll(
+			resolveExpression(arguments[0], ctx),
+			resolveExpression(arguments[1], ctx),
+			resolveExpression(arguments[2], ctx),
+		)
+	}
 	if strings.HasPrefix(expr, "_escape_json(") && strings.HasSuffix(expr, ")") {
-		value := resolveExpression(strings.TrimSuffix(strings.TrimPrefix(expr, "_escape_json("), ")"), ctx)
+		argument := strings.TrimSuffix(strings.TrimPrefix(expr, "_escape_json("), ")")
+		if value, ok := structuredTemplateValue(argument, ctx); ok {
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return ""
+			}
+			return string(encoded)
+		}
+		value := resolveExpression(argument, ctx)
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return ""
@@ -663,6 +748,62 @@ func resolveExpression(expr string, ctx templateContext) string {
 		}
 	}
 	return ""
+}
+
+func structuredTemplateValue(expr string, ctx templateContext) (any, bool) {
+	expr = strings.TrimSpace(expr)
+	if value, ok := ctx.structured[expr]; ok {
+		return value, true
+	}
+	if normalized := normalizeTemplatePath(expr); normalized != expr {
+		value, ok := ctx.structured[normalized]
+		return value, ok
+	}
+	return nil, false
+}
+
+func splitTemplateArguments(expr string) []string {
+	parts := make([]string, 0, 3)
+	start := 0
+	depth := 0
+	var quote byte
+	escaped := false
+	for index := 0; index < len(expr); index++ {
+		char := expr[index]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' {
+				escaped = true
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		switch char {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(expr[start:index]))
+				start = index + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(expr[start:]))
+	return parts
 }
 
 func splitTemplateOperator(expr, operator string) []string {
@@ -829,7 +970,7 @@ type xmlNode struct {
 	children []*xmlNode
 }
 
-func flattenXMLValues(body []byte, out map[string]string) error {
+func flattenXMLValues(body []byte, out map[string]string, structured map[string]any) error {
 	decoder := xml.NewDecoder(bytes.NewReader(body))
 	root := &xmlNode{}
 	stack := []*xmlNode{root}
@@ -862,14 +1003,18 @@ func flattenXMLValues(body []byte, out map[string]string) error {
 			}
 		}
 	}
+	if len(root.children) == 0 {
+		return errors.New("XML document has no root element")
+	}
 
 	for _, node := range root.children {
-		flattenXMLNode(node, node.name, out)
+		flattenXMLNode(node, node.name, out, structured)
 	}
 	return nil
 }
 
-func flattenXMLNode(node *xmlNode, prefix string, out map[string]string) {
+func flattenXMLNode(node *xmlNode, prefix string, out map[string]string, structured map[string]any) {
+	structured[prefix] = xmlNodeValue(node)
 	for name, value := range node.attrs {
 		out[fmt.Sprintf("%s._attr.%s", prefix, name)] = value
 	}
@@ -892,13 +1037,43 @@ func flattenXMLNode(node *xmlNode, prefix string, out map[string]string) {
 		children := groups[name]
 		childPrefix := prefix + "." + name
 		if len(children) == 1 {
-			flattenXMLNode(children[0], childPrefix, out)
+			flattenXMLNode(children[0], childPrefix, out, structured)
 			continue
 		}
 		for index, child := range children {
-			flattenXMLNode(child, fmt.Sprintf("%s.%d", childPrefix, index), out)
+			flattenXMLNode(child, fmt.Sprintf("%s.%d", childPrefix, index), out, structured)
 		}
 	}
+}
+
+func xmlNodeValue(node *xmlNode) any {
+	if len(node.children) == 0 && len(node.attrs) == 0 {
+		return node.text
+	}
+	value := make(map[string]any, len(node.children)+1)
+	if len(node.attrs) > 0 {
+		attrs := make(map[string]any, len(node.attrs))
+		for name, attrValue := range node.attrs {
+			attrs[name] = attrValue
+		}
+		value["_attr"] = attrs
+	}
+	groups := make(map[string][]*xmlNode, len(node.children))
+	for _, child := range node.children {
+		groups[child.name] = append(groups[child.name], child)
+	}
+	for name, children := range groups {
+		if len(children) == 1 {
+			value[name] = xmlNodeValue(children[0])
+			continue
+		}
+		items := make([]any, len(children))
+		for index, child := range children {
+			items[index] = xmlNodeValue(child)
+		}
+		value[name] = items
+	}
+	return value
 }
 
 func flattenMultipartValues(body []byte, contentType string, out map[string]string) error {

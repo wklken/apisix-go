@@ -226,6 +226,160 @@ func TestHarnessRunsRequestSequence(t *testing.T) {
 	runCase(t, caseSpec)
 }
 
+func TestHarnessFixtureEchoesRequestBody(t *testing.T) {
+	body := "echo me"
+	caseSpec := Case{
+		Name:   "fixture-echo",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "fixture-echo",
+					"uri": "/echo",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{Body: &Matcher{Equals: &body}},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, EchoRequestBody: true},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:  "echo",
+				Input: HTTPInput{Method: http.MethodPost, Path: "/echo", Body: body},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Body:   &Matcher{Equals: &body},
+				},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessExpandsIterationPlaceholders(t *testing.T) {
+	bodyTemplate := "body-{{ITERATION}}"
+	firstBody := "body-1"
+	secondBody := "body-2"
+	firstPath := "/echo?iteration=1"
+	secondPath := "/echo?iteration=2"
+	firstIteration := "1"
+	secondIteration := "2"
+	caseSpec := Case{
+		Name:   "iteration-placeholders",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "iteration-placeholders",
+					"uri": "/echo",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{
+						Path: &Matcher{Equals: &firstPath},
+						Headers: map[string]Matcher{
+							"X-Iteration": {Equals: &firstIteration},
+						},
+						Body: &Matcher{Equals: &firstBody},
+					},
+					{
+						Path: &Matcher{Equals: &secondPath},
+						Headers: map[string]Matcher{
+							"X-Iteration": {Equals: &secondIteration},
+						},
+						Body: &Matcher{Equals: &secondBody},
+					},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, EchoRequestBody: true},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "repeat",
+				Repeat: 2,
+				Input: HTTPInput{
+					Method: http.MethodPost,
+					Path:   "/echo?iteration={{ITERATION}}",
+					Headers: map[string]string{
+						"X-Iteration": "{{ITERATION}}",
+					},
+					Body: bodyTemplate,
+				},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Body:   &Matcher{Equals: &bodyTemplate},
+				},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessDoesNotBlockUnassertedFixtureCaptures(t *testing.T) {
+	body := "body"
+	caseSpec := Case{
+		Name:   "unasserted-fixture-captures",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "unasserted-fixture-captures",
+					"uri": "/echo",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, EchoRequestBody: true},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:   "repeat",
+				Repeat: 3,
+				Input:  HTTPInput{Method: http.MethodPost, Path: "/echo", Body: body},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
 func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
 	caseSpec := Case{
 		Name:   "repeat-generated-headers",
@@ -596,7 +750,7 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 		default:
 		}
 
-		writeFixtureResponse(w, spec.Respond)
+		writeFixtureResponse(w, spec.Respond, string(body))
 	})
 
 	var server *httptest.Server
@@ -614,12 +768,16 @@ func startNamedFixture(spec FixtureSpec) *fixtureServer {
 	nextResponse := 0
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		requests <- capturedRequest{
+		request := capturedRequest{
 			method:  r.Method,
 			path:    r.URL.RequestURI(),
 			host:    r.Host,
 			headers: r.Header.Clone(),
 			body:    string(body),
+		}
+		select {
+		case requests <- request:
+		default:
 		}
 
 		responseMu.Lock()
@@ -629,7 +787,7 @@ func startNamedFixture(spec FixtureSpec) *fixtureServer {
 		}
 		responseMu.Unlock()
 		response := spec.Respond[responseIndex]
-		writeFixtureResponse(w, response)
+		writeFixtureResponse(w, response, string(body))
 	})
 
 	var server *httptest.Server
@@ -641,7 +799,7 @@ func startNamedFixture(spec FixtureSpec) *fixtureServer {
 	return &fixtureServer{server: server, requests: requests}
 }
 
-func writeFixtureResponse(w http.ResponseWriter, response HTTPResponse) {
+func writeFixtureResponse(w http.ResponseWriter, response HTTPResponse, requestBody string) {
 	for name, value := range response.Headers {
 		w.Header().Set(name, value)
 	}
@@ -650,6 +808,10 @@ func writeFixtureResponse(w http.ResponseWriter, response HTTPResponse) {
 		status = http.StatusOK
 	}
 	w.WriteHeader(status)
+	if response.EchoRequestBody {
+		_, _ = io.WriteString(w, requestBody)
+		return
+	}
 	if len(response.Chunks) == 0 {
 		_, _ = io.WriteString(w, response.Body)
 		return
@@ -1090,8 +1252,10 @@ func runCase(t *testing.T, spec Case) {
 				}
 				for iteration := 1; iteration <= repeat; iteration++ {
 					run := func(t *testing.T) {
+						input := expandIterationInput(step.Input, iteration)
+						output := expandIterationOutput(step.Output, iteration)
 						if err := runHTTPInput(
-							t, client, address, tlsAddress, step.Input, step.Output, bodyLengths, headerHistory,
+							t, client, address, tlsAddress, input, output, bodyLengths, headerHistory,
 							capturedCookies,
 						); err != nil {
 							requestFailed = true
@@ -1468,6 +1632,83 @@ func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, bo
 			t.Errorf("gzip response body: %v", err)
 		}
 	}
+}
+
+func expandIterationInput(input HTTPInput, iteration int) HTTPInput {
+	replacement := strconv.Itoa(iteration)
+	input.Path = replaceIteration(input.Path, replacement)
+	input.Body = replaceIteration(input.Body, replacement)
+	if input.Headers != nil {
+		headers := make(map[string]string, len(input.Headers))
+		for name, value := range input.Headers {
+			headers[replaceIteration(name, replacement)] = replaceIteration(value, replacement)
+		}
+		input.Headers = headers
+	}
+	if input.HeaderValues != nil {
+		headers := make(map[string][]string, len(input.HeaderValues))
+		for name, values := range input.HeaderValues {
+			expanded := make([]string, len(values))
+			for i, value := range values {
+				expanded[i] = replaceIteration(value, replacement)
+			}
+			headers[replaceIteration(name, replacement)] = expanded
+		}
+		input.HeaderValues = headers
+	}
+	if input.BodyRepeat != nil {
+		repeated := *input.BodyRepeat
+		repeated.Value = replaceIteration(repeated.Value, replacement)
+		input.BodyRepeat = &repeated
+	}
+	return input
+}
+
+func expandIterationOutput(output HTTPOutput, iteration int) HTTPOutput {
+	replacement := strconv.Itoa(iteration)
+	output.Body = expandIterationMatcher(output.Body, replacement)
+	output.GzipBody = expandIterationMatcher(output.GzipBody, replacement)
+	output.Logs = expandIterationMatcher(output.Logs, replacement)
+	if output.Headers != nil {
+		headers := make(map[string]Matcher, len(output.Headers))
+		for name, matcher := range output.Headers {
+			headers[replaceIteration(name, replacement)] = *expandIterationMatcher(&matcher, replacement)
+		}
+		output.Headers = headers
+	}
+	output.SaveBodyLength = replaceIteration(output.SaveBodyLength, replacement)
+	output.BodyLengthLessThan = replaceIteration(output.BodyLengthLessThan, replacement)
+	return output
+}
+
+func expandIterationMatcher(matcher *Matcher, replacement string) *Matcher {
+	if matcher == nil {
+		return nil
+	}
+	expanded := *matcher
+	if matcher.Equals != nil {
+		value := replaceIteration(*matcher.Equals, replacement)
+		expanded.Equals = &value
+	}
+	if matcher.Matches != nil {
+		value := replaceIteration(*matcher.Matches, replacement)
+		expanded.Matches = &value
+	}
+	if matcher.NotMatches != nil {
+		value := replaceIteration(*matcher.NotMatches, replacement)
+		expanded.NotMatches = &value
+	}
+	if matcher.Values != nil {
+		expanded.Values = make([]string, len(matcher.Values))
+		for i, value := range matcher.Values {
+			expanded.Values[i] = replaceIteration(value, replacement)
+		}
+	}
+	return &expanded
+}
+
+func replaceIteration(value string, replacement string) string {
+	return strings.ReplaceAll(value, "{{ITERATION}}", replacement)
 }
 
 func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received capturedRequest) {

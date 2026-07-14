@@ -1,0 +1,638 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/api-breaker.t
+  tests: 20
+
+cases:
+  - name: schema-defaults
+    source:
+      tests: [1, 2, 3, 4]
+    variants:
+      - name: explicit-valid-config
+        runtime: &runtime
+          plugins: [api-breaker]
+        config:
+          routes:
+            - id: api-breaker-explicit-valid
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 502
+                  unhealthy:
+                    http_statuses: [500]
+                    failures: 1
+                  healthy:
+                    http_statuses: [200]
+                    successes: 1
+              upstream: &fixture_upstream
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.primary.ADDR}}": 1
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - &ok_response
+                status: 200
+                body: done
+        steps:
+          - name: valid-response
+            input:
+              path: /api_breaker
+            output: &ok_output
+              status: 200
+              body:
+                equals: done
+      - name: default-config
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-default-config
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 502
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - &error_response
+                status: 500
+              - *error_response
+              - *error_response
+        steps:
+          - &error_step
+            name: first-failure
+            input: &breaker_input
+              path: /api_breaker
+            output: &error_output
+              status: 500
+          - name: second-failure
+            input: *breaker_input
+            output: *error_output
+          - name: third-failure
+            input: *breaker_input
+            output: *error_output
+          - name: breaker-open
+            input: *breaker_input
+            output: &default_break_output
+              status: 502
+      - name: empty-healthy-uses-defaults
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-empty-healthy
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 502
+                  healthy: {}
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - *error_response
+              - *error_response
+              - *error_response
+              - *ok_response
+              - *ok_response
+              - *ok_response
+        steps:
+          - *error_step
+          - name: second-failure
+            input: *breaker_input
+            output: *error_output
+          - name: third-failure-and-open
+            input: *breaker_input
+            output: *error_output
+            wait: 3s
+          - name: first-half-open-success
+            input: *breaker_input
+            output: *ok_output
+          - name: second-half-open-success
+            input: *breaker_input
+            output: *ok_output
+          - name: third-half-open-success
+            input: *breaker_input
+            output: *ok_output
+      - name: empty-unhealthy-uses-defaults
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-empty-unhealthy
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 502
+                  unhealthy: {}
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - *error_response
+              - *error_response
+              - *error_response
+        steps:
+          - *error_step
+          - name: second-failure
+            input: *breaker_input
+            output: *error_output
+          - name: third-failure
+            input: *breaker_input
+            output: *error_output
+          - name: breaker-open
+            input: *breaker_input
+            output: *default_break_output
+
+  - name: reject-invalid-schema
+    source:
+      tests: [5, 6, 7, 8, 20]
+    variants:
+      - name: break-response-code-below-minimum
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-invalid-code
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 199
+        input: &invalid_input
+          path: /api_breaker
+        output: &invalid_output
+          status: 404
+          logs:
+            matches: 'build route api-breaker-invalid-.*fail:.*api-breaker'
+      - name: negative-max-breaker-sec
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-invalid-timeout
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 200
+                  max_breaker_sec: -1
+        input: *invalid_input
+        output: *invalid_output
+      - name: unhealthy-status-above-599
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-invalid-unhealthy-status
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 200
+                  unhealthy:
+                    http_statuses: [500, 603]
+                    failures: 3
+        input: *invalid_input
+        output: *invalid_output
+      - name: duplicate-healthy-status
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-invalid-healthy-duplicate
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 500
+                  healthy:
+                    http_statuses: [206, 206]
+                    successes: 3
+        input: *invalid_input
+        output: *invalid_output
+      - name: malformed-break-response-header
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-invalid-header
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 200
+                  break_response_headers:
+                    - content-type: application/json
+        input: *invalid_input
+        output: *invalid_output
+
+  - name: configured-statuses-open-breaker
+    source:
+      tests: [9, 10]
+    runtime: *runtime
+    config:
+      routes:
+        - id: api-breaker-configured-statuses
+          uri: /api_breaker
+          plugins:
+            api-breaker:
+              break_response_code: 599
+              unhealthy:
+                http_statuses: [500, 503]
+                failures: 3
+              healthy:
+                http_statuses: [200, 206]
+                successes: 3
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *ok_response
+          - *error_response
+          - status: 503
+          - *error_response
+    steps:
+      - name: healthy
+        input: *breaker_input
+        output:
+          status: 200
+      - name: first-unhealthy
+        input: *breaker_input
+        output: *error_output
+      - name: second-unhealthy
+        input: *breaker_input
+        output:
+          status: 503
+      - name: third-unhealthy
+        input: *breaker_input
+        output: *error_output
+      - name: first-open-rejection
+        input: *breaker_input
+        output: &configured_break_output
+          status: 599
+      - name: second-open-rejection
+        input: *breaker_input
+        output: *configured_break_output
+
+  - name: healthy-successes-clear-failures
+    source:
+      tests: [11]
+    runtime: *runtime
+    config:
+      routes:
+        - id: api-breaker-clear-failures
+          uri: /api_breaker
+          plugins:
+            api-breaker:
+              break_response_code: 599
+              unhealthy:
+                http_statuses: [500, 503]
+                failures: 3
+              healthy:
+                http_statuses: [200, 206]
+                successes: 3
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *error_response
+          - *error_response
+          - *ok_response
+          - *ok_response
+          - *ok_response
+          - *error_response
+          - *error_response
+    steps:
+      - *error_step
+      - name: second-failure
+        input: *breaker_input
+        output: *error_output
+      - name: first-success
+        input: *breaker_input
+        output:
+          status: 200
+      - name: second-success
+        input: *breaker_input
+        output:
+          status: 200
+      - name: third-success-clears-failures
+        input: *breaker_input
+        output:
+          status: 200
+      - name: failure-after-reset-one
+        input: *breaker_input
+        output: *error_output
+      - name: failure-after-reset-two
+        input: *breaker_input
+        output: *error_output
+
+  - name: half-open-success-recovery
+    source:
+      tests: [12, 16]
+    runtime: *runtime
+    config:
+      routes:
+        - id: api-breaker-half-open-recovery
+          uri: /api_breaker
+          plugins:
+            api-breaker:
+              break_response_code: 599
+              unhealthy:
+                http_statuses: [500, 503]
+                failures: 3
+              healthy:
+                http_statuses: [200, 206]
+                successes: 3
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *error_response
+          - *error_response
+          - *error_response
+          - *ok_response
+          - *ok_response
+          - *ok_response
+          - *ok_response
+          - *error_response
+          - *error_response
+          - *error_response
+    steps:
+      - *error_step
+      - name: second-failure
+        input: *breaker_input
+        output: *error_output
+      - name: third-failure
+        input: *breaker_input
+        output: *error_output
+      - name: rejected-during-open-window
+        input: *breaker_input
+        output: *configured_break_output
+        wait: 3s
+      - name: first-half-open-success
+        input: *breaker_input
+        output:
+          status: 200
+      - name: second-half-open-success
+        input: *breaker_input
+        output:
+          status: 200
+      - name: third-half-open-success
+        input: *breaker_input
+        output:
+          status: 200
+      - name: closed-success
+        input: *breaker_input
+        output:
+          status: 200
+      - name: new-failure-one
+        input: *breaker_input
+        output: *error_output
+      - name: new-failure-two
+        input: *breaker_input
+        output: *error_output
+      - name: new-failure-three
+        input: *breaker_input
+        output: *error_output
+      - name: breaker-opens-again
+        input: *breaker_input
+        output: *configured_break_output
+
+  - name: half-open-failure-reopens
+    source:
+      tests: [17]
+    runtime: *runtime
+    config:
+      routes:
+        - id: api-breaker-half-open-failure
+          uri: /api_breaker
+          plugins:
+            api-breaker:
+              break_response_code: 502
+              unhealthy:
+                failures: 3
+              healthy:
+                successes: 3
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *error_response
+          - *error_response
+          - *error_response
+          - *error_response
+          - *error_response
+          - *error_response
+    steps:
+      - *error_step
+      - name: second-failure
+        input: *breaker_input
+        output: *error_output
+      - name: third-failure
+        input: *breaker_input
+        output: *error_output
+      - name: rejected-during-open-window
+        input: *breaker_input
+        output: *default_break_output
+        wait: 3s
+      - name: half-open-failure-one
+        input: *breaker_input
+        output: *error_output
+      - name: half-open-failure-two
+        input: *breaker_input
+        output: *error_output
+      - name: half-open-failure-three
+        input: *breaker_input
+        output: *error_output
+      - name: reopened-breaker
+        input: *breaker_input
+        output: *default_break_output
+
+  - name: custom-break-response
+    source:
+      tests: [13, 14, 15]
+    variants:
+      - name: default-unhealthy-status
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-default-unhealthy-status
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 502
+                  break_response_body: '{"message":"breaker opened."}'
+                  break_response_headers:
+                    - key: Content-Type
+                      value: application/json
+                    - key: Content-Type
+                      value: application/json+v1
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - *error_response
+        steps:
+          - *error_step
+      - name: response-body-and-headers
+        runtime: *runtime
+        config:
+          routes:
+            - id: api-breaker-custom-response
+              uri: /api_breaker
+              plugins:
+                api-breaker:
+                  break_response_code: 502
+                  break_response_body: '{"message":"breaker opened."}'
+                  break_response_headers:
+                    - key: Content-Type
+                      value: application/json
+                    - key: Content-Type
+                      value: application/json+v1
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - *ok_response
+              - *error_response
+              - status: 503
+              - *error_response
+              - *error_response
+        steps:
+          - name: healthy-neutral
+            input: *breaker_input
+            output:
+              status: 200
+          - name: first-default-unhealthy
+            input: *breaker_input
+            output: *error_output
+          - name: neutral-503
+            input: *breaker_input
+            output:
+              status: 503
+          - name: second-default-unhealthy
+            input: *breaker_input
+            output: *error_output
+          - name: third-default-unhealthy
+            input: *breaker_input
+            output: *error_output
+          - name: custom-open-response
+            input: *breaker_input
+            output:
+              status: 502
+              headers:
+                Content-Type:
+                  equals: application/json+v1
+              body:
+                equals: '{"message":"breaker opened."}'
+
+  - name: exponential-backoff-is-capped
+    source:
+      tests: [18, 19]
+    runtime: *runtime
+    config:
+      routes:
+        - id: api-breaker-capped-backoff
+          uri: /api_breaker
+          plugins:
+            api-breaker:
+              break_response_code: 502
+              max_breaker_sec: 10
+              unhealthy:
+                http_statuses: [500, 503]
+                failures: 1
+              healthy:
+                successes: 3
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *error_response
+          - *error_response
+          - *error_response
+          - *error_response
+    steps:
+      - name: request-01-upstream
+        input: *breaker_input
+        output: *error_output
+        wait: 1s
+      - name: request-02-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-03-upstream
+        input: *breaker_input
+        output: *error_output
+        wait: 1s
+      - name: request-04-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-05-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-06-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-07-upstream
+        input: *breaker_input
+        output: *error_output
+        wait: 1s
+      - name: request-08-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-09-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-10-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-11-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-12-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-13-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-14-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-15-upstream
+        input: *breaker_input
+        output: *error_output
+        wait: 1s
+      - name: request-16-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-17-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-18-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-19-blocked
+        input: *breaker_input
+        output: *default_break_output
+        wait: 1s
+      - name: request-20-blocked
+        input: *breaker_input
+        output:
+          status: 502
+          logs:
+            matches: '(?s)breaker_time: 2.*breaker_time: 4.*breaker_time: 8.*breaker_time: 10'

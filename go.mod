@@ -41,7 +41,6 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a
-	github.com/sony/gobreaker v1.0.0
 	github.com/spf13/cast v1.10.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0

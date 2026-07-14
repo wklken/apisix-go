@@ -707,6 +707,17 @@ func TestReplaceFixturePlaceholders(t *testing.T) {
 		t.Fatalf("replacement = %q, want %q", got, want)
 	}
 
+	data, err = replaceFixturePlaceholders(
+		[]byte("port: '{{FIXTURE.primary.PORT}}'"),
+		map[string]string{"{{FIXTURE.primary.PORT}}": "1980"},
+	)
+	if err != nil {
+		t.Fatalf("replace numeric fixture placeholder: %v", err)
+	}
+	if got, want := string(data), "port: 1980"; got != want {
+		t.Fatalf("numeric replacement = %q, want %q", got, want)
+	}
+
 	_, err = replaceFixturePlaceholders([]byte("{{FIXTURE.missing.URL}}"), nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown fixture placeholder") {
 		t.Fatalf("unknown replacement error = %v", err)
@@ -1102,6 +1113,10 @@ func renderStandaloneConfig(config map[string]any, replacements map[string]strin
 
 func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]byte, error) {
 	for placeholder, value := range replacements {
+		if strings.HasSuffix(placeholder, ".PORT}}") {
+			data = bytes.ReplaceAll(data, []byte("'"+placeholder+"'"), []byte(value))
+			data = bytes.ReplaceAll(data, []byte(`"`+placeholder+`"`), []byte(value))
+		}
 		data = bytes.ReplaceAll(data, []byte(placeholder), []byte(value))
 	}
 	if bytes.Contains(data, []byte("{{FIXTURE.")) || bytes.Contains(data, []byte("{{UPSTREAM_")) {

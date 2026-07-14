@@ -8,9 +8,9 @@ uses a fresh loopback upstream fixture.
 
 The corpus is pinned to Apache APISIX commit
 `c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The current checkpoint contains
-32 manifests for 31 plugins, mapping 595 upstream `TEST` blocks exactly once
-into 360 isolated case/variant process runs, 451 request/assertion steps, and
-1,456 actual requests after repeats. The target is all 98 source-backed plugins
+33 manifests for 32 plugins, mapping 610 upstream `TEST` blocks exactly once
+into 368 isolated case/variant process runs, 461 request/assertion steps, and
+1,466 actual requests after repeats. The target is all 98 source-backed plugins
 marked Supported in `docs/plugins.md`.
 
 The schema rejects `skip` fields. A source block counts as covered only when it

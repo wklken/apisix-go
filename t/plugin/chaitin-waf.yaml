@@ -1,0 +1,307 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/chaitin-waf.t
+  tests: 15
+
+cases:
+  - name: metadata-rejects-empty-nodes
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: chaitin-waf-empty-nodes
+          uri: /hello
+          plugins:
+            chaitin-waf: {}
+      plugin_metadata:
+        - id: chaitin-waf
+          nodes: []
+    input:
+      path: /hello
+    output:
+      status: 500
+      headers:
+        X-APISIX-CHAITIN-WAF:
+          equals: err
+      logs:
+        matches: 'validate plugin_metadata chaitin-waf:.*nodes.*minimum 1'
+
+  - name: metadata-requires-node-host
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: chaitin-waf-missing-host
+          uri: /hello
+          plugins:
+            chaitin-waf: {}
+      plugin_metadata:
+        - id: chaitin-waf
+          nodes:
+            - port: 8000
+    input:
+      path: /hello
+    output:
+      status: 500
+      headers:
+        X-APISIX-CHAITIN-WAF:
+          equals: err
+      logs:
+        matches: 'validate plugin_metadata chaitin-waf:.*host.*required'
+
+  - name: default-pass
+    source:
+      tests: [3, 4]
+    config: &pass_config
+      routes:
+        - id: chaitin-waf-pass
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              upstream:
+                servers: [httpbun.org]
+          upstream: &primary_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+      plugin_metadata: &waf_metadata
+        - id: chaitin-waf
+          nodes:
+            - host: "{{FIXTURE.waf.HOST}}"
+              port: "{{FIXTURE.waf.PORT}}"
+    fixtures:
+      - &primary_fixture
+        name: primary
+        kind: http
+        respond:
+          - &hello_response
+            status: 200
+            body: hello world
+      - &waf_fixture
+        name: waf
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+        respond:
+          - &pass_response
+            status: 200
+            body: '{"status":200}'
+    steps:
+      - name: pass
+        input:
+          path: /hello
+        output: &pass_output
+          status: 200
+          headers:
+            X-APISIX-CHAITIN-WAF:
+              equals: 'yes'
+            X-APISIX-CHAITIN-WAF-STATUS:
+              equals: '200'
+            X-APISIX-CHAITIN-WAF-ACTION:
+              equals: pass
+            X-APISIX-CHAITIN-WAF-TIME:
+              matches: '^[0-9]+$'
+          body:
+            equals: hello world
+
+  - name: conditional-match
+    source:
+      tests: [5, 6, 7]
+    config:
+      routes:
+        - id: chaitin-waf-match
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              upstream:
+                servers: [httpbun.org]
+              match:
+                - vars:
+                    - [http_waf, '==', 'true']
+          upstream: *primary_upstream
+      plugin_metadata: *waf_metadata
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *hello_response
+          - *hello_response
+      - *waf_fixture
+    steps:
+      - name: no-match
+        input:
+          path: /hello
+        output:
+          status: 200
+          headers:
+            X-APISIX-CHAITIN-WAF:
+              equals: 'no'
+          body:
+            equals: hello world
+      - name: matched
+        input:
+          path: /hello
+          headers:
+            Waf: 'true'
+        output: *pass_output
+
+  - name: mode-off
+    source:
+      tests: [8, 9]
+    config:
+      routes:
+        - id: chaitin-waf-off
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              mode: off
+              upstream:
+                servers: [httpbun.org]
+              match:
+                - vars:
+                    - [http_waf, '==', 'true']
+          upstream: *primary_upstream
+      plugin_metadata: *waf_metadata
+    fixtures:
+      - *primary_fixture
+      - name: waf
+        kind: http
+        respond:
+          - *pass_response
+    steps:
+      - name: off
+        input:
+          path: /hello
+          headers:
+            Trigger: 'true'
+        output:
+          status: 200
+          headers:
+            X-APISIX-CHAITIN-WAF:
+              equals: 'off'
+          body:
+            equals: hello world
+
+  - name: real-client-ip-disabled
+    source:
+      tests: [10, 11, 12]
+    config:
+      routes:
+        - id: chaitin-waf-real-client-ip-disabled
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              match:
+                - vars:
+                    - [http_trigger, '==', 'true']
+              config:
+                real_client_ip: false
+          upstream: *primary_upstream
+      plugin_metadata: *waf_metadata
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *hello_response
+          - *hello_response
+      - name: waf
+        kind: http
+        expect:
+          - &loopback_waf_request
+            headers:
+              X-Forwarded-For:
+                equals: 127.0.0.1
+          - *loopback_waf_request
+        respond:
+          - *pass_response
+    steps:
+      - name: ignores-forwarded-for
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 1.2.3.4
+            Trigger: 'true'
+        output: *pass_output
+      - name: ignores-trusted-forwarded-for
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 192.0.2.10
+            Trigger: 'true'
+        output: *pass_output
+
+  - name: real-client-ip-from-trusted-forwarded-for
+    source:
+      tests: [13, 14]
+    runtime:
+      apisix:
+        trusted_addresses: [127.0.0.0/8]
+    config:
+      routes:
+        - id: chaitin-waf-real-client-ip-enabled
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              match:
+                - vars:
+                    - [http_trigger, '==', 'true']
+              config:
+                real_client_ip: true
+          upstream: *primary_upstream
+      plugin_metadata: *waf_metadata
+    fixtures:
+      - *primary_fixture
+      - name: waf
+        kind: http
+        expect:
+          - headers:
+              X-Forwarded-For:
+                equals: 192.0.2.10
+        respond:
+          - *pass_response
+    steps:
+      - name: trusted-forwarded-for
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 192.0.2.10
+            Trigger: 'true'
+        output: *pass_output
+
+  - name: spoofed-forwarded-for-from-untrusted-peer
+    source:
+      tests: [15]
+    runtime:
+      apisix:
+        trusted_addresses: [192.0.2.1/32]
+    config:
+      routes:
+        - id: chaitin-waf-untrusted-forwarded-for
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              match:
+                - vars:
+                    - [http_trigger, '==', 'true']
+              config:
+                real_client_ip: true
+          upstream: *primary_upstream
+      plugin_metadata: *waf_metadata
+    fixtures:
+      - *primary_fixture
+      - name: waf
+        kind: http
+        expect:
+          - *loopback_waf_request
+        respond:
+          - *pass_response
+    steps:
+      - name: untrusted-forwarded-for
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 192.0.2.10
+            Trigger: 'true'
+        output: *pass_output

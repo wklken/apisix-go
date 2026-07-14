@@ -8,9 +8,9 @@ uses a fresh loopback upstream fixture.
 
 The corpus is pinned to Apache APISIX commit
 `c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The current checkpoint contains
-33 manifests for 32 plugins, mapping 610 upstream `TEST` blocks exactly once
-into 368 isolated case/variant process runs, 461 request/assertion steps, and
-1,466 actual requests after repeats. The target is all 98 source-backed plugins
+34 manifests for 33 plugins, mapping 624 upstream `TEST` blocks exactly once
+into 379 isolated case/variant process runs, 483 request/assertion steps, and
+1,488 actual requests after repeats. The target is all 98 source-backed plugins
 marked Supported in `docs/plugins.md`.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
@@ -69,6 +69,20 @@ its own files, process, request/assertion cycle, and temporary store.
 
 `{{UPSTREAM_ADDR}}` inside `config` is replaced with the current fixture's
 loopback address and is valid only when the case declares `upstream`.
+`{{APISIX_URL}}` resolves to the isolated instance's frontend URL.
+
+An ordered step may capture one regular-expression group from a response
+header and reuse it in a later request path, body, or header:
+
+```yaml
+output:
+  captures:
+    state:
+      header: Location
+      matches: 'state=([^&]+)'
+input:
+  path: /callback?state={{CAPTURE.state}}
+```
 
 ## Matchers
 

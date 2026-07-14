@@ -1,0 +1,436 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/authz-casdoor.t
+  tests: 14
+
+cases:
+  - name: schema
+    source:
+      tests: [1]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: authz-casdoor-valid
+              uri: /anything/*
+              plugins:
+                authz-casdoor:
+                  callback_url: "{{APISIX_URL}}/anything/callback"
+                  endpoint_addr: "{{FIXTURE.casdoor.URL}}"
+                  client_id: client-a
+                  client_secret: secret-a
+        fixtures:
+          - &unused_casdoor
+            name: casdoor
+            kind: http
+            respond:
+              - &valid_token
+                status: 200
+                body: '{"access_token":"aaaaaaaaaaaaaaaa","expires_in":1000000}'
+        steps:
+          - name: redirect
+            input:
+              path: /anything/d
+            output:
+              status: 302
+              headers:
+                Location:
+                  matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=client-a.*$'
+      - name: callback-query-rejected
+        config:
+          routes:
+            - id: authz-casdoor-callback-query
+              uri: /anything/*
+              plugins:
+                authz-casdoor:
+                  callback_url: http://gateway.example/anything/callback?code=aaa
+                  endpoint_addr: http://door.example
+                  client_id: client-a
+                  client_secret: secret-a
+        input:
+          path: /anything/d
+        output: &schema_rejection
+          status: 404
+          logs:
+            matches: 'build route authz-casdoor-.*fail:.*authz-casdoor'
+      - name: endpoint-trailing-slash-rejected
+        config:
+          routes:
+            - id: authz-casdoor-endpoint-slash
+              uri: /anything/*
+              plugins:
+                authz-casdoor:
+                  callback_url: http://gateway.example/anything/callback
+                  endpoint_addr: http://door.example/
+                  client_id: client-a
+                  client_secret: secret-a
+        input:
+          path: /anything/d
+        output: *schema_rejection
+
+  - name: authorize-redirect
+    source:
+      tests: [2, 3]
+    config:
+      routes:
+        - id: authz-casdoor-redirect
+          uri: /anything/*
+          plugins:
+            authz-casdoor: &default_auth
+              callback_url: "{{APISIX_URL}}/anything/callback"
+              endpoint_addr: "{{FIXTURE.casdoor.URL}}"
+              client_id: 7ceb9b7fda4a9061ec1c
+              client_secret: 3416238e1edf915eac08b8fe345b2b95cdba7e04
+    fixtures:
+      - *unused_casdoor
+    steps:
+      - name: redirect
+        input:
+          path: /anything/d?param1=foo&param2=bar
+        output: &authorize_redirect
+          status: 302
+          headers:
+            Location:
+              matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=7ceb9b7fda4a9061ec1c.*redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A[0-9]+%2Fanything%2Fcallback.*state=[0-9a-f]+.*$'
+            Set-Cookie:
+              matches: '^authz_casdoor_session_[0-9a-f]{64}='
+
+  - name: fake-casdoor-and-login
+    source:
+      tests: [4, 5, 6]
+    config:
+      routes:
+        - id: authz-casdoor-fake-token
+          uri: /fake-casdoor
+          plugins:
+            proxy-rewrite:
+              uri: /api/login/oauth/access_token
+          upstream: &casdoor_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.casdoor.ADDR}}": 1
+        - id: authz-casdoor-login
+          uri: /anything/*
+          plugins:
+            authz-casdoor: *default_auth
+            proxy-rewrite:
+              uri: /echo
+          upstream: &primary_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: casdoor
+        kind: http
+        expect:
+          - method: GET
+            path:
+              equals: /api/login/oauth/access_token
+          - &token_request
+            method: POST
+            path:
+              equals: /api/login/oauth/access_token
+            headers:
+              Content-Type:
+                matches: '^application/x-www-form-urlencoded'
+            body:
+              matches: '(^|&)client_id=7ceb9b7fda4a9061ec1c(&|$).*client_secret=3416238e1edf915eac08b8fe345b2b95cdba7e04.*code=aaa'
+        respond:
+          - *valid_token
+          - *valid_token
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /echo?param1=foo&param2=bar
+        respond:
+          - status: 200
+            body: logged in
+    steps:
+      - name: fake-token-service
+        input:
+          path: /fake-casdoor
+        output:
+          status: 200
+          body:
+            matches: '"access_token":"aaaaaaaaaaaaaaaa"'
+      - name: begin-login
+        input:
+          path: /anything/d?param1=foo&param2=bar
+        output:
+          <<: *authorize_redirect
+          captures:
+            state: &state_capture
+              header: Location
+              matches: '[?&]state=([^&]+)'
+      - name: callback
+        input:
+          path: /anything/callback?code=aaa&state={{CAPTURE.state}}
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /anything/d?param1=foo&param2=bar
+      - name: authenticated
+        input:
+          path: /anything/d?param1=foo&param2=bar
+        output:
+          status: 200
+          body:
+            equals: logged in
+
+  - name: callback-without-session
+    source:
+      tests: [7]
+    config:
+      routes:
+        - id: authz-casdoor-no-session
+          uri: /anything/*
+          plugins:
+            authz-casdoor: *default_auth
+    fixtures:
+      - *unused_casdoor
+    steps:
+      - name: callback
+        input:
+          path: /anything/callback?code=aaa&state=bbb
+        output:
+          status: 503
+          body:
+            matches: 'no session found'
+          logs:
+            matches: 'no session found'
+
+  - name: invalid-state
+    source:
+      tests: [8]
+    config:
+      routes:
+        - id: authz-casdoor-invalid-state
+          uri: /anything/*
+          plugins:
+            authz-casdoor: *default_auth
+    fixtures:
+      - *unused_casdoor
+    steps:
+      - name: begin-login
+        input:
+          path: /anything/d?param1=foo&param2=bar
+        output:
+          <<: *authorize_redirect
+          captures:
+            state: *state_capture
+      - name: reject-state
+        input:
+          path: /anything/callback?code=aaa&state=wrong-{{CAPTURE.state}}
+        output:
+          status: 400
+          body:
+            matches: 'invalid state'
+          logs:
+            matches: 'invalid state'
+
+  - name: invalid-access-token
+    source:
+      tests: [9]
+    config:
+      routes:
+        - id: authz-casdoor-invalid-token
+          uri: /anything/*
+          plugins:
+            authz-casdoor: *default_auth
+    fixtures:
+      - name: casdoor
+        kind: http
+        expect:
+          - method: POST
+            body:
+              matches: '(^|&)code=wrong(&|$)'
+        respond:
+          - status: 200
+            body: '{"access_token":"bbbbbbbbbb","expires_in":0}'
+    steps:
+      - name: begin-login
+        input:
+          path: /anything/d
+        output:
+          status: 302
+          captures:
+            state: *state_capture
+      - name: reject-token
+        input:
+          path: /anything/callback?code=wrong&state={{CAPTURE.state}}
+        output:
+          status: 503
+          body:
+            matches: 'failed when accessing token: invalid access_token'
+          logs:
+            matches: 'failed when accessing token: invalid access_token'
+
+  - name: encrypted-client-secret
+    source:
+      tests: [10]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: authz-casdoor-encrypted-secret
+          uri: /anything/*
+          plugins:
+            authz-casdoor:
+              callback_url: "{{APISIX_URL}}/anything/callback"
+              endpoint_addr: "{{FIXTURE.casdoor.URL}}"
+              client_id: 7ceb9b7fda4a9061ec1c
+              client_secret: YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
+    fixtures:
+      - name: casdoor
+        kind: http
+        expect:
+          - *token_request
+        respond:
+          - *valid_token
+    steps:
+      - name: begin-login
+        input:
+          path: /anything/d
+        output:
+          status: 302
+          captures:
+            state: *state_capture
+      - name: decrypt-secret-for-token-exchange
+        input:
+          path: /anything/callback?code=aaa&state={{CAPTURE.state}}
+        output:
+          status: 302
+
+  - name: session-cookie-scoped-per-client-id
+    source:
+      tests: [11, 12]
+    config:
+      routes:
+        - id: authz-casdoor-low
+          uri: /low/*
+          plugins:
+            authz-casdoor:
+              callback_url: "{{APISIX_URL}}/low/callback"
+              endpoint_addr: "{{FIXTURE.casdoor.URL}}"
+              client_id: low-client
+              client_secret: low-secret
+          upstream: *primary_upstream
+        - id: authz-casdoor-high
+          uri: /high/*
+          plugins:
+            authz-casdoor:
+              callback_url: "{{APISIX_URL}}/high/callback"
+              endpoint_addr: "{{FIXTURE.casdoor.URL}}"
+              client_id: high-client
+              client_secret: high-secret
+          upstream: *primary_upstream
+    fixtures:
+      - name: casdoor
+        kind: http
+        expect:
+          - method: POST
+            body:
+              matches: 'client_id=low-client.*client_secret=low-secret.*code=aaa'
+        respond:
+          - *valid_token
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: low data
+    steps:
+      - name: low-redirect
+        input:
+          path: /low/data
+        output:
+          status: 302
+          headers:
+            Location:
+              matches: 'client_id=low-client'
+            Set-Cookie:
+              matches: '^authz_casdoor_session_313f04fbdb3e87d271b93490b15adc35db08e5ee1ff66a909d8b1ceb815ad094='
+          captures:
+            low_state: *state_capture
+      - name: low-callback
+        input:
+          path: /low/callback?code=aaa&state={{CAPTURE.low_state}}
+        output:
+          status: 302
+      - name: high-rejects-low-session
+        input:
+          path: /high/data
+        output:
+          status: 302
+          headers:
+            Location:
+              matches: 'client_id=high-client'
+            Set-Cookie:
+              matches: '^authz_casdoor_session_fe7ae8841c6c2f181cd899c271cb6a136d295d716c139b3a2f8a8d5f45e586f7='
+
+  - name: session-expiry
+    source:
+      tests: [13, 14]
+    config:
+      routes:
+        - id: authz-casdoor-short-expiry
+          uri: /shortexp/*
+          plugins:
+            authz-casdoor:
+              callback_url: "{{APISIX_URL}}/shortexp/callback"
+              endpoint_addr: "{{FIXTURE.casdoor.URL}}"
+              client_id: 7ceb9b7fda4a9061ec1c
+              client_secret: 3416238e1edf915eac08b8fe345b2b95cdba7e04
+          upstream: *primary_upstream
+    fixtures:
+      - name: casdoor
+        kind: http
+        expect:
+          - method: POST
+            body:
+              matches: 'code=shortexp'
+        respond:
+          - status: 200
+            body: '{"access_token":"cccccccccccccccc","expires_in":2}'
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /shortexp/d
+        respond:
+          - status: 200
+            body: active
+    steps:
+      - name: begin-login
+        input:
+          path: /shortexp/d
+        output:
+          status: 302
+          captures:
+            state: *state_capture
+      - name: callback
+        input:
+          path: /shortexp/callback?code=shortexp&state={{CAPTURE.state}}
+        output:
+          status: 302
+      - name: active-session
+        wait: 3s
+        input:
+          path: /shortexp/d
+        output:
+          status: 200
+          body:
+            equals: active
+      - name: expired-session
+        input:
+          path: /shortexp/d
+        output:
+          status: 302
+          headers:
+            Location:
+              matches: 'client_id=7ceb9b7fda4a9061ec1c'

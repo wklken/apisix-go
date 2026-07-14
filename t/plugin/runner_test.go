@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -465,6 +466,62 @@ func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
 					Headers: map[string]string{"apisix-csrf-token": "{{COOKIE.apisix-csrf-token}}"},
 				},
 				Output: HTTPOutput{Status: http.StatusOK},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
+	statePattern := `state=([^&]+)`
+	firstPath := "/authorize"
+	secondPath := "/callback?state=dynamic-state"
+	done := "done"
+	caseSpec := Case{
+		Name:   "response-header-capture",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "response-header-capture",
+					"uri": "/*",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{Path: &Matcher{Equals: &firstPath}},
+					{Path: &Matcher{Equals: &secondPath}},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Headers: map[string]string{"X-State": "state=dynamic-state"}},
+					{Status: http.StatusOK, Body: done},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:  "capture",
+				Input: HTTPInput{Path: "/authorize"},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Captures: map[string]HeaderCapture{
+						"state": {Header: "X-State", Matches: statePattern},
+					},
+				},
+			},
+			{
+				Name:   "reuse",
+				Input:  HTTPInput{Path: "/callback?state={{CAPTURE.state}}"},
+				Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &done}},
 			},
 		},
 	}
@@ -1119,7 +1176,8 @@ func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]
 		}
 		data = bytes.ReplaceAll(data, []byte(placeholder), []byte(value))
 	}
-	if bytes.Contains(data, []byte("{{FIXTURE.")) || bytes.Contains(data, []byte("{{UPSTREAM_")) {
+	if bytes.Contains(data, []byte("{{FIXTURE.")) || bytes.Contains(data, []byte("{{UPSTREAM_")) ||
+		bytes.Contains(data, []byte("{{APISIX_")) {
 		return nil, fmt.Errorf("configuration contains an unknown fixture placeholder")
 	}
 	return data, nil
@@ -1156,6 +1214,8 @@ func runCase(t *testing.T, spec Case) {
 	if err != nil {
 		t.Fatalf("reserve APISIX port: %v", err)
 	}
+	apisixAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	replacements["{{APISIX_URL}}"] = "http://" + apisixAddress
 	runtimeOverrides := spec.Runtime
 	standaloneResources := spec.Config
 	tlsPort := 0
@@ -1210,7 +1270,7 @@ func runCase(t *testing.T, spec Case) {
 			_ = process.stop()
 		}
 	}()
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	address := apisixAddress
 	if err := process.waitReady(address, 5*time.Second); err != nil {
 		_ = process.stop()
 		stopped = true
@@ -1258,6 +1318,7 @@ func runCase(t *testing.T, spec Case) {
 	bodyLengths := make(map[string]int)
 	headerHistory := make(map[string][]string)
 	capturedCookies := make(map[string]string)
+	capturedValues := make(map[string]string)
 	if len(spec.Steps) > 0 {
 		for _, step := range spec.Steps {
 			t.Run(step.Name, func(t *testing.T) {
@@ -1271,7 +1332,7 @@ func runCase(t *testing.T, spec Case) {
 						output := expandIterationOutput(step.Output, iteration)
 						if err := runHTTPInput(
 							t, client, address, tlsAddress, input, output, bodyLengths, headerHistory,
-							capturedCookies,
+							capturedCookies, capturedValues,
 						); err != nil {
 							requestFailed = true
 						}
@@ -1292,7 +1353,8 @@ func runCase(t *testing.T, spec Case) {
 		}
 	} else if spec.Input.Path != "" {
 		if err := runHTTPInput(
-			t, client, address, tlsAddress, spec.Input, spec.Output, bodyLengths, headerHistory, capturedCookies,
+			t, client, address, tlsAddress, spec.Input, spec.Output, bodyLengths, headerHistory,
+			capturedCookies, capturedValues,
 		); err != nil {
 			requestFailed = true
 		}
@@ -1367,8 +1429,15 @@ func runHTTPInput(
 	bodyLengths map[string]int,
 	headerHistory map[string][]string,
 	capturedCookies map[string]string,
+	capturedValues map[string]string,
 ) error {
 	t.Helper()
+	var err error
+	input, err = resolveCapturedInput(input, capturedValues)
+	if err != nil {
+		t.Errorf("resolve captured response value: %v", err)
+		return err
+	}
 	method := input.Method
 	if method == "" {
 		method = http.MethodGet
@@ -1418,7 +1487,7 @@ func runHTTPInput(
 	}
 	if input.Version == "1.0" {
 		return runRawHTTP10Input(
-			t, client, address, request, output, bodyLengths, headerHistory, capturedCookies,
+			t, client, address, request, output, bodyLengths, headerHistory, capturedCookies, capturedValues,
 		)
 	}
 	response, err := client.Do(request)
@@ -1442,6 +1511,70 @@ func runHTTPInput(
 	assertBodyLength(t, output, len(responseBody), bodyLengths)
 	assertGeneratedHeaders(t, output, response.Header, headerHistory)
 	captureResponseCookies(response, capturedCookies)
+	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
+		t.Errorf("capture response header: %v", err)
+		return err
+	}
+	return nil
+}
+
+func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInput, error) {
+	var err error
+	input.Path, err = replaceCapturePlaceholders(input.Path, captured)
+	if err != nil {
+		return input, err
+	}
+	input.Body, err = replaceCapturePlaceholders(input.Body, captured)
+	if err != nil {
+		return input, err
+	}
+	if input.Headers != nil {
+		headers := make(map[string]string, len(input.Headers))
+		for name, value := range input.Headers {
+			value, err = replaceCapturePlaceholders(value, captured)
+			if err != nil {
+				return input, fmt.Errorf("header %s: %w", name, err)
+			}
+			headers[name] = value
+		}
+		input.Headers = headers
+	}
+	return input, nil
+}
+
+func replaceCapturePlaceholders(value string, captured map[string]string) (string, error) {
+	const prefix = "{{CAPTURE."
+	for {
+		start := strings.Index(value, prefix)
+		if start < 0 {
+			return value, nil
+		}
+		endOffset := strings.Index(value[start:], "}}")
+		if endOffset < 0 {
+			return "", fmt.Errorf("unterminated capture placeholder")
+		}
+		end := start + endOffset + 2
+		name := value[start+len(prefix) : start+endOffset]
+		if name == "" {
+			return "", fmt.Errorf("capture placeholder name is empty")
+		}
+		replacement, ok := captured[name]
+		if !ok {
+			return "", fmt.Errorf("response capture %q has not been recorded", name)
+		}
+		value = value[:start] + replacement + value[end:]
+	}
+}
+
+func captureResponseHeaders(captures map[string]HeaderCapture, headers http.Header, captured map[string]string) error {
+	for name, capture := range captures {
+		value := headers.Get(capture.Header)
+		match := regexp.MustCompile(capture.Matches).FindStringSubmatch(value)
+		if len(match) != 2 {
+			return fmt.Errorf("response header %s value %q does not match capture %q", capture.Header, value, name)
+		}
+		captured[name] = match[1]
+	}
 	return nil
 }
 
@@ -1484,6 +1617,7 @@ func runRawHTTP10Input(
 	bodyLengths map[string]int,
 	headerHistory map[string][]string,
 	capturedCookies map[string]string,
+	capturedValues map[string]string,
 ) error {
 	t.Helper()
 	var connection net.Conn
@@ -1538,6 +1672,10 @@ func runRawHTTP10Input(
 	assertBodyLength(t, output, len(body), bodyLengths)
 	assertGeneratedHeaders(t, output, response.Header, headerHistory)
 	captureResponseCookies(response, capturedCookies)
+	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
+		t.Errorf("capture response header: %v", err)
+		return err
+	}
 	return nil
 }
 

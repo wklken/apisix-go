@@ -116,16 +116,22 @@ type HTTPResponse struct {
 }
 
 type HTTPOutput struct {
-	Status             int                `yaml:"status"`
-	Headers            map[string]Matcher `yaml:"headers,omitempty"`
-	UniqueHeaders      []string           `yaml:"unique_headers,omitempty"`
-	MonotonicHeaders   []string           `yaml:"monotonic_headers,omitempty"`
-	DifferentHeaders   [][]string         `yaml:"different_headers,omitempty"`
-	Body               *Matcher           `yaml:"body,omitempty"`
-	GzipBody           *Matcher           `yaml:"gzip_body,omitempty"`
-	Logs               *Matcher           `yaml:"logs,omitempty"`
-	SaveBodyLength     string             `yaml:"save_body_length,omitempty"`
-	BodyLengthLessThan string             `yaml:"body_length_less_than,omitempty"`
+	Status             int                      `yaml:"status"`
+	Headers            map[string]Matcher       `yaml:"headers,omitempty"`
+	UniqueHeaders      []string                 `yaml:"unique_headers,omitempty"`
+	MonotonicHeaders   []string                 `yaml:"monotonic_headers,omitempty"`
+	DifferentHeaders   [][]string               `yaml:"different_headers,omitempty"`
+	Body               *Matcher                 `yaml:"body,omitempty"`
+	GzipBody           *Matcher                 `yaml:"gzip_body,omitempty"`
+	Logs               *Matcher                 `yaml:"logs,omitempty"`
+	SaveBodyLength     string                   `yaml:"save_body_length,omitempty"`
+	BodyLengthLessThan string                   `yaml:"body_length_less_than,omitempty"`
+	Captures           map[string]HeaderCapture `yaml:"captures,omitempty"`
+}
+
+type HeaderCapture struct {
+	Header  string `yaml:"header"`
+	Matches string `yaml:"matches"`
 }
 
 type Matcher struct {
@@ -304,7 +310,7 @@ func (c *Case) hasScenario() bool {
 		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil || len(c.Fixtures) > 0 ||
 		c.Output.GzipBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" ||
 		len(c.Output.UniqueHeaders) > 0 || len(c.Output.MonotonicHeaders) > 0 ||
-		len(c.Output.DifferentHeaders) > 0 ||
+		len(c.Output.DifferentHeaders) > 0 || len(c.Output.Captures) > 0 ||
 		len(c.Steps) > 0 || c.TLS != nil
 }
 
@@ -336,7 +342,8 @@ func (c *Case) validateScenario() error {
 			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil ||
 			c.Output.GzipBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
 			c.Output.BodyLengthLessThan != "" || len(c.Output.UniqueHeaders) > 0 ||
-			len(c.Output.MonotonicHeaders) > 0 || len(c.Output.DifferentHeaders) > 0 {
+			len(c.Output.MonotonicHeaders) > 0 || len(c.Output.DifferentHeaders) > 0 ||
+			len(c.Output.Captures) > 0 {
 			return errors.New("steps and fixtures must not be mixed with input, upstream, or output")
 		}
 		if len(c.Steps) == 0 {
@@ -453,6 +460,21 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 	for _, pair := range output.DifferentHeaders {
 		if len(pair) != 2 || strings.TrimSpace(pair[0]) == "" || strings.TrimSpace(pair[1]) == "" {
 			return errors.New("different_headers entries must contain two non-blank header names")
+		}
+	}
+	for name, capture := range output.Captures {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("response capture name must not be blank")
+		}
+		if strings.TrimSpace(capture.Header) == "" {
+			return fmt.Errorf("response capture %q header must not be blank", name)
+		}
+		pattern, err := regexp.Compile(capture.Matches)
+		if err != nil {
+			return fmt.Errorf("response capture %q matches: %w", name, err)
+		}
+		if pattern.NumSubexp() != 1 {
+			return fmt.Errorf("response capture %q matches must contain exactly one capture group", name)
 		}
 	}
 	if output.Body != nil {

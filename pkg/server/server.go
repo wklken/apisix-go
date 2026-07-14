@@ -30,6 +30,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"golang.org/x/net/http2"
 )
 
 var ErrMissingStreamUpstream = errors.New("missing stream upstream")
@@ -169,6 +170,11 @@ func configuredTLSListenAddresses() []string {
 
 func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	server := &http.Server{Handler: handler}
+	if frontendHTTP2Enabled() {
+		if err := http2.ConfigureServer(server, nil); err != nil {
+			logger.Errorf("configure HTTP/2 server: %s", err)
+		}
+	}
 	if config.GlobalConfig == nil {
 		return server
 	}
@@ -552,8 +558,13 @@ func (s *Server) startServer(ctx context.Context) {
 }
 
 func frontendTLSConfig() *tls.Config {
+	protocols := []string{"http/1.1"}
+	if frontendHTTP2Enabled() {
+		protocols = append([]string{"h2"}, protocols...)
+	}
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		NextProtos: protocols,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			serverName := strings.TrimSpace(hello.ServerName)
 			if serverName == "" && config.GlobalConfig != nil {
@@ -576,6 +587,21 @@ func frontendTLSConfig() *tls.Config {
 			return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
 		},
 	}
+}
+
+func frontendHTTP2Enabled() bool {
+	if config.GlobalConfig == nil {
+		return false
+	}
+	if config.GlobalConfig.Apisix.EnableHttp2 {
+		return true
+	}
+	for _, listener := range config.GlobalConfig.Apisix.Ssl.Listen {
+		if listener.EnableHttp2 {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesSNI(snis []string, serverName string) bool {

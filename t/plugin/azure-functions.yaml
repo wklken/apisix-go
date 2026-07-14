@@ -1,0 +1,286 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/azure-functions.t
+  tests: 14
+
+cases:
+  - name: schema
+    source:
+      tests: [1, 2]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: azure-functions-valid
+              uri: /azure
+              plugins:
+                azure-functions:
+                  function_uri: "http://{{UPSTREAM_ADDR}}/httptrigger"
+        input:
+          path: /azure
+        upstream: &function_ok
+          expect:
+            path:
+              equals: /httptrigger
+          respond:
+            status: 200
+            body: done
+        output: &done
+          status: 200
+          body:
+            equals: done
+      - name: missing-function-uri
+        config:
+          routes:
+            - id: azure-functions-missing-uri
+              uri: /azure
+              plugins:
+                azure-functions: {}
+        input:
+          path: /azure
+        output:
+          status: 404
+          logs:
+            matches: 'build route azure-functions-missing-uri fail:.*azure-functions'
+
+  - name: invoke-and-http2-response
+    source:
+      tests: [3, 4, 5, 6]
+    frontend_tls:
+      sni: azure-functions.test
+    config:
+      routes:
+        - id: azure-functions-invoke
+          uri: /azure
+          plugins:
+            azure-functions:
+              function_uri: "{{FIXTURE.function.URL}}/httptrigger"
+    fixtures:
+      - name: function
+        kind: http
+        expect:
+          - &httptrigger_request
+            method: GET
+            path:
+              equals: /httptrigger
+          - *httptrigger_request
+          - method: HEAD
+            path:
+              equals: /httptrigger
+        respond:
+          - &function_response
+            status: 200
+            headers:
+              Content-Type: text/plain
+              Content-Length: "13"
+              X-Extra-Header: MUST
+              Connection: Keep-Alive
+              Keep-Alive: timeout=5
+              Upgrade: websocket
+            body: "faas invoked\n"
+          - *function_response
+          - *function_response
+    steps:
+      - name: http1-endpoint
+        input:
+          path: /azure
+        output: &function_output
+          status: 200
+          headers:
+            Content-Length:
+              equals: "13"
+            X-Extra-Header:
+              equals: MUST
+          body:
+            equals: "faas invoked\n"
+      - name: http2-body
+        input:
+          scheme: https
+          version: "2"
+          path: /azure
+        output: *function_output
+      - name: http2-head-drops-connection-headers
+        input:
+          method: HEAD
+          scheme: https
+          version: "2"
+          path: /azure
+        output:
+          status: 200
+          headers:
+            Connection: &absent
+              absent: true
+            Upgrade: *absent
+            Keep-Alive: *absent
+            Content-Type:
+              equals: text/plain
+            X-Extra-Header:
+              equals: MUST
+            Content-Length:
+              equals: "13"
+          body:
+            equals: ""
+
+  - name: configured-api-key
+    source:
+      tests: [7]
+    config:
+      routes:
+        - id: azure-functions-configured-key
+          uri: /azure
+          plugins:
+            azure-functions:
+              function_uri: "http://{{UPSTREAM_ADDR}}/azure-demo"
+              authorization:
+                apikey: test_key
+    input:
+      path: /azure
+    upstream:
+      expect:
+        path:
+          equals: /azure-demo
+        headers:
+          X-Functions-Key:
+            equals: test_key
+      respond:
+        status: 200
+        body: "Authz-Header - test_key\n"
+    output:
+      status: 200
+      body:
+        equals: "Authz-Header - test_key\n"
+
+  - name: client-api-key-wins
+    source:
+      tests: [8]
+    config:
+      routes:
+        - id: azure-functions-client-key
+          uri: /azure
+          plugins:
+            azure-functions:
+              function_uri: "http://{{UPSTREAM_ADDR}}/azure-demo"
+              authorization:
+                apikey: test_key
+    input:
+      path: /azure
+      headers:
+        X-Functions-Key: must_not_be_overrided
+    upstream:
+      expect:
+        headers:
+          X-Functions-Key:
+            equals: must_not_be_overrided
+      respond:
+        status: 200
+        body: "Authz-Header - must_not_be_overrided\n"
+    output:
+      status: 200
+      body:
+        equals: "Authz-Header - must_not_be_overrided\n"
+
+  - name: metadata-master-key
+    source:
+      tests: [9]
+    config:
+      routes:
+        - id: azure-functions-metadata-key
+          uri: /azure
+          plugins:
+            azure-functions:
+              function_uri: "http://{{UPSTREAM_ADDR}}/azure-demo"
+      plugin_metadata:
+        - id: azure-functions
+          master_apikey: metadata_key
+    input:
+      path: /azure
+    upstream:
+      expect:
+        headers:
+          X-Functions-Key:
+            equals: metadata_key
+      respond:
+        status: 200
+        body: "Authz-Header - metadata_key\n"
+    output:
+      status: 200
+      body:
+        equals: "Authz-Header - metadata_key\n"
+
+  - name: wildcard-path-forwarding
+    source:
+      tests: [10, 11, 12, 13]
+    config:
+      routes:
+        - id: azure-functions-paths
+          uri: /azure/*
+          plugins:
+            azure-functions:
+              function_uri: "{{FIXTURE.function.URL}}/api"
+    fixtures:
+      - name: function
+        kind: http
+        expect:
+          - method: GET
+            path:
+              equals: /api/httptrigger
+          - method: GET
+            path:
+              equals: /api/http/trigger
+          - method: GET
+            path:
+              equals: /api/http/trigger
+          - method: GET
+            path:
+              equals: /api
+        respond:
+          - status: 200
+            body: "invocation /api/httptrigger successful\n"
+          - &nested_response
+            status: 200
+            body: "invocation /api/http/trigger successful\n"
+          - *nested_response
+          - status: 200
+            body: "invocation /api successful\n"
+    steps:
+      - name: one-level
+        input:
+          path: /azure/httptrigger
+        output:
+          status: 200
+          body:
+            equals: "invocation /api/httptrigger successful\n"
+      - name: multi-level
+        input:
+          path: /azure/http/trigger
+        output: &nested_output
+          status: 200
+          body:
+            equals: "invocation /api/http/trigger successful\n"
+      - name: repeated-slashes
+        input:
+          path: /azure///http////trigger
+        output: *nested_output
+      - name: no-extension
+        input:
+          path: /azure/
+        output:
+          status: 200
+          body:
+            equals: "invocation /api successful\n"
+
+  - name: final-route-setup
+    source:
+      tests: [14]
+    config:
+      routes:
+        - id: azure-functions-final-route
+          uri: /azure
+          plugins:
+            azure-functions:
+              function_uri: "http://{{UPSTREAM_ADDR}}/httptrigger"
+    input:
+      path: /azure
+    upstream: *function_ok
+    output: *done

@@ -185,6 +185,33 @@ cases:
 	}
 }
 
+func TestManifestAcceptsHTTP2InputWithFrontendTLS(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: http2
+    source:
+      tests: [1]
+    config:
+      routes: []
+    frontend_tls:
+      sni: example.test
+    input:
+      scheme: https
+      version: "2"
+      path: /hello
+    output:
+      status: 200
+`)
+
+	if _, err := loadManifest("http2.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
 func TestManifestRejectsSkipField(t *testing.T) {
 	data := strings.Replace(validManifestYAML, "    config:\n", "    skip: not executable\n    config:\n", 1)
 

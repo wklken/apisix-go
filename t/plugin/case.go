@@ -419,8 +419,11 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 	if input.Scheme != "" && input.Scheme != "http" && input.Scheme != "https" {
 		return fmt.Errorf("input scheme %q is not supported", input.Scheme)
 	}
-	if input.Version != "" && input.Version != "1.0" && input.Version != "1.1" {
+	if input.Version != "" && input.Version != "1.0" && input.Version != "1.1" && input.Version != "2" {
 		return fmt.Errorf("input version %q is not supported", input.Version)
+	}
+	if input.Version == "2" && input.Scheme != "https" {
+		return errors.New("HTTP/2 input requires HTTPS")
 	}
 	if input.BodyRepeat != nil {
 		if input.Body != "" {

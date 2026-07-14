@@ -786,6 +786,7 @@ func prepareFrontendTLS(
 	standaloneConfig map[string]any,
 	sni string,
 	port int,
+	enableHTTP2 bool,
 ) (map[string]any, map[string]any, error) {
 	runtimeConfig, err := cloneConfigMap(runtimeConfig)
 	if err != nil {
@@ -803,7 +804,11 @@ func prepareFrontendTLS(
 	apisix := ensureMap(runtimeConfig, "apisix")
 	sslConfig := ensureMap(apisix, "ssl")
 	sslConfig["enable"] = true
-	sslConfig["listen"] = []any{map[string]any{"ip": "127.0.0.1", "port": port}}
+	sslConfig["listen"] = []any{map[string]any{
+		"ip":           "127.0.0.1",
+		"port":         port,
+		"enable_http2": enableHTTP2,
+	}}
 
 	ssls, _ := standaloneConfig["ssls"].([]any)
 	standaloneConfig["ssls"] = append(ssls, map[string]any{
@@ -826,6 +831,18 @@ func cloneConfigMap(config map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return cloned, nil
+}
+
+func caseUsesHTTP2(spec Case) bool {
+	if spec.Input.Version == "2" {
+		return true
+	}
+	for _, step := range spec.Steps {
+		if step.Input.Version == "2" {
+			return true
+		}
+	}
+	return false
 }
 
 func generateFrontendCertificate(sni string) (string, string, error) {
@@ -965,6 +982,7 @@ func runCase(t *testing.T, spec Case) {
 	runtimeOverrides := spec.Runtime
 	standaloneResources := spec.Config
 	tlsPort := 0
+	enableHTTP2 := caseUsesHTTP2(spec)
 	if spec.TLS != nil {
 		tlsPort, err = reservePort()
 		if err != nil {
@@ -975,6 +993,7 @@ func runCase(t *testing.T, spec Case) {
 			spec.Config,
 			spec.TLS.SNI,
 			tlsPort,
+			enableHTTP2,
 		)
 		if err != nil {
 			t.Fatalf("prepare frontend TLS: %v", err)
@@ -1038,7 +1057,7 @@ func runCase(t *testing.T, spec Case) {
 		}
 	}
 
-	transport := &http.Transport{DisableCompression: true}
+	transport := &http.Transport{DisableCompression: true, ForceAttemptHTTP2: enableHTTP2}
 	if spec.TLS != nil {
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // integration certificate is generated per case
@@ -1226,6 +1245,12 @@ func runHTTPInput(
 	response, err := client.Do(request)
 	if err != nil {
 		t.Errorf("client request: %v", err)
+		return err
+	}
+	if input.Version == "2" && response.ProtoMajor != 2 {
+		err := fmt.Errorf("response protocol = %s, want HTTP/2", response.Proto)
+		t.Error(err)
+		_ = response.Body.Close()
 		return err
 	}
 	responseBody, err := io.ReadAll(response.Body)

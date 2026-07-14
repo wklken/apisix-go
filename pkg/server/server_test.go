@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -123,6 +124,30 @@ func TestConfiguredTLSListenAddresses(t *testing.T) {
 	config.GlobalConfig.Apisix.Ssl.Enable = false
 	if got := configuredTLSListenAddresses(); len(got) != 0 {
 		t.Fatalf("configuredTLSListenAddresses() = %#v, want no disabled listeners", got)
+	}
+}
+
+func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+		Enable: true,
+		Listen: []config.Listen{{Port: 9443, EnableHttp2: true}},
+	}}}
+
+	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	if _, ok := server.TLSNextProto["h2"]; !ok {
+		t.Fatal("configured HTTP server does not install an HTTP/2 handler")
+	}
+
+	tlsConfig := frontendTLSConfig()
+	if !slices.Contains(tlsConfig.NextProtos, "h2") {
+		t.Fatalf("frontend TLS protocols = %v, want h2", tlsConfig.NextProtos)
+	}
+
+	config.GlobalConfig.Apisix.Ssl.Listen[0].EnableHttp2 = false
+	if protocols := frontendTLSConfig().NextProtos; slices.Contains(protocols, "h2") {
+		t.Fatalf("disabled frontend TLS protocols = %v, must not advertise h2", protocols)
 	}
 }
 

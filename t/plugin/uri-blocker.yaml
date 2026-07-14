@@ -1,386 +1,295 @@
-sources:
-- repository: https://github.com/apache/apisix
+source:
+  repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/uri-blocker.t
   tests: 22
+
 cases:
-- name: test-001-invalid-regular-expression
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 1
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-002-multiple-valid-rules
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 2
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-003-multiple-rules-include-one-invalid-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 3
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-004-one-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 4
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-005-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 5
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-4
-  input:
-    method: GET
-    path: /hello?aa=1
-  upstream:
-    respond:
+  - name: reject-invalid-regular-expression
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: uri-blocker-invalid-regex
+          uri: /hello
+          plugins:
+            uri-blocker:
+              block_rules: ['.+(']
+    output:
+      logs:
+        matches: 'build route uri-blocker-invalid-regex fail:.*uri-blocker'
+
+  - name: accept-multiple-valid-rules
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: uri-blocker-valid-rules
+          uri: /hello
+          plugins:
+            uri-blocker:
+              block_rules: ['^a', '^b']
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              '{{UPSTREAM_ADDR}}': 1
+    input:
+      path: /hello
+    upstream: &hello_fixture
+      respond:
+        status: 200
+        body: hello world
+    output: &hello_output
       status: 200
-      body: hello world
-  output:
-    status: 403
-    logs:
-      matches: concat\ block_rules:\ aa
-- name: test-006-miss-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 6
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-4
-  input:
-    method: GET
-    path: /hello?bb=2
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 200
-    logs:
-      matches: concat\ block_rules:\ aa
-- name: test-007-multiple-block-rules
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 7
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-008-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 8
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-          - bb
-          - c\d+
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-7
-  input:
-    method: GET
-    path: /hello?x=bb
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-    logs:
-      matches: concat\ block_rules:\ aa\|bb\|c\\d\+,
-- name: test-009-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 9
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-          - bb
-          - c\d+
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-7
-  input:
-    method: GET
-    path: /hello?bb=2
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-    logs:
-      matches: concat\ block_rules:\ aa\|bb\|c\\d\+,
-- name: test-010-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 10
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-          - bb
-          - c\d+
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-7
-  input:
-    method: GET
-    path: /hello?c1=2
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-- name: test-011-not-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 11
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-          - bb
-          - c\d+
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-7
-  input:
-    method: GET
-    path: /hello?cc=2
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 200
-- name: test-012-sql-injection
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 12
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-013-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 13
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - select.+(from|limit)
-          - (?:(union(.*?)select))
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-12
-  input:
-    method: GET
-    path: /hello?name=;select%20from%20sys
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-    logs:
-      matches: concat\ block_rules:\ select\.\+\(from\|limit\)\|\(\?:\(union\(\.\*\?\)select\)\),
-- name: test-014-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 14
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - select.+(from|limit)
-          - (?:(union(.*?)select))
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-12
-  input:
-    method: GET
-    path: /hello?name=;union%20select%20
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-- name: test-015-not-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 15
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - select.+(from|limit)
-          - (?:(union(.*?)select))
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-12
-  input:
-    method: GET
-    path: /hello?cc=2
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 200
-- name: test-016-invalid-rejected-msg-length-or-type
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 16
-  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
-- name: test-017-one-block-rule-with-rejected-msg
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 17
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-018-hit-block-rule-and-return-rejected-msg
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 18
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - aa
-          rejected_msg: access is not allowed
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-17
-  input:
-    method: GET
-    path: /hello?aa=1
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-    body:
-      equals: '{"error_msg":"access is not allowed"}'
-- name: test-019-one-block-rule-with-case-insensitive
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 19
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-020-hit-block-rule
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 20
-  config:
-    routes:
-    - plugins:
-        uri-blocker:
-          block_rules:
-          - AA
-          rejected_msg: access is not allowed
-          case_insensitive: true
-      upstream:
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-        type: roundrobin
-      uri: /hello
-      id: uri-blocker-19
-  input:
-    method: GET
-    path: /hello?aa=1
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-    body:
-      equals: '{"error_msg":"access is not allowed"}'
-- name: test-021-add-block-rule-with-anchor
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 21
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-022-can-t-bypass-with-url-without-normalization
-  source:
-    file: t/plugin/uri-blocker.t
-    tests:
-    - 22
-  skip: source route has no inline upstream fixture for standalone execution
+      body:
+        equals: hello world
+
+  - name: reject-one-invalid-rule
+    source:
+      tests: [3]
+    config:
+      routes:
+        - id: uri-blocker-one-invalid-rule
+          uri: /hello
+          plugins:
+            uri-blocker:
+              block_rules: ['^a', '^b(']
+    output:
+      logs:
+        matches: 'build route uri-blocker-one-invalid-rule fail:.*uri-blocker'
+
+  - name: one-rule-blocks-query
+    source:
+      tests: [4, 5]
+    config:
+      routes:
+        - id: uri-blocker-one-rule-block
+          uri: /hello
+          plugins: &one_rule_plugin
+            uri-blocker:
+              block_rules: [aa]
+          upstream: *fixture_route
+    input:
+      path: /hello?aa=1
+    upstream: *hello_fixture
+    output:
+      status: 403
+      logs:
+        matches: 'concat block_rules: aa'
+
+  - name: one-rule-allows-other-query
+    source:
+      tests: [6]
+    config:
+      routes:
+        - id: uri-blocker-one-rule-allow
+          uri: /hello
+          plugins: *one_rule_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello?bb=2
+    upstream: *hello_fixture
+    output:
+      <<: *hello_output
+      logs:
+        matches: 'concat block_rules: aa'
+
+  - name: multiple-rules-block-bb-value
+    source:
+      tests: [7, 8]
+    config:
+      routes:
+        - id: uri-blocker-multiple-rules-bb-value
+          uri: /hello
+          plugins: &multiple_rules_plugin
+            uri-blocker:
+              block_rules: [aa, bb, 'c\d+']
+          upstream: *fixture_route
+    input:
+      path: /hello?x=bb
+    upstream: *hello_fixture
+    output:
+      status: 403
+      logs: &multiple_rules_log
+        matches: 'concat block_rules: aa[|]bb[|]c.*,'
+
+  - name: multiple-rules-block-bb-key
+    source:
+      tests: [9]
+    config:
+      routes:
+        - id: uri-blocker-multiple-rules-bb-key
+          uri: /hello
+          plugins: *multiple_rules_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello?bb=2
+    upstream: *hello_fixture
+    output:
+      status: 403
+      logs: *multiple_rules_log
+
+  - name: multiple-rules-block-numeric-pattern
+    source:
+      tests: [10]
+    config:
+      routes:
+        - id: uri-blocker-multiple-rules-numeric
+          uri: /hello
+          plugins: *multiple_rules_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello?c1=2
+    upstream: *hello_fixture
+    output:
+      status: 403
+
+  - name: multiple-rules-allow-nonmatch
+    source:
+      tests: [11]
+    config:
+      routes:
+        - id: uri-blocker-multiple-rules-allow
+          uri: /hello
+          plugins: *multiple_rules_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello?cc=2
+    upstream: *hello_fixture
+    output: *hello_output
+
+  - name: sql-select-blocked
+    source:
+      tests: [12, 13]
+    config:
+      routes:
+        - id: uri-blocker-sql-select
+          uri: /hello
+          plugins: &sql_rules_plugin
+            uri-blocker:
+              block_rules: ['select.+(from|limit)', '(?:(union(.*?)select))']
+          upstream: *fixture_route
+    input:
+      path: /hello?name=;select%20from%20sys
+    upstream: *hello_fixture
+    output:
+      status: 403
+      logs:
+        matches: 'concat block_rules: select\.\+\(from\|limit\)\|\(\?:\(union\(\.\*\?\)select\)\),'
+
+  - name: sql-union-select-blocked
+    source:
+      tests: [14]
+    config:
+      routes:
+        - id: uri-blocker-sql-union
+          uri: /hello
+          plugins: *sql_rules_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello?name=;union%20select%20
+    upstream: *hello_fixture
+    output:
+      status: 403
+
+  - name: sql-rules-allow-nonmatch
+    source:
+      tests: [15]
+    config:
+      routes:
+        - id: uri-blocker-sql-allow
+          uri: /hello
+          plugins: *sql_rules_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello?cc=2
+    upstream: *hello_fixture
+    output: *hello_output
+
+  - name: reject-invalid-message
+    source:
+      tests: [16]
+    variants:
+      - name: empty
+        config:
+          routes:
+            - id: uri-blocker-empty-message
+              uri: /hello
+              plugins:
+                uri-blocker:
+                  block_rules: ['^a']
+                  rejected_msg: ''
+        output:
+          logs:
+            matches: 'build route uri-blocker-empty-message fail:.*uri-blocker'
+      - name: boolean
+        config:
+          routes:
+            - id: uri-blocker-boolean-message
+              uri: /hello
+              plugins:
+                uri-blocker:
+                  block_rules: ['^a']
+                  rejected_msg: true
+        output:
+          logs:
+            matches: 'build route uri-blocker-boolean-message fail:.*uri-blocker'
+
+  - name: custom-rejected-message
+    source:
+      tests: [17, 18]
+    config:
+      routes:
+        - id: uri-blocker-custom-message
+          uri: /hello
+          plugins:
+            uri-blocker:
+              block_rules: [aa]
+              rejected_msg: access is not allowed
+          upstream: *fixture_route
+    input:
+      path: /hello?aa=1
+    upstream: *hello_fixture
+    output:
+      status: 403
+      body:
+        equals: '{"error_msg":"access is not allowed"}'
+
+  - name: case-insensitive
+    source:
+      tests: [19, 20]
+    config:
+      routes:
+        - id: uri-blocker-case-insensitive
+          uri: /hello
+          plugins:
+            uri-blocker:
+              block_rules: [AA]
+              rejected_msg: access is not allowed
+              case_insensitive: true
+          upstream: *fixture_route
+    input:
+      path: /hello?aa=1
+    upstream: *hello_fixture
+    output:
+      status: 403
+      body:
+        equals: '{"error_msg":"access is not allowed"}'
+
+  - name: normalized-path-cannot-bypass-anchor
+    source:
+      tests: [21, 22]
+    runtime:
+      apisix:
+        normalize_uri_like_servlet: true
+    config:
+      routes:
+        - id: uri-blocker-normalized-path
+          uri: /internal/*
+          plugins:
+            uri-blocker:
+              block_rules: ['^/internal/']
+    input:
+      path: /./internal/x?aa=1
+    output:
+      status: 403

@@ -1,21 +1,12 @@
-sources:
-- repository: https://github.com/apache/apisix
+source:
+  repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/proxy-rewrite.t
   tests: 57
 
-- repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/proxy-rewrite2.t
-  tests: 8
-- repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/proxy-rewrite3.t
-  tests: 43
 cases:
   - name: schema-sanity
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [1]
     config:
       routes:
@@ -47,7 +38,6 @@ cases:
 
   - name: add-plugin
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [2]
     config:
       routes:
@@ -71,7 +61,6 @@ cases:
 
   - name: update-plugin
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [3]
     config:
       routes:
@@ -95,7 +84,6 @@ cases:
 
   - name: disable-plugin
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [4]
     config:
       routes:
@@ -113,7 +101,6 @@ cases:
 
   - name: rewrite-host
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [5, 6]
     config:
       routes:
@@ -138,7 +125,6 @@ cases:
 
   - name: rewrite-scheme-https
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [7, 8]
     config:
       routes:
@@ -168,7 +154,6 @@ cases:
 
   - name: rewrite-headers
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [9, 10]
     config:
       routes:
@@ -196,7 +181,6 @@ cases:
 
   - name: add-headers
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [11, 12]
     config:
       routes:
@@ -222,7 +206,6 @@ cases:
 
   - name: rewrite-empty-headers
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [13, 14]
     config:
       routes:
@@ -248,7 +231,6 @@ cases:
 
   - name: rewrite-uri-query
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [15, 16]
     config:
       routes:
@@ -269,7 +251,6 @@ cases:
 
   - name: rewrite-uri-empty-query
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [17, 18]
     config:
       routes:
@@ -290,7 +271,6 @@ cases:
 
   - name: remove-empty-header
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [19, 20]
     config:
       routes:
@@ -320,7 +300,6 @@ cases:
 
   - name: regex-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [21, 22]
     config:
       routes:
@@ -341,7 +320,6 @@ cases:
 
   - name: regex-uri-no-route-match
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [23]
     config:
       routes:
@@ -364,7 +342,6 @@ cases:
 
   - name: uri-precedes-regex-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [24, 25]
     config:
       routes:
@@ -386,7 +363,6 @@ cases:
 
   - name: reject-odd-regex-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [26]
     config:
       routes:
@@ -404,7 +380,6 @@ cases:
 
   - name: reject-invalid-regex-pattern
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [27]
     config:
       routes:
@@ -419,7 +394,6 @@ cases:
 
   - name: reject-invalid-regex-replacement
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [28]
     config:
       routes:
@@ -434,7 +408,6 @@ cases:
 
   - name: reject-invalid-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [29]
     config:
       routes:
@@ -449,7 +422,6 @@ cases:
 
   - name: reject-non-string-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [30]
     config:
       routes:
@@ -464,7 +436,6 @@ cases:
 
   - name: reject-invalid-header-field
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [31]
     config:
       routes:
@@ -481,7 +452,6 @@ cases:
 
   - name: reject-invalid-header-value
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [32]
     config:
       routes:
@@ -498,7 +468,6 @@ cases:
 
   - name: rewrite-uri-with-arguments
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [33, 34]
     config:
       routes:
@@ -519,13 +488,11 @@ cases:
 
   - name: admin-etcd-clean-serialization
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [35]
     skip: Admin API and etcd serialization are outside standalone mode
 
   - name: header-request-variables
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [36, 37]
     config:
       routes:
@@ -559,7 +526,6 @@ cases:
 
   - name: missing-request-variable
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [38, 39]
     config:
       routes:
@@ -592,7 +558,6 @@ cases:
 
   - name: context-uri-variable
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [40, 41]
     config:
       routes:
@@ -613,7 +578,6 @@ cases:
 
   - name: host-with-port-schema
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [42]
     config:
       routes:
@@ -634,7 +598,6 @@ cases:
 
   - name: host-with-port-and-rewritten-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [43, 44]
     config:
       routes:
@@ -659,7 +622,6 @@ cases:
 
   - name: unsafe-uri-with-query
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [45, 46]
     config:
       routes:
@@ -681,7 +643,6 @@ cases:
 
   - name: unsafe-uri-empty-query
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [47, 48]
     config:
       routes:
@@ -703,7 +664,6 @@ cases:
 
   - name: unsafe-configured-uri-query-merge
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [49, 50]
     config:
       routes:
@@ -725,7 +685,6 @@ cases:
 
   - name: unsafe-real-request-uri
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [51, 52]
     config:
       routes:
@@ -746,7 +705,6 @@ cases:
 
   - name: unsafe-special-query
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [53, 54]
     config:
       routes:
@@ -768,7 +726,6 @@ cases:
 
   - name: unsafe-multiple-question-marks
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [55]
     config:
       routes:
@@ -790,7 +747,6 @@ cases:
 
   - name: safe-configured-uri-query
     source:
-      file: t/plugin/proxy-rewrite.t
       tests: [56, 57]
     config:
       routes:
@@ -809,309 +765,3 @@ cases:
           equals: /print_uri_detailed?name=a%20b&x=1
       respond: *hello_response
     output: *hello_output
-  - name: "proxy-rewrite2-test-001-access-upstream-uri-before-proxy-rewrite"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 1
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-002-default-x-forwarded-proto"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 2
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-003-pass-x-forwarded-proto"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 3
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-004-customize-x-forwarded-proto"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 4
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-005-make-sure-x-forwarded-proto-hit-the-core-request-header-cache"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 5
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-006-pass-duplicate-x-forwarded-proto"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 6
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-007-customize-x-forwarded-port"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 7
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite2-test-008-pass-duplicate-x-forwarded-proto-but-not-configured-trusted-addresses"
-    source:
-      file: t/plugin/proxy-rewrite2.t
-      tests:
-      - 8
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-001-set-route-rewrite-method"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 1
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-002-hit-route-upstream-uri-should-be-hello"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 2
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-003-set-route-update-rewrite-method"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 3
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-004-hit-route-upstream-uri-should-be-hello"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 4
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-005-wrong-value-of-method-key"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 5
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-006-set-route-rewrite-method-with-headers"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 6
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-007-hit-route-with-header"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 7
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-008-set-route-unsafe-uri-not-normalized-at-request-with-unsafe-allowed"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 8
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-009-unsafe-uri-not-normalized-at-request"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 9
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-010-set-route-safe-uri-not-normalized-at-request-with-unsafe-allowed"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 10
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-011-safe-uri-not-normalized-at-request"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 11
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-012-set-route-rewrite-x-forwarded-host"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 12
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-013-rewrite-x-forwarded-host"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 13
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-014-set-route-header-test"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 14
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-015-add-exist-header-in-muti-header"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 15
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-016-add-header-to-exist-header"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 16
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-017-remove-header"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 17
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-018-set-header-success"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 18
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-019-header-priority-test"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 19
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-020-set-and-test-priority-test-deprecated-calls-test"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 20
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-021-set-route"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 21
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-022-hit-with-crlf"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 22
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-023-set-route-with-uri"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 23
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-024-hit-with-crlf"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 24
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-025-regex-uri-with-args"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 25
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-026-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 26
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-027-use-variables-in-headers-when-captured-by-regex-uri"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 27
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-028-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 28
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-029-use-variables-in-header-when-not-matched-regex-uri"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 29
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-030-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 30
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-031-use-variables-in-headers-when-captured-by-regex-uri"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 31
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-032-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 32
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-033-set-route-test-if-x-forwarded-port-can-be-set-before-proxy"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 33
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-034-test-if-x-forwarded-port-can-be-set-before-proxy"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 34
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-035-set-route-test-if-x-forwarded-for-can-be-set-before-proxy"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 35
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-036-test-if-x-forwarded-for-can-be-set-before-proxy"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 36
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-037-setting-multiple-regex-uris"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 37
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-038-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 38
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-039-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 39
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-040-use-regex-uri-with-unsafe-allowed"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 40
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-041-hit"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 41
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-042-set-route-unsafe-uri-normalized-at-request-with-unsafe-not-allowed"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 42
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "proxy-rewrite3-test-043-unsafe-uri-normalized-at-request"
-    source:
-      file: t/plugin/proxy-rewrite3.t
-      tests:
-      - 43
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

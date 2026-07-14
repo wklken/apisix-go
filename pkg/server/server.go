@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"slices"
 	"strings"
 	"syscall"
@@ -57,6 +58,9 @@ func NewServer() (*Server, error) {
 	storage := store.NewStore("apisix-go-store.db", events)
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	var handler http.Handler = routes
+	if config.GlobalConfig != nil && config.GlobalConfig.Apisix.NormalizeURILikeServlet {
+		handler = normalizeRequestPath(handler)
+	}
 	if pluginConfigured("node-status") {
 		handler = node_status.Track(handler)
 	}
@@ -70,6 +74,26 @@ func NewServer() (*Server, error) {
 		events:          events,
 		storage:         storage,
 	}, nil
+}
+
+func normalizeRequestPath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cleaned := path.Clean(r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/") && cleaned != "/" {
+			cleaned += "/"
+		}
+		if cleaned == r.URL.Path {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		request := r.Clone(r.Context())
+		requestURL := *r.URL
+		requestURL.Path = cleaned
+		requestURL.RawPath = ""
+		request.URL = &requestURL
+		next.ServeHTTP(w, request)
+	})
 }
 
 func configuredListenAddresses() []string {

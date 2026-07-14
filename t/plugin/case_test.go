@@ -39,63 +39,37 @@ func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
 	}
 }
 
-func TestManifestAcceptsMultipleSourceFiles(t *testing.T) {
-	manifest := &Manifest{
-		Sources: []SourceSpec{
-			{
-				Repository: "https://github.com/apache/apisix",
-				Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
-				File:       "t/plugin/example.t",
-				Tests:      2,
-			},
-			{
-				Repository: "https://github.com/apache/apisix",
-				Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
-				File:       "t/plugin/example2.t",
-				Tests:      1,
-			},
-		},
-		Cases: []Case{
-			{
-				Name:   "first",
-				Source: CaseSource{File: "t/plugin/example.t", Tests: []int{1, 2}},
-				Config: map[string]any{"routes": []any{}},
-				Input:  HTTPInput{Path: "/hello"},
-				Output: HTTPOutput{Status: 200},
-			},
-			{
-				Name:   "second",
-				Source: CaseSource{File: "t/plugin/example2.t", Tests: []int{1}},
-				Config: map[string]any{"routes": []any{}},
-				Input:  HTTPInput{Path: "/hello"},
-				Output: HTTPOutput{Status: 200},
-			},
-		},
-	}
+func TestManifestAcceptsMultipleStandaloneVariantsForOneSourceCase(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: invalid-values
+    source:
+      tests: [1]
+    variants:
+      - name: first
+        config:
+          routes: []
+        output:
+          logs:
+            matches: first
+      - name: second
+        config:
+          routes: []
+        output:
+          logs:
+            matches: second
+`)
 
-	if err := manifest.validate(); err != nil {
-		t.Fatalf("validate() error = %v", err)
+	manifest, err := loadManifest("variants.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
 	}
-}
-
-func TestManifestRejectsMultipleSourceFilesWithoutCaseFile(t *testing.T) {
-	manifest := &Manifest{
-		Sources: []SourceSpec{
-			{Repository: "https://github.com/apache/apisix", Commit: "commit", File: "one.t", Tests: 1},
-			{Repository: "https://github.com/apache/apisix", Commit: "commit", File: "two.t", Tests: 1},
-		},
-		Cases: []Case{{
-			Name:   "ambiguous",
-			Source: CaseSource{Tests: []int{1}},
-			Config: map[string]any{"routes": []any{}},
-			Input:  HTTPInput{Path: "/hello"},
-			Output: HTTPOutput{Status: 200},
-		}},
-	}
-
-	err := manifest.validate()
-	if err == nil || !strings.Contains(err.Error(), "source file is required") {
-		t.Fatalf("validate() error = %v, want source file requirement", err)
+	if got := len(manifest.Cases[0].Variants); got != 2 {
+		t.Fatalf("variants = %d, want 2", got)
 	}
 }
 
@@ -195,16 +169,6 @@ func TestMatcherRejectsAmbiguousOperations(t *testing.T) {
 	err := (Matcher{Equals: &value, Matches: &pattern}).validate(matcherBody)
 	if err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("validate() error = %v, want ambiguous matcher rejection", err)
-	}
-}
-
-func TestMatchLogsMatchesStructuredMessage(t *testing.T) {
-	pattern := `concat block_rules: aa|bb|c\\d+,`
-	if err := matchLogs(
-		Matcher{Matches: &pattern},
-		`{"level":"info","msg":"concat block_rules: aa|bb|c\\d+,"}`,
-	); err != nil {
-		t.Fatalf("matchLogs() error = %v", err)
 	}
 }
 

@@ -16,25 +16,21 @@
 - Additional documented rows: **14** (12 README/native extras and 2 registered non-default protocol entries)
 - Total plugin rows in the status table: **118**
 
-## Integrated plugin test corpus
+## Integrated plugin tests
 
-The standalone integrated-test corpus lives under [`t/plugin`](../t/plugin/README.md)
-and is pinned to Apache APISIX commit `c3d7d5ec69774121f53d2e20d29d09c816795dd7`.
-It tracks all 100 rows marked `Supported` in this table through 96 manifests,
-covering 252 upstream `t/plugin/*.t` files and 3,928 upstream `TEST` blocks.
-The current runner executes 198 cases end-to-end and retains 3,684 source-mapped
-cases as explicit skips when their Lua/OpenResty phase, sequential Admin API,
-external-service, or other standalone boundary cannot be represented yet.
+The standalone integration suite under [`t/plugin`](../t/plugin/README.md) is
+pinned to Apache APISIX commit
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. Its six manifests map 170
+upstream `TEST` blocks to 113 executable standalone runs. Each run writes a
+fresh `config.yaml` and `apisix.yaml`, starts the real APISIX-Go CLI, sends the
+source-equivalent request, and asserts the response, upstream request, or
+startup log.
 
-`GM`, `proxy-cache`, `graphql-proxy-cache`, and `proxy-buffering` are the only
-supported rows without a matching upstream `t/plugin/*.t` file at the pinned
-commit; the coverage test records these as explicit source exceptions.
-
-The first parity fixes found through this corpus are compact JSON error bodies
-for `basic-auth` and `acl`, bare-host `Referer` values treated as missing by
-`referer-restriction`, and APISIX-compatible concatenated `block_rules` logging
-for `uri-blocker`. Each has focused package coverage alongside its integrated
-case.
+`referer-restriction.t`, `uri-blocker.t`, and `redirect2.t` currently have no
+skipped groups. Three concrete non-standalone groups remain in the earlier
+`redirect.t`, `proxy-rewrite.t`, and `response-rewrite.t` manifests: frontend
+TLS handshake behavior and two Admin API/etcd serialization checks. Generic
+source-enumeration skips are not treated as coverage.
 
 The four intentionally unregistered defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`. They require an external plugin runner or Lua/OpenResty runtime. The bounded `serverless-pre-function` and `serverless-post-function` compatibility implementations remain documented as not-required native/runtime parity.
 
@@ -53,7 +49,7 @@ The table below is the single source of truth for plugin status. The final colum
 | Category | Plugin | APISIX 3.17 scope | Registered | Coverage | Current status | Supported behavior | Remaining jobs |
 |---|---|---|---:|---:|---|---|---|
 | General | [`batch-requests`](https://apisix.apache.org/zh/docs/apisix/plugins/batch-requests/) | README-listed extra/native | yes | 85% | Supported (README) | support `/apisix/batch-requests`, global and per-item query/header merging, per-item host overrides, HTTP version validation, default methods, request body forwarding, bounded timeout responses, response aggregation, `X-Real-IP` subrequest injection, `plugin_attr.batch-requests.uri`, plugin metadata `max_body_size` / `max_pipeline_items`, and accepted `ssl_verify` input | No normal Go TODO; true HTTP pipelining, custom NGINX real-IP header configuration, and TLS verification for the in-process dispatcher remain native boundaries. |
-| General | [`redirect`](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support `uri`, `regex_uri`, `http_to_https`, forwarded HTTPS detection, method-specific 301/308 responses, query preservation, robust host/port replacement, `ret_code`, `append_query_string`, `encode_uri`, `plugin_attr.redirect.https_port`, and random `apisix.ssl.listen` fallback | No normal Go TODO; monitor exact OpenResty URI/phase behavior only if a concrete mismatch appears. |
+| General | [`redirect`](https://apisix.apache.org/zh/docs/apisix/plugins/redirect/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support `uri`, `regex_uri`, `http_to_https`, forwarded HTTPS detection, method-specific 301/308 responses, query preservation including `regex_uri` with `append_query_string`, robust host/port replacement, `ret_code`, `encode_uri`, `plugin_attr.redirect.https_port`, and random `apisix.ssl.listen` fallback | No normal Go TODO; monitor exact OpenResty URI/phase behavior only if a concrete mismatch appears. |
 | General | [`echo`](https://apisix.apache.org/zh/docs/apisix/plugins/echo/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support `before_body`, `body`, `after_body`, response `headers`, body-modification header cleanup, and official body/header schema boundaries | No normal Go TODO; exact native phase timing remains outside the Go middleware contract. |
 | General | [`gzip`](https://apisix.apache.org/zh/docs/apisix/plugins/gzip/) | APISIX 3.17 default | yes | 98% | Supported (monitor) | support `types`, `types = "*"`, `min_length`, `comp_level`, `http_version`, and `vary` | No normal Go TODO; NGINX-native `buffers` remains unsupported. |
 | General | [`brotli`](https://apisix.apache.org/zh/docs/apisix/plugins/brotli/) | README-listed extra/native | yes | 82% | Supported (README) | support `Accept-Encoding: br` / `*`, `types`, `min_length`, `comp_level`, `lgwin`, `http_version`, `vary`, content-encoding skip, content-length removal, and strong ETag weakening | No normal library TODO; Go encoder `mode`/`lgblock` tuning and NGINX streaming internals remain deferred. |
@@ -101,10 +97,10 @@ The table below is the single source of truth for plugin status. The final colum
 | Authentication | [`multi-auth`](https://apisix.apache.org/zh/docs/apisix/plugins/multi-auth/) | APISIX 3.17 default | yes | 85% | Supported (monitor) | support ordered fallback across every APISIX 3.17 plugin marked `type = auth`: `basic-auth`, `key-auth`, `jwt-auth`, `hmac-auth`, `ldap-auth`, `jwe-decrypt`, and `wolf-rbac`; request passes when any configured auth plugin succeeds | No normal Go TODO; preserve generic final denial semantics. |
 | Security | [`cors`](https://apisix.apache.org/zh/docs/apisix/plugins/cors/) | APISIX 3.17 default | yes | 87% | Supported (monitor) | support `allow_origins`, `allow_origins = "**"` request-origin echo, `allow_origins_by_regex`, `allow_origins_by_metadata`, `timing_allow_origins`, `timing_allow_origins_by_regex`, method wildcards, `allow_headers = "**"` request-header reflection, APISIX-style 200 preflight responses, explicit exposed headers with no custom expose header by default, `max_age`, and wildcard/credential cross-field validation | Only exact middleware-specific wildcard response-header semantics remain to monitor. |
 | Security | [`acl`](https://apisix.apache.org/zh/docs/apisix/plugins/acl/) | APISIX 3.17 default | yes | 78% | Supported (monitor) | support authenticated consumer `labels`, including string, JSON/segmented-text, numeric, boolean, and array label values, plus `$external_user` label extraction with bounded dotted fields, `$..field[.suffix]` recursive lookup, and `json`/`segmented_text`/`table` parsers | Full OpenResty JSONPath/parser behavior remains deferred. |
-| Security | [`uri-blocker`](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support `block_rules`, `rejected_code`, `rejected_msg`, `case_insensitive`, APISIX-style empty default rejection bodies, and `error_msg` JSON custom rejections | Monitor PCRE/JIT exactness only after a concrete mismatch. |
+| Security | [`uri-blocker`](https://apisix.apache.org/zh/docs/apisix/plugins/uri-blocker/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support `block_rules`, safe invalid-regex rejection, normalized-path matching with original query arguments, concatenated-rule diagnostics, `rejected_code`, `rejected_msg`, `case_insensitive`, APISIX-style empty default rejection bodies, and `error_msg` JSON custom rejections | Monitor PCRE/JIT exactness only after a concrete mismatch. |
 | Security | [`ip-restriction`](https://apisix.apache.org/zh/docs/apisix/plugins/ip-restriction/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support `whitelist`, `blacklist`, CIDR/IP matching, custom messages, `response_code` 403/404 selection, fail-fast IP/CIDR validation, `remote_addr` context overrides, and APISIX-style JSON rejection bodies | Shared OpenResty LRU matcher caching remains deferred. |
 | Security | [`ua-restriction`](https://apisix.apache.org/zh/docs/apisix/plugins/ua-restriction/) | APISIX 3.17 default | yes | 95% | Supported (monitor) | support mutually exclusive APISIX `allowlist` or `denylist` schema branches, allow-before-deny matching, `bypass_missing`, trimmed User-Agent matching, and APISIX-style JSON rejection bodies | Exact OpenResty multi-value User-Agent and regex/cache fidelity remain deferred. |
-| Security | [`referer-restriction`](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) | APISIX 3.17 default | yes | 98% | Supported (monitor) | support `whitelist`, `blacklist`, `bypass_missing`, custom rejection messages, APISIX-style JSON rejection bodies, leading-`*` suffix host matching, and APISIX `host_def` character/ wildcard schema validation | Exact OpenResty host parsing/cache lifecycle remains deferred. |
+| Security | [`referer-restriction`](https://apisix.apache.org/zh/docs/apisix/plugins/referer-restriction/) | APISIX 3.17 default | yes | 98% | Supported (monitor) | support `whitelist`, `blacklist`, `bypass_missing` including malformed bare-host Referer values, custom rejection messages, APISIX-style JSON rejection bodies, leading-`*` suffix host matching, and APISIX `host_def` character/ wildcard schema validation | Exact OpenResty host parsing/cache lifecycle remains deferred. |
 | Security | [`consumer-restriction`](https://apisix.apache.org/zh/docs/apisix/plugins/consumer-restriction/) | APISIX 3.17 default | yes | 85% | Supported (monitor) | support `consumer_name`, `service_id`, `route_id`, `consumer_group_id`, blacklist, whitelist, `allowed_by_methods` with the official GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/CONNECT/TRACE/PURGE method enum, custom rejection status/message, and APISIX-style rejection bodies | Exact OpenResty consumer-context lifecycle remains deferred. |
 | Security | [`csrf`](https://apisix.apache.org/zh/docs/apisix/plugins/csrf/) | APISIX 3.17 default | yes | 80% | Supported (monitor) | support official token cookie/header validation, safe method bypass, token expiry/signature checks including `expires = 0` no-expiry validation, configurable `key` / `expires` / `name`, strict `key` resolution through `apisix.data_encryption`, and APISIX-style JSON error bodies | Exact Lua random-number formatting remains deferred unless a user-visible mismatch appears. |
 | Security | [`public-api`](https://apisix.apache.org/zh/docs/apisix/plugins/public-api/) | APISIX 3.17 default | yes | 75% | Supported (monitor) | support exposing registered internal public APIs such as `batch-requests`, `node-status`, and `server-info`, with optional `uri` override | No normal Go TODO for the runtime-owned batch/node-status/server-info/Prometheus registry; arbitrary internal API discovery remains out of scope. |

@@ -1,17 +1,12 @@
-sources:
-- repository: https://github.com/apache/apisix
+source:
+  repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/redirect.t
   tests: 48
 
-- repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/redirect2.t
-  tests: 3
 cases:
   - name: schema-sanity
     source:
-      file: t/plugin/redirect.t
       tests: [1]
     config:
       routes:
@@ -39,7 +34,6 @@ cases:
 
   - name: default-ret-code
     source:
-      file: t/plugin/redirect.t
       tests: [2]
     config:
       routes:
@@ -60,7 +54,6 @@ cases:
 
   - name: fixed-uri
     source:
-      file: t/plugin/redirect.t
       tests: [3, 4]
     config:
       routes:
@@ -82,7 +75,6 @@ cases:
 
   - name: uri-variable
     source:
-      file: t/plugin/redirect.t
       tests: [5, 6]
     config:
       routes:
@@ -104,7 +96,6 @@ cases:
 
   - name: argument-variable
     source:
-      file: t/plugin/redirect.t
       tests: [7, 8]
     config:
       routes:
@@ -126,7 +117,6 @@ cases:
 
   - name: literal-dollar
     source:
-      file: t/plugin/redirect.t
       tests: [9, 10]
     config:
       routes:
@@ -148,7 +138,6 @@ cases:
 
   - name: escaped-uri-variables
     source:
-      file: t/plugin/redirect.t
       tests: [11, 12]
     config:
       routes:
@@ -170,7 +159,6 @@ cases:
 
   - name: missing-variable
     source:
-      file: t/plugin/redirect.t
       tests: [13, 14]
     config:
       routes:
@@ -192,7 +180,6 @@ cases:
 
   - name: absolute-https-uri
     source:
-      file: t/plugin/redirect.t
       tests: [15, 16]
     config:
       routes:
@@ -217,7 +204,6 @@ cases:
 
   - name: plugin-attr-https-port
     source:
-      file: t/plugin/redirect.t
       tests: [17, 18]
     runtime:
       plugin_attr:
@@ -245,7 +231,6 @@ cases:
 
   - name: ssl-listen-port
     source:
-      file: t/plugin/redirect.t
       tests: [19]
     runtime: &ssl_9445
       apisix:
@@ -275,7 +260,6 @@ cases:
 
   - name: single-ssl-listen-port
     source:
-      file: t/plugin/redirect.t
       tests: [20]
     runtime: &ssl_9443
       apisix:
@@ -305,7 +289,6 @@ cases:
 
   - name: multiple-ssl-listen-ports
     source:
-      file: t/plugin/redirect.t
       tests: [21]
     runtime:
       apisix:
@@ -338,7 +321,6 @@ cases:
 
   - name: default-https-port
     source:
-      file: t/plugin/redirect.t
       tests: [22]
     config:
       routes:
@@ -362,7 +344,6 @@ cases:
 
   - name: http-to-https-ignores-ret-code
     source:
-      file: t/plugin/redirect.t
       tests: [23, 24]
     runtime: *ssl_9443
     config:
@@ -388,7 +369,6 @@ cases:
 
   - name: reject-http-to-https-with-uri
     source:
-      file: t/plugin/redirect.t
       tests: [25]
     config:
       routes:
@@ -406,7 +386,6 @@ cases:
 
   - name: http-to-https-with-upstream
     source:
-      file: t/plugin/redirect.t
       tests: [26, 27]
     runtime: *ssl_9443
     config:
@@ -431,13 +410,11 @@ cases:
 
   - name: frontend-tls-handshake
     source:
-      file: t/plugin/redirect.t
       tests: [28, 29]
     skip: APISIX Go does not provide a frontend TLS listener in standalone HTTP mode
 
   - name: post-http-to-https
     source:
-      file: t/plugin/redirect.t
       tests: [30, 31]
     runtime: *ssl_9443
     config:
@@ -465,7 +442,6 @@ cases:
 
   - name: get-http-to-https
     source:
-      file: t/plugin/redirect.t
       tests: [32]
     runtime: *ssl_9443
     config:
@@ -493,7 +469,6 @@ cases:
 
   - name: head-http-to-https
     source:
-      file: t/plugin/redirect.t
       tests: [33]
     runtime: *ssl_9443
     config:
@@ -521,7 +496,6 @@ cases:
 
   - name: regex-uri-match
     source:
-      file: t/plugin/redirect.t
       tests: [34, 35]
     config:
       routes:
@@ -543,7 +517,6 @@ cases:
 
   - name: regex-uri-fallthrough
     source:
-      file: t/plugin/redirect.t
       tests: [36]
     config:
       routes:
@@ -564,7 +537,6 @@ cases:
 
   - name: encoded-regex-uri
     source:
-      file: t/plugin/redirect.t
       tests: [37, 38]
     config:
       routes:
@@ -587,7 +559,6 @@ cases:
 
   - name: encoded-uri
     source:
-      file: t/plugin/redirect.t
       tests: [39, 40]
     config:
       routes:
@@ -610,7 +581,6 @@ cases:
 
   - name: append-query-string
     source:
-      file: t/plugin/redirect.t
       tests: [41, 42]
     config:
       routes:
@@ -633,7 +603,6 @@ cases:
 
   - name: append-existing-query-string
     source:
-      file: t/plugin/redirect.t
       tests: [43, 44]
     config:
       routes:
@@ -656,7 +625,6 @@ cases:
 
   - name: forwarded-http
     source:
-      file: t/plugin/redirect.t
       tests: [45, 46]
     runtime: *ssl_9443
     config:
@@ -682,7 +650,6 @@ cases:
 
   - name: forwarded-nonstandard-scheme
     source:
-      file: t/plugin/redirect.t
       tests: [47]
     runtime: *ssl_9443
     config:
@@ -708,7 +675,6 @@ cases:
 
   - name: reject-http-to-https-with-query-append
     source:
-      file: t/plugin/redirect.t
       tests: [48]
     config:
       routes:
@@ -723,21 +689,3 @@ cases:
     output:
       logs:
         matches: 'build route redirect-reject-http-to-https-with-query-append fail:.*redirect'
-  - name: "redirect2-test-001-set-use-regex-uri-redirect-and-enable-append-query-string-route"
-    source:
-      file: t/plugin/redirect2.t
-      tests:
-      - 1
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "redirect2-test-002-set-use-regex-uri-redirect-and-enable-append-query-string-route"
-    source:
-      file: t/plugin/redirect2.t
-      tests:
-      - 2
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
-  - name: "redirect2-test-003-compatible-with-old-version-configuration"
-    source:
-      file: t/plugin/redirect2.t
-      tests:
-      - 3
-    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

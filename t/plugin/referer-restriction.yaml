@@ -1,252 +1,194 @@
-sources:
-- repository: https://github.com/apache/apisix
+source:
+  repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/referer-restriction.t
   tests: 13
+
 cases:
-- name: test-001-set-whitelist
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 1
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-002-hit-route-and-in-the-whitelist-wildcard
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 2
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          whitelist:
-          - '*.xx.com'
-          - yy.com
-      id: referer-restriction-1
-  input:
-    method: GET
-    path: /hello
-    headers:
-      Referer: http://www.xx.com
-  upstream:
-    respond:
+  - name: whitelist-wildcard
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - id: referer-whitelist-wildcard
+          uri: /hello
+          plugins: &whitelist_plugin
+            referer-restriction:
+              whitelist: ['*.xx.com', yy.com]
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              '{{UPSTREAM_ADDR}}': 1
+    input:
+      path: /hello
+      headers:
+        Referer: http://www.xx.com
+    upstream: &hello_fixture
+      respond:
+        status: 200
+        body: hello world
+    output: &hello_output
       status: 200
-      body: hello world
-  output:
-    status: 200
-    body:
-      equals: hello world
-- name: test-003-hit-route-and-in-the-whitelist
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 3
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          whitelist:
-          - '*.xx.com'
-          - yy.com
-      id: referer-restriction-1
-  input:
-    method: GET
-    path: /hello
-    headers:
-      Referer: https://yy.com/am
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 200
-    body:
-      equals: hello world
-- name: test-004-hit-route-and-not-in-the-whitelist
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 4
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          whitelist:
-          - '*.xx.com'
-          - yy.com
-      id: referer-restriction-1
-  input:
-    method: GET
-    path: /hello
-    headers:
-      Referer: https://www.yy.com/am
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-- name: test-005-hit-route-and-without-referer
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 5
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          whitelist:
-          - '*.xx.com'
-          - yy.com
-      id: referer-restriction-1
-  input:
-    method: GET
-    path: /hello
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-- name: test-006-set-whitelist-allow-referer-missing
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 6
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-007-hit-route-and-without-referer
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 7
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          bypass_missing: true
-          whitelist:
-          - '*.xx.com'
-          - yy.com
-      id: referer-restriction-6
-  input:
-    method: GET
-    path: /hello
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 200
-    body:
-      equals: hello world
-- name: test-008-malformed-referer-is-treated-as-missing
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 8
-  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
-- name: test-009-invalid-schema
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 9
-  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
-- name: test-010-set-blacklist-with-reject-message
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 10
-  skip: setup or schema-only source block is represented by standalone cases that follow
-- name: test-011-hit-route-and-in-the-blacklist
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 11
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          blacklist:
-          - '*.xx.com'
-          message: Your referer host is deny
-      id: referer-restriction-10
-  input:
-    method: GET
-    path: /hello
-    headers:
-      Referer: http://www.xx.com
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 403
-    body:
-      equals: '{"message":"Your referer host is deny"}'
-- name: test-012-hit-route-and-not-in-the-blacklist
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 12
-  config:
-    routes:
-    - uri: /hello
-      upstream:
-        type: roundrobin
-        nodes:
-          '{{UPSTREAM_ADDR}}': 1
-      plugins:
-        referer-restriction:
-          blacklist:
-          - '*.xx.com'
-          message: Your referer host is deny
-      id: referer-restriction-10
-  input:
-    method: GET
-    path: /hello
-    headers:
-      Referer: https://yy.com
-  upstream:
-    respond:
-      status: 200
-      body: hello world
-  output:
-    status: 200
-    body:
-      equals: hello world
-- name: test-013-whitelist-and-blacklist-mutual-exclusive
-  source:
-    file: t/plugin/referer-restriction.t
-    tests:
-    - 13
-  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+      body:
+        equals: hello world
+
+  - name: whitelist-exact
+    source:
+      tests: [3]
+    config:
+      routes:
+        - id: referer-whitelist-exact
+          uri: /hello
+          plugins: *whitelist_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Referer: https://yy.com/am
+    upstream: *hello_fixture
+    output: *hello_output
+
+  - name: whitelist-rejects-subdomain
+    source:
+      tests: [4]
+    config:
+      routes:
+        - id: referer-whitelist-rejects-subdomain
+          uri: /hello
+          plugins: *whitelist_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Referer: https://www.yy.com/am
+    upstream: *hello_fixture
+    output:
+      status: 403
+
+  - name: whitelist-rejects-missing
+    source:
+      tests: [5]
+    config:
+      routes:
+        - id: referer-whitelist-rejects-missing
+          uri: /hello
+          plugins: *whitelist_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 403
+
+  - name: bypass-missing
+    source:
+      tests: [6, 7]
+    config:
+      routes:
+        - id: referer-bypass-missing
+          uri: /hello
+          plugins: &bypass_plugin
+            referer-restriction:
+              bypass_missing: true
+              whitelist: ['*.xx.com', yy.com]
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output: *hello_output
+
+  - name: malformed-referer-is-missing
+    source:
+      tests: [8]
+    config:
+      routes:
+        - id: referer-malformed-is-missing
+          uri: /hello
+          plugins: *bypass_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Referer: www.yy.com
+    upstream: *hello_fixture
+    output: *hello_output
+
+  - name: reject-invalid-host-patterns
+    source:
+      tests: [9]
+    variants:
+      - name: embedded-wildcard
+        config:
+          routes:
+            - id: referer-invalid-x-pattern
+              uri: /invalid-x
+              plugins:
+                referer-restriction:
+                  whitelist: ['x.*']
+        output:
+          logs:
+            matches: 'build route referer-invalid-x-pattern fail:.*referer-restriction'
+      - name: tilde-prefix
+        config:
+          routes:
+            - id: referer-invalid-tilde-pattern
+              uri: /invalid-tilde
+              plugins:
+                referer-restriction:
+                  whitelist: ['~y.xn']
+        output:
+          logs:
+            matches: 'build route referer-invalid-tilde-pattern fail:.*referer-restriction'
+
+  - name: blacklist-reject-message
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: referer-blacklist-message
+          uri: /hello
+          plugins: &blacklist_plugin
+            referer-restriction:
+              blacklist: ['*.xx.com']
+              message: Your referer host is deny
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Referer: http://www.xx.com
+    upstream: *hello_fixture
+    output:
+      status: 403
+      body:
+        equals: '{"message":"Your referer host is deny"}'
+
+  - name: blacklist-allows-other-host
+    source:
+      tests: [12]
+    config:
+      routes:
+        - id: referer-blacklist-allows-other-host
+          uri: /hello
+          plugins: *blacklist_plugin
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Referer: https://yy.com
+    upstream: *hello_fixture
+    output: *hello_output
+
+  - name: reject-whitelist-and-blacklist
+    source:
+      tests: [13]
+    config:
+      routes:
+        - id: referer-reject-mutually-exclusive-lists
+          uri: /hello
+          plugins:
+            referer-restriction:
+              whitelist: [xx.com]
+              blacklist: [yy.com]
+    output:
+      logs:
+        matches: 'build route referer-reject-mutually-exclusive-lists fail:.*referer-restriction'

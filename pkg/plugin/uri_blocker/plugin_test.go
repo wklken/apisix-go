@@ -65,15 +65,28 @@ func TestCaseInsensitiveMatch(t *testing.T) {
 	}
 }
 
-func TestPostInitStoresConcatenatedRulesForLogging(t *testing.T) {
-	caseInsensitive := true
-	p := newTestPlugin(t, Config{
-		BlockRules:      []string{"AA", `c\d+`},
-		CaseInsensitive: &caseInsensitive,
-	})
+func TestPostInitRejectsInvalidRegularExpression(t *testing.T) {
+	p := &Plugin{config: Config{BlockRules: []string{`.+(`}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid regular expression rejected")
+	}
+}
 
-	if got, want := p.config.blockRulesConcat, `(?i)AA|c\d+`; got != want {
-		t.Fatalf("blockRulesConcat = %q, want %q", got, want)
+func TestNormalizedPathCannotBypassAnchoredRule(t *testing.T) {
+	p := newTestPlugin(t, Config{BlockRules: []string{`^/internal/`}})
+	req := httptest.NewRequest(http.MethodGet, "/./internal/x?aa=1", nil)
+	req.URL.Path = "/internal/x"
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("uri-blocker should not call the next handler")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 }
 

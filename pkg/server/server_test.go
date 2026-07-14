@@ -2,12 +2,33 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/config"
 )
+
+func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
+	var gotPath string
+	var gotRequestURI string
+	handler := normalizeRequestPath(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRequestURI = r.RequestURI
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/./internal/x?aa=1", nil)
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotPath != "/internal/x" {
+		t.Fatalf("URL.Path = %q, want /internal/x", gotPath)
+	}
+	if gotRequestURI != "/./internal/x?aa=1" {
+		t.Fatalf("RequestURI = %q, want original request target preserved", gotRequestURI)
+	}
+}
 
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	previous := config.GlobalConfig

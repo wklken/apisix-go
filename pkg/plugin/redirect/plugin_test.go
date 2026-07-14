@@ -42,6 +42,25 @@ func TestHandlerRedirectsWithRegexURI(t *testing.T) {
 	}
 }
 
+func TestHandlerAppendsRequestQueryToRegexURI(t *testing.T) {
+	appendQueryString := true
+	p := newTestPlugin(t, Config{
+		RegexUri:          []string{`^/test/(.*)$`, `http://test.com/$1?q=apisix`},
+		AppendQueryString: &appendQueryString,
+	})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test/hello?o=apache", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if got := res.Header().Get("Location"); got != "http://test.com/hello?q=apisix&o=apache" {
+		t.Fatalf("Location = %q, want regex redirect URI with the request query appended", got)
+	}
+}
+
 func TestHandlerRegexURINoMatchFallsThrough(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		RegexUri: []string{`^/users/(\d+)$`, `/profiles/$1`},

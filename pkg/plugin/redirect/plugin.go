@@ -179,6 +179,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			if p.config.AppendQueryString != nil && *p.config.AppendQueryString && r.URL.RawQuery != "" {
+				if strings.Contains(redirectURI, "?") {
+					redirectURI += "&" + r.URL.RawQuery
+				} else {
+					redirectURI += "?" + r.URL.RawQuery
+				}
+			}
 			p.redirect(w, redirectURI)
 			return
 		}

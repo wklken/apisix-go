@@ -157,29 +157,23 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			separator = p.config.ExternalUserLabelFieldSeparator
 		}
 		if !authenticated {
-			writeError(w, util.BuildMessageResponse("Missing authentication."), http.StatusUnauthorized)
+			http.Error(w, util.BuildMessageResponse("Missing authentication."), http.StatusUnauthorized)
 			return
 		}
 
 		if p.config.DenyLabels != nil && containsLabelWithParser(p.config.DenyLabels, labels, parser, separator) {
-			writeError(w, p.config.rejectBody, p.config.RejectedCode)
+			http.Error(w, p.config.rejectBody, p.config.RejectedCode)
 			return
 		}
 
 		if p.config.AllowLabels != nil && !containsLabelWithParser(p.config.AllowLabels, labels, parser, separator) {
-			writeError(w, p.config.rejectBody, p.config.RejectedCode)
+			http.Error(w, p.config.rejectBody, p.config.RejectedCode)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
-}
-
-func writeError(w http.ResponseWriter, body string, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
 }
 
 func (p *Plugin) externalUserLabels(r *http.Request) (map[string]any, bool) {

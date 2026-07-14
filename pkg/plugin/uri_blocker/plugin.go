@@ -1,6 +1,7 @@
 package uri_blocker
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -59,9 +60,8 @@ type Config struct {
 	RejectedMsg     string   `json:"rejected_msg,omitempty"`
 	CaseInsensitive *bool    `json:"case_insensitive,omitempty"`
 
-	RegexRule        *regexp.Regexp
-	rejectBody       string
-	blockRulesConcat string
+	RegexRule  *regexp.Regexp
+	rejectBody string
 }
 
 func (p *Plugin) Init() error {
@@ -97,12 +97,6 @@ func (p *Plugin) PostInit() error {
 		if *p.config.CaseInsensitive {
 			blockRulesConcat = "(?i)" + blockRulesConcat
 		}
-		p.config.blockRulesConcat = blockRulesConcat
-		logValue := blockRulesConcat
-		if strings.Contains(logValue, "|") {
-			logValue += ","
-		}
-		logger.Info("concat block_rules: " + logValue)
 	}
 
 	if p.config.RejectedMsg != "" {
@@ -110,7 +104,18 @@ func (p *Plugin) PostInit() error {
 		p.config.rejectBody = util.BytesToString(body)
 	}
 
-	p.config.RegexRule = regexp.MustCompile(blockRulesConcat)
+	regexRule, err := regexp.Compile(blockRulesConcat)
+	if err != nil {
+		return fmt.Errorf("compile block_rules: %w", err)
+	}
+	p.config.RegexRule = regexRule
+	if blockRulesConcat != "" {
+		logValue := blockRulesConcat
+		if len(blockRules) > 1 {
+			logValue += ","
+		}
+		logger.Info("concat block_rules: " + logValue)
+	}
 	return nil
 }
 
@@ -120,7 +125,11 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.RegexRule.MatchString(r.RequestURI) {
+		requestURI := r.URL.EscapedPath()
+		if r.URL.RawQuery != "" {
+			requestURI += "?" + r.URL.RawQuery
+		}
+		if p.config.RegexRule.MatchString(requestURI) {
 			if p.config.RejectedMsg != "" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(p.config.RejectedCode)

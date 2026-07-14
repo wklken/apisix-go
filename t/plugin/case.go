@@ -12,9 +12,8 @@ import (
 )
 
 type Manifest struct {
-	Source  SourceSpec   `yaml:"source,omitempty"`
-	Sources []SourceSpec `yaml:"sources,omitempty"`
-	Cases   []Case       `yaml:"cases"`
+	Source SourceSpec `yaml:"source"`
+	Cases  []Case     `yaml:"cases"`
 }
 
 type SourceSpec struct {
@@ -28,6 +27,16 @@ type Case struct {
 	Name     string         `yaml:"name"`
 	Source   CaseSource     `yaml:"source"`
 	Skip     string         `yaml:"skip,omitempty"`
+	Variants []CaseVariant  `yaml:"variants,omitempty"`
+	Runtime  map[string]any `yaml:"runtime,omitempty"`
+	Config   map[string]any `yaml:"config,omitempty"`
+	Input    HTTPInput      `yaml:"input,omitempty"`
+	Upstream *UpstreamSpec  `yaml:"upstream,omitempty"`
+	Output   HTTPOutput     `yaml:"output,omitempty"`
+}
+
+type CaseVariant struct {
+	Name     string         `yaml:"name"`
 	Runtime  map[string]any `yaml:"runtime,omitempty"`
 	Config   map[string]any `yaml:"config,omitempty"`
 	Input    HTTPInput      `yaml:"input,omitempty"`
@@ -36,8 +45,7 @@ type Case struct {
 }
 
 type CaseSource struct {
-	File  string `yaml:"file,omitempty"`
-	Tests []int  `yaml:"tests"`
+	Tests []int `yaml:"tests"`
 }
 
 type HTTPInput struct {
@@ -109,39 +117,24 @@ func loadManifest(name string, data []byte) (*Manifest, error) {
 }
 
 func (m *Manifest) validate() error {
-	sources := make([]SourceSpec, 0, len(m.Sources)+1)
-	if m.Source.File != "" || m.Source.Repository != "" || m.Source.Commit != "" || m.Source.Tests != 0 {
-		sources = append(sources, m.Source)
+	if strings.TrimSpace(m.Source.Repository) == "" {
+		return errors.New("source repository is required")
 	}
-	sources = append(sources, m.Sources...)
-	if len(sources) == 0 {
-		return errors.New("at least one source is required")
+	if strings.TrimSpace(m.Source.Commit) == "" {
+		return errors.New("source commit is required")
 	}
-	sourceByFile := make(map[string]SourceSpec, len(sources))
-	for i, source := range sources {
-		if strings.TrimSpace(source.Repository) == "" {
-			return fmt.Errorf("source %d repository is required", i+1)
-		}
-		if strings.TrimSpace(source.Commit) == "" {
-			return fmt.Errorf("source %d commit is required", i+1)
-		}
-		if strings.TrimSpace(source.File) == "" {
-			return fmt.Errorf("source %d file is required", i+1)
-		}
-		if source.Tests <= 0 {
-			return fmt.Errorf("source %q tests must be positive", source.File)
-		}
-		if _, exists := sourceByFile[source.File]; exists {
-			return fmt.Errorf("source file %q is duplicated", source.File)
-		}
-		sourceByFile[source.File] = source
+	if strings.TrimSpace(m.Source.File) == "" {
+		return errors.New("source file is required")
+	}
+	if m.Source.Tests <= 0 {
+		return errors.New("source tests must be positive")
 	}
 	if len(m.Cases) == 0 {
 		return errors.New("at least one case is required")
 	}
 
 	names := make(map[string]struct{}, len(m.Cases))
-	mapped := make(map[string]map[int]string, len(sourceByFile))
+	mapped := make(map[int]string, m.Source.Tests)
 	for i := range m.Cases {
 		current := &m.Cases[i]
 		name := strings.TrimSpace(current.Name)
@@ -155,50 +148,22 @@ func (m *Manifest) validate() error {
 		if len(current.Source.Tests) == 0 {
 			return fmt.Errorf("case %q source tests are required", name)
 		}
-		file := strings.TrimSpace(current.Source.File)
-		if file == "" {
-			if len(sourceByFile) != 1 {
-				return fmt.Errorf("case %q source file is required when multiple sources are configured", name)
-			}
-			for sourceFile := range sourceByFile {
-				file = sourceFile
-			}
-			current.Source.File = file
-		}
-		source, ok := sourceByFile[file]
-		if !ok {
-			return fmt.Errorf("case %q references unknown source file %q", name, file)
-		}
-		if mapped[file] == nil {
-			mapped[file] = make(map[int]string, source.Tests)
-		}
 		for _, number := range current.Source.Tests {
-			if number < 1 || number > source.Tests {
-				return fmt.Errorf("case %q source test %d is outside 1..%d for %s", name, number, source.Tests, file)
+			if number < 1 || number > m.Source.Tests {
+				return fmt.Errorf("case %q source test %d is outside 1..%d", name, number, m.Source.Tests)
 			}
-			if previous, ok := mapped[file][number]; ok {
-				if len(sourceByFile) == 1 {
-					return fmt.Errorf("source test %d is mapped more than once by %q and %q", number, previous, name)
-				}
-				return fmt.Errorf(
-					"source test %d in %s is mapped more than once by %q and %q",
-					number,
-					file,
-					previous,
-					name,
-				)
+			if previous, ok := mapped[number]; ok {
+				return fmt.Errorf("source test %d is mapped more than once by %q and %q", number, previous, name)
 			}
-			mapped[file][number] = name
+			mapped[number] = name
 		}
 		if err := current.validate(); err != nil {
 			return fmt.Errorf("case %q: %w", name, err)
 		}
 	}
-	for file, source := range sourceByFile {
-		for number := 1; number <= source.Tests; number++ {
-			if _, ok := mapped[file][number]; !ok {
-				return fmt.Errorf("missing source test %d in %s", number, file)
-			}
+	for number := 1; number <= m.Source.Tests; number++ {
+		if _, ok := mapped[number]; !ok {
+			return fmt.Errorf("missing source test %d", number)
 		}
 	}
 	return nil
@@ -209,8 +174,53 @@ func (c *Case) validate() error {
 		if strings.TrimSpace(c.Skip) == "" {
 			return errors.New("skip reason must not be blank")
 		}
+		if len(c.Variants) > 0 {
+			return errors.New("skipped case must not declare variants")
+		}
 		return nil
 	}
+	if len(c.Variants) > 0 {
+		if c.hasScenario() {
+			return errors.New("case with variants must not declare an inline scenario")
+		}
+		names := make(map[string]struct{}, len(c.Variants))
+		for i := range c.Variants {
+			variant := &c.Variants[i]
+			name := strings.TrimSpace(variant.Name)
+			if name == "" {
+				return fmt.Errorf("variant %d name is required", i+1)
+			}
+			if _, ok := names[name]; ok {
+				return fmt.Errorf("variant name %q is duplicated", name)
+			}
+			names[name] = struct{}{}
+			if err := variant.caseSpec().validateScenario(); err != nil {
+				return fmt.Errorf("variant %q: %w", name, err)
+			}
+		}
+		return nil
+	}
+	return c.validateScenario()
+}
+
+func (c *Case) hasScenario() bool {
+	return len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" || c.Input.Path != "" ||
+		len(c.Input.Headers) > 0 || c.Input.Body != "" || c.Upstream != nil || c.Output.Status != 0 ||
+		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil
+}
+
+func (v *CaseVariant) caseSpec() *Case {
+	return &Case{
+		Name:     v.Name,
+		Runtime:  v.Runtime,
+		Config:   v.Config,
+		Input:    v.Input,
+		Upstream: v.Upstream,
+		Output:   v.Output,
+	}
+}
+
+func (c *Case) validateScenario() error {
 	if len(c.Config) == 0 {
 		return errors.New("config is required")
 	}

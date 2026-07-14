@@ -25,7 +25,7 @@ func TestParseStreamRoutePreservesMatchUpstreamAndPlugins(t *testing.T) {
 	if _, ok := route.Plugins["mqtt-proxy"]; !ok {
 		t.Fatal("mqtt-proxy config was not preserved")
 	}
-	if len(route.Upstream.Nodes) != 1 || route.Upstream.Nodes[0].Host != "127.0.0.1:2883" ||
+	if len(route.Upstream.Nodes) != 1 || route.Upstream.Nodes[0].Host != "127.0.0.1" ||
 		route.Upstream.Nodes[0].Port != 2883 {
 		t.Fatalf("upstream = %#v", route.Upstream)
 	}

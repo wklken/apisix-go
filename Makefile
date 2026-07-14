@@ -19,6 +19,10 @@ lint:
 build:
 	go build -o ${BINARY_NAME}
 
+.PHONY: test-integration
+test-integration:
+	go test ./t/plugin -count=1 -v
+
 .PHONY: serve
 serve: build
 	./apisix

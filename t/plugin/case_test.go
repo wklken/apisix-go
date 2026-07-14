@@ -1,0 +1,218 @@
+package pluginintegration
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLoadManifestRejectsUnknownField(t *testing.T) {
+	_, err := loadManifest("test.yaml", []byte(validManifestYAML+"unknown: true\n"))
+	if err == nil || !strings.Contains(err.Error(), "field unknown not found") {
+		t.Fatalf("loadManifest() error = %v, want unknown field rejection", err)
+	}
+}
+
+func TestManifestRejectsMissingSourceNumber(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Source.Tests = []int{1, 3}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "missing source test 2") {
+		t.Fatalf("validate() error = %v, want missing source test 2", err)
+	}
+}
+
+func TestManifestRejectsDuplicateSourceNumber(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Source.Tests = []int{1, 2, 2, 3}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "source test 2 is mapped more than once") {
+		t.Fatalf("validate() error = %v, want duplicate source test 2", err)
+	}
+}
+
+func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
+	manifest := validManifest()
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRequiresSkipReason(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Skip = " "
+	manifest.Cases[0].Config = nil
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "skip reason") {
+		t.Fatalf("validate() error = %v, want skip reason rejection", err)
+	}
+}
+
+func TestManifestRequiresExecutableFields(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Config = nil
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "config is required") {
+		t.Fatalf("validate() error = %v, want missing config rejection", err)
+	}
+}
+
+func TestManifestAcceptsLogOnlyConfigRejection(t *testing.T) {
+	pattern := "build route.*fail"
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{Logs: &Matcher{Matches: &pattern}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsMissingHTTPAndLogAssertions(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "HTTP output or log assertion is required") {
+		t.Fatalf("validate() error = %v, want missing assertion rejection", err)
+	}
+}
+
+func TestMatcherSupportsEqualsAndRegex(t *testing.T) {
+	equalValue := "hello"
+	equals := Matcher{Equals: &equalValue}
+	if err := equals.validate(matcherBody); err != nil {
+		t.Fatalf("equals.validate() error = %v", err)
+	}
+	if err := equals.match("hello", true); err != nil {
+		t.Fatalf("equals.match() error = %v", err)
+	}
+	if err := equals.match("world", true); err == nil {
+		t.Fatal("equals.match() error = nil, want mismatch")
+	}
+
+	pattern := `^request-[0-9]+$`
+	matches := Matcher{Matches: &pattern}
+	if err := matches.validate(matcherBody); err != nil {
+		t.Fatalf("matches.validate() error = %v", err)
+	}
+	if err := matches.match("request-42", true); err != nil {
+		t.Fatalf("matches.match() error = %v", err)
+	}
+}
+
+func TestHeaderMatcherSupportsAbsent(t *testing.T) {
+	absent := true
+	matcher := Matcher{Absent: &absent}
+	if err := matcher.validate(matcherHeader); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if err := matcher.match("", false); err != nil {
+		t.Fatalf("match() error = %v", err)
+	}
+	if err := matcher.match("", true); err == nil {
+		t.Fatal("match() error = nil, want present-header mismatch")
+	}
+}
+
+func TestMatcherRejectsAbsentForBody(t *testing.T) {
+	absent := true
+	err := (Matcher{Absent: &absent}).validate(matcherBody)
+	if err == nil || !strings.Contains(err.Error(), "absent is only valid for headers") {
+		t.Fatalf("validate() error = %v, want absent body rejection", err)
+	}
+}
+
+func TestMatcherRejectsAmbiguousOperations(t *testing.T) {
+	value := "hello"
+	pattern := "hello"
+	err := (Matcher{Equals: &value, Matches: &pattern}).validate(matcherBody)
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("validate() error = %v, want ambiguous matcher rejection", err)
+	}
+}
+
+func TestUpstreamAssertionValidatesHostMatcher(t *testing.T) {
+	invalid := "["
+	upstream := UpstreamSpec{Expect: HTTPAssertion{Host: &Matcher{Matches: &invalid}}}
+
+	err := upstream.validate()
+	if err == nil || !strings.Contains(err.Error(), "upstream request host") {
+		t.Fatalf("validate() error = %v, want invalid host matcher rejection", err)
+	}
+}
+
+func TestMergeRuntimeConfigPreservesNestedOverrides(t *testing.T) {
+	dst := map[string]any{
+		"apisix": map[string]any{
+			"node_listen": []any{map[string]any{"ip": "127.0.0.1", "port": 9080}},
+		},
+	}
+	src := map[string]any{
+		"plugin_attr": map[string]any{
+			"redirect": map[string]any{"https_port": 9443},
+		},
+		"apisix": map[string]any{
+			"enable_admin": false,
+		},
+	}
+
+	mergeMap(dst, src)
+
+	apisix := dst["apisix"].(map[string]any)
+	if _, ok := apisix["node_listen"]; !ok {
+		t.Fatal("mergeMap() removed runner-owned node_listen")
+	}
+	if got := apisix["enable_admin"]; got != false {
+		t.Fatalf("enable_admin = %v, want false", got)
+	}
+	pluginAttr := dst["plugin_attr"].(map[string]any)
+	redirect := pluginAttr["redirect"].(map[string]any)
+	if got := redirect["https_port"]; got != 9443 {
+		t.Fatalf("https_port = %v, want 9443", got)
+	}
+}
+
+func validManifest() *Manifest {
+	body := "ok"
+	return &Manifest{
+		Source: SourceSpec{
+			Repository: "https://github.com/apache/apisix",
+			Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+			File:       "t/plugin/example.t",
+			Tests:      3,
+		},
+		Cases: []Case{
+			{
+				Name:   "complete",
+				Source: CaseSource{Tests: []int{1, 2, 3}},
+				Config: map[string]any{"routes": []any{}},
+				Input:  HTTPInput{Path: "/hello"},
+				Output: HTTPOutput{Status: 200, Body: &Matcher{Equals: &body}},
+			},
+		},
+	}
+}
+
+const validManifestYAML = `source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: complete
+    source:
+      tests: [1]
+    config:
+      routes: []
+    input:
+      path: /hello
+    output:
+      status: 200
+`

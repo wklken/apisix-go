@@ -98,8 +98,88 @@ func TestHandlerEncodesRedirectURIPath(t *testing.T) {
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
-	if got := res.Header().Get("Location"); got != "http://example.com/new%20path/%E4%B8%AD%E6%96%87?keep=1" {
+	if got := res.Header().Get("Location"); got != "/new%20path/%E4%B8%AD%E6%96%87?keep=1" {
 		t.Fatalf("Location = %q, want encoded redirect URI", got)
+	}
+}
+
+func TestHandlerUsesRelativeLocationForRelativeURI(t *testing.T) {
+	p := newTestPlugin(t, Config{Uri: "/new"})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/old", nil)
+	req.Host = "example.com"
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if got := res.Header().Get("Location"); got != "/new" {
+		t.Fatalf("Location = %q, want /new", got)
+	}
+}
+
+func TestHandlerExpandsRedirectVariables(t *testing.T) {
+	p := newTestPlugin(t, Config{Uri: "$uri/to/${arg_name}/$bad_var"})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/from?name=json", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if got := res.Header().Get("Location"); got != "/from/to/json/" {
+		t.Fatalf("Location = %q, want /from/to/json/", got)
+	}
+}
+
+func TestHandlerPreservesRedirectDollarEscapes(t *testing.T) {
+	p := newTestPlugin(t, Config{Uri: `/foo$$uri/\$uri/$uri`})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/from", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if got := res.Header().Get("Location"); got != `/foo$/from/\$uri//from` {
+		t.Fatalf("Location = %q, want dollar escapes preserved", got)
+	}
+}
+
+func TestPostInitRejectsIncompatibleRedirectOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+	}{
+		{
+			name: "http_to_https and uri",
+			config: Config{
+				HttpToHttps: new(true),
+				Uri:         "/foo",
+			},
+		},
+		{
+			name: "http_to_https and append_query_string",
+			config: Config{
+				HttpToHttps:       new(true),
+				AppendQueryString: new(true),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: test.config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatal("PostInit() error = nil, want incompatible redirect options rejected")
+			}
+		})
 	}
 }
 

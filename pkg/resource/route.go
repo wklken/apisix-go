@@ -68,6 +68,7 @@ type Upstream struct {
 
 func (s *Upstream) UnmarshalJSON(data []byte) error {
 	// FIXME: refactor it
+	s.Scheme = "http"
 	var upstreamData map[string]json.RawMessage
 	if err := json.Unmarshal(data, &upstreamData); err != nil {
 		return fmt.Errorf("unmarshal to json.RawMessage fail, %w", err)
@@ -178,16 +179,17 @@ func parseNodeAddress(address string) (string, int) {
 	const defaultPort = 80
 	if _, portText, err := net.SplitHostPort(address); err == nil {
 		if port, parseErr := strconv.Atoi(portText); parseErr == nil {
-			return address, port
+			host, _, _ := net.SplitHostPort(address)
+			return host, port
 		}
 	}
 	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
 		return address, defaultPort
 	}
 	if strings.Count(address, ":") == 1 {
-		_, portText, _ := strings.Cut(address, ":")
+		host, portText, _ := strings.Cut(address, ":")
 		if port, err := strconv.Atoi(portText); err == nil {
-			return address, port
+			return host, port
 		}
 	}
 	return address, defaultPort

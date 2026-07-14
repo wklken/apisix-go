@@ -341,7 +341,9 @@ func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
 		} else {
 			resp.body = []byte(*p.config.Body)
 		}
-		resp.header.Del("Content-Length")
+		for _, field := range []string{"Content-Length", "Content-Encoding", "Last-Modified", "ETag"} {
+			resp.header[http.CanonicalHeaderKey(field)] = nil
+		}
 	}
 
 	if len(p.config.Filters) > 0 {
@@ -387,7 +389,12 @@ func (h Headers) apply(r *http.Request, resp *responseRecorder) {
 		header.Del(field)
 	}
 	for field, value := range h.LegacySet {
-		header.Set(field, resolveValue(r, resp, value))
+		resolved := resolveValue(r, resp, value)
+		if resolved == "" {
+			header[http.CanonicalHeaderKey(field)] = nil
+			continue
+		}
+		header.Set(field, resolved)
 	}
 	for field, value := range h.Set {
 		header.Set(field, resolveValue(r, resp, value))
@@ -544,6 +551,10 @@ func (r *responseRecorder) Write(body []byte) (int, error) {
 
 func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 	for field, values := range r.header {
+		if len(values) == 0 {
+			w.Header()[field] = nil
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(field, value)
 		}

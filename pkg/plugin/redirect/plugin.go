@@ -1,6 +1,7 @@
 package redirect
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -10,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cast"
-	v "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -90,6 +90,24 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	configuredTargets := 0
+	if p.config.Uri != "" {
+		configuredTargets++
+	}
+	if len(p.config.RegexUri) > 0 {
+		configuredTargets++
+	}
+	if p.config.HttpToHttps != nil {
+		configuredTargets++
+	}
+	if configuredTargets != 1 {
+		return errors.New("exactly one of uri, regex_uri, or http_to_https must be configured")
+	}
+	if p.config.HttpToHttps != nil && *p.config.HttpToHttps &&
+		p.config.AppendQueryString != nil && *p.config.AppendQueryString {
+		return errors.New("http_to_https and append_query_string cannot be configured together")
+	}
+
 	if p.config.RetCode == 0 {
 		p.config.RetCode = 302
 	}
@@ -166,8 +184,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if p.config.Uri != "" {
-			// FIXME: add cache here?
-			url := fmt.Sprintf("%s://%s%s", v.GetNginxVar(r, "$scheme"), r.Host, p.config.Uri)
+			url := expandRedirectURI(r, p.config.Uri)
 			if p.config.AppendQueryString != nil && *p.config.AppendQueryString {
 				if strings.Contains(url, "?") {
 					url = url + "&" + r.URL.RawQuery
@@ -182,6 +199,59 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func expandRedirectURI(r *http.Request, template string) string {
+	var result strings.Builder
+	result.Grow(len(template))
+	for position := 0; position < len(template); {
+		if template[position] == '\\' && position+1 < len(template) && template[position+1] == '$' {
+			result.WriteString(`\$`)
+			position += 2
+			continue
+		}
+		if template[position] != '$' {
+			result.WriteByte(template[position])
+			position++
+			continue
+		}
+		if position+1 < len(template) && template[position+1] == '$' {
+			result.WriteByte('$')
+			position++
+			continue
+		}
+
+		nameStart := position + 1
+		nameEnd := nameStart
+		if nameStart < len(template) && template[nameStart] == '{' {
+			nameStart++
+			closing := strings.IndexByte(template[nameStart:], '}')
+			if closing < 0 {
+				result.WriteByte('$')
+				position++
+				continue
+			}
+			nameEnd = nameStart + closing
+			position = nameEnd + 1
+		} else {
+			for nameEnd < len(template) && isRedirectVariableCharacter(template[nameEnd]) {
+				nameEnd++
+			}
+			if nameEnd == nameStart {
+				result.WriteByte('$')
+				position++
+				continue
+			}
+			position = nameEnd
+		}
+		result.WriteString(base.RequestVar(r, template[nameStart:nameEnd], 0))
+	}
+	return result.String()
+}
+
+func isRedirectVariableCharacter(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || value == '_'
 }
 
 func configuredHTTPSPort() *int {

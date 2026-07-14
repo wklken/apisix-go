@@ -740,10 +740,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			req.Method = method
 		}
 
-		if host != "" {
-			req.URL.Host = host
-			req.Host = host
-		} else if applyTrafficSplitOverride(req) {
+		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
 		} else {
 			target := lb.Next()
@@ -758,6 +755,13 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			req.URL.Scheme = u.Scheme
 			req.URL.Host = u.Host
 			req.Host = u.Host
+		}
+		if ctx.GetApisixVars(req) != nil {
+			ctx.RegisterApisixVar(req, "$balancer_ip", req.URL.Hostname())
+			ctx.RegisterApisixVar(req, "$balancer_port", req.URL.Port())
+		}
+		if host != "" {
+			req.Host = host
 		}
 
 		if scheme != "" {

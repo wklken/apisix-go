@@ -11,6 +11,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"golang.org/x/net/http/httpguts"
 )
 
 type Plugin struct {
@@ -145,6 +146,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.Uri != "" && !strings.HasPrefix(p.config.Uri, "/") {
+		return fmt.Errorf("uri %q must begin with /", p.config.Uri)
+	}
 	if len(p.config.RegexURI)%2 != 0 {
 		return fmt.Errorf("regex_uri length should be even")
 	}
@@ -154,10 +158,16 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return fmt.Errorf("invalid regex_uri pattern %q: %w", p.config.RegexURI[i], err)
 		}
+		if err := validateRegexReplacement(p.config.RegexURI[i+1]); err != nil {
+			return fmt.Errorf("invalid regex_uri replacement %q: %w", p.config.RegexURI[i+1], err)
+		}
 		p.config.regexURIPairs = append(p.config.regexURIPairs, regexURIPair{
 			pattern:     pattern,
 			replacement: p.config.RegexURI[i+1],
 		})
+	}
+	if err := p.config.Headers.validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -170,6 +180,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		uri, captures := p.rewriteURI(p.rewriteSourceURI(r))
+		if p.config.Uri != "" {
+			uri = appendRequestQuery(resolveHeaderValue(r, p.config.Uri, nil), r.URL.RawQuery)
+		}
 		p.config.Headers.apply(r, captures)
 
 		data := map[string]any{
@@ -189,7 +202,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func (h Headers) apply(r *http.Request, captures []string) {
 	for name, value := range h.LegacySet {
-		r.Header.Set(name, resolveHeaderValue(r, value, captures))
+		resolved := resolveHeaderValue(r, value, captures)
+		if resolved == "" {
+			r.Header.Del(name)
+			continue
+		}
+		r.Header.Set(name, resolved)
 	}
 	for name, value := range h.Add {
 		r.Header.Add(name, resolveHeaderValue(r, value, captures))
@@ -215,13 +233,75 @@ func (p *Plugin) rewriteURI(path string) (string, []string) {
 	}
 	for _, pair := range p.config.regexURIPairs {
 		if matches := pair.pattern.FindStringSubmatch(path); matches != nil {
-			return pair.pattern.ReplaceAllString(path, pair.replacement), matches
+			rewritten := pair.pattern.ReplaceAllStringFunc(path, func(match string) string {
+				return resolveCaptureValue(pair.replacement, pair.pattern.FindStringSubmatch(match))
+			})
+			return rewritten, matches
 		}
 	}
 	if p.config.UseRealRequestURIUnsafe {
 		return path, nil
 	}
 	return "", nil
+}
+
+func appendRequestQuery(uri string, rawQuery string) string {
+	if rawQuery == "" {
+		return uri
+	}
+	if strings.Contains(uri, "?") {
+		return uri + "&" + rawQuery
+	}
+	return uri + "?" + rawQuery
+}
+
+func validateRegexReplacement(replacement string) error {
+	for position := 0; position < len(replacement); position++ {
+		if replacement[position] != '$' {
+			continue
+		}
+		position++
+		if position >= len(replacement) {
+			return fmt.Errorf("capture number is missing")
+		}
+		if replacement[position] == '{' {
+			position++
+			start := position
+			for position < len(replacement) && replacement[position] >= '0' && replacement[position] <= '9' {
+				position++
+			}
+			if position == start || position >= len(replacement) || replacement[position] != '}' {
+				return fmt.Errorf("invalid braced capture")
+			}
+			continue
+		}
+		if replacement[position] < '0' || replacement[position] > '9' {
+			return fmt.Errorf("invalid capture name")
+		}
+		for position+1 < len(replacement) && replacement[position+1] >= '0' && replacement[position+1] <= '9' {
+			position++
+		}
+	}
+	return nil
+}
+
+func (h Headers) validate() error {
+	for _, values := range []HeaderValues{h.LegacySet, h.Add, h.Set} {
+		for name, value := range values {
+			if !httpguts.ValidHeaderFieldName(name) {
+				return fmt.Errorf("invalid header field %q", name)
+			}
+			if !httpguts.ValidHeaderFieldValue(value) {
+				return fmt.Errorf("invalid header value for %q", name)
+			}
+		}
+	}
+	for _, name := range h.Remove {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("invalid header field %q", name)
+		}
+	}
+	return nil
 }
 
 var (

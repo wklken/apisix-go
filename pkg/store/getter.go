@@ -143,6 +143,19 @@ func ListStreamRoutes() ([]resource.StreamRoute, error) {
 	return routes, nil
 }
 
+func ListSSLs() ([]resource.SSL, error) {
+	data := s.GetBucketData("ssls")
+	ssls := make([]resource.SSL, 0, len(data))
+	for _, value := range data {
+		ssl, err := ParseSSL(value)
+		if err != nil {
+			return nil, fmt.Errorf("parse SSL resource: %w", err)
+		}
+		ssls = append(ssls, ssl)
+	}
+	return ssls, nil
+}
+
 func ListGlobalRules() ([]resource.GlobalRule, error) {
 	var rules []resource.GlobalRule
 	data := s.GetBucketData("global_rules")

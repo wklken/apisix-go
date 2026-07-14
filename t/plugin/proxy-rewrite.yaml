@@ -489,7 +489,27 @@ cases:
   - name: admin-etcd-clean-serialization
     source:
       tests: [35]
-    skip: Admin API and etcd serialization are outside standalone mode
+    config:
+      routes:
+        - id: proxy-rewrite-clean-standalone-config
+          uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /uri/plugin_proxy_rewrite
+              headers:
+                X-Api: v2
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream:
+      expect:
+        path:
+          equals: /uri/plugin_proxy_rewrite
+        headers:
+          X-Api:
+            equals: v2
+      respond: *hello_response
+    output: *hello_output
 
   - name: header-request-variables
     source:

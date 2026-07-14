@@ -1,0 +1,354 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/request-id.t
+    tests: 28
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/request-id2.t
+    tests: 4
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/request-id3.t
+    tests: 5
+
+cases:
+  - name: default-uuid-v4
+    source:
+      file: t/plugin/request-id.t
+      tests: [1, 3, 4, 5, 23]
+    config:
+      routes:
+        - id: request-id-default
+          uri: /opentracing
+          plugins:
+            request-id: {}
+            mocking: &mock
+              response_status: 200
+              response_example: ok
+    steps:
+      - name: unique-uuid-v4
+        repeat: 180
+        input:
+          path: /opentracing
+        output:
+          status: 200
+          headers:
+            X-Request-Id:
+              matches: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          unique_headers: [X-Request-Id]
+
+  - name: reject-wrong-include-in-response-type
+    source:
+      file: t/plugin/request-id.t
+      tests: [2]
+    config:
+      routes:
+        - id: request-id-wrong-include-type
+          uri: /opentracing
+          plugins:
+            request-id:
+              include_in_response: bad_type
+            mocking: *mock
+    input:
+      path: /opentracing
+    output:
+      status: 404
+      logs:
+        matches: 'build route request-id-wrong-include-type fail:.*expected boolean'
+
+  - name: custom-header-name
+    source:
+      file: t/plugin/request-id.t
+      tests: [6, 7]
+    config:
+      routes:
+        - id: request-id-custom-header
+          uri: /opentracing
+          plugins:
+            request-id:
+              header_name: Custom-Header-Name
+            mocking: *mock
+    input:
+      path: /opentracing
+    output:
+      status: 200
+      headers:
+        Custom-Header-Name:
+          matches: '^[0-9a-f-]{36}$'
+        X-Request-Id:
+          absent: true
+
+  - name: exclude-from-response
+    source:
+      file: t/plugin/request-id.t
+      tests: [8, 9]
+    config:
+      routes:
+        - id: request-id-hidden-response
+          uri: /opentracing
+          plugins:
+            request-id:
+              include_in_response: false
+            mocking: *mock
+    input:
+      path: /opentracing
+    output:
+      status: 200
+      headers:
+        X-Request-Id:
+          absent: true
+
+  - name: global-and-route-request-ids-differ
+    source:
+      file: t/plugin/request-id.t
+      tests: [10, 11]
+    config:
+      global_rules:
+        - id: request-id-global
+          plugins:
+            request-id:
+              header_name: Custom-Header-Name
+      routes:
+        - id: request-id-route-and-global
+          uri: /opentracing
+          plugins:
+            request-id: {}
+            mocking: *mock
+    input:
+      path: /opentracing
+    output:
+      status: 200
+      headers:
+        X-Request-Id:
+          matches: '^[0-9a-f-]{36}$'
+        Custom-Header-Name:
+          matches: '^[0-9a-f-]{36}$'
+      different_headers:
+        - [X-Request-Id, Custom-Header-Name]
+
+  - name: reject-unsupported-algorithms
+    source:
+      file: t/plugin/request-id.t
+      tests: [12, 18]
+    variants:
+      - name: bad-algorithm
+        config:
+          routes:
+            - id: request-id-bad-algorithm
+              uri: /opentracing
+              plugins:
+                request-id:
+                  algorithm: bad_algorithm
+                mocking: *mock
+        input:
+          path: /opentracing
+        output:
+          status: 404
+          logs:
+            matches: 'build route request-id-bad-algorithm fail:.*enum'
+      - name: uuid-v5
+        config:
+          routes:
+            - id: request-id-uuid-v5
+              uri: /opentracing
+              plugins:
+                request-id:
+                  algorithm: uuidv5
+                mocking: *mock
+        input:
+          path: /opentracing
+        output:
+          status: 404
+          logs:
+            matches: 'build route request-id-uuid-v5 fail:.*enum'
+
+  - name: echo-client-request-id
+    source:
+      file: t/plugin/request-id.t
+      tests: [13, 14]
+    config:
+      routes:
+        - id: request-id-client-value
+          uri: /opentracing
+          plugins:
+            request-id:
+              include_in_response: true
+            mocking: *mock
+    input:
+      path: /opentracing
+      headers:
+        X-Request-Id: "123"
+    output:
+      status: 200
+      headers:
+        X-Request-Id:
+          equals: "123"
+
+  - name: nanoid-generation
+    source:
+      file: t/plugin/request-id.t
+      tests: [15, 16, 28]
+    config:
+      routes:
+        - id: request-id-nanoid
+          uri: /opentracing
+          plugins:
+            request-id:
+              algorithm: nanoid
+            mocking: *mock
+    steps:
+      - name: non-empty-unique-nanoids
+        repeat: 200
+        input:
+          path: /opentracing
+          headers:
+            X-Request-Id: ""
+        output:
+          status: 200
+          headers:
+            X-Request-Id:
+              matches: '^[A-Za-z0-9_-]{21}$'
+          unique_headers: [X-Request-Id]
+
+  - name: uuid-v7-generation
+    source:
+      file: t/plugin/request-id.t
+      tests: [17, 19, 20, 21, 22, 24, 26, 27]
+    config:
+      routes:
+        - id: request-id-uuid-v7
+          uri: /opentracing
+          plugins:
+            request-id:
+              algorithm: uuidv7
+            mocking: *mock
+    steps:
+      - name: ordered-unique-uuid-v7
+        repeat: 180
+        input:
+          path: /opentracing
+        output:
+          status: 200
+          headers:
+            X-Request-Id:
+              matches: '^(?:[1-9a-f][0-9a-f]{3}|0[1-9a-f][0-9a-f]{2}|00[1-9a-f][0-9a-f]|000[1-9a-f])[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          unique_headers: [X-Request-Id]
+          monotonic_headers: [X-Request-Id]
+
+  - name: uuid-v7-custom-header
+    source:
+      file: t/plugin/request-id.t
+      tests: [25]
+    config:
+      routes:
+        - id: request-id-uuid-v7-custom-header
+          uri: /opentracing
+          plugins:
+            request-id:
+              algorithm: uuidv7
+              header_name: X-Trace-Id
+            mocking: *mock
+    input:
+      path: /opentracing
+    output:
+      status: 200
+      headers:
+        X-Trace-Id:
+          matches: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+  - name: custom-range-id
+    source:
+      file: t/plugin/request-id2.t
+      tests: [1]
+    config:
+      routes:
+        - id: request-id-custom-range
+          uri: /opentracing
+          plugins:
+            request-id:
+              algorithm: range_id
+              range_id:
+                char_set: abcdefg
+                length: 20
+            mocking: *mock
+    input:
+      path: /opentracing
+    output:
+      status: 200
+      headers:
+        X-Request-Id:
+          matches: '^[a-g]{20}$'
+
+  - name: default-range-id
+    source:
+      file: t/plugin/request-id2.t
+      tests: [2, 3, 4]
+    config:
+      routes:
+        - id: request-id-default-range
+          uri: /opentracing
+          plugins:
+            request-id:
+              algorithm: range_id
+            mocking: *mock
+    steps:
+      - name: unique-default-range-ids
+        repeat: 180
+        input:
+          path: /opentracing
+        output:
+          status: 200
+          headers:
+            X-Request-Id:
+              matches: '^[A-Za-z0-9]{16}$'
+          unique_headers: [X-Request-Id]
+
+  - name: ksuid-generation
+    source:
+      file: t/plugin/request-id3.t
+      tests: [1, 2, 3]
+    config:
+      routes:
+        - id: request-id-ksuid
+          uri: /opentracing
+          plugins:
+            request-id:
+              algorithm: ksuid
+            mocking: *mock
+    steps:
+      - name: unique-ksuids
+        repeat: 180
+        input:
+          path: /opentracing
+        output:
+          status: 200
+          headers:
+            X-Request-Id:
+              matches: '^[A-Za-z0-9]{27}$'
+          unique_headers: [X-Request-Id]
+
+  - name: client-id-on-upstream-failure
+    source:
+      file: t/plugin/request-id3.t
+      tests: [4, 5]
+    config:
+      routes:
+        - id: request-id-upstream-failure
+          uri: /opentracing
+          plugins:
+            request-id:
+              header_name: X-Request-Id
+          upstream:
+            type: roundrobin
+            nodes:
+              "127.0.0.1:1": 1
+    input:
+      path: /opentracing
+      headers:
+        X-Request-Id: abctesting
+    output:
+      status: 502
+      headers:
+        X-Request-Id:
+          equals: abctesting

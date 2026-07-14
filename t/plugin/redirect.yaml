@@ -411,7 +411,27 @@ cases:
   - name: frontend-tls-handshake
     source:
       tests: [28, 29]
-    skip: APISIX Go does not provide a frontend TLS listener in standalone HTTP mode
+    frontend_tls:
+      sni: test.com
+    config:
+      routes:
+        - id: redirect-frontend-tls-handshake
+          uri: /hello
+          hosts: [test.com]
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      scheme: https
+      path: /hello
+      headers:
+        Host: test.com
+    upstream: *hello_fixture
+    output:
+      status: 200
+      body:
+        equals: hello world
 
   - name: post-http-to-https
     source:

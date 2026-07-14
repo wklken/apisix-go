@@ -49,6 +49,25 @@ func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRegisterExtraRoutesReturnsNotFoundForUnsupportedNodeStatusMethod(t *testing.T) {
+	oldConfig := config.GlobalConfig
+	t.Cleanup(func() {
+		config.GlobalConfig = oldConfig
+	})
+	config.GlobalConfig = &config.Config{Plugins: []string{"node-status"}}
+
+	mux := chi.NewRouter()
+	registerExtraRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/apisix/status", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+}
+
 func TestRegisterExtraRoutesSkipsNodeStatusWhenDisabled(t *testing.T) {
 	oldConfig := config.GlobalConfig
 	t.Cleanup(func() {

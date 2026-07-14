@@ -183,7 +183,7 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if !strings.Contains(rr.Body.String(), "Missing API key found in request") {
+	if !strings.Contains(rr.Body.String(), "Missing API key in request") {
 		t.Fatalf("body = %q, want missing key message", rr.Body.String())
 	}
 }

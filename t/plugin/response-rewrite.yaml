@@ -236,7 +236,32 @@ cases:
   - name: admin-etcd-clean-serialization
     source:
       tests: [15]
-    skip: Admin API and etcd serialization are outside standalone mode
+    config:
+      routes:
+        - id: response-rewrite-clean-standalone-config
+          uri: /with_header
+          plugins:
+            response-rewrite:
+              headers:
+                X-Server-id: 3
+                X-Server-status: "on"
+                Content-Type: ""
+              body: "new body\n"
+          upstream: *fixture_route
+    input:
+      path: /with_header
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        X-Server-id:
+          equals: "3"
+        X-Server-status:
+          equals: "on"
+        Content-Type:
+          equals: ""
+      body:
+        equals: "new body\n"
 
   - name: valid-status-expression
     source:

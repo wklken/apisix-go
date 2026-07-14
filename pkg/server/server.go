@@ -103,6 +103,25 @@ func configuredListenAddresses() []string {
 	return config.GlobalConfig.Apisix.ListenAddresses()
 }
 
+func configuredTLSListenAddresses() []string {
+	if config.GlobalConfig == nil || !config.GlobalConfig.Apisix.Ssl.Enable {
+		return nil
+	}
+	listeners := config.GlobalConfig.Apisix.Ssl.Listen
+	addresses := make([]string, 0, len(listeners))
+	for _, listener := range listeners {
+		if listener.Port < 1 || listener.Port > 65535 {
+			continue
+		}
+		host := strings.TrimSpace(listener.Ip)
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		addresses = append(addresses, net.JoinHostPort(host, fmt.Sprintf("%d", listener.Port)))
+	}
+	return addresses
+}
+
 func newConfiguredHTTPServer(handler http.Handler) *http.Server {
 	server := &http.Server{Handler: handler}
 	if config.GlobalConfig == nil {
@@ -147,7 +166,7 @@ func (s *Server) Start() {
 
 	logger.Info("build the routes")
 	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
-	s.routes.Replace(builder.Build(), builder.Stop)
+	s.routes.Replace(initialRouteHandler(builder.Build()), builder.Stop)
 	s.startStreamProxy(ctx)
 
 	// start the reloader
@@ -176,6 +195,13 @@ func (s *Server) Start() {
 	}
 
 	s.startServer(ctx)
+}
+
+func initialRouteHandler(handler *chi.Mux) http.Handler {
+	if handler == nil {
+		return http.NotFoundHandler()
+	}
+	return handler
 }
 
 func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.CancelFunc) {
@@ -463,8 +489,61 @@ func (s *Server) startServer(ctx context.Context) {
 			}
 		}(listener)
 	}
+	for _, addr := range configuredTLSListenAddresses() {
+		logger.Infof("listening with TLS on %s", addr)
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			logger.Fatalf("error opening TLS listener: %w", err)
+		}
+		tlsListener := tls.NewListener(listener, frontendTLSConfig())
+		go func(listener net.Listener) {
+			if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				logger.Errorf("error serve TLS: %s", err)
+			}
+		}(tlsListener)
+	}
 
 	<-ctx.Done()
+}
+
+func frontendTLSConfig() *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			serverName := strings.TrimSpace(hello.ServerName)
+			if serverName == "" && config.GlobalConfig != nil {
+				serverName = strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
+			}
+			ssls, err := store.ListSSLs()
+			if err != nil {
+				return nil, err
+			}
+			for _, sslResource := range ssls {
+				if sslResource.Status == 0 || !matchesSNI(sslResource.Snis, serverName) {
+					continue
+				}
+				certificate, err := tls.X509KeyPair([]byte(sslResource.Cert), []byte(sslResource.Key))
+				if err != nil {
+					return nil, fmt.Errorf("load SSL resource %q: %w", sslResource.ID, err)
+				}
+				return &certificate, nil
+			}
+			return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+		},
+	}
+}
+
+func matchesSNI(snis []string, serverName string) bool {
+	for _, sni := range snis {
+		sni = strings.TrimSpace(sni)
+		if strings.EqualFold(sni, serverName) {
+			return true
+		}
+		if strings.HasPrefix(sni, "*.") && strings.HasSuffix(strings.ToLower(serverName), strings.ToLower(sni[1:])) {
+			return true
+		}
+	}
+	return false
 }
 
 type prometheusExportServerConfig struct {

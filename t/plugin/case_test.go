@@ -39,6 +39,82 @@ func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
 	}
 }
 
+func TestManifestMultipleSources(t *testing.T) {
+	body := "ok"
+	manifest := &Manifest{
+		Sources: []SourceSpec{
+			{
+				Repository: "https://github.com/apache/apisix",
+				Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+				File:       "t/plugin/example.t",
+				Tests:      1,
+			},
+			{
+				Repository: "https://github.com/apache/apisix",
+				Commit:     "c3d7d5ec69774121f53d2e20d29d09c816795dd7",
+				File:       "t/plugin/example2.t",
+				Tests:      1,
+			},
+		},
+		Cases: []Case{
+			{
+				Name:   "first",
+				Source: CaseSource{File: "t/plugin/example.t", Tests: []int{1}},
+				Config: map[string]any{"routes": []any{}},
+				Input:  HTTPInput{Path: "/first"},
+				Output: HTTPOutput{Status: 200, Body: &Matcher{Equals: &body}},
+			},
+			{
+				Name:   "second",
+				Source: CaseSource{File: "t/plugin/example2.t", Tests: []int{1}},
+				Config: map[string]any{"routes": []any{}},
+				Input:  HTTPInput{Path: "/second"},
+				Output: HTTPOutput{Status: 200, Body: &Matcher{Equals: &body}},
+			},
+		},
+	}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsMissingSourceFile(t *testing.T) {
+	manifest := validManifest()
+	manifest.Sources = []SourceSpec{
+		manifest.Source,
+		{
+			Repository: manifest.Source.Repository,
+			Commit:     manifest.Source.Commit,
+			File:       "t/plugin/example2.t",
+			Tests:      1,
+		},
+	}
+	manifest.Source = SourceSpec{}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "source file is required when multiple sources are configured") {
+		t.Fatalf("validate() error = %v, want missing source file rejection", err)
+	}
+}
+
+func TestManifestRejectsDuplicateSourceNumberAcrossCases(t *testing.T) {
+	manifest := validManifest()
+	manifest.Sources = []SourceSpec{manifest.Source}
+	manifest.Source = SourceSpec{}
+	manifest.Cases[0].Source.File = "t/plugin/example.t"
+	manifest.Cases[0].Source.Tests = []int{1, 2, 3}
+	duplicate := manifest.Cases[0]
+	duplicate.Name = "duplicate"
+	duplicate.Source.Tests = []int{2}
+	manifest.Cases = append(manifest.Cases, duplicate)
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "source test 2 in t/plugin/example.t is mapped more than once") {
+		t.Fatalf("validate() error = %v, want duplicate source test rejection", err)
+	}
+}
+
 func TestManifestAcceptsMultipleStandaloneVariantsForOneSourceCase(t *testing.T) {
 	data := []byte(`source:
   repository: https://github.com/apache/apisix
@@ -73,16 +149,48 @@ cases:
 	}
 }
 
-func TestManifestRequiresSkipReason(t *testing.T) {
-	manifest := validManifest()
-	manifest.Cases[0].Skip = " "
-	manifest.Cases[0].Config = nil
-	manifest.Cases[0].Input = HTTPInput{}
-	manifest.Cases[0].Output = HTTPOutput{}
+func TestManifestAcceptsStepsAndNamedFixtures(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: sequence
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: ok
+    steps:
+      - name: first
+        input:
+          path: /hello
+        output:
+          status: 200
+        wait: 200ms
+`)
 
-	err := manifest.validate()
-	if err == nil || !strings.Contains(err.Error(), "skip reason") {
-		t.Fatalf("validate() error = %v, want skip reason rejection", err)
+	manifest, err := loadManifest("steps.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	if got := manifest.Cases[0].Steps[0].Wait.String(); got != "200ms" {
+		t.Fatalf("step wait = %s, want 200ms", got)
+	}
+}
+
+func TestManifestRejectsSkipField(t *testing.T) {
+	data := strings.Replace(validManifestYAML, "    config:\n", "    skip: not executable\n    config:\n", 1)
+
+	_, err := loadManifest("skip.yaml", []byte(data))
+	if err == nil || !strings.Contains(err.Error(), "field skip not found") {
+		t.Fatalf("loadManifest() error = %v, want skip field rejection", err)
 	}
 }
 
@@ -152,6 +260,19 @@ func TestHeaderMatcherSupportsAbsent(t *testing.T) {
 	}
 	if err := matcher.match("", true); err == nil {
 		t.Fatal("match() error = nil, want present-header mismatch")
+	}
+}
+
+func TestHeaderMatcherSupportsOrderedValues(t *testing.T) {
+	matcher := Matcher{Values: []string{"upstream", "Accept-Encoding"}}
+	if err := matcher.validate(matcherHeader); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if err := matcher.matchHeader("upstream", []string{"upstream", "Accept-Encoding"}); err != nil {
+		t.Fatalf("matchHeader() error = %v", err)
+	}
+	if err := matcher.matchHeader("upstream", []string{"upstream"}); err == nil {
+		t.Fatal("matchHeader() error = nil, want missing value mismatch")
 	}
 }
 

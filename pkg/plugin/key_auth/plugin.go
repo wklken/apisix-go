@@ -92,7 +92,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			http.Error(w, `{"message": "Missing API key found in request"}`, http.StatusUnauthorized)
+			http.Error(w, `{"message": "Missing API key in request"}`, http.StatusUnauthorized)
 			return
 		}
 

@@ -1,0 +1,126 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/public-api.t
+  tests: 8
+
+cases:
+  - name: schema
+    source:
+      tests: [1]
+    variants:
+      - name: valid-uri
+        runtime:
+          plugins: [public-api, wolf-rbac]
+        config:
+          routes:
+            - id: initialize-wolf-rbac-public-apis
+              uri: /_wolf-init
+              plugins:
+                wolf-rbac: {}
+            - id: public-api-valid-schema
+              uri: /userinfo
+              plugins:
+                public-api:
+                  uri: /apisix/plugin/wolf-rbac/user_info
+        input:
+          path: /userinfo
+        output:
+          status: 401
+          body:
+            matches: 'Missing rbac token'
+      - name: reject-non-string-uri
+        runtime:
+          plugins: [public-api, wolf-rbac]
+        config:
+          routes:
+            - id: public-api-invalid-schema
+              uri: /userinfo
+              plugins:
+                public-api:
+                  uri: 3233
+        input:
+          path: /userinfo
+        output:
+          status: 404
+          logs:
+            matches: 'build route public-api-invalid-schema fail:.*expected string'
+
+  - name: direct-and-missing-public-apis
+    source:
+      tests: [2, 3, 4, 5]
+    runtime:
+      plugins: [public-api, wolf-rbac]
+    config:
+      routes:
+        - id: initialize-wolf-rbac-public-apis
+          uri: /_wolf-init
+          plugins:
+            wolf-rbac: {}
+        - id: direct-wolf-rbac-userinfo
+          uri: /apisix/plugin/wolf-rbac/user_info
+          plugins:
+            public-api: {}
+        - id: wrong-public-api
+          uri: /wrong-public-api
+          plugins:
+            public-api:
+              uri: /apisix/plugin/balalbala
+    steps:
+      - name: direct-wolf-rbac-userinfo
+        input:
+          path: /apisix/plugin/wolf-rbac/user_info
+        output:
+          status: 401
+          body:
+            matches: 'Missing rbac token'
+      - name: missing-route
+        input:
+          path: /apisix/plugin/balalbala
+        output:
+          status: 404
+      - name: wrong-public-api-uri
+        input:
+          path: /wrong-public-api
+        output:
+          status: 404
+
+  - name: key-auth-protected-public-api
+    source:
+      tests: [6, 7, 8]
+    runtime:
+      plugins: [public-api, wolf-rbac, key-auth]
+    config:
+      routes:
+        - id: initialize-wolf-rbac-public-apis
+          uri: /_wolf-init
+          plugins:
+            wolf-rbac: {}
+        - id: custom-user-info
+          uri: /get_user_info
+          plugins:
+            key-auth: {}
+            public-api:
+              uri: /apisix/plugin/wolf-rbac/user_info
+      consumers:
+        - username: bob
+          plugins:
+            key-auth:
+              key: testkey
+    steps:
+      - name: authenticated-request-reaches-public-api
+        input:
+          path: /get_user_info?key=user-key
+          headers:
+            apikey: testkey
+        output:
+          status: 401
+          body:
+            matches: 'Missing rbac token'
+      - name: missing-api-key
+        input:
+          path: /get_user_info?key=user-key
+        output:
+          status: 401
+          body:
+            equals: "{\"message\": \"Missing API key in request\"}\n"

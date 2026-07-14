@@ -68,6 +68,40 @@ func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	}
 }
 
+func TestConfiguredTLSListenAddresses(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
+		Enable: true,
+		Listen: []config.Listen{
+			{Port: 9443},
+			{Ip: "127.0.0.2", Port: 9444},
+		},
+	}}}
+
+	if got, want := configuredTLSListenAddresses(), []string{
+		"0.0.0.0:9443",
+		"127.0.0.2:9444",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("configuredTLSListenAddresses() = %#v, want %#v", got, want)
+	}
+
+	config.GlobalConfig.Apisix.Ssl.Enable = false
+	if got := configuredTLSListenAddresses(); len(got) != 0 {
+		t.Fatalf("configuredTLSListenAddresses() = %#v, want no disabled listeners", got)
+	}
+}
+
+func TestInitialRouteHandlerUsesNotFoundForFailedBuild(t *testing.T) {
+	handler := initialRouteHandler(nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/missing", nil))
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
 func TestEtcdTLSIsNotEnabledForHTTPEndpoints(t *testing.T) {
 	verify := true
 	settings := config.EtcdTLS{Verify: &verify}

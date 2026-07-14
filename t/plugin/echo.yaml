@@ -1,0 +1,176 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/echo.t
+  tests: 11
+
+cases:
+  - name: schema-sanity
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: echo-schema-sanity
+          uri: /echo-schema
+          plugins:
+            echo:
+              before_body: body before
+              body: body to attach
+              after_body: body after
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /echo-schema
+    upstream: &hello_fixture
+      respond:
+        status: 200
+        body: hello world
+    output:
+      status: 200
+      body:
+        equals: body to attach
+
+  - name: reject-wrong-after-body-type
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: echo-invalid-after-body
+          uri: /echo-invalid
+          plugins:
+            echo:
+              before_body: body before
+              body: body to attach
+              after_body: 10
+          upstream: *fixture_route
+    input:
+      path: /echo-invalid
+    upstream: *hello_fixture
+    output:
+      status: 404
+      logs:
+        matches: 'build route echo-invalid-after-body fail:.*echo'
+
+  - name: replace-body-and-add-headers
+    source:
+      tests: [3, 4]
+    config:
+      routes:
+        - id: echo-replace-body-and-headers
+          uri: /hello
+          plugins:
+            echo:
+              before_body: "before the body modification "
+              body: hello upstream
+              after_body: " after the body modification."
+              headers:
+                Location: https://www.iresty.com
+                Authorization: userpass
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        Location:
+          equals: https://www.iresty.com
+        Authorization:
+          equals: userpass
+      body:
+        equals: hello upstream
+
+  - name: prepend-body-without-replacement
+    source:
+      tests: [5, 6]
+    config:
+      routes:
+        - id: echo-prepend-body
+          uri: /hello
+          plugins:
+            echo:
+              before_body: "before the body modification "
+              headers:
+                Location: https://www.iresty.com
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        Location:
+          equals: https://www.iresty.com
+      body:
+        equals: before the body modification hello world
+
+  - name: clean-standalone-config
+    source:
+      tests: [7]
+    config:
+      routes:
+        - id: echo-clean-standalone-config
+          uri: /hello
+          plugins:
+            echo:
+              before_body: "before the body modification "
+              headers:
+                Location: https://www.iresty.com
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        Location:
+          equals: https://www.iresty.com
+      body:
+        equals: before the body modification hello world
+
+  - name: replace-chunked-body
+    source:
+      tests: [8, 9]
+    config:
+      routes:
+        - id: echo-replace-chunked-body
+          uri: /hello_chunked
+          plugins:
+            echo:
+              body: hello upstream
+          upstream: *fixture_route
+    input:
+      path: /hello_chunked
+    upstream:
+      respond:
+        status: 200
+        chunks: ["hello ", "world"]
+    output:
+      status: 200
+      body:
+        equals: hello upstream
+
+  - name: wrap-chunked-body
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: echo-wrap-chunked-body
+          uri: /hello_chunked
+          plugins:
+            echo:
+              before_body: "before the body modification "
+              after_body: " after the body modification."
+          upstream: *fixture_route
+    input:
+      path: /hello_chunked
+    upstream:
+      respond:
+        status: 200
+        chunks: ["hello ", "world\n"]
+    output:
+      status: 200
+      body:
+        equals: "before the body modification hello world\n after the body modification."

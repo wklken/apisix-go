@@ -1,0 +1,93 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-proxy.t
+  tests: 2
+
+cases:
+  - name: schema
+    source:
+      tests: [1]
+    variants:
+      - name: empty-config
+        config:
+          routes:
+            - id: kafka-proxy-empty
+              uri: /opentracing
+              plugins:
+                kafka-proxy: {}
+              upstream: &upstream
+                type: roundrobin
+                nodes:
+                  "{{UPSTREAM_ADDR}}": 1
+        input:
+          path: /opentracing
+        upstream: &fixture
+          respond:
+            status: 200
+            body: done
+        output: &done
+          status: 200
+          body:
+            equals: done
+      - name: valid-sasl
+        config:
+          routes:
+            - id: kafka-proxy-valid-sasl
+              uri: /opentracing
+              plugins:
+                kafka-proxy:
+                  sasl:
+                    username: user
+                    password: pwd
+              upstream: *upstream
+        input:
+          path: /opentracing
+        upstream: *fixture
+        output: *done
+      - name: missing-sasl-password
+        config:
+          routes:
+            - id: kafka-proxy-missing-password
+              uri: /opentracing
+              plugins:
+                kafka-proxy:
+                  sasl:
+                    username: user
+        output: &schema_error
+          logs:
+            matches: 'build route kafka-proxy-.*fail:.*kafka-proxy'
+      - name: numeric-sasl-password
+        config:
+          routes:
+            - id: kafka-proxy-numeric-password
+              uri: /opentracing
+              plugins:
+                kafka-proxy:
+                  sasl:
+                    username: user
+                    password: 1234
+        output: *schema_error
+
+  - name: encrypted-sasl-password
+    source:
+      tests: [2]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: kafka-proxy-encrypted-password
+          uri: /opentracing
+          plugins:
+            kafka-proxy:
+              sasl:
+                username: admin
+                password: y4Z3aqo51xrt3f9UziNUrg==
+          upstream: *upstream
+    input:
+      path: /opentracing
+    upstream: *fixture
+    output: *done

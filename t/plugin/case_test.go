@@ -249,6 +249,20 @@ func TestMatcherSupportsEqualsAndRegex(t *testing.T) {
 	}
 }
 
+func TestMatcherSupportsNegativeRegex(t *testing.T) {
+	pattern := `"consumer"|"service"`
+	matcher := Matcher{NotMatches: &pattern}
+	if err := matcher.validate(matcherBody); err != nil {
+		t.Fatalf("not_matches.validate() error = %v", err)
+	}
+	if err := matcher.match(`{"route":{"id":"1"}}`, true); err != nil {
+		t.Fatalf("not_matches.match() error = %v", err)
+	}
+	if err := matcher.match(`{"consumer":{"username":"test"}}`, true); err == nil {
+		t.Fatal("not_matches.match() error = nil, want forbidden match")
+	}
+}
+
 func TestHeaderMatcherSupportsAbsent(t *testing.T) {
 	absent := true
 	matcher := Matcher{Absent: &absent}

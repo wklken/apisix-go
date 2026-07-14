@@ -37,6 +37,34 @@ func TestWorkflowRouteChainAllowsNonMatchingRequest(t *testing.T) {
 	}
 }
 
+func TestNormalizePluginResourceContextUsesInitializedServiceConfig(t *testing.T) {
+	context := pluginRouteContext{
+		route: resource.Route{Plugins: map[string]resource.PluginConfig{
+			"opa": map[string]any{"host": "http://opa.test", "policy": "echo"},
+		}},
+		service: resource.Service{Plugins: map[string]resource.PluginConfig{
+			"key-auth": map[string]any{},
+		}},
+	}
+	normalized := map[string]any{
+		"header":           "apikey",
+		"query":            "apikey",
+		"hide_credentials": false,
+	}
+
+	context = normalizePluginResourceContext(context, "key-auth", normalized)
+	data, err := apisixjson.Marshal(context.service.Plugins["key-auth"])
+	if err != nil {
+		t.Fatalf("marshal normalized service plugin: %v", err)
+	}
+	if got := string(data); got != `{"header":"apikey","hide_credentials":false,"query":"apikey"}` {
+		t.Fatalf("normalized service key-auth = %s", got)
+	}
+	if _, ok := context.route.Plugins["key-auth"]; ok {
+		t.Fatal("normalized service config was incorrectly added to the route")
+	}
+}
+
 func TestWorkflowRouteChainRejectsMatchingRequest(t *testing.T) {
 	handler := buildWorkflowRouteChain(t)
 

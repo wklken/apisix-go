@@ -83,6 +83,7 @@ Every matcher configures exactly one operation:
 ```yaml
 equals: literal value
 matches: '^Go regular expression$'
+not_matches: 'forbidden regular expression'
 absent: true
 ```
 

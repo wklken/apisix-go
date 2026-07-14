@@ -214,6 +214,23 @@ func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]reso
 	return cloned
 }
 
+func normalizePluginResourceContext(
+	context pluginRouteContext,
+	name string,
+	config resource.PluginConfig,
+) pluginRouteContext {
+	if _, ok := context.route.Plugins[name]; ok {
+		context.route.Plugins = clonePluginConfigs(context.route.Plugins)
+		context.route.Plugins[name] = config
+		return context
+	}
+	if _, ok := context.service.Plugins[name]; ok {
+		context.service.Plugins = clonePluginConfigs(context.service.Plugins)
+		context.service.Plugins[name] = config
+	}
+	return context
+}
+
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	resourcePlugins := clonePluginConfigs(r.Plugins)
 	// handle plugin_config_id
@@ -618,6 +635,8 @@ func (b *Builder) initPluginsStrict(
 	routeContext pluginRouteContext,
 ) ([]plugin.Plugin, error) {
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	normalizedRouteContext := routeContext
+	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
 		if p == nil {
@@ -650,6 +669,7 @@ func (b *Builder) initPluginsStrict(
 		}
 		if setter, ok := p.(pluginResourceContextSetter); ok {
 			setter.SetResourceContext(routeContext.route, routeContext.service)
+			resourceContextSetters = append(resourceContextSetters, setter)
 		}
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
@@ -662,6 +682,7 @@ func (b *Builder) initPluginsStrict(
 		if err := p.PostInit(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
+		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
 		if stopper, ok := p.(pluginStopper); ok {
 			b.stoppers = append(b.stoppers, stopper)
 		}
@@ -675,6 +696,9 @@ func (b *Builder) initPluginsStrict(
 			}
 		}
 		plugins = append(plugins, initialized)
+	}
+	for _, setter := range resourceContextSetters {
+		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
 	}
 	return plugins, nil
 }

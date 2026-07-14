@@ -128,10 +128,11 @@ type HTTPOutput struct {
 }
 
 type Matcher struct {
-	Equals  *string  `yaml:"equals,omitempty"`
-	Matches *string  `yaml:"matches,omitempty"`
-	Absent  *bool    `yaml:"absent,omitempty"`
-	Values  []string `yaml:"values,omitempty"`
+	Equals     *string  `yaml:"equals,omitempty"`
+	Matches    *string  `yaml:"matches,omitempty"`
+	NotMatches *string  `yaml:"not_matches,omitempty"`
+	Absent     *bool    `yaml:"absent,omitempty"`
+	Values     []string `yaml:"values,omitempty"`
 }
 
 type matcherKind int
@@ -552,6 +553,12 @@ func (m Matcher) validate(kind matcherKind) error {
 			return fmt.Errorf("invalid regular expression: %w", err)
 		}
 	}
+	if m.NotMatches != nil {
+		operations++
+		if _, err := regexp.Compile(*m.NotMatches); err != nil {
+			return fmt.Errorf("invalid regular expression: %w", err)
+		}
+	}
 	if m.Absent != nil {
 		operations++
 		if kind != matcherHeader {
@@ -571,7 +578,7 @@ func (m Matcher) validate(kind matcherKind) error {
 		}
 	}
 	if operations != 1 {
-		return errors.New("matcher must configure exactly one of equals, matches, absent, or values")
+		return errors.New("matcher must configure exactly one of equals, matches, not_matches, absent, or values")
 	}
 	return nil
 }
@@ -595,6 +602,10 @@ func (m Matcher) match(value string, present bool) error {
 	case m.Matches != nil:
 		if !regexp.MustCompile(*m.Matches).MatchString(value) {
 			return fmt.Errorf("value %q does not match %q", value, *m.Matches)
+		}
+	case m.NotMatches != nil:
+		if regexp.MustCompile(*m.NotMatches).MatchString(value) {
+			return fmt.Errorf("value %q unexpectedly matches %q", value, *m.NotMatches)
 		}
 	case m.Absent != nil:
 		if present {

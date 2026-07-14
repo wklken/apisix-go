@@ -123,4 +123,4 @@ cases:
         output:
           status: 401
           body:
-            equals: "{\"message\": \"Missing API key in request\"}\n"
+            equals: '{"message":"Missing API key in request"}'

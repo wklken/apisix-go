@@ -59,6 +59,53 @@ func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T
 	}
 }
 
+func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
+	builder := NewBuilder(nil)
+	handler, err := builder.buildGlobalNotFoundHandler([]resource.GlobalRule{{
+		Plugins: map[string]resource.PluginConfig{
+			"exit-transformer": map[string]any{
+				"functions": []any{
+					"return (function(code, body, header) if code == 404 then return 405 end return code, body, header end)(...)",
+				},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)
+	}
+
+	response := performRouteTestRequest(t, handler, "/missing")
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestBuildSystemPluginConfigsUsesGlobalBodyLimitUnlessRouteOverridesIt(t *testing.T) {
+	previous := appconfig.GlobalConfig
+	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+	appconfig.GlobalConfig = &appconfig.Config{NginxConfig: appconfig.NginxConfig{
+		HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 30},
+	}}
+
+	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{}, nil)
+	clientControl, ok := plugins["client-control"].(map[string]any)
+	if !ok {
+		t.Fatalf("client-control config = %#v, want generated config", plugins["client-control"])
+	}
+	if got := clientControl["max_body_size"]; got != int64(30) {
+		t.Fatalf("client-control max_body_size = %#v, want 30", got)
+	}
+
+	plugins = buildSystemPluginConfigs(
+		resource.Route{ID: "route-limit"},
+		resource.Service{},
+		map[string]resource.PluginConfig{"client-control": map[string]any{"max_body_size": 50}},
+	)
+	if _, ok := plugins["client-control"]; ok {
+		t.Fatalf("system client-control = %#v, want route override only", plugins["client-control"])
+	}
+}
+
 func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 	delivered := make(chan struct{}, 1)
 	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -186,6 +186,12 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "Missing API key in request") {
 		t.Fatalf("body = %q, want missing key message", rr.Body.String())
 	}
+	if got := rr.Body.String(); got != `{"message":"Missing API key in request"}` {
+		t.Fatalf("body = %q, want APISIX error JSON", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
 }
 
 func TestHandlerUsesAnonymousConsumerWhenKeyIsMissing(t *testing.T) {
@@ -226,6 +232,12 @@ func TestHandlerRejectsInvalidKey(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid API key in request") {
 		t.Fatalf("body = %q, want invalid key message", rr.Body.String())
+	}
+	if got := rr.Body.String(); got != `{"message":"Invalid API key in request"}` {
+		t.Fatalf("body = %q, want APISIX error JSON", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
 }
 

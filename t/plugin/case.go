@@ -84,6 +84,13 @@ type HTTPInput struct {
 	Headers      map[string]string   `yaml:"headers,omitempty"`
 	HeaderValues map[string][]string `yaml:"header_values,omitempty"`
 	Body         string              `yaml:"body,omitempty"`
+	BodyRepeat   *RepeatedBody       `yaml:"body_repeat,omitempty"`
+	Chunked      bool                `yaml:"chunked,omitempty"`
+}
+
+type RepeatedBody struct {
+	Value string `yaml:"value"`
+	Count int    `yaml:"count"`
 }
 
 type UpstreamSpec struct {
@@ -290,6 +297,7 @@ func (c *Case) validate() error {
 func (c *Case) hasScenario() bool {
 	return len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" || c.Input.Path != "" ||
 		len(c.Input.Headers) > 0 || len(c.Input.HeaderValues) > 0 || c.Input.Body != "" ||
+		c.Input.BodyRepeat != nil || c.Input.Chunked ||
 		c.Upstream != nil || c.Output.Status != 0 ||
 		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil || len(c.Fixtures) > 0 ||
 		c.Output.GzipBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" ||
@@ -321,7 +329,8 @@ func (c *Case) validateScenario() error {
 	}
 	if len(c.Steps) > 0 || len(c.Fixtures) > 0 {
 		if c.Input.Method != "" || c.Input.Path != "" || len(c.Input.Headers) > 0 ||
-			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" ||
+			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" || c.Input.BodyRepeat != nil ||
+			c.Input.Chunked ||
 			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil ||
 			c.Output.GzipBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
 			c.Output.BodyLengthLessThan != "" || len(c.Output.UniqueHeaders) > 0 ||
@@ -411,6 +420,17 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 	}
 	if input.Version != "" && input.Version != "1.0" && input.Version != "1.1" {
 		return fmt.Errorf("input version %q is not supported", input.Version)
+	}
+	if input.BodyRepeat != nil {
+		if input.Body != "" {
+			return errors.New("input body and body_repeat must not both be configured")
+		}
+		if input.BodyRepeat.Value == "" {
+			return errors.New("input body_repeat value must not be empty")
+		}
+		if input.BodyRepeat.Count <= 0 {
+			return errors.New("input body_repeat count must be positive")
+		}
 	}
 	if output.Status < 100 || output.Status > 599 {
 		return errors.New("output status must be between 100 and 599")

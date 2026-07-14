@@ -353,6 +353,39 @@ func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
 	runCase(t, caseSpec)
 }
 
+func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
+	body := "AAAAAA"
+	caseSpec := Case{
+		Name:   "repeated-chunked-body",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "repeated-chunked-body",
+					"uri": "/body",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{
+			Method:     http.MethodPost,
+			Path:       "/body",
+			Chunked:    true,
+			BodyRepeat: &RepeatedBody{Value: "A", Count: 6},
+		},
+		Upstream: &UpstreamSpec{
+			Expect:  HTTPAssertion{Body: &Matcher{Equals: &body}},
+			Respond: HTTPResponse{Status: http.StatusOK, Body: "ok"},
+		},
+		Output: HTTPOutput{Status: http.StatusOK},
+	}
+
+	runCase(t, caseSpec)
+}
+
 func TestHarnessRunsNamedFixtures(t *testing.T) {
 	primaryBody := "primary"
 	auditBody := "audit"
@@ -1150,7 +1183,11 @@ func runHTTPInput(
 	if scheme == "https" {
 		address = tlsAddress
 	}
-	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(input.Body))
+	body := input.Body
+	if input.BodyRepeat != nil {
+		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count)
+	}
+	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
 	if err != nil {
 		t.Errorf("build client request: %v", err)
 		return err
@@ -1176,6 +1213,10 @@ func runHTTPInput(
 			}
 			request.Header.Add(name, value)
 		}
+	}
+	if input.Chunked {
+		request.ContentLength = -1
+		request.TransferEncoding = []string{"chunked"}
 	}
 	if input.Version == "1.0" {
 		return runRawHTTP10Input(

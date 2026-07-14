@@ -24,6 +24,7 @@ import (
 	"github.com/justinas/alice"
 	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -180,11 +181,31 @@ func (b *Builder) Build() *chi.Mux {
 		}
 		fmt.Println("===============================")
 	}
+	globalRules, err := store.ListGlobalRules()
+	if err != nil {
+		logger.Errorf("list global rules for not found handler fail: %s", err)
+		return nil
+	}
+	notFoundHandler, err := b.buildGlobalNotFoundHandler(globalRules)
+	if err != nil {
+		logger.Errorf("build global not found handler fail: %s", err)
+		return nil
+	}
+	mux.NotFound(notFoundHandler.ServeHTTP)
 
 	// add extra route
 	registerExtraRoutes(mux)
 
 	return mux
+}
+
+func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
+	globalPlugins, err := b.initGlobalPluginsStrict(globalRules, pluginRouteContext{})
+	if err != nil {
+		return nil, err
+	}
+	chain := assembleRoutePluginChain(nil, globalPlugins)
+	return withAIExecutionTerminal(chain, http.NotFoundHandler()), nil
 }
 
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
@@ -235,9 +256,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	}
 
 	// add a context plugin, set the default vars
-	systemPlugins := map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
-	}
+	systemPlugins := buildSystemPluginConfigs(r, service, resourcePlugins)
 
 	var chain alice.Chain
 
@@ -279,6 +298,26 @@ func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) alice
 	plugins = append(plugins, localPlugins...)
 	plugins = append(plugins, globalPlugins...)
 	return plugin.BuildPluginChain(plugins...)
+}
+
+func buildSystemPluginConfigs(
+	r resource.Route,
+	service resource.Service,
+	resourcePlugins map[string]resource.PluginConfig,
+) map[string]resource.PluginConfig {
+	plugins := map[string]resource.PluginConfig{
+		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
+	}
+	if appconfig.GlobalConfig == nil || appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
+		return plugins
+	}
+	if _, configured := resourcePlugins["client-control"]; configured {
+		return plugins
+	}
+	plugins["client-control"] = map[string]any{
+		"max_body_size": appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize,
+	}
+	return plugins
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {

@@ -1,0 +1,289 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/error-page.t
+  tests: 20
+
+cases:
+  - name: missing-metadata-keeps-original-error
+    source:
+      tests: [1, 2, 3]
+    runtime: &runtime
+      plugins: [error-page, serverless-post-function]
+    config:
+      routes:
+        - id: error-page-local-status
+          uri: /hello
+          plugins:
+            serverless-post-function: &status_function
+              functions:
+                - |
+                  return function()
+                    local status = tonumber(ngx.req.get_headers()["X-Test-Status"])
+                    ngx.header["Content-Type"] = "text/html"
+                    return status, "<html><body>openresty</body></html>"
+                  end
+          upstream: &single_upstream
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+      global_rules:
+        - id: error-page-global
+          plugins:
+            error-page: {}
+    input:
+      path: /hello
+      headers:
+        X-Test-Status: '502'
+    upstream: &unused_fixture
+      respond:
+        status: 200
+        body: upstream
+    output:
+      status: 502
+      headers:
+        Content-Type:
+          matches: '^text/html'
+      body:
+        matches: openresty
+
+  - name: custom-pages
+    source:
+      tests: [4, 5, 6, 7, 8, 9]
+    runtime: *runtime
+    config:
+      routes:
+        - id: error-page-custom-statuses
+          uri: /hello
+          plugins:
+            serverless-post-function: *status_function
+          upstream: &named_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+      global_rules:
+        - id: error-page-custom-global
+          plugins:
+            error-page: {}
+      plugin_metadata:
+        - id: error-page
+          enable: true
+          error_500:
+            body: <html><body><h1>500 Internal Server Error</h1></body></html>
+          error_404:
+            body: <html><body><h1>404 Not Found</h1></body></html>
+          error_502:
+            body: <html><body><h1>502 Bad Gateway</h1></body></html>
+          error_503:
+            body: <html><body><h1>503 Service Unavailable</h1></body></html>
+    fixtures:
+      - &unused_named_fixture
+        name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: upstream
+    steps:
+      - name: custom-500
+        input:
+          path: /hello
+          headers:
+            X-Test-Status: '500'
+        output:
+          status: 500
+          headers: &html_header
+            Content-Type:
+              matches: '^text/html'
+          body:
+            matches: '<body><h1>500 Internal Server Error</h1></body>'
+      - name: custom-502
+        input:
+          path: /hello
+          headers:
+            X-Test-Status: '502'
+        output:
+          status: 502
+          headers: *html_header
+          body:
+            matches: '<body><h1>502 Bad Gateway</h1></body>'
+      - name: custom-503
+        input:
+          path: /hello
+          headers:
+            X-Test-Status: '503'
+        output:
+          status: 503
+          headers: *html_header
+          body:
+            matches: '<body><h1>503 Service Unavailable</h1></body>'
+      - name: custom-404
+        input:
+          path: /hello
+          headers:
+            X-Test-Status: '404'
+        output:
+          status: 404
+          headers: *html_header
+          body:
+            matches: '<body><h1>404 Not Found</h1></body>'
+      - name: unconfigured-405
+        input:
+          path: /hello
+          headers:
+            X-Test-Status: '405'
+        output:
+          status: 405
+          body:
+            matches: openresty
+
+  - name: empty-metadata-body-falls-back
+    source:
+      tests: [10, 11]
+    runtime: *runtime
+    config:
+      routes:
+        - id: error-page-default-405
+          uri: /hello
+          plugins:
+            serverless-post-function: *status_function
+          upstream: *single_upstream
+      global_rules:
+        - id: error-page-default-global
+          plugins:
+            error-page: {}
+      plugin_metadata:
+        - id: error-page
+          error_405:
+            content_type: text/html
+    input:
+      path: /hello
+      headers:
+        X-Test-Status: '405'
+    upstream: *unused_fixture
+    output:
+      status: 405
+      body:
+        matches: openresty
+
+  - name: deleted-metadata-keeps-original-error
+    source:
+      tests: [12, 13]
+    runtime: *runtime
+    config:
+      routes:
+        - id: error-page-deleted-metadata
+          uri: /hello
+          plugins:
+            serverless-post-function: *status_function
+          upstream: *single_upstream
+      global_rules:
+        - id: error-page-deleted-global
+          plugins:
+            error-page: {}
+    input:
+      path: /hello
+      headers:
+        X-Test-Status: '500'
+    upstream: *unused_fixture
+    output:
+      status: 500
+      headers:
+        Content-Type:
+          matches: '^text/html'
+      body:
+        matches: openresty
+
+  - name: custom-content-type
+    source:
+      tests: [14, 15]
+    runtime: *runtime
+    config:
+      routes:
+        - id: error-page-json
+          uri: /hello
+          plugins:
+            serverless-post-function: *status_function
+          upstream: *single_upstream
+      global_rules:
+        - id: error-page-json-global
+          plugins:
+            error-page: {}
+      plugin_metadata:
+        - id: error-page
+          enable: true
+          error_500:
+            body: '{"code": 500, "message": "Internal Server Error"}'
+            content_type: application/json
+    input:
+      path: /hello
+      headers:
+        X-Test-Status: '500'
+    upstream: *unused_fixture
+    output:
+      status: 500
+      headers:
+        Content-Type:
+          equals: application/json
+      body:
+        equals: '{"code": 500, "message": "Internal Server Error"}'
+
+  - name: upstream-error-is-not-intercepted
+    source:
+      tests: [16, 17, 18]
+    runtime:
+      plugins: [error-page]
+    config:
+      routes:
+        - id: error-page-upstream-error
+          uri: /upstream-test
+          upstream: *single_upstream
+      global_rules:
+        - id: error-page-upstream-global
+          plugins:
+            error-page: {}
+      plugin_metadata:
+        - id: error-page
+          enable: true
+          error_500:
+            body: <html><body><h1>500 custom</h1></body></html>
+    input:
+      path: /upstream-test
+    upstream:
+      respond:
+        status: 500
+        headers:
+          Content-Type: text/plain
+        body: real upstream 500 error
+    output:
+      status: 500
+      body:
+        equals: real upstream 500 error
+
+  - name: proxy-error-is-intercepted
+    source:
+      tests: [19, 20]
+    runtime:
+      plugins: [error-page]
+    config:
+      routes:
+        - id: error-page-proxy-error
+          uri: /nginx-error-test
+          upstream:
+            type: roundrobin
+            nodes:
+              127.0.0.1:1: 1
+      global_rules:
+        - id: error-page-proxy-global
+          plugins:
+            error-page: {}
+      plugin_metadata:
+        - id: error-page
+          enable: true
+          error_502:
+            body: <html><body><h1>502 custom</h1></body></html>
+    input:
+      path: /nginx-error-test
+    output:
+      status: 502
+      body:
+        matches: 502 custom

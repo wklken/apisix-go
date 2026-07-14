@@ -1,0 +1,280 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/exit-transformer.t
+  tests: 20
+
+cases:
+  - name: reject-invalid-function-syntax
+    source:
+      tests: [1]
+    runtime: &runtime
+      plugins: [exit-transformer, key-auth, limit-count]
+    config:
+      routes:
+        - id: exit-transformer-invalid-syntax
+          uri: /t
+          plugins:
+            exit-transformer:
+              functions:
+                - return (function(code, body, header) if code == then return 405 end return code, body, header end)(...)
+    input:
+      path: /t
+    output:
+      status: 404
+      logs:
+        matches: 'build route exit-transformer-invalid-syntax fail:.*unexpected symbol'
+
+  - name: remap-not-found-status
+    source:
+      tests: [2, 3]
+    runtime: *runtime
+    config:
+      global_rules:
+        - id: exit-transformer-not-found
+          plugins:
+            exit-transformer:
+              functions:
+                - return (function(code, body, header) if code == 404 then return 405 end return code, body, header end)(...)
+    input:
+      path: /hello
+    output:
+      status: 405
+
+  - name: remap-auth-failure
+    source:
+      tests: [4, 5, 6, 7, 8]
+    runtime: *runtime
+    config:
+      routes:
+        - id: exit-transformer-auth
+          uri: /hello
+          plugins:
+            key-auth: {}
+          upstream: &upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+      consumers:
+        - username: jack
+          plugins:
+            key-auth:
+              key: auth-one
+      global_rules:
+        - id: exit-transformer-auth-global
+          plugins:
+            exit-transformer:
+              functions:
+                - return (function(code, body, header) if code == 401 then return 402, body, header end return code, body, header end)(...)
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers:
+              Content-Type: text/plain
+            body: "hello world\n"
+    steps:
+      - name: valid-consumer
+        input:
+          path: /hello
+          headers:
+            apikey: auth-one
+        output:
+          status: 200
+          body:
+            equals: "hello world\n"
+      - name: invalid-consumer
+        input:
+          path: /hello
+          headers:
+            apikey: '123'
+        output:
+          status: 402
+          body:
+            equals: '{"message":"Invalid API key in request"}'
+
+  - name: remap-rate-limit-status-and-body
+    source:
+      tests: [9, 10, 11]
+    runtime: *runtime
+    config:
+      routes:
+        - id: exit-transformer-rate-limit
+          uri: /hello
+          methods: [GET]
+          plugins:
+            limit-count:
+              count: 2
+              time_window: 60
+              rejected_code: 503
+              key: remote_addr
+          upstream: *upstream
+      global_rules:
+        - id: exit-transformer-rate-limit-global
+          plugins:
+            exit-transformer:
+              functions:
+                - return (function(code, body, header) if code == 503 then return 502, "Modified 503 to 502", header end return code, body, header end)(...)
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: "hello world\n"
+          - status: 200
+            body: "hello world\n"
+    steps:
+      - name: first-allowed
+        input: &hello_request
+          path: /hello
+        output: &hello_output
+          status: 200
+          body:
+            equals: "hello world\n"
+      - name: second-allowed
+        input: *hello_request
+        output: *hello_output
+      - name: first-rejected
+        input: *hello_request
+        output: &transformed_limit_output
+          status: 502
+          body:
+            equals: Modified 503 to 502
+      - name: second-rejected
+        input: *hello_request
+        output: *transformed_limit_output
+
+  - name: invalid-function-is-contained
+    source:
+      tests: [12, 13]
+    runtime: *runtime
+    config:
+      global_rules:
+        - id: exit-transformer-invalid-runtime
+          plugins:
+            exit-transformer:
+              functions:
+                - return (function(code, body, header) if code == 404 then return code() end return code, body, header end)(...)
+    input:
+      path: /nohello
+    output:
+      status: 404
+      logs:
+        matches: 'attempt to call local ''code'' \(a number value\)'
+
+  - name: condition-on-request-content-type
+    source:
+      tests: [14, 15, 16]
+    runtime: *runtime
+    config:
+      global_rules:
+        - id: exit-transformer-content-type
+          plugins:
+            exit-transformer:
+              functions:
+                - |
+                  return
+                      (function(code, body, header)
+                          local core = require("apisix.core")
+                          local ct = core.request.headers()["Content-Type"]
+
+                          core.log.warn("exit transformer running outside if check")
+
+                          if ct == "application/json" and code == 404 then
+                              core.log.warn("exit transformer running inside if check")
+                              return 405
+                          end
+                          return code, body, header
+                      end)
+                  (...)
+    steps:
+      - name: non-json-content-type
+        input:
+          path: /nohello
+          headers:
+            Content-Type: text/html
+        output:
+          status: 404
+          logs:
+            matches: exit transformer running outside if check
+      - name: json-content-type
+        input:
+          path: /nohello
+          headers:
+            Content-Type: application/json
+        output:
+          status: 405
+          logs:
+            matches: 'exit transformer running inside if check'
+
+  - name: transform-auth-body-as-table
+    source:
+      tests: [17, 18, 19, 20]
+    runtime: *runtime
+    config:
+      routes:
+        - id: exit-transformer-body-table
+          uri: /hello
+          plugins:
+            key-auth: {}
+            exit-transformer:
+              functions:
+                - |
+                  return
+                      (function(code, body, header)
+                          if code == 401 and body.message == "Missing API key in request" then
+                              return 400, {message = "authentication Failed"}, {["content-type"] = "application/json"}
+                          end
+                          return code, body, header
+                      end)
+                  (...)
+          upstream: *upstream
+      consumers:
+        - username: jack
+          plugins:
+            key-auth:
+              key: auth-one
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers:
+              Content-Type: text/plain
+            body: "hello world\n"
+    steps:
+      - name: valid-consumer
+        input:
+          path: /hello
+          headers:
+            apikey: auth-one
+        output:
+          status: 200
+          headers:
+            Content-Type:
+              equals: text/plain
+          body:
+            equals: "hello world\n"
+      - name: missing-api-key
+        input:
+          path: /hello
+        output:
+          status: 400
+          headers:
+            Content-Type:
+              equals: application/json
+          body:
+            equals: '{"message":"authentication Failed"}'
+      - name: invalid-consumer
+        input:
+          path: /hello
+          headers:
+            apikey: '123'
+        output:
+          status: 401
+          headers:
+            Content-Type:
+              equals: text/plain
+          body:
+            equals: '{"message":"Invalid API key in request"}'

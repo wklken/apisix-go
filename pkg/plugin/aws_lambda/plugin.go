@@ -173,12 +173,14 @@ func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM) {
 
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	canonicalQuery := canonicalQueryString(r.URL.RawQuery)
+	r.URL.RawQuery = canonicalQuery
 
 	signedHeaders, canonicalHeaders := canonicalHeaders(r)
 	canonicalRequest := strings.Join([]string{
 		strings.ToUpper(r.Method),
 		canonicalURI(r.URL.Path),
-		canonicalQueryString(r.URL.RawQuery),
+		canonicalQuery,
 		canonicalHeaders,
 		signedHeaders,
 		sha256Hex(body),
@@ -214,19 +216,39 @@ func canonicalQueryString(rawQuery string) string {
 	if rawQuery == "" {
 		return ""
 	}
-	parts := strings.Split(rawQuery, "&")
-	for i, part := range parts {
-		key, value, found := strings.Cut(part, "=")
-		key = unescapeQueryPart(key)
-		if found {
-			value = unescapeQueryPart(value)
-			parts[i] = key + "=" + value
-			continue
-		}
-		parts[i] = key + "="
+	type queryPart struct {
+		key   string
+		value string
 	}
-	sort.Strings(parts)
-	return strings.Join(parts, "&")
+	parts := make([]queryPart, 0, strings.Count(rawQuery, "&")+1)
+	for part := range strings.SplitSeq(rawQuery, "&") {
+		key, value, found := strings.Cut(part, "=")
+		key = escapeQueryPart(unescapeQueryPart(key))
+		if found {
+			value = escapeQueryPart(unescapeQueryPart(value))
+		}
+		parts = append(parts, queryPart{key: key, value: value})
+	}
+	sort.Slice(parts, func(i, j int) bool {
+		if parts[i].key != parts[j].key {
+			return parts[i].key < parts[j].key
+		}
+		return parts[i].value < parts[j].value
+	})
+	var query strings.Builder
+	for i, part := range parts {
+		if i > 0 {
+			query.WriteByte('&')
+		}
+		query.WriteString(part.key)
+		query.WriteByte('=')
+		query.WriteString(part.value)
+	}
+	return query.String()
+}
+
+func escapeQueryPart(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }
 
 func unescapeQueryPart(value string) string {

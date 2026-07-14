@@ -1,0 +1,219 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/aws-lambda.t
+  tests: 9
+
+cases:
+  - name: iam-schema
+    source:
+      tests: [1, 2]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: aws-lambda-valid-iam
+              uri: /aws
+              plugins:
+                aws-lambda:
+                  function_uri: "http://{{UPSTREAM_ADDR}}/generic"
+                  authorization:
+                    iam:
+                      accesskey: key1
+                      secretkey: key2
+        input:
+          path: /aws
+        upstream: &invoked_fixture
+          respond:
+            status: 200
+            body: invoked
+        output: &invoked
+          status: 200
+          body:
+            equals: invoked
+      - name: missing-access-key
+        config:
+          routes:
+            - id: aws-lambda-missing-access-key
+              uri: /aws
+              plugins:
+                aws-lambda:
+                  function_uri: "http://example.test/generic"
+                  authorization:
+                    iam:
+                      secretkey: key2
+        output:
+          logs:
+            matches: 'build route aws-lambda-missing-access-key fail:.*aws-lambda'
+
+  - name: invoke-endpoint
+    source:
+      tests: [3, 4]
+    config:
+      routes:
+        - id: aws-lambda-endpoint
+          uri: /aws
+          plugins:
+            aws-lambda:
+              function_uri: "http://{{UPSTREAM_ADDR}}/httptrigger"
+              authorization:
+                apikey: testkey
+    input:
+      path: /aws
+    upstream:
+      expect:
+        path:
+          equals: /httptrigger
+      respond:
+        status: 200
+        headers:
+          Content-Length: "19"
+        body: "aws lambda invoked\n"
+    output:
+      status: 200
+      headers:
+        Content-Length:
+          equals: "19"
+      body:
+        equals: "aws lambda invoked\n"
+
+  - name: api-key-header
+    source:
+      tests: [5]
+    config:
+      routes:
+        - id: aws-lambda-api-key
+          uri: /aws
+          plugins:
+            aws-lambda:
+              function_uri: "http://{{UPSTREAM_ADDR}}/generic"
+              authorization:
+                apikey: test_key
+    input:
+      path: /aws
+    upstream:
+      expect:
+        headers:
+          X-Api-Key:
+            equals: test_key
+      respond:
+        status: 200
+        body: "Authz-Header - test_key\n"
+    output:
+      status: 200
+      body:
+        equals: "Authz-Header - test_key\n"
+
+  - name: iam-signing
+    source:
+      tests: [6]
+    config:
+      routes:
+        - id: aws-lambda-iam-signing
+          uri: /aws
+          plugins:
+            aws-lambda:
+              function_uri: "http://{{UPSTREAM_ADDR}}/generic"
+              authorization:
+                iam:
+                  accesskey: KEY1
+                  secretkey: KeySecret
+    input:
+      path: /aws
+    upstream: &signed_fixture
+      expect:
+        headers:
+          Authorization:
+            matches: '^AWS4-HMAC-SHA256 Credential=KEY1/.*Signature=[0-9a-f]{64}$'
+          X-Amz-Date:
+            matches: '^[0-9]{8}T[0-9]{6}Z$'
+      respond:
+        status: 200
+        body: invoked
+    output: *invoked
+
+  - name: encrypted-credentials
+    source:
+      tests: [7, 8]
+    variants:
+      - name: api-key
+        runtime: &encrypted_runtime
+          apisix:
+            data_encryption:
+              enable_encrypt_fields: true
+              keyring: [edd1c9f0985e76a2]
+        config:
+          routes:
+            - id: aws-lambda-encrypted-api-key
+              uri: /aws
+              plugins:
+                aws-lambda:
+                  function_uri: "http://{{UPSTREAM_ADDR}}/generic"
+                  authorization:
+                    apikey: KmjDqNkKEE39RiuQS4o2wg==
+        input:
+          path: /aws
+        upstream:
+          expect:
+            headers:
+              X-Api-Key:
+                equals: test-api-key
+          respond:
+            status: 200
+            body: invoked
+        output: *invoked
+      - name: iam
+        runtime: *encrypted_runtime
+        config:
+          routes:
+            - id: aws-lambda-encrypted-iam
+              uri: /aws
+              plugins:
+                aws-lambda:
+                  function_uri: "http://{{UPSTREAM_ADDR}}/generic"
+                  authorization:
+                    iam:
+                      accesskey: 3KasmnibINRmuBZzJcd7bQ==
+                      secretkey: 2Mtlm8PbJyuq5TDBGVaWiQ==
+        input:
+          path: /aws
+        upstream:
+          expect:
+            headers:
+              Authorization:
+                matches: '^AWS4-HMAC-SHA256 Credential=test-access-key/.*Signature=[0-9a-f]{64}$'
+          respond:
+            status: 200
+            body: invoked
+        output: *invoked
+
+  - name: canonical-query-signing
+    source:
+      tests: [9]
+    config:
+      routes:
+        - id: aws-lambda-canonical-query
+          uri: /aws
+          plugins:
+            aws-lambda:
+              function_uri: "http://{{UPSTREAM_ADDR}}/generic"
+              authorization:
+                iam:
+                  accesskey: KEY1
+                  secretkey: KeySecret
+    input:
+      path: /aws?with%20space=a%2Fb%20c&multi=m2&multi=m1&flag&a=*&a-=x
+    upstream:
+      expect:
+        path:
+          equals: /generic?a=%2A&a-=x&flag=&multi=m1&multi=m2&with%20space=a%2Fb%20c
+        headers:
+          Authorization:
+            matches: '^AWS4-HMAC-SHA256 Credential=KEY1/.*Signature=[0-9a-f]{64}$'
+      respond:
+        status: 200
+        body: "signature: ok\n"
+    output:
+      status: 200
+      body:
+        equals: "signature: ok\n"

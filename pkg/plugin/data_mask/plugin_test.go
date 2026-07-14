@@ -122,6 +122,46 @@ func TestHandlerMasksParsedPrefixWhenURLEncodedBodyExceedsArgumentLimit(t *testi
 	}
 }
 
+func TestHandlerReencodesTruncatedURLEncodedBodyAfterIdentityRegexMatch(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		MaxReqPostArgs: new(1),
+		Request: []MaskRule{{
+			Type:       "body",
+			BodyFormat: "urlencoded",
+			Name:       "arg1",
+			Action:     "regex",
+			Regex:      `(\d+)$`,
+			Value:      "$1",
+		}},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/orders",
+		strings.NewReader("arg1=1&arg2=2"),
+	)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if string(body) != "arg1=1" {
+			t.Fatalf("body = %q, want matched prefix re-encoded without arg2", body)
+		}
+	})).ServeHTTP(rr, req)
+}
+
+func TestMaskStringReplacesOnlyTheFirstMatch(t *testing.T) {
+	masked, matched := maskString("abc", MaskRule{Regex: `.`, Value: "*"})
+	if !matched {
+		t.Fatal("maskString() matched = false, want true")
+	}
+	if masked != "*bc" {
+		t.Fatalf("maskString() = %q, want first match only", masked)
+	}
+}
+
 func TestHandlerMasksRequestLineForLoggerFields(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{Type: "query", Name: "token", Action: "replace", Value: "*****"}},

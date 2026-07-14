@@ -1,0 +1,333 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/data-mask.t
+  tests: 20
+
+cases:
+  - name: mask-query-log-fields
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - id: data-mask-query
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: query
+                  name: password
+                  action: remove
+                - type: query
+                  name: token
+                  action: replace
+                  value: "*****"
+                - type: query
+                  name: card
+                  action: regex
+                  regex: '(\d+)\-\d+\-\d+\-(\d+)'
+                  value: "$1-****-****-$2"
+          upstream: &upstream
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello?password=abc&token=xyz&card=1234-1234-1234-1234
+    upstream: &query_fixture
+      expect:
+        path:
+          equals: /hello?card=1234-%2A%2A%2A%2A-%2A%2A%2A%2A-1234&token=%2A%2A%2A%2A%2A
+      respond: &done_response
+        status: 200
+        body: done
+    output: &done_output
+      status: 200
+      body:
+        equals: done
+
+  - name: mask-header-log-fields
+    source:
+      tests: [3, 4]
+    config:
+      routes:
+        - id: data-mask-header
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: header
+                  name: password
+                  action: remove
+                - type: header
+                  name: token
+                  action: replace
+                  value: "*****"
+                - type: header
+                  name: card
+                  action: regex
+                  regex: '(\d+)\-\d+\-\d+\-(\d+)'
+                  value: "$1-****-****-$2"
+          upstream: *upstream
+    input:
+      path: /hello
+      headers:
+        password: abc
+        token: xyz
+        card: 1234-1234-1234-1234
+    upstream:
+      expect:
+        headers:
+          password:
+            absent: true
+          token:
+            equals: "*****"
+          card:
+            equals: 1234-****-****-1234
+      respond: *done_response
+    output: *done_output
+
+  - name: mask-urlencoded-body-log-field
+    source:
+      tests: [5, 6]
+    config:
+      routes:
+        - id: data-mask-urlencoded
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: body
+                  body_format: urlencoded
+                  name: password
+                  action: remove
+                - type: body
+                  body_format: urlencoded
+                  name: token
+                  action: replace
+                  value: "*****"
+                - type: body
+                  body_format: urlencoded
+                  name: card
+                  action: regex
+                  regex: '(\d+)\-\d+\-\d+\-(\d+)'
+                  value: "$1-****-****-$2"
+          upstream: *upstream
+    input:
+      method: POST
+      path: /hello
+      body: password=abc&token=xyz&card=1234-1234-1234-1234
+    upstream:
+      expect:
+        body:
+          equals: card=1234-%2A%2A%2A%2A-%2A%2A%2A%2A-1234&token=%2A%2A%2A%2A%2A
+      respond: *done_response
+    output: *done_output
+
+  - name: mask-json-body-log-field
+    source:
+      tests: [7, 8]
+    config:
+      routes:
+        - id: data-mask-json
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: body
+                  body_format: json
+                  name: $.password
+                  action: remove
+                - type: body
+                  body_format: json
+                  name: users[*].token
+                  action: replace
+                  value: "*****"
+                - type: body
+                  body_format: json
+                  name: $.users[*].credit.card
+                  action: regex
+                  regex: '(\d+)\-\d+\-\d+\-(\d+)'
+                  value: "$1-****-****-$2"
+          upstream: *upstream
+    input:
+      method: POST
+      path: /hello
+      body: '{"password":"abc","users":[{"token":"xyz","credit":{"card":"1234-1234-1234-1234"}},{"token":"xyz","credit":{"card":"1234-1234-1234-1234"}}]}'
+    upstream:
+      expect:
+        body:
+          equals: '{"users":[{"credit":{"card":"1234-****-****-1234"},"token":"*****"},{"credit":{"card":"1234-****-****-1234"},"token":"*****"}]}'
+      respond: *done_response
+    output: *done_output
+
+  - name: global-rule-missing-body
+    source:
+      tests: [9, 10]
+    config:
+      global_rules:
+        - id: data-mask-global
+          plugins:
+            data-mask:
+              request:
+                - type: query
+                  name: password
+                  action: remove
+                - type: query
+                  name: token
+                  action: replace
+                  value: "*****"
+                - type: query
+                  name: card
+                  action: regex
+                  regex: '(\d+)\-\d+\-\d+\-(\d+)'
+                  value: "$1-****-****-$2"
+    input:
+      method: POST
+      path: /random
+      body: password=abc&token=xyz&card=1234-1234-1234-1234
+    output:
+      status: 404
+      body:
+        equals: "404 page not found\n"
+
+  - name: default-max-request-post-args
+    source:
+      tests: [11, 12]
+    config:
+      routes:
+        - id: data-mask-default-max-args
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: body
+                  body_format: urlencoded
+                  name: arg100
+                  action: regex
+                  regex: '(\d+)$'
+                  value: "$1"
+          upstream: *upstream
+    input:
+      method: POST
+      path: /hello
+      body: arg1=1&arg2=2&arg3=3&arg4=4&arg5=5&arg6=6&arg7=7&arg8=8&arg9=9&arg10=10&arg11=11&arg12=12&arg13=13&arg14=14&arg15=15&arg16=16&arg17=17&arg18=18&arg19=19&arg20=20&arg21=21&arg22=22&arg23=23&arg24=24&arg25=25&arg26=26&arg27=27&arg28=28&arg29=29&arg30=30&arg31=31&arg32=32&arg33=33&arg34=34&arg35=35&arg36=36&arg37=37&arg38=38&arg39=39&arg40=40&arg41=41&arg42=42&arg43=43&arg44=44&arg45=45&arg46=46&arg47=47&arg48=48&arg49=49&arg50=50&arg51=51&arg52=52&arg53=53&arg54=54&arg55=55&arg56=56&arg57=57&arg58=58&arg59=59&arg60=60&arg61=61&arg62=62&arg63=63&arg64=64&arg65=65&arg66=66&arg67=67&arg68=68&arg69=69&arg70=70&arg71=71&arg72=72&arg73=73&arg74=74&arg75=75&arg76=76&arg77=77&arg78=78&arg79=79&arg80=80&arg81=81&arg82=82&arg83=83&arg84=84&arg85=85&arg86=86&arg87=87&arg88=88&arg89=89&arg90=90&arg91=91&arg92=92&arg93=93&arg94=94&arg95=95&arg96=96&arg97=97&arg98=98&arg99=99&arg100=100&arg101=101&arg102=102&arg103=103&arg104=104&arg105=105&arg106=106&arg107=107&arg108=108&arg109=109&arg110=110
+    upstream:
+      expect:
+        body:
+          equals: arg1=1&arg10=10&arg100=100&arg11=11&arg12=12&arg13=13&arg14=14&arg15=15&arg16=16&arg17=17&arg18=18&arg19=19&arg2=2&arg20=20&arg21=21&arg22=22&arg23=23&arg24=24&arg25=25&arg26=26&arg27=27&arg28=28&arg29=29&arg3=3&arg30=30&arg31=31&arg32=32&arg33=33&arg34=34&arg35=35&arg36=36&arg37=37&arg38=38&arg39=39&arg4=4&arg40=40&arg41=41&arg42=42&arg43=43&arg44=44&arg45=45&arg46=46&arg47=47&arg48=48&arg49=49&arg5=5&arg50=50&arg51=51&arg52=52&arg53=53&arg54=54&arg55=55&arg56=56&arg57=57&arg58=58&arg59=59&arg6=6&arg60=60&arg61=61&arg62=62&arg63=63&arg64=64&arg65=65&arg66=66&arg67=67&arg68=68&arg69=69&arg7=7&arg70=70&arg71=71&arg72=72&arg73=73&arg74=74&arg75=75&arg76=76&arg77=77&arg78=78&arg79=79&arg8=8&arg80=80&arg81=81&arg82=82&arg83=83&arg84=84&arg85=85&arg86=86&arg87=87&arg88=88&arg89=89&arg9=9&arg90=90&arg91=91&arg92=92&arg93=93&arg94=94&arg95=95&arg96=96&arg97=97&arg98=98&arg99=99
+      respond: *done_response
+    output: *done_output
+
+  - name: custom-max-request-post-args
+    source:
+      tests: [13, 14]
+    config:
+      routes:
+        - id: data-mask-custom-max-args
+          uri: /hello
+          plugins:
+            data-mask:
+              max_req_post_args: 10
+              request:
+                - type: body
+                  body_format: urlencoded
+                  name: arg10
+                  action: regex
+                  regex: '(\d+)$'
+                  value: "$1"
+          upstream: *upstream
+    input:
+      method: POST
+      path: /hello
+      body: arg1=1&arg2=2&arg3=3&arg4=4&arg5=5&arg6=6&arg7=7&arg8=8&arg9=9&arg10=10&arg11=11&arg12=12&arg13=13&arg14=14&arg15=15&arg16=16&arg17=17&arg18=18&arg19=19&arg20=20&arg21=21&arg22=22&arg23=23&arg24=24&arg25=25&arg26=26&arg27=27&arg28=28&arg29=29&arg30=30&arg31=31&arg32=32&arg33=33&arg34=34&arg35=35&arg36=36&arg37=37&arg38=38&arg39=39&arg40=40&arg41=41&arg42=42&arg43=43&arg44=44&arg45=45&arg46=46&arg47=47&arg48=48&arg49=49&arg50=50&arg51=51&arg52=52&arg53=53&arg54=54&arg55=55&arg56=56&arg57=57&arg58=58&arg59=59&arg60=60&arg61=61&arg62=62&arg63=63&arg64=64&arg65=65&arg66=66&arg67=67&arg68=68&arg69=69&arg70=70&arg71=71&arg72=72&arg73=73&arg74=74&arg75=75&arg76=76&arg77=77&arg78=78&arg79=79&arg80=80&arg81=81&arg82=82&arg83=83&arg84=84&arg85=85&arg86=86&arg87=87&arg88=88&arg89=89&arg90=90&arg91=91&arg92=92&arg93=93&arg94=94&arg95=95&arg96=96&arg97=97&arg98=98&arg99=99&arg100=100&arg101=101&arg102=102&arg103=103&arg104=104&arg105=105&arg106=106&arg107=107&arg108=108&arg109=109&arg110=110
+    upstream:
+      expect:
+        body:
+          equals: arg1=1&arg10=10&arg2=2&arg3=3&arg4=4&arg5=5&arg6=6&arg7=7&arg8=8&arg9=9
+      respond: *done_response
+    output: *done_output
+
+  - name: multi-value-query-regex
+    source:
+      tests: [15, 16]
+    config:
+      routes:
+        - id: data-mask-multi-value-query
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: query
+                  name: token
+                  action: regex
+                  regex: '.'
+                  value: "*"
+          upstream: *upstream
+    input:
+      path: /hello?token=abc&token=def
+    upstream:
+      expect:
+        path:
+          equals: /hello?token=%2Abc&token=%2Aef
+      respond: *done_response
+    output: *done_output
+
+  - name: non-string-json-regex
+    source:
+      tests: [17, 18]
+    config:
+      routes:
+        - id: data-mask-non-string-json
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: body
+                  body_format: json
+                  name: $.count
+                  action: regex
+                  regex: '\d+'
+                  value: "[REDACTED]"
+                - type: body
+                  body_format: json
+                  name: $.name
+                  action: replace
+                  value: "***"
+          upstream: *upstream
+    input:
+      method: POST
+      path: /hello
+      body: '{"count":42,"name":"Alice"}'
+    upstream:
+      expect:
+        body:
+          equals: '{"count":42,"name":"***"}'
+      respond: *done_response
+    output: *done_output
+
+  - name: access-log-request-line
+    source:
+      tests: [19, 20]
+    config:
+      routes:
+        - id: data-mask-access-log
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - type: query
+                  name: password
+                  action: remove
+                - type: query
+                  name: token
+                  action: replace
+                  value: "*****"
+          upstream: *upstream
+    input:
+      path: /hello?password=secret&token=mytoken
+    upstream:
+      expect:
+        path:
+          equals: /hello?token=%2A%2A%2A%2A%2A
+      respond: *done_response
+    output: *done_output

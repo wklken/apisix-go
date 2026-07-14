@@ -1,0 +1,624 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/batch-requests-grpc.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/batch-requests.t
+    tests: 30
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/batch-requests2.t
+    tests: 11
+cases:
+  - name: batch-requests-grpc-corpus
+    source:
+      file: t/plugin/batch-requests-grpc.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: batch-requests-grpc-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: batch-requests-grpc-001-pre-create-public-api-route
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-grpc-002-set-proto-id-1
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-grpc-003-set-routes-id-2
+        input:
+          method: GET
+          path: "/grpctest"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-grpc-004-hit-route
+        input:
+          method: GET
+          path: "/grpctest?name=world"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: batch-requests-grpc-005-successful-batch-requests-for-both-grpc-and-http
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: batch-requests-corpus
+    source:
+      file: t/plugin/batch-requests.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+    config:
+      routes:
+        - id: batch-requests-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 413
+            headers: {}
+            body: "validation failed"
+          - status: 413
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 413
+            headers: {}
+            body: "validation failed"
+          - status: 413
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: batch-requests-001-pre-create-public-api-route
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-002-sanity
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-003-missing-pipeline
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-004-timeout-is-not-number
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-005-different-response-time
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-006-last-request-timeout
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-007-first-request-timeout
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-008-no-body-in-request
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-009-invalid-body
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-010-invalid-pipeline-s-path
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-011-invalid-pipeline-s-method
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-012-invalid-pipeline-s-version
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-013-invalid-pipeline-s-ssl
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-014-invalid-pipeline-s-number
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: batch-requests-015-when-client-body-has-been-wrote-to-temp-file
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-016-copy-all-header-to-every-request-except-content
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-017-exceed-default-body-limit-size-check-header
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 413
+          body:
+            matches: "validation failed"
+      - name: batch-requests-018-exceed-default-body-limit-size-check-file-size
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+          headers:
+            Transfer-Encoding: chunked
+        output:
+          status: 413
+          body:
+            matches: "validation failed"
+      - name: batch-requests-019-add-plugin-metadata
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-020-exceed-body-limit-size
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 413
+          body:
+            matches: "validation failed"
+      - name: batch-requests-021-exceed-body-limit-size-expected
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 413
+          body:
+            matches: "validation failed"
+      - name: batch-requests-022-don-t-exceed-body-limit-size
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-023-invalid-body-size
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: batch-requests-024-reject-unknown-field-in-a-pipeline-request
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: batch-requests-025-accept-and-forward-a-request-body-in-a-pipeline-request
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: batch-requests-026-reject-timeout-below-the-minimum
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: batch-requests-027-set-a-small-max-pipeline-items
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests-028-reject-a-pipeline-with-too-many-requests
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: batch-requests-029-reject-a-pipeline-entry-missing-path
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: batch-requests-030-keep-environment-clean
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: batch-requests2-corpus
+    source:
+      file: t/plugin/batch-requests2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+    config:
+      routes:
+        - id: batch-requests2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 404
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Content-Type: application/json
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: batch-requests2-001-pre-create-public-api-route
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-002-customize-uri-not-found
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+        output:
+          status: 404
+          body:
+            equals: "validation failed"
+      - name: batch-requests2-003-create-public-api-route-for-custom-uri
+        input:
+          method: GET
+          path: "/foo/bar"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-004-customize-uri-found
+        input:
+          method: GET
+          path: "/foo/bar"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-005-customize-uri-missing-plugin-use-default
+        input:
+          method: GET
+          path: "/foo/bar"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-006-customize-uri-missing-attr-use-default
+        input:
+          method: GET
+          path: "/foo/bar"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-007-ensure-real-ip-header-is-overridden
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-008-ensure-real-ip-header-is-overridden-header-from-the-pipeline
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-009-ensure-real-ip-header-is-overridden-header-has-underscore
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: batch-requests2-010-ensure-the-content-type-is-correct
+        input:
+          method: GET
+          path: "/apisix/batch-requests"
+          body: "{\n    \"headers\": {\n    },\n    \"pipeline\":[\n        {\n            \"path\": \"/c\",\n            \"method\": \"PUT\"\n        }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Content-Type:
+              equals: application/json
+      - name: batch-requests2-011-ensure-sub-responses-count-matches-sub-requests-on-timed-out-sub-
+        input:
+          method: GET
+          path: "/aggregate"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

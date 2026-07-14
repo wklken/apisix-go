@@ -1,0 +1,508 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ldap-auth-realm.t
+    tests: 7
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ldap-auth.t
+    tests: 28
+cases:
+  - name: ldap-auth-realm-corpus
+    source:
+      file: t/plugin/ldap-auth-realm.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+    config:
+      routes:
+        - id: ldap-auth-realm-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers:
+              WWW-Authenticate: "Basic realm=\"ldap\""
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers:
+              WWW-Authenticate: "Basic realm=\"my-ldap-realm\""
+            body: "validation failed"
+          - status: 401
+            headers:
+              WWW-Authenticate: "Basic realm=\"my-ldap-realm\""
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers:
+              WWW-Authenticate: "Basic realm=\"my-ldap-realm\""
+            body: "validation failed"
+    steps:
+      - name: ldap-auth-realm-001-sanity-default-realm
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-realm-002-verify-default-realm
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+          headers:
+            WWW-Authenticate:
+              equals: "Basic realm=\"ldap\""
+      - name: ldap-auth-realm-003-set-custom-realm
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-realm-004-verify-custom-realm
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+          headers:
+            WWW-Authenticate:
+              equals: "Basic realm=\"my-ldap-realm\""
+      - name: ldap-auth-realm-005-ldap-auth-failure-missing-header-returns-realm
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+          headers:
+            WWW-Authenticate:
+              equals: "Basic realm=\"my-ldap-realm\""
+      - name: ldap-auth-realm-006-ldap-auth-failure-invalid-credentials-returns-realm
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-realm-007-verify-ldap-invalid-credentials-returns-realm
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjp3cm9uZw=="
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+          headers:
+            WWW-Authenticate:
+              equals: "Basic realm=\"my-ldap-realm\""
+  - name: ldap-auth-corpus
+    source:
+      file: t/plugin/ldap-auth.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+    config:
+      routes:
+        - id: ldap-auth-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: ldap-auth-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-002-wrong-type-of-string
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-003-add-consumer-with-username-and-plugins
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-004-enable-basic-auth-plugin-using-admin-api
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-005-verify-missing-authorization
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ldap-auth-006-verify-invalid-basic-authorization-header
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Bad_header Zm9vOmZvbwo="
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ldap-auth-007-verify-invalid-authorization-value-bad-base64-str
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic aca_a"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ldap-auth-008-verify-invalid-authorization-value-no-password
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic Zm9v"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ldap-auth-009-verify-invalid-password
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic Zm9vOmZvbwo="
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ldap-auth-010-verify
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-011-enable-basic-auth-plugin-using-admin-api
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-012-verify-capitalization-scheme
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-013-invalid-schema
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-014-get-the-default-schema
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-015-get-the-schema-by-schema-type
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-016-get-the-schema-by-error-schema-type
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-017-enable-ldap-auth-with-tls
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-018-verify
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-019-enable-ldap-auth-with-tls-verify-ca
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-020-verify
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-021-set-ldap-auth-conf-user-dn-uses-secret-ref
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-022-store-secret-into-vault
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-023-verify
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-024-set-ldap-auth-conf-with-the-token-in-an-env-var-user-dn-uses-secr
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-025-verify
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-026-verify-lowercase-scheme
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "basic dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-027-verify-uppercase-scheme
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "BASIC dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ldap-auth-028-verify-mixed-case-scheme
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "bASiC dXNlcjAxOnBhc3N3b3JkMQ=="
+        output:
+          status: 200
+          body:
+            equals: "hello world"

@@ -1,0 +1,3564 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-consumer-group-credentials.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-consumer-isolation.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis-cluster.t
+    tests: 18
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis-cluster2.t
+    tests: 2
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis-cluster3.t
+    tests: 6
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis-delayed-sync.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis-delayed-sync2.t
+    tests: 9
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis-sentinel.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis.t
+    tests: 22
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis2.t
+    tests: 10
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis3.t
+    tests: 11
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis4.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-redis5.t
+    tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-rules.t
+    tests: 22
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-sliding.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count-variable.t
+    tests: 13
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count.t
+    tests: 42
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count2.t
+    tests: 22
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count3.t
+    tests: 13
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count4.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-count5.t
+    tests: 8
+cases:
+  - name: limit-count-consumer-group-credentials-corpus
+    source:
+      file: t/plugin/limit-count-consumer-group-credentials.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: limit-count-consumer-group-credentials-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-consumer-group-credentials-001-setup-consumer-group-with-limit-count-plugin
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-002-setup-consumer-with-group-id-no-direct-plugins
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-003-setup-credentials-via-credentials-endpoint
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-004-setup-route-with-key-auth
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-005-verify-rate-limiting-works-all-3-requests-in-one-test
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: auth-jack
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-006-setup-second-consumer-group-with-higher-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-007-setup-premium-consumer-with-credentials
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-group-credentials-008-verify-premium-consumer-has-higher-limit
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: auth-jane
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-consumer-isolation-corpus
+    source:
+      file: t/plugin/limit-count-consumer-isolation.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: limit-count-consumer-isolation-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-consumer-isolation-001-set-route-with-key-auth
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-isolation-002-add-consumer-jack1-with-limit-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-isolation-003-add-consumer-jack2-with-limit-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-isolation-004-jack1-hits-limit
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: jack1
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-consumer-isolation-005-jack2-starts-fresh-isolated-from-jack1
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: jack2
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-cluster-corpus
+    source:
+      file: t/plugin/limit-count-redis-cluster.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+    config:
+      routes:
+        - id: limit-count-redis-cluster-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-cluster-001-set-route-missing-redis-cluster-nodes
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-cluster-002-set-route-with-redis-cluster-nodes-and-redis-cluster-name
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-003-set-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-004-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-005-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-006-up-the-limit-again
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-007-set-route-four-redis-nodes-only-one-is-valid
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-008-hit-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-009-update-route-use-new-limit-configuration
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-010-set-route-four-redis-nodes-no-one-is-valid-with-enable-degradatio
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-011-enable-degradation-switch-for-test-10
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-012-set-route-use-error-type-for-redis-cluster-ssl-and-redis-cluster-
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-cluster-013-set-route-redis-cluster-ssl-verify-is-true-will-cause-ssl-handsha
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-014-enable-degradation-switch-for-test-13
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-015-set-route-with-redis-cluster-nodes-and-redis-cluster-name-redis-c
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-016-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-017-set-route-and-flush-the-cluster-script-cache
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster-018-cluster-path-falls-back-to-eval-on-noscript
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-cluster2-corpus
+    source:
+      file: t/plugin/limit-count-redis-cluster2.t
+      tests:
+        - 1
+        - 2
+    config:
+      routes:
+        - id: limit-count-redis-cluster2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-cluster2-001-update-route-use-new-limit-configuration
+        input:
+          method: GET
+          path: "/hello2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster2-002-test-header-x-ratelimit-reset-shouldn-t-be-set-to-0-after-request
+        input:
+          method: GET
+          path: "/hello2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-cluster3-corpus
+    source:
+      file: t/plugin/limit-count-redis-cluster3.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+    config:
+      routes:
+        - id: limit-count-redis-cluster3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-cluster3-001-modified-redis-script-cost-2
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster3-002-set-route-with-single-node-in-redis-cluster-nodes-and-redis-clust
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster3-003-up-the-limit-for-single-node-in-redis-cluster-nodes
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster3-004-set-route-with-redis-cluster-nodes-as-environment-variables-and-r
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster3-005-up-the-limit-with-environment-variables-for-redis-cluster-nodes
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-cluster3-006-check-redis-cluster-keepalive-param
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-delayed-sync-corpus
+    source:
+      file: t/plugin/limit-count-redis-delayed-sync.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: limit-count-redis-delayed-sync-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-delayed-sync-001-setup-routes
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync-002-sanity-delayed-sync-to-redis
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync-003-sanity-delayed-sync-to-redis-cluster
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync-004-sanity-delayed-sync-to-redis-sentinel
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync-005-queue-full-delayed-sync-drops-enqueue-and-warns-request-still-suc
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-delayed-sync2-corpus
+    source:
+      file: t/plugin/limit-count-redis-delayed-sync2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+    config:
+      routes:
+        - id: limit-count-redis-delayed-sync2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-delayed-sync2-001-set-route-with-redis-fixed-window-delayed-sync
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-002-delayed-sync-to-redis-remaining-decreases-locally
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Host: example-1.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-003-delayed-sync-to-redis-reach-the-limit
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Host: example-1.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-004-set-route-with-redis-sentinel-fixed-window-delayed-sync
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-005-delayed-sync-to-redis-sentinel-remaining-decreases-locally
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Host: example-4.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-006-delayed-sync-to-redis-sentinel-reach-the-limit
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Host: example-4.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-007-set-route-with-redis-cluster-fixed-window-delayed-sync
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-008-delayed-sync-to-redis-cluster-remaining-decreases-locally
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Host: example-7.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-delayed-sync2-009-delayed-sync-to-redis-cluster-reach-the-limit
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Host: example-7.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-sentinel-corpus
+    source:
+      file: t/plugin/limit-count-redis-sentinel.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+    config:
+      routes:
+        - id: limit-count-redis-sentinel-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-sentinel-001-set-route-without-redis-master-name
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-sentinel-002-set-route-without-redis-sentinels
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-sentinel-003-set-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-004-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-005-set-route-with-different-limit-count
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-006-up-the-limit
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-007-set-route-with-authenticated-redis-sentinel-without-password
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-008-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-sentinel-009-set-route-with-authenticated-redis-sentinel-with-password
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-010-up-the-limit
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-011-create-a-limit-count-with-broken-redis-sentinels
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-012-send-test-request
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-sentinel-013-set-route-with-invalid-username-password
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-sentinel-014-redis-authentication-failure
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-sentinel-015-routes-with-different-databases-must-not-share-connections
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis-corpus
+    source:
+      file: t/plugin/limit-count-redis.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+    config:
+      routes:
+        - id: limit-count-redis-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis-001-set-route-missing-redis-host
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-redis-002-set-route-with-redis-host-and-port
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-003-set-route-default-value-port-and-timeout
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-004-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-005-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-006-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-007-flush-redis-script-cache
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-008-evalsha-noscript-fallback-after-script-flush
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-009-set-route-with-redis-host-port-and-right-password
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-010-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-011-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-012-set-route-with-redis-host-port-and-wrong-password
+        input:
+          method: GET
+          path: "/hello_new"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-013-request-for-test-10
+        input:
+          method: GET
+          path: "/hello_new"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-014-multi-request-for-test-10
+        input:
+          method: GET
+          path: "/hello_new"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-015-set-route-with-redis-host-port-and-bad-username-and-good-password
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-016-request-for-test-13
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-017-set-route-with-redis-host-port-and-good-username-and-bad-password
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-018-request-for-test-15
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-019-set-route-with-redis-host-port-and-right-username-and-password
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-020-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-021-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis-022-restore-redis-password-to
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis2-corpus
+    source:
+      file: t/plugin/limit-count-redis2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+    config:
+      routes:
+        - id: limit-count-redis2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: limit-count-redis2-001-set-route-with-redis-host-and-port-and-default-database
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-002-set-route-with-redis-host-and-port-but-wrong-database
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-003-use-wrong-database
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-004-set-route-with-redis-host-and-port-and-right-database
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-005-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-006-set-route-with-redis-host-but-wrong-port-with-enable-degradation-
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-007-enable-degradation-switch-for-test-6
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-008-set-route-with-don-t-show-limit-quota-header
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-009-don-t-show-limit-quota-header-for-test-8
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis2-010-configuration-from-the-same-group-should-be-the-same
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+  - name: limit-count-redis3-corpus
+    source:
+      file: t/plugin/limit-count-redis3.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+    config:
+      routes:
+        - id: limit-count-redis3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis3-001-set-route-counter-will-be-shared
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-002-test-x-ratelimit-reset-second-number-could-be-decline
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-003-set-router
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-004-test-header-x-ratelimit-remaining-exist-when-limit-rejected
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-005-set-route-with-redis-host-port-and-ssl
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-006-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-007-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-008-set-route-with-redis-host-port-ssl-and-ssl-verify-is-true-will-ca
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-009-enable-degradation-switch-for-test-8
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-010-set-router
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis3-011-test-header-x-ratelimit-reset-shouldn-t-be-set-to-0-after-request
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis4-corpus
+    source:
+      file: t/plugin/limit-count-redis4.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: limit-count-redis4-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis4-001-modified-redis-script-cost-2
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis4-002-set-route-with-redis-host-as-environment-variable
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis4-003-up-the-limit-with-host-environment-variable
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis4-004-set-route-for-keepalive-test
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis4-005-verify-redis-connection-reused-times-in-debug-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-redis5-corpus
+    source:
+      file: t/plugin/limit-count-redis5.t
+      tests:
+        - 1
+        - 2
+        - 3
+    config:
+      routes:
+        - id: limit-count-redis5-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-redis5-001-routes-pointing-to-the-same-redis-but-different-databases-must-no
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis5-002-a-route-with-wrong-credentials-must-not-reuse-another-route-s-aut
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-redis5-003-clean-up-the-routes
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-rules-corpus
+    source:
+      file: t/plugin/limit-count-rules.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+    config:
+      routes:
+        - id: limit-count-rules-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Jack-RateLimit-Limit: "2"
+              X-Jack-RateLimit-Remaining: "1"
+              X-Jack-RateLimit-Reset: "60"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Bar-RateLimit-Limit: "3"
+              X-Bar-RateLimit-Remaining: "2"
+              X-Bar-RateLimit-Reset: "60"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-1-RateLimit-Limit: "2"
+              X-1-RateLimit-Remaining: "1"
+              X-1-RateLimit-Reset: "60"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-2-RateLimit-Limit: "3"
+              X-2-RateLimit-Remaining: "2"
+              X-2-RateLimit-Reset: "60"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-rules-001-configure-count-time-window-and-rules-at-same-time
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-rules-002-configure-multiple-rules-with-same-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-rules-003-setup-route-with-rules
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-004-no-any-rule-matched
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-count-rules-005-match-user-rule
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: jack
+            jack-count: "2"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: limit-count-rules-006-match-project-rule
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            project: apisix
+            apisix-count: "3"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: limit-count-rules-007-setup-route-with-rules-with-variables-with-default-values
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-008-rules-with-variables-in-count-default-value
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: limit-count-rules-009-rules-with-variables-in-count-with-header
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            count: "1"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: limit-count-rules-010-rules-with-same-key-and-custom-headers
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-011-test-rules-with-same-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-012-setup-route-with-header-prefix
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-013-match-jack
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: jack
+            jack-count: "2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Jack-RateLimit-Limit:
+              equals: "2"
+            X-Jack-RateLimit-Remaining:
+              equals: "1"
+            X-Jack-RateLimit-Reset:
+              equals: "60"
+      - name: limit-count-rules-014-match-bar
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            project: apisix
+            apisix-count: "3"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Bar-RateLimit-Limit:
+              equals: "3"
+            X-Bar-RateLimit-Remaining:
+              equals: "2"
+            X-Bar-RateLimit-Reset:
+              equals: "60"
+      - name: limit-count-rules-015-setup-route-without-header-prefix
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-016-match-jack
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: jack
+            jack-count: "2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-1-RateLimit-Limit:
+              equals: "2"
+            X-1-RateLimit-Remaining:
+              equals: "1"
+            X-1-RateLimit-Reset:
+              equals: "60"
+      - name: limit-count-rules-017-match-bar
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            project: apisix
+            apisix-count: "3"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-2-RateLimit-Limit:
+              equals: "3"
+            X-2-RateLimit-Remaining:
+              equals: "2"
+            X-2-RateLimit-Reset:
+              equals: "60"
+      - name: limit-count-rules-018-use-variable-with-default-value-in-rules-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-019-with-project-header
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            project: kubernetes
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-020-without-project-header
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-021-setup-route-with-rules-using-limit-count-plugin-directly
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-rules-022-match-user-rule-via-limit-count-plugin-directly
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            x-user: testuser
+            x-project: myproject
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-sliding-corpus
+    source:
+      file: t/plugin/limit-count-sliding.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: limit-count-sliding-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-sliding-001-set-route-id-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-002-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-003-headers-rounded-off
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-004-set-route-id-1-with-redis-sentinel
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-005-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-006-sliding-window-commit-flushes-an-already-permitted-delta-even-ove
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-007-sliding-window-redis-counters-are-isolated-by-plugin-name
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-sliding-008-check-and-incr-decides-and-increments-atomically-never-on-reject
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-variable-corpus
+    source:
+      file: t/plugin/limit-count-variable.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    config:
+      routes:
+        - id: limit-count-variable-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-variable-001-use-variable-in-count-and-time-window-with-default-value
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-002-request-without-count-time-window-headers
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-003-request-with-count-header
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            count: "5"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-004-request-with-count-and-time-window-header
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-005-use-variable-in-count-dynamic-updates-to-count-should-bring-immed
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-006-request-with-varying-count-header
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-007-use-variable-in-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-008-check-access-log-contains-rate-limiting-info
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            host: test.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-009-set-up-route-with-count-time-window-from-request-variables
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-010-a-client-supplied-0-negative-fractional-count-is-rejected-not-byp
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-011-a-client-supplied-0-negative-fractional-time-window-is-rejected-n
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-012-set-up-rules-mode-route-with-count-from-a-request-variable
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-variable-013-rules-mode-invalid-count-rejects-not-silently-skips-the-rule
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count-corpus
+    source:
+      file: t/plugin/limit-count.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+        - 38
+        - 39
+        - 40
+        - 41
+        - 42
+    config:
+      routes:
+        - id: limit-count-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-002-set-key-empty
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-003-set-route-id-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-004-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-005-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-006-set-route-id-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-007-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-008-invalid-route-missing-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-009-invalid-route-wrong-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-010-invalid-route-wrong-count-post-method
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-011-invalid-service-missing-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-012-invalid-service-wrong-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-013-invalid-service-wrong-count-post-method
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count-014-set-route-without-id-in-post-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-015-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-016-disable-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-017-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-018-set-route-key-server-addr
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-019-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-020-default-rejected-code
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-021-when-the-count-is-changed-check-the-limit-is-correct
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-022-when-the-count-is-changed-check-the-limit-is-correct-from-1-to-2
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-023-when-the-count-is-changed-check-the-limit-is-correct-from-2-to-2
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-024-create-consumer-and-bind-key-auth-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-025-create-route-and-consumer-name-is-consumer-jack
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-026-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: auth-jack
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-027-set-service-id-1-and-binding-limit-count-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-028-set-route-id-1-and-bind-service
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-029-the-number-of-requests-exceeds-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-030-set-service-id-1-and-no-limit-count-plugin-configured
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-031-set-route-id-1-and-bind-service
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-032-the-number-of-requests-exceeds-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-033-delete-route-id-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-034-delete-service-id-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-035-use-remote-addr-as-default-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-036-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-037-add-service-and-route-upstream-is-the-domain-name
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-038-normal-the-result-is-as-expected
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-039-plugin-is-bound-to-the-route-and-upstream-is-the-domain-name
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-040-normal-the-result-is-as-expected
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count-041-check-schema-failed-the-count-attribute-is-equal-to-0
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: limit-count-042-check-schema-failed-the-time-window-attribute-is-equal-to-0
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+  - name: limit-count2-corpus
+    source:
+      file: t/plugin/limit-count2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+    config:
+      routes:
+        - id: limit-count2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 503
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count2-001-invalid-route-wrong-rejected-msg-type
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count2-002-invalid-route-wrong-rejected-msg-length
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count2-003-set-route-with-rejected-msg
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-004-rejected-msg-request-normal
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-005-rejected-msg-request-frequent
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 503
+          body:
+            equals: "validation failed"
+      - name: limit-count2-006-update-route-use-new-limit-configuration
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-007-exceed-the-burst-when-key-type-is-var
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-008-bypass-empty-key-when-key-type-is-var
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-009-update-plugin-to-set-key-type-to-var-combination
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-010-exceed-the-burst-when-key-type-is-var-combination
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-011-don-t-exceed-the-burst-when-key-type-is-var-combination
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-012-request-when-key-is-missing
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-013-update-plugin-to-set-invalid-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-014-request-when-key-is-invalid
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-015-limit-count-in-group
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-016-hit-multiple-paths
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-017-limit-count-in-group-configuration-is-from-services
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-018-hit-multiple-paths
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-019-configuration-from-the-same-group-should-be-the-same
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-count2-020-group-with-constant-key
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-021-hit-multiple-paths
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count2-022-group-with-disable
+        input:
+          method: GET
+          path: "/hello_chunked"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count3-corpus
+    source:
+      file: t/plugin/limit-count3.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    config:
+      routes:
+        - id: limit-count3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 429
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: limit-count3-001-set-route-counter-will-be-shared
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-002-hit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-003-set-route-with-conf-not-changed
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-004-hit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-005-set-route-with-conf-changed
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-006-hit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-007-set-another-route-with-the-same-conf
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-008-avoid-sharing-the-same-counter
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-009-add-consumer-jack1
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-010-add-consumer-jack2
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-011-set-route-with-consumers
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-012-hit-jack1-pass
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count3-013-hit-jack2-reject-the-two-consumers-share-the-same-counter
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
+        output:
+          status: 429
+          body:
+            equals: "validation failed"
+  - name: limit-count4-corpus
+    source:
+      file: t/plugin/limit-count4.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: limit-count4-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count4-001-set-route-counter-will-be-shared
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count4-002-test-x-ratelimit-reset-second-number-could-be-decline
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count4-003-set-route-counter-will-be-shared
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count4-004-test-header-x-ratelimit-remaining-exist-when-limit-rejected
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count4-005-test-header-x-ratelimit-reset-shouldn-t-be-set-to-0-after-request
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-count5-corpus
+    source:
+      file: t/plugin/limit-count5.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: limit-count5-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-count5-001-modified-limit-count-incoming-cost-2
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-002-set-route-id-1-using-environment-variable-for-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-003-up-the-limit-with-environment-variable-for-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-004-customize-rate-limit-headers-by-plugin-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-005-check-rate-limit-headers
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-006-set-route-id-1-using-key-type-var
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-007-check-access-log-contains-rate-limiting-info
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            host: test.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-count5-008-cost-0-peek-does-not-consume-quota
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

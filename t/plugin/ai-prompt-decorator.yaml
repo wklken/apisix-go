@@ -1,0 +1,227 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-prompt-decorator.t
+    tests: 17
+cases:
+  - name: ai-prompt-decorator-corpus
+    source:
+      file: t/plugin/ai-prompt-decorator.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+    config:
+      routes:
+        - id: ai-prompt-decorator-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: ai-prompt-decorator-001-sanity-configure-prepend-only
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-002-test-prepend
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-003-sanity-configure-append-only
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-004-test-append
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-005-sanity-configure-append-and-prepend-both
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-006-test-append
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-007-verify-no-message-accumulation-across-multiple-requests
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-008-sanity-configure-neither-append-nor-prepend-should-fail
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-decorator-009-responses-api-configure-prepend-for-responses-api-test
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-010-responses-api-prepend-sets-instructions-field
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-011-responses-api-prepend-prepends-to-existing-instructions
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-012-responses-api-configure-append-for-responses-api-test
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-013-responses-api-append-to-string-input
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-014-responses-api-append-to-array-input
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-015-responses-api-configure-both-prepend-and-append
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-016-responses-api-prepend-and-append-together
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-decorator-017-chat-completions-still-works-after-responses-api-support-regressi
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

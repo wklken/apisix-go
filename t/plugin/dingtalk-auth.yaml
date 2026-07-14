@@ -1,0 +1,503 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/dingtalk-auth.t
+  tests: 14
+
+cases:
+  - name: schema
+    source:
+      tests: [1, 2, 3]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: dingtalk-auth-valid
+              uri: /hello
+              plugins:
+                dingtalk-auth:
+                  app_key: appkey123
+                  app_secret: appsecret456
+                  secret: session-secret-key
+                  redirect_uri: /login
+                  access_token_url: "{{FIXTURE.dingtalk.URL}}/v1.0/oauth2/accessToken"
+                  userinfo_url: "{{FIXTURE.dingtalk.URL}}/topapi/v2/user/getuserinfo"
+        fixtures:
+          - &unused_dingtalk
+            name: dingtalk
+            kind: http
+            respond:
+              - status: 200
+                body: '{}'
+        steps:
+          - name: redirect
+            input:
+              path: /hello
+            output:
+              status: 302
+              headers:
+                Location:
+                  equals: /login
+      - name: missing-app-key
+        config:
+          routes:
+            - id: dingtalk-auth-missing-app-key
+              uri: /hello
+              plugins:
+                dingtalk-auth:
+                  app_secret: appsecret456
+                  secret: session-secret-key
+                  redirect_uri: /login
+        input:
+          path: /hello
+        output: &schema_rejection
+          status: 404
+          logs:
+            matches: 'build route dingtalk-auth-.*fail:.*dingtalk-auth'
+      - name: short-secret
+        config:
+          routes:
+            - id: dingtalk-auth-short-secret
+              uri: /hello
+              plugins:
+                dingtalk-auth:
+                  app_key: appkey123
+                  app_secret: appsecret456
+                  secret: short
+                  redirect_uri: /login
+        input:
+          path: /hello
+        output: *schema_rejection
+
+  - name: redirect-without-code
+    source:
+      tests: [4, 5]
+    config:
+      routes:
+        - id: dingtalk-auth-redirect
+          uri: /hello
+          plugins:
+            dingtalk-auth: &default_auth
+              app_key: testappkey
+              app_secret: testappsecret
+              secret: my-session-secret
+              access_token_url: "{{FIXTURE.dingtalk.URL}}/v1.0/oauth2/accessToken"
+              userinfo_url: "{{FIXTURE.dingtalk.URL}}/topapi/v2/user/getuserinfo"
+              cookie_expires_in: 2
+              redirect_uri: /login
+    fixtures:
+      - *unused_dingtalk
+    steps:
+      - name: redirect
+        input:
+          path: /hello
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /login
+
+  - name: invalid-code
+    source:
+      tests: [6]
+    config:
+      routes:
+        - id: dingtalk-auth-invalid-code
+          uri: /hello
+          plugins:
+            dingtalk-auth: *default_auth
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - &token_request
+            method: POST
+            path:
+              equals: /v1.0/oauth2/accessToken
+            headers:
+              Content-Type:
+                matches: '^application/json'
+            body:
+              matches: '"appKey":"testappkey".*"appSecret":"testappsecret"'
+          - &userinfo_request
+            method: POST
+            path:
+              equals: /topapi/v2/user/getuserinfo?access_token=test_access_token_12345
+            headers:
+              Content-Type:
+                matches: '^application/json'
+            body:
+              matches: '"code":"invalid_code"'
+        respond:
+          - &token_response
+            status: 200
+            body: '{"accessToken":"test_access_token_12345","expireIn":7200}'
+          - status: 200
+            body: '{"errcode":403,"errmsg":"Unauthorized"}'
+    steps:
+      - name: reject
+        input:
+          path: /hello?code=invalid_code
+        output:
+          status: 401
+          body:
+            equals: '{"message":"Invalid authorization code"}'
+
+  - name: valid-query-code
+    source:
+      tests: [7]
+    config: &default_route
+      routes:
+        - id: dingtalk-auth-query
+          uri: /hello
+          plugins:
+            dingtalk-auth: *default_auth
+          upstream: &primary_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures: &valid_fixtures
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - &userinfo_response
+            status: 200
+            body: '{"errcode":0,"errmsg":"ok","result":{"userid":"user_001","name":"Test User","unionid":"union_abc123"}}'
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?code=valid_code
+            headers:
+              X-Userinfo:
+                matches: '.+'
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate
+        input:
+          path: /hello?code=valid_code
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            Set-Cookie:
+              matches: '^dingtalk_session='
+
+  - name: valid-header-code
+    source:
+      tests: [8]
+    config:
+      routes:
+        - id: dingtalk-auth-header
+          uri: /hello
+          plugins:
+            dingtalk-auth: *default_auth
+          upstream: *primary_upstream
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate
+        input:
+          path: /hello
+          headers:
+            X-DingTalk-Code: valid_code
+        output:
+          status: 200
+          body:
+            equals: hello world
+
+  - name: session-reuse
+    source:
+      tests: [9]
+    config: *default_route
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?code=valid_code
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate
+        input:
+          path: /hello?code=valid_code
+        output:
+          status: 200
+          headers:
+            Set-Cookie:
+              matches: '^dingtalk_session='
+      - name: reuse-session
+        input:
+          path: /hello
+        output:
+          status: 200
+          body:
+            equals: hello world
+      - name: omit-session
+        input:
+          path: /hello
+          without_cookies: true
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /login
+
+  - name: session-expiry
+    source:
+      tests: [10]
+    config: *default_route
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate
+        input:
+          path: /hello?code=valid_code
+        output:
+          status: 200
+      - name: valid-before-expiry
+        wait: 3s
+        input:
+          path: /hello
+        output:
+          status: 200
+      - name: expired
+        input:
+          path: /hello
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /login
+
+  - name: custom-query
+    source:
+      tests: [11, 12]
+    config: &custom_route
+      routes:
+        - id: dingtalk-auth-custom
+          uri: /hello
+          plugins:
+            dingtalk-auth: &custom_auth
+              <<: *default_auth
+              code_query: dt_code
+              code_header: X-Custom-DT-Code
+          upstream: *primary_upstream
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?dt_code=valid_code
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: default-query-ignored
+        input:
+          path: /hello?code=valid_code
+        output:
+          status: 302
+      - name: custom-query-accepted
+        input:
+          path: /hello?dt_code=valid_code
+        output:
+          status: 200
+          body:
+            equals: hello world
+
+  - name: custom-header
+    source:
+      tests: [13]
+    config: *custom_route
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: default-header-ignored
+        input:
+          path: /hello
+          headers:
+            X-DingTalk-Code: valid_code
+        output:
+          status: 302
+      - name: custom-header-accepted
+        input:
+          path: /hello
+          headers:
+            X-Custom-DT-Code: valid_code
+        output:
+          status: 200
+          body:
+            equals: hello world
+
+  - name: forged-userinfo
+    source:
+      tests: [14]
+    config:
+      routes:
+        - id: dingtalk-auth-forged-login
+          uri: /hello
+          plugins:
+            dingtalk-auth: *default_auth
+          upstream: *primary_upstream
+        - id: dingtalk-auth-userinfo-off
+          uri: /dt-echo-off
+          plugins:
+            dingtalk-auth:
+              <<: *default_auth
+              set_userinfo_header: false
+          upstream: *primary_upstream
+        - id: dingtalk-auth-userinfo-on
+          uri: /dt-echo-on
+          plugins:
+            dingtalk-auth:
+              <<: *default_auth
+              set_userinfo_header: true
+          upstream: *primary_upstream
+    fixtures:
+      - name: dingtalk
+        kind: http
+        expect:
+          - *token_request
+          - <<: *userinfo_request
+            body:
+              matches: '"code":"valid_code"'
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?code=valid_code
+            headers:
+              X-Userinfo:
+                matches: '.+'
+          - path:
+              equals: /dt-echo-off
+            headers:
+              X-Userinfo:
+                absent: true
+          - path:
+              equals: /dt-echo-on
+            headers:
+              X-Userinfo:
+                equals: eyJuYW1lIjoiVGVzdCBVc2VyIiwidW5pb25pZCI6InVuaW9uX2FiYzEyMyIsInVzZXJpZCI6InVzZXJfMDAxIn0=
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: none
+          - status: 200
+            body: verified
+    steps:
+      - name: authenticate
+        input:
+          path: /hello?code=valid_code
+        output:
+          status: 200
+      - name: forged-header-does-not-authenticate
+        input:
+          path: /hello
+          without_cookies: true
+          headers:
+            X-Userinfo: eyJ1c2VyaWQiOiJhZG1pbiIsIm5hbWUiOiJmb3JnZWQifQ==
+        output:
+          status: 302
+      - name: forged-header-removed
+        input:
+          path: /dt-echo-off
+          headers:
+            X-Userinfo: eyJ1c2VyaWQiOiJhZG1pbiIsIm5hbWUiOiJmb3JnZWQifQ==
+        output:
+          status: 200
+          body:
+            equals: none
+      - name: forged-header-overwritten
+        input:
+          path: /dt-echo-on
+          headers:
+            X-Userinfo: eyJ1c2VyaWQiOiJhZG1pbiIsIm5hbWUiOiJmb3JnZWQifQ==
+        output:
+          status: 200
+          body:
+            equals: verified

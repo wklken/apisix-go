@@ -1,0 +1,314 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/loki-logger.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/loki-logger2.t
+    tests: 1
+cases:
+  - name: loki-logger-corpus
+    source:
+      file: t/plugin/loki-logger.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+    config:
+      routes:
+        - id: loki-logger-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: loki-logger-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-002-setup-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-003-hit-route
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            test-header: "only-for-test#1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-004-check-loki-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-005-setup-route-with-log-labels
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-006-hit-route
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            test-header: "only-for-test#2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-007-check-loki-log-with-custom-label
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-008-setup-route-with-tenant-id
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-009-hit-route
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            test-header: "only-for-test#3"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-010-check-loki-log-with-tenant-id-tenant-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-011-check-loki-log-with-tenant-id-tenant-2
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-012-setup-route-with-log-labels-as-variables
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-013-hit-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-014-check-loki-log-with-custom-label
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-015-setup-route-test-headers
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-016-hit-route-test-headers
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-017-setup-route-with-a-per-request-variable-label-same-conf-for-all-r
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-018-two-requests-with-different-label-values-share-one-worker-and-mus
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-019-setup-route-log-format-extra-enriches-default-via-plugin-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-020-hit-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: loki-logger-021-check-loki-log-default-fields-kept-extra-field-added
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: loki-logger2-corpus
+    source:
+      file: t/plugin/loki-logger2.t
+      tests:
+        - 1
+    config:
+      routes:
+        - id: loki-logger2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: loki-logger2-001-should-drop-entries-when-max-pending-entries-is-exceeded
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

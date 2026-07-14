@@ -1,0 +1,199 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/feishu-auth.t
+    tests: 14
+cases:
+  - name: feishu-auth-corpus
+    source:
+      file: t/plugin/feishu-auth.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+    config:
+      routes:
+        - id: feishu-auth-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 302
+            headers:
+              Location: "/echo"
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: feishu-auth-001-enable-feishu-auth-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-002-missing-code
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 302
+          body:
+            equals: "validation failed"
+          headers:
+            Location:
+              equals: "/echo"
+      - name: feishu-auth-003-invalid-code
+        input:
+          method: GET
+          path: "/hello?code=invalid"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: feishu-auth-004-valid-code
+        input:
+          method: GET
+          path: "/hello?code=passed"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-005-x-feishu-code-with-invalid-code
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            X-Feishu-Code: invalid
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: feishu-auth-006-x-feishu-code-header
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            X-Feishu-Code: passed
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-007-check-cookie
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-008-cookie-expire
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-009-specify-header-and-query-and-redirect-uri
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-010-specify-query
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-011-specify-header
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-012-secret-fallbacks-allows-session-created-with-old-secret-after-key
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-013-forged-x-userinfo-header-does-not-bypass-authentication
+        input:
+          method: GET
+          path: "/hello-echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: feishu-auth-014-secret-fallbacks-values-are-encrypted-in-etcd
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

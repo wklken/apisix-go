@@ -1,0 +1,272 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-request-rewrite.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-request-rewrite2.t
+    tests: 4
+cases:
+  - name: ai-request-rewrite-corpus
+    source:
+      file: t/plugin/ai-request-rewrite.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+    config:
+      routes:
+        - id: ai-request-rewrite-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: ai-request-rewrite-001-minimal-viable-configuration
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-002-missing-prompt-field-should-not-pass
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-003-missing-auth-field-should-not-pass
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-004-missing-provider-field-should-not-pass
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-005-provider-must-be-one-of-deepseek-openai-aimlapi-openai-compatible
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-006-provider-deepseek
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-007-provider-openai-compatible
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-008-override-endpoint-works
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-009-set-route-with-wrong-auth-header
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-010-set-route-with-correct-query-param
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-011-set-route-with-wrong-query-param
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-012-prompt-passed-correctly-to-llm-service
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-013-check-llm-bad-request
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-014-check-llm-internal-server-error
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite-015-provider-aimlapi
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: ai-request-rewrite2-corpus
+    source:
+      file: t/plugin/ai-request-rewrite2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+    config:
+      routes:
+        - id: ai-request-rewrite2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: ai-request-rewrite2-001-check-plugin-options-send-to-llm-service-correctly
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite2-002-openai-compatible-provider-should-use-with-override-endpoint
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite2-003-query-params-in-override-endpoint-should-be-sent-to-llm
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-request-rewrite2-004-send-request-without-body
+        input:
+          method: GET
+          path: "/anything"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

@@ -1,0 +1,47 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/lago.t
+    tests: 2
+cases:
+  - name: lago-corpus
+    source:
+      file: t/plugin/lago.t
+      tests:
+        - 1
+        - 2
+    config:
+      routes:
+        - id: lago-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: lago-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: lago-002-test
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            matches: "hello world"

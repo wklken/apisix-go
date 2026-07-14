@@ -1,0 +1,614 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/fault-injection.t
+    tests: 39
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/fault-injection2.t
+    tests: 7
+cases:
+  - name: fault-injection-corpus
+    source:
+      file: t/plugin/fault-injection.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+        - 38
+        - 39
+    config:
+      routes:
+        - id: fault-injection-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 405
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 302
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: fault-injection-001-set-route-invalid-http-status-in-the-abort-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-002-set-route-without-http-status-in-the-abort-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-003-set-route-without-abort-delay-properties
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-004-set-route-without-duration-in-the-delay-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-005-set-route-invalid-duration-with-string-in-the-delay-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-006-set-route-invalid-duration-with-double-dot-in-the-delay-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-007-set-route-invalid-duration-with-whitespace-in-the-delay-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-008-set-route-invalid-vars-in-the-delay-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-009-set-route-invalid-vars-in-in-the-abort-property
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: fault-injection-010-set-route-delay-1-seconds
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-011-hit-route-delay-1-seconds-and-return-hello-world
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-012-set-route-abort-with-http-status-200-and-return-fault-injection-n
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-013-hit-route-abort-with-http-code-200-and-return-fault-injection-n
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-014-set-route-abort-with-http-status-405-and-return-fault-injection-n
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-015-hit-route-abort-with-http-status-405-and-return-fault-injection-n
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 405
+          body:
+            equals: "validation failed"
+      - name: fault-injection-016-set-route-play-with-redirect-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-017-hit-route-abort-with-http-status-200-and-return-fault-injection-n
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-018-set-route-abort-injection-but-with-zero-percentage
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-019-hit-route-redirect
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 302
+          body:
+            equals: "validation failed"
+      - name: fault-injection-020-set-route-delay-injection-but-with-zero-percentage
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-021-hit-route-no-wait-and-return-hello1-world
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-022-set-route-body-with-var
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-023-hit-route-body-with-var
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-024-set-route-abort-without-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-025-hit-route-abort-without-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-026-vars-schema-validation-passed
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-027-vars-schema-validation-failed-abort-failed
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-028-set-route-and-configure-the-vars-rule-in-abort
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-029-hit-the-route-all-vars-rules-pass-execute-abort
+        input:
+          method: GET
+          path: "/hello?name=jack&age=18"
+          headers:
+            apikey: api-key
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: fault-injection-030-hit-the-route-missing-apikey-execute-abort
+        input:
+          method: GET
+          path: "/hello?name=jack&age=20"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: fault-injection-031-hit-the-route-missing-request-parameters-execute-abort
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: api-key
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: fault-injection-032-hit-route-vars-do-not-match-age-is-missing
+        input:
+          method: GET
+          path: "/hello?name=allen"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-033-hit-route-all-vars-do-not-match
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-034-set-route-and-configure-the-vars-rule-in-delay
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-035-hit-route-delay-2-seconds-and-return-hello-world
+        input:
+          method: GET
+          path: "/hello?name=jack&age=22"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-036-hit-route-no-wait-and-return-hello1-world
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-037-set-route-and-configure-the-vars-rule-in-abort-and-delay
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection-038-hit-the-route-all-vars-rules-are-passed-execute-abort-and-delay
+        input:
+          method: GET
+          path: "/hello?name=jack&age=18"
+          headers:
+            apikey: api-key
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: fault-injection-039-hit-the-route-abort-rule-does-not-match-only-execute-delay
+        input:
+          method: GET
+          path: "/hello?name=jack&age=16"
+          headers:
+            apikey: api-key
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: fault-injection2-corpus
+    source:
+      file: t/plugin/fault-injection2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+    config:
+      routes:
+        - id: fault-injection2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              h1: v1
+              h2: "2"
+              h3: "/hello"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: fault-injection2-001-vars-rule-with-set
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection2-002-vars-rule-with-hit
+        input:
+          method: GET
+          path: "/hello?name=jack&age=17"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: fault-injection2-003-vars-rule-with-miss
+        input:
+          method: GET
+          path: "/hello?name=jack&age=18"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection2-004-inject-header-config
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection2-005-inject-header
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            h1:
+              equals: v1
+            h2:
+              equals: "2"
+            h3:
+              equals: "/hello"
+      - name: fault-injection2-006-closing-curly-brace-not-should-not-be-a-part-of-variable
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: fault-injection2-007-test-route
+        input:
+          method: GET
+          path: "/hello?count=2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

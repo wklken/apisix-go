@@ -42,6 +42,22 @@ func TestSupportedPluginManifestSelection(t *testing.T) {
 		t.Fatalf("complete manifest set problems = %v", problems)
 	}
 
+	files, err := filepath.Glob("*.yaml")
+	if err != nil {
+		t.Fatalf("discover manifests: %v", err)
+	}
+	actual := make(map[string]bool, len(files))
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+		if name == "redirect2" {
+			name = "redirect"
+		}
+		actual[name] = true
+	}
+	if problems := manifestCoverageProblems(plugins, actual); len(problems) != 0 {
+		t.Fatalf("checked-in manifest set problems = %v", problems)
+	}
+
 	delete(manifests, "redirect")
 	problems := manifestCoverageProblems(plugins, manifests)
 	if len(problems) != 1 || !strings.Contains(problems[0], "redirect") {
@@ -53,6 +69,25 @@ func TestSupportedPluginManifestSelection(t *testing.T) {
 	problems = manifestCoverageProblems(plugins, manifests)
 	if len(problems) != 1 || !strings.Contains(problems[0], "not-a-plugin") {
 		t.Fatalf("extra manifest problems = %v, want not-a-plugin", problems)
+	}
+}
+
+func TestManifestCorpusValidates(t *testing.T) {
+	files, err := filepath.Glob("*.yaml")
+	if err != nil {
+		t.Fatalf("discover manifests: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no manifests found")
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if _, err := loadManifest(file, data); err != nil {
+			t.Fatalf("load %s: %v", file, err)
+		}
 	}
 }
 

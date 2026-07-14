@@ -1,0 +1,655 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak.t
+    tests: 18
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak2.t
+    tests: 19
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak3.t
+    tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak4.t
+    tests: 4
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-keycloak5.t
+    tests: 1
+cases:
+  - name: authz-keycloak-corpus
+    source:
+      file: t/plugin/authz-keycloak.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+    config:
+      routes:
+        - id: authz-keycloak-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 503
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 307
+            headers:
+              Location: http://127.0.0.1/test
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: authz-keycloak-001-minimal-valid-configuration-w-o-discovery
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-002-minimal-valid-configuration-with-discovery
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-003-minimal-valid-configuration-w-o-discovery-when-lazy-load-paths-tr
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-004-minimal-valid-configuration-with-discovery-when-lazy-load-paths-t
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-005-full-schema-check
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-006-token-endpoint-and-discovery-both-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-007-client-id-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-008-resource-registration-endpoint-and-discovery-both-missing-and-laz
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-009-add-https-endpoint-with-ssl-verify-true-default
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-010-test-with-fake-token-and-https-endpoint
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 503
+          body:
+            equals: "validation failed"
+      - name: authz-keycloak-011-add-https-endpoint-with-ssl-verify-false
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-012-test-for-https-based-token-verification-with-ssl-verify-false
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-013-set-enforcement-mode-is-enforcing-lazy-load-paths-and-permissions
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-014-test-for-permission-is-empty-and-enforcement-mode-is-enforcing
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-015-set-enforcement-mode-is-enforcing-lazy-load-paths-and-permissions
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-016-test-for-permission-is-empty-and-enforcement-mode-is-enforcing-ac
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 307
+          body:
+            equals: "validation failed"
+          headers:
+            Location:
+              equals: http://127.0.0.1/test
+      - name: authz-keycloak-017-add-https-endpoint-with-password-grant-token-generation-incoming-
+        input:
+          method: GET
+          path: "/api/token"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak-018-no-username-or-password
+        input:
+          method: GET
+          path: "/api/token"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: authz-keycloak2-corpus
+    source:
+      file: t/plugin/authz-keycloak2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+    config:
+      routes:
+        - id: authz-keycloak2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: authz-keycloak2-001-add-plugin-with-view-course-permissions-using-token-endpoint
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-002-get-access-token-for-teacher-and-access-view-course-route
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-003-invalid-access-token
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-004-add-plugin-with-view-course-permissions-using-discovery
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-005-get-access-token-for-teacher-and-access-view-course-route
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-006-invalid-access-token
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-007-add-plugin-for-delete-course-route
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-008-get-access-token-for-student-and-delete-course
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-009-add-plugin-with-lazy-load-paths-and-http-method-as-scope
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-010-get-access-token-for-teacher-and-access-view-course-route
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-011-get-access-token-for-student-and-access-view-course-route
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-012-get-access-token-for-teacher-and-delete-course
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-013-get-access-token-for-student-and-try-to-delete-course-should-fail
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-014-get-access-token-for-teacher-and-access-view-course-route
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-015-get-access-token-for-student-and-access-view-course-route
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-016-add-plugin-with-lazy-load-paths-when-resource-registration-endpoi
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-017-get-access-token-for-student-and-access-view-course-route
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-018-add-plugin-with-lazy-load-paths-for-query-string-test
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak2-019-access-route-with-query-string-should-succeed-query-string-stripp
+        input:
+          method: GET
+          path: "/course/foo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: authz-keycloak3-corpus
+    source:
+      file: t/plugin/authz-keycloak3.t
+      tests:
+        - 1
+        - 2
+        - 3
+    config:
+      routes:
+        - id: authz-keycloak3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 307
+            headers:
+              Location: http://127.0.0.1/test
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: authz-keycloak3-001-access-denied-redirect-uri-works-with-request-denied-in-token-end
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak3-002-hit
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 307
+          body:
+            equals: "validation failed"
+          headers:
+            Location:
+              equals: http://127.0.0.1/test
+      - name: authz-keycloak3-003-data-encryption-for-client-secret
+        input:
+          method: GET
+          path: "/api/token"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: authz-keycloak4-corpus
+    source:
+      file: t/plugin/authz-keycloak4.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+    config:
+      routes:
+        - id: authz-keycloak4-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: authz-keycloak4-001-store-secret-into-vault
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak4-002-set-client-secret-as-a-reference-to-secret
+        input:
+          method: GET
+          path: "/api/token"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak4-003-set-client-secret-as-a-reference-to-env-variable
+        input:
+          method: GET
+          path: "/api/token"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-keycloak4-004-set-invalid-client-secret-as-a-reference-to-env-variable
+        input:
+          method: GET
+          path: "/api/token"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: authz-keycloak5-corpus
+    source:
+      file: t/plugin/authz-keycloak5.t
+      tests:
+        - 1
+    config:
+      routes:
+        - id: authz-keycloak5-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: authz-keycloak5-001-http-method-as-scope-must-not-accumulate-the-request-method-acros
+        input:
+          method: GET
+          path: "/course"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

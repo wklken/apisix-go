@@ -7,16 +7,19 @@ CLI in a fresh child process, writes temporary `conf/config.yaml` and
 uses a fresh loopback upstream fixture.
 
 The corpus is pinned to Apache APISIX commit
-`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The current checkpoint contains
-34 manifests for 33 plugins, mapping 624 upstream `TEST` blocks exactly once
-into 379 isolated case/variant process runs, 483 request/assertion steps, and
-1,488 actual requests after repeats. The target is all 98 source-backed plugins
-marked Supported in `docs/plugins.md`.
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. It currently contains 99
+manifests: the 98 source-backed plugins marked Supported in `docs/plugins.md`
+plus the supplemental `redirect2` source file. Every pinned upstream `TEST`
+number is represented exactly once by a runnable request/assertion step. The
+original source blocks are grouped into ordered standalone fixture sequences
+when one source file shares setup state; each sequence still starts the real
+APISIX-Go process with generated `config.yaml` and `apisix.yaml`.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;
 placeholder reasons such as "requires setup or an external dependency" are not
-accepted as coverage.
+accepted as coverage. Cases that need a local dependency use a fixture declared
+in the same manifest; they are not represented as skips.
 
 ## Run
 
@@ -83,6 +86,9 @@ output:
 input:
   path: /callback?state={{CAPTURE.state}}
 ```
+
+Set `without_cookies: true` on an input to deliberately omit the shared client
+cookie jar for that request while retaining it for later ordered steps.
 
 ## Matchers
 

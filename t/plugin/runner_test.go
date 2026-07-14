@@ -473,6 +473,61 @@ func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
 	runCase(t, caseSpec)
 }
 
+func TestHarnessCanOmitStoredCookies(t *testing.T) {
+	firstPath := "/issue"
+	secondPath := "/reuse"
+	thirdPath := "/omit"
+	cookiePattern := `session=stored`
+	absent := true
+	caseSpec := Case{
+		Name:   "omit-response-cookie",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "omit-response-cookie",
+					"uri": "/*",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Expect: []HTTPAssertion{
+					{Path: &Matcher{Equals: &firstPath}},
+					{Path: &Matcher{Equals: &secondPath}, Headers: map[string]Matcher{
+						"Cookie": {Matches: &cookiePattern},
+					}},
+					{Path: &Matcher{Equals: &thirdPath}, Headers: map[string]Matcher{
+						"Cookie": {Absent: &absent},
+					}},
+				},
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Headers: map[string]string{"Set-Cookie": "session=stored; Path=/"}},
+					{Status: http.StatusOK},
+					{Status: http.StatusOK},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{Name: "issue", Input: HTTPInput{Path: "/issue"}, Output: HTTPOutput{Status: http.StatusOK}},
+			{Name: "reuse", Input: HTTPInput{Path: "/reuse"}, Output: HTTPOutput{Status: http.StatusOK}},
+			{
+				Name:   "omit",
+				Input:  HTTPInput{Path: "/omit", WithoutCookies: true},
+				Output: HTTPOutput{Status: http.StatusOK},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
 func TestHarnessCapturesResponseHeaderForLaterStep(t *testing.T) {
 	statePattern := `state=([^&]+)`
 	firstPath := "/authorize"
@@ -778,6 +833,31 @@ func TestReplaceFixturePlaceholders(t *testing.T) {
 	_, err = replaceFixturePlaceholders([]byte("{{FIXTURE.missing.URL}}"), nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown fixture placeholder") {
 		t.Fatalf("unknown replacement error = %v", err)
+	}
+}
+
+func TestResolveCapturedInputExpandsAllRequestPayloadForms(t *testing.T) {
+	input, err := resolveCapturedInput(HTTPInput{
+		Path: "/callback?state={{CAPTURE.state}}",
+		Headers: map[string]string{
+			"X-State": "{{CAPTURE.state}}",
+		},
+		HeaderValues: map[string][]string{
+			"X-Values": {"before", "{{CAPTURE.state}}"},
+		},
+		BodyRepeat: &RepeatedBody{Value: "{{CAPTURE.state}}", Count: 2},
+	}, map[string]string{"state": "captured"})
+	if err != nil {
+		t.Fatalf("resolveCapturedInput() error = %v", err)
+	}
+	if input.Path != "/callback?state=captured" || input.Headers["X-State"] != "captured" {
+		t.Fatalf("resolved path/headers = %q/%q", input.Path, input.Headers["X-State"])
+	}
+	if got := input.HeaderValues["X-Values"][1]; got != "captured" {
+		t.Fatalf("resolved header value = %q, want captured", got)
+	}
+	if got := input.BodyRepeat.Value; got != "captured" {
+		t.Fatalf("resolved repeated body = %q, want captured", got)
 	}
 }
 
@@ -1195,6 +1275,7 @@ func runCase(t *testing.T, spec Case) {
 		fixture = startFixture(spec.Upstream)
 		defer fixture.server.Close()
 		replacements["{{UPSTREAM_ADDR}}"] = fixture.address()
+		replacements["{{UPSTREAM_URL}}"] = fixture.server.URL
 		replacements["{{UPSTREAM_HOST}}"] = fixture.host()
 		replacements["{{UPSTREAM_PORT}}"] = fixture.port()
 	}
@@ -1490,7 +1571,13 @@ func runHTTPInput(
 			t, client, address, request, output, bodyLengths, headerHistory, capturedCookies, capturedValues,
 		)
 	}
-	response, err := client.Do(request)
+	requestClient := client
+	if input.WithoutCookies {
+		clientWithoutCookies := *client
+		clientWithoutCookies.Jar = nil
+		requestClient = &clientWithoutCookies
+	}
+	response, err := requestClient.Do(request)
 	if err != nil {
 		t.Errorf("client request: %v", err)
 		return err
@@ -1528,6 +1615,14 @@ func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInpu
 	if err != nil {
 		return input, err
 	}
+	if input.BodyRepeat != nil {
+		repeated := *input.BodyRepeat
+		repeated.Value, err = replaceCapturePlaceholders(repeated.Value, captured)
+		if err != nil {
+			return input, fmt.Errorf("body_repeat: %w", err)
+		}
+		input.BodyRepeat = &repeated
+	}
 	if input.Headers != nil {
 		headers := make(map[string]string, len(input.Headers))
 		for name, value := range input.Headers {
@@ -1538,6 +1633,20 @@ func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInpu
 			headers[name] = value
 		}
 		input.Headers = headers
+	}
+	if input.HeaderValues != nil {
+		headers := make(map[string][]string, len(input.HeaderValues))
+		for name, values := range input.HeaderValues {
+			expanded := make([]string, len(values))
+			for i, value := range values {
+				expanded[i], err = replaceCapturePlaceholders(value, captured)
+				if err != nil {
+					return input, fmt.Errorf("header %s: %w", name, err)
+				}
+			}
+			headers[name] = expanded
+		}
+		input.HeaderValues = headers
 	}
 	return input, nil
 }

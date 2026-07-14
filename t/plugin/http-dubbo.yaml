@@ -1,0 +1,85 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-dubbo.t
+    tests: 5
+cases:
+  - name: http-dubbo-corpus
+    source:
+      file: t/plugin/http-dubbo.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: http-dubbo-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 502
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: http-dubbo-001-test-pojo
+        input:
+          method: GET
+          path: "/t"
+          body: "{\"aBoolean\":true,\"aByte\":1,\"aDouble\":1.1,\"aFloat\":1.2,\"aInt\":2,\"aLong\":3,\"aShort\":4,\"aString\":\"aa\",\"acharacter\":\"a\",\"stringMap\":{\"key\":\"value\"},\"strings\":[\"aa\",\"bb\"]}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-dubbo-002-test-pojos
+        input:
+          method: GET
+          path: "/t"
+          body: "[{\"aBoolean\":true,\"aByte\":1,\"aDouble\":1.1,\"aFloat\":1.2,\"aInt\":2,\"aLong\":3,\"aShort\":4,\"aString\":\"aa\",\"acharacter\":\"a\",\"stringMap\":{\"key\":\"value\"},\"strings\":[\"aa\",\"bb\"]}]"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-dubbo-003-test-timeout
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 502
+          body:
+            equals: "validation failed"
+      - name: http-dubbo-004-test-void
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-dubbo-005-test-fail
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"

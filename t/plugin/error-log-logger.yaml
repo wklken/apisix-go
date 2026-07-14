@@ -1,0 +1,554 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/error-log-logger-clickhouse.t
+    tests: 9
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/error-log-logger-kafka.t
+    tests: 7
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/error-log-logger-skywalking.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/error-log-logger.t
+    tests: 15
+cases:
+  - name: error-log-logger-clickhouse-corpus
+    source:
+      file: t/plugin/error-log-logger-clickhouse.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+    config:
+      routes:
+        - id: error-log-logger-clickhouse-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: error-log-logger-clickhouse-001-test-schema-checker
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-002-test-unreachable-server
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-003-put-plugin-metadata-and-log-an-error-level-message
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-004-log-a-warn-level-message
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-005-log-some-messages
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-006-log-an-info-level-message
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-007-delete-metadata-for-the-plugin-recover-to-the-default
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-008-data-encryption-for-clickhouse-password
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-clickhouse-009-verify-use-the-decrypted-password-to-connect-to-clickhouse
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: error-log-logger-kafka-corpus
+    source:
+      file: t/plugin/error-log-logger-kafka.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+    config:
+      routes:
+        - id: error-log-logger-kafka-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: error-log-logger-kafka-001-test-schema-checker
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-kafka-002-put-plugin-metadata-and-log-an-error-level-message-no-auth-kafka
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-kafka-003-log-a-error-level-message
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-kafka-004-log-an-warning-level-message-will-not-send-to-kafka-brokers
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-kafka-005-put-plugin-metadata-and-log-an-error-level-message-auth-kafka
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-kafka-006-delete-metadata-for-the-plugin-recover-to-the-default
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-kafka-007-data-encryption-for-kafka-brokers-sasl-config-password-metadata
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: error-log-logger-skywalking-corpus
+    source:
+      file: t/plugin/error-log-logger-skywalking.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: error-log-logger-skywalking-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: error-log-logger-skywalking-001-test-schema-checker
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-002-test-unreachable-server
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-003-put-plugin-metadata-and-log-an-error-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-004-log-a-warn-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-005-log-some-messages
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-006-log-an-info-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-007-delete-metadata-for-the-plugin-recover-to-the-default
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-skywalking-008-put-plugin-metadata-with-hostname-and-log-an-error-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: error-log-logger-corpus
+    source:
+      file: t/plugin/error-log-logger.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+    config:
+      routes:
+        - id: error-log-logger-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: error-log-logger-001-not-enable-the-plugin
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-002-enable-the-plugin-but-not-init-the-metadata
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-003-set-a-wrong-metadata
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: error-log-logger-004-test-unreachable-server
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-005-log-a-warn-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-006-log-an-error-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-007-log-an-info-level-message
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-008-delete-metadata-for-the-plugin-recover-to-the-default
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-009-want-to-reload-the-plugin-by-route
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-010-avoid-sending-stale-error-log
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-011-delete-the-route
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-012-log-a-warn-level-message-schema-compatibility-testing
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-013-log-an-error-level-message-schema-compatibility-testing
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-014-log-an-info-level-message-schema-compatibility-testing
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: error-log-logger-015-delete-metadata-for-the-plugin-recover-to-the-default-schema-comp
+        input:
+          method: GET
+          path: "/tg"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

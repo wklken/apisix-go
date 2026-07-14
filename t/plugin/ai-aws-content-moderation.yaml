@@ -1,0 +1,355 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-aws-content-moderation-secrets.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-aws-content-moderation.t
+    tests: 16
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-aws-content-moderation2.t
+    tests: 2
+cases:
+  - name: ai-aws-content-moderation-secrets-corpus
+    source:
+      file: t/plugin/ai-aws-content-moderation-secrets.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: ai-aws-content-moderation-secrets-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: ai-aws-content-moderation-secrets-001-store-secret-into-vault
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-secrets-002-set-secret-access-key-and-access-key-id-as-a-reference-to-secret
+        input:
+          method: GET
+          path: "/chat"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-secrets-003-good-request-should-pass-secret-credentials-reach-comprehend
+        input:
+          method: GET
+          path: "/chat"
+          body: "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"good_request\"}]}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-secrets-004-set-secret-access-key-as-a-reference-to-env-variable
+        input:
+          method: GET
+          path: "/chat"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-secrets-005-good-request-should-pass-env-credentials-reach-comprehend
+        input:
+          method: GET
+          path: "/chat"
+          body: "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"good_request\"}]}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: ai-aws-content-moderation-corpus
+    source:
+      file: t/plugin/ai-aws-content-moderation.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+    config:
+      routes:
+        - id: ai-aws-content-moderation-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: ai-aws-content-moderation-001-sanity-ai-proxy-moderation
+        input:
+          method: GET
+          path: "/chat"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-002-toxic-request-should-fail
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"toxic\" } ] }"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-aws-content-moderation-003-good-request-should-pass
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"good_request\" } ] }"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-004-profanity-filter
+        input:
+          method: GET
+          path: "/chat"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-005-profane-request-should-fail
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"profane\" } ] }"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-aws-content-moderation-006-very-profane-request-should-also-fail
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"very_profane\" } ] }"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-aws-content-moderation-007-good-request-should-pass
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"good_request\" } ] }"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-008-set-profanity-0-7-allow-profane-request-but-disallow-very-profane
+        input:
+          method: GET
+          path: "/chat"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-009-profane-request-should-pass-profanity-check-but-fail-toxicity-che
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"profane\" } ] }"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-aws-content-moderation-010-profane-but-not-toxic-request-should-pass
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"profane_but_not_toxic\" } ] }"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-011-but-very-profane-request-will-fail
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"very_profane\" } ] }"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-aws-content-moderation-012-good-request-should-pass
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"good_request\" } ] }"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-013-setup-route-without-ai-proxy-default-fail-mode-skip
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-014-request-without-ai-proxy-passes-through-unchecked-skip
+        input:
+          method: GET
+          path: "/echo"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"toxic\" } ] }"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-015-setup-route-without-ai-proxy-fail-mode-error
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation-016-request-without-ai-proxy-is-rejected-when-fail-mode-error
+        input:
+          method: GET
+          path: "/echo"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"good_request\" } ] }"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+  - name: ai-aws-content-moderation2-corpus
+    source:
+      file: t/plugin/ai-aws-content-moderation2.t
+      tests:
+        - 1
+        - 2
+    config:
+      routes:
+        - id: ai-aws-content-moderation2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: ai-aws-content-moderation2-001-sanity-ai-proxy-moderation-no-comprehend-server-listening
+        input:
+          method: GET
+          path: "/chat"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-aws-content-moderation2-002-request-fails-when-comprehend-is-unreachable
+        input:
+          method: GET
+          path: "/chat"
+          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"toxic\" } ] }"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"

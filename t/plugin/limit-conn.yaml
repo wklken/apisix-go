@@ -1,0 +1,1407 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-redis-cluster.t
+    tests: 10
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-redis.t
+    tests: 26
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-variable.t
+    tests: 18
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn.t
+    tests: 34
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn2.t
+    tests: 13
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn3.t
+    tests: 3
+cases:
+  - name: limit-conn-redis-cluster-corpus
+    source:
+      file: t/plugin/limit-conn-redis-cluster.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+    config:
+      routes:
+        - id: limit-conn-redis-cluster-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-conn-redis-cluster-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-002-add-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-003-not-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-004-update-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-005-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-006-update-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-007-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-008-set-route-with-redis-cluster-nodes-and-redis-cluster-name-redis-c
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-009-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-cluster-010-check-redis-cluster-keepalive-param
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-conn-redis-corpus
+    source:
+      file: t/plugin/limit-conn-redis.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+    config:
+      routes:
+        - id: limit-conn-redis-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-conn-redis-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-002-add-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-003-not-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-004-update-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-005-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-006-update-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-007-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-008-update-plugin-with-username-password
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-009-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-010-update-plugin-with-username-wrong-password
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-011-catch-wrong-pass
+        input:
+          method: GET
+          path: "/access_root_dir"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-conn-redis-012-invalid-route-missing-redis-host
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn-redis-013-disable-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-014-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-015-set-route-key-server-addr
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-016-key-http-x-real-ip
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-017-exceeding-the-burst-x-real-ip
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-018-key-http-x-forwarded-for
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-019-exceeding-the-burst-x-forwarded-for
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-020-default-rejected-code
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-021-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-022-set-global-rule-with-conn-2
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-023-exceeding-the-burst-of-global-rule
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-024-delete-global-rule
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-025-not-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-redis-026-verify-redis-connection-reused-times-in-debug-log
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-conn-variable-corpus
+    source:
+      file: t/plugin/limit-conn-variable.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+    config:
+      routes:
+        - id: limit-conn-variable-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: limit-conn-variable-001-use-variable-in-conn-and-burst-with-default-value
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-002-request-without-conn-burst-headers
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-003-request-with-conn-header
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            conn: "3"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-004-request-with-conn-and-burst-header
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            conn: "3"
+            burst: "4"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-005-configure-conn-burst-and-rules-at-same-time
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn-variable-006-setup-route-with-rules
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-007-request-matching-user-rule
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            user: jack
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-008-request-matching-project-rule-with-default-conn-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            project: apisix
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-009-request-matching-project-rule-with-custom-conn-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            project: apisix
+            project-conn: "2"
+            project-burst: "1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-010-request-not-matching-any-rule
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-011-restore-route-for-invalid-variable-tests-conn-burst-as-dynamic-he
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-012-zero-conn-header-value-is-rejected-with-500-and-error-log
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            conn: "0"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-conn-variable-013-negative-conn-header-value-is-rejected-with-500-and-error-log
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            conn: "-1"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-conn-variable-014-fractional-conn-header-value-is-rejected-with-500-and-error-log
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            conn: "1.5"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-conn-variable-015-fractional-burst-header-value-is-rejected-with-500-and-error-log
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            burst: "1.5"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-conn-variable-016-conn-header-value-above-2-53-1-is-rejected-with-500-and-error-log
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            conn: "99007199254740993"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: limit-conn-variable-017-dynamic-burst-resolving-to-0-is-accepted-schema-allows-burst-mini
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            burst: "0"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-variable-018-negative-burst-header-value-is-rejected-with-500-and-error-log
+        input:
+          method: GET
+          path: "/limit_conn"
+          headers:
+            burst: "-1"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+  - name: limit-conn-corpus
+    source:
+      file: t/plugin/limit-conn.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+    config:
+      routes:
+        - id: limit-conn-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: limit-conn-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-002-wrong-value-of-key
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-003-add-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-004-not-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-005-update-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-006-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-007-update-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-008-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-009-invalid-route-missing-key
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn-010-invalid-route-wrong-conn
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn-011-invalid-service-missing-key
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn-012-invalid-service-wrong-count
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn-013-disable-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-014-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-015-set-route-key-server-addr
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-016-key-http-x-real-ip
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-017-exceeding-the-burst-x-real-ip
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            X-Real-IP: "10.0.0.1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-018-key-http-x-forwarded-for
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-019-exceeding-the-burst-x-forwarded-for
+        input:
+          method: GET
+          path: "/test_concurrency"
+          headers:
+            X-Real-IP: "10.0.0.1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-020-default-rejected-code
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-021-set-global-rule-with-conn-2
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-022-exceeding-the-burst-of-global-rule
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-023-delete-global-rule
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-024-not-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-025-invalid-schema
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-026-create-consumer-and-bind-key-auth-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-027-create-route-and-enable-plugin-key-auth
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-028-not-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-029-update-plugin-limit-conn-configuration-conn-and-burst
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-030-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-031-plugin-limit-conn-uses-the-wrong-value-of-key
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-032-enable-plugin-conn-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-033-hit-route-and-should-not-be-limited
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn-034-invalid-route-wrong-allow-degradation
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+  - name: limit-conn2-corpus
+    source:
+      file: t/plugin/limit-conn2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    config:
+      routes:
+        - id: limit-conn2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-conn2-001-limit-conn-with-retry-upstream-set-upstream
+        input:
+          method: GET
+          path: "/mysleep"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-002-hit-route
+        input:
+          method: GET
+          path: "/mysleep?seconds=0.1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-003-set-both-global-and-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-004-hit-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-005-set-only-use-default-delay-option-to-true-in-specific-route
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-006-hit-route
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-007-invalid-route-wrong-rejected-msg-type
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn2-008-invalid-route-wrong-rejected-msg-length
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: limit-conn2-009-update-plugin-to-set-key-type-to-var-combination
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-010-don-t-exceed-the-burst
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-011-request-when-key-is-missing
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-012-update-plugin-to-set-invalid-key
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn2-013-request-when-key-is-invalid
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: limit-conn3-corpus
+    source:
+      file: t/plugin/limit-conn3.t
+      tests:
+        - 1
+        - 2
+        - 3
+    config:
+      routes:
+        - id: limit-conn3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: limit-conn3-001-create-route-with-limit-conn-plugin
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn3-002-create-ssl-sni-www-test-com
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: limit-conn3-003-use-http-version-2-to-request
+        input:
+          method: GET
+          path: "/limit_conn"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

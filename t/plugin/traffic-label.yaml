@@ -1,0 +1,614 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-label.t
+    tests: 20
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-label2.t
+    tests: 18
+cases:
+  - name: traffic-label-corpus
+    source:
+      file: t/plugin/traffic-label.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+    config:
+      routes:
+        - id: traffic-label-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+              X-content-type: json
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+    steps:
+      - name: traffic-label-001-use-unsupported-action
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: traffic-label-002-only-one-operator-are-supported-in-the-same-level
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: traffic-label-003-use-traffic-label-plugin-to-override-one-req-header
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-004-trigger-traffic-label-mismatch
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label-005-trigger-traffic-label
+        input:
+          method: GET
+          path: "/echo?foo=bar"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label-006-use-traffic-label-plugin-to-add-a-new-req-header
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-007-trigger-traffic-label
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+            X-content-type:
+              equals: json
+      - name: traffic-label-008-and-condition-in-match
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-009-mismatch-the-condition
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label-010-match-the-condition
+        input:
+          method: GET
+          path: "/echo?foo=bar"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label-011-or-condition-in-match
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-012-match-the-condition
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label-013-wrong-weight-in-rules
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: traffic-label-014-ipmatch-operator-mismatch
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-015-trigger-traffic-label
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label-016-ipmatch-operator-match
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-017-trigger-traffic-label
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label-018-nested-expr
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label-019-trigger-traffic-label-mismatch
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label-020-trigger-traffic-label-match
+        input:
+          method: GET
+          path: "/echo?foo=bar"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+  - name: traffic-label2-corpus
+    source:
+      file: t/plugin/traffic-label2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+    config:
+      routes:
+        - id: traffic-label2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "100"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "200"
+            body: "hello world"
+          - status: 200
+            headers:
+              X-Server-id: "300"
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: traffic-label2-001-use-traffic-label-plugin-with-proxy-rewrite-plugin
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-002-trigger-workflow
+        input:
+          method: GET
+          path: "/echo_not_exist"
+          headers:
+            X-server-id: "100"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label2-003-trigger-workflow
+        input:
+          method: GET
+          path: "/echo_not_exist?foo=bar"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label2-004-trigger-workflow
+        input:
+          method: GET
+          path: "/echo?foo=bar"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label2-005-trigger-workflow
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label2-006-if-there-is-no-match-condition-in-rule-all-requests-are-matched-b
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-007-match-the-condition
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "100"
+      - name: traffic-label2-008-multiple-headers
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-009-trigger-traffic-label
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            X-server-id: "200"
+            X-request-id: id1
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-010-multiple-actions
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-011-trigger-traffic-label
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-012-no-action
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-013-match-the-condition
+        input:
+          method: GET
+          path: "/echo?foo=bar"
+          headers:
+            X-server-id: "200"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label2-014-multiple-rules
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: traffic-label2-015-match-one-condition
+        input:
+          method: GET
+          path: "/echo?foo=water"
+          headers:
+            X-server-id: "100"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "200"
+      - name: traffic-label2-016-match-one-condition
+        input:
+          method: GET
+          path: "/echo?foo=bar"
+          headers:
+            X-server-id: "100"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            X-Server-id:
+              equals: "300"
+      - name: traffic-label2-017-set-plugin-without-configuration
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: traffic-label2-018-set-plugin-with-empty-rules
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"

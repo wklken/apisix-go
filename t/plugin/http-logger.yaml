@@ -1,0 +1,1536 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger-json.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger-large-body.t
+    tests: 29
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger-log-format.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger-new-line.t
+    tests: 10
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger.t
+    tests: 29
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger2.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-logger3.t
+    tests: 2
+cases:
+  - name: http-logger-json-corpus
+    source:
+      file: t/plugin/http-logger-json.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: http-logger-json-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger-json-001-json-body-with-request-body
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-002-json-body-with-response-body
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-003-json-body-with-response-body-and-response-body-expression
+        input:
+          method: GET
+          path: "/hello?bar=foo"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-004-json-body-with-response-body-expr-not-hit
+        input:
+          method: GET
+          path: "/hello?bar=bar"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-005-json-body-with-request-body-and-response-body
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-006-json-body-without-request-body-or-response-body
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-007-json-body-with-request-body-and-request-body-expression
+        input:
+          method: GET
+          path: "/hello?bar=foo"
+          body: "{\"test\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-json-008-json-body-with-request-body-expr-not-hit
+        input:
+          method: GET
+          path: "/hello?bar=bar"
+          body: "{\"sample_payload\":\"hello\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: http-logger-large-body-corpus
+    source:
+      file: t/plugin/http-logger-large-body.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+    config:
+      routes:
+        - id: http-logger-large-body-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger-large-body-001-max-body-bytes-is-not-an-integer
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-002-max-resp-body-bytes-is-not-an-integer
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-003-set-route-include-req-body-true-concat-method-json
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-004-hit-route-include-req-body-true-concat-method-json
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-005-set-route-include-resp-body-true-concat-method-json
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-006-hit-route-include-resp-body-true-concat-method-json
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-007-set-route-include-resp-body-true-include-req-body-true-concat-met
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-008-hit-route-include-resp-body-true-include-req-body-true-concat-met
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-009-set-route-include-resp-body-false-include-req-body-false
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-010-hit-route-include-resp-body-false-include-req-body-false
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-011-set-route-large-body-include-resp-body-true-include-req-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-012-hit-route-large-body-include-resp-body-true-include-req-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-large-body-013-set-route-large-body-include-resp-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-014-hit-route-large-body-include-resp-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-large-body-015-set-route-large-body-include-req-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-016-hit-route-large-body-include-req-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-large-body-017-set-route-large-body-include-resp-body-true
+        input:
+          method: GET
+          path: "/large_resp"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-018-truncate-upstream-response-body-1m-to-256-bytes
+        input:
+          method: GET
+          path: "/large_resp"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-large-body-019-set-route-large-body-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-020-truncate-upstream-request-body-100kb-to-256-bytes
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-021-set-route-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-022-empty-request-body
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-023-add-plugin-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-024-set-route-with-plugin-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-025-hit-route-with-custom-log-format
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-026-set-route-include-req-body-true-concat-method-new-line
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-027-hit-route-concat-method-new-line-batch-max-size-2
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-028-set-route-include-resp-body-true-concat-method-new-line
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-large-body-029-hit-route-concat-method-new-line-include-resp-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: http-logger-log-format-corpus
+    source:
+      file: t/plugin/http-logger-log-format.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+    config:
+      routes:
+        - id: http-logger-log-format-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger-log-format-001-add-plugin-metadata
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-002-sanity-batch-max-size-1-and-concat-method-is-new-line
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-003-report-http-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-004-sanity-batch-max-size-2-and-concat-method-is-new-line
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-005-report-http-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-006-sanity-batch-max-size-1-and-concat-method-is-json
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-007-report-http-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-008-sanity-batch-max-size-2-and-concat-method-is-json
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-009-report-http-logger-to-confirm-two-json-in-array
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-010-remove-plugin-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-011-remove-route
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-012-check-default-log-format
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-013-check-logs
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-014-multi-level-nested-expr-conditions
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-015-use-custom-variable-in-the-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-016-hit-route-and-report-http-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-017-log-format-in-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-018-hit-route-and-report-http-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-019-nested-log-format-in-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-log-format-020-hit-route-and-verify-nested-log-format
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: http-logger-log-format-021-deep-nested-log-format-is-truncated-and-warns
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: http-logger-new-line-corpus
+    source:
+      file: t/plugin/http-logger-new-line.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+    config:
+      routes:
+        - id: http-logger-new-line-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger-new-line-001-sanity-batch-max-size-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-002-hit-route-and-report-http-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-003-sanity-batch-max-size-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-004-hit-route-and-no-report-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-005-hit-route-and-report-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-006-hit-route-and-report-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-007-hit-route-and-report-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-008-set-in-global-rule
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-009-not-hit-route-and-report-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-new-line-010-delete-the-global-rule
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: http-logger-corpus
+    source:
+      file: t/plugin/http-logger.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+    config:
+      routes:
+        - id: http-logger-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-002-full-schema-check
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-003-uri-is-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-004-add-plugin
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-005-access-local-server
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-006-set-to-the-http-external-endpoint
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-007-access-external-endpoint
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-008-set-wrong-https-endpoint
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-009-access-wrong-https-endpoint
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-010-set-correct-https-endpoint
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-011-access-correct-https-endpoint
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-012-set-batch-max-size-to-two
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-013-access-route-with-batch-max-size-twice
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-014-set-wrong-port
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-015-access-wrong-port
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-016-check-uri
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-017-check-plugin-configuration-updating
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-018-check-log-schema-include-resp-body-expr
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-019-ssl-verify-default-is-false-for-comppatibaility
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-020-set-correct-https-endpoint-and-ssl-verify-true
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-021-access-correct-https-endpoint-but-ssl-verify-failed
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-022-set-correct-https-endpoint-and-ssl-verify-false
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-023-access-correct-https-endpoint-but-ssl-verify-ok
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-024-set-route-with-include-resp-body-enabled
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-025-test-http-logger-with-include-resp-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-026-set-route-with-http-logger-include-resp-body-disabled-file-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-027-test-http-logger-without-log-response-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-028-set-global-file-logger-and-http-logger-with-route-file-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger-029-http-logger-keeps-response-body-when-file-logger-runs-in-global-r
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: http-logger2-corpus
+    source:
+      file: t/plugin/http-logger2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+    config:
+      routes:
+        - id: http-logger2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger2-001-check-stale-batch-processor
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-002-don-t-remove-current-processor
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-003-remove-stale-processor
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-004-don-t-remove-batch-processor-which-is-in-used
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-005-don-t-remove
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-006-set-fetch-request-body-and-response-body-route
+        input:
+          method: GET
+          path: "/http-logger/test"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-007-test-fetch-request-body-and-response-body-route
+        input:
+          method: GET
+          path: "/http-logger/test"
+          body: test-http-logger-request
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-008-set-fetch-request-body-and-response-body-route-gzip
+        input:
+          method: GET
+          path: "/gzip_hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-009-test-fetch-request-body-and-response-body-route
+        input:
+          method: GET
+          path: "/gzip_hello"
+          headers:
+            Accept-Encoding: gzip
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-010-set-fetch-request-body-and-response-body-route-brotli
+        input:
+          method: GET
+          path: "/brotli_hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-011-test-fetch-request-body-and-response-body-route
+        input:
+          method: GET
+          path: "/brotli_hello"
+          headers:
+            Accept-Encoding: br
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-012-test-default-authorization-header-sent-to-the-log-server
+        input:
+          method: GET
+          path: "/http-logger/test"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-013-hit
+        input:
+          method: GET
+          path: "/http-logger/test"
+          body: test-http-logger-request
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-014-add-default-path
+        input:
+          method: GET
+          path: "/http-logger/test"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger2-015-hit
+        input:
+          method: GET
+          path: "/http-logger/test"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: http-logger3-corpus
+    source:
+      file: t/plugin/http-logger3.t
+      tests:
+        - 1
+        - 2
+    config:
+      routes:
+        - id: http-logger3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: http-logger3-001-should-drop-entries-when-max-pending-entries-is-exceeded
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: http-logger3-002-max-pending-entries-should-not-block-new-requests-after-stale-cle
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

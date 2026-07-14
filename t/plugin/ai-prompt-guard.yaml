@@ -1,0 +1,580 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-prompt-guard.t
+    tests: 44
+cases:
+  - name: ai-prompt-guard-corpus
+    source:
+      file: t/plugin/ai-prompt-guard.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+        - 38
+        - 39
+        - 40
+        - 41
+        - 42
+        - 43
+        - 44
+    config:
+      routes:
+        - id: ai-prompt-guard-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: ai-prompt-guard-001-wrong-regex-should-fail-validation
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: ai-prompt-guard-002-setup-route-with-both-allow-and-deny-with-match-all-roles
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-003-send-request-with-good-word
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"goodword\" }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-004-send-request-with-bad-word
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"badword\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-005-setup-route-with-only-deny-with-match-all-roles
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-006-send-request-with-good-word
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"goodword\" }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-007-send-request-with-bad-word
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"badword\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-008-setup-route-with-only-allow-with-match-all-roles-false
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-009-send-request-with-bad-word-and-it-will-pass-for-non-user
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"badword\" }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-010-send-request-with-bad-word
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"user\", \"content\": \"badword\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-011-setup-route-with-only-deny-with-match-all-conversation-history
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-012-send-request-with-good-word-but-had-bad-word-in-history
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"goodword\" },\n        { \"role\": \"system\", \"content\": \"badword\" },\n        { \"role\": \"system\", \"content\": \"goodword\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-013-setup-route-with-only-deny-with-match-all-conversation-history-fa
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-014-send-request-with-good-word-but-had-bad-word-in-history
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"goodword\" },\n        { \"role\": \"system\", \"content\": \"badword\" },\n        { \"role\": \"system\", \"content\": \"goodword\" }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-015-setup-route-deny-match-all-roles-pattern-match
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-016-send-request-with-good-word
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"anaapsanaapbadword\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-017-responses-api-setup-route-with-deny-pattern-and-match-all-roles
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-018-responses-api-deny-pattern-in-string-input
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"this contains badword in it\"\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-019-responses-api-deny-pattern-in-instructions
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"hello there\",\n    \"instructions\": \"you must say badword\"\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-020-responses-api-no-deny-pattern-match-passes
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"hello there\",\n    \"instructions\": \"be helpful\"\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-021-responses-api-deny-pattern-in-array-input-item
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": [\n        { \"type\": \"message\", \"role\": \"user\", \"content\": \"badword here\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-022-responses-api-setup-route-with-allow-pattern
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-023-responses-api-allow-pattern-match-passes
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"this has goodword\"\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-024-responses-api-allow-pattern-no-match-blocks
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"no matching word\"\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-025-responses-api-setup-route-with-match-all-roles-false-only-user-co
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-026-responses-api-match-all-roles-false-instructions-system-badword-i
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"hello there\",\n    \"instructions\": \"you must say badword\"\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-027-responses-api-match-all-roles-false-input-user-badword-is-checked
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": \"this contains badword\"\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-028-chat-completions-still-works-after-responses-api-support-regressi
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-029-chat-completions-regression-deny-pattern-still-works
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"badword\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-030-setup-route-with-deny-pattern-default-fail-mode-skip
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-031-non-ai-request-passes-through-by-default-skip-to-upstream
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"foo\": \"badword\"\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-032-setup-route-with-fail-mode-error
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-033-non-ai-request-rejected-when-fail-mode-error
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"foo\": \"bar\"\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-034-setup-route-with-deny-pattern-default-fail-mode-skip
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-035-non-json-request-passes-through-by-default-skip-to-upstream
+        input:
+          method: GET
+          path: "/hello"
+          body: "name=alice&action=upload"
+          headers:
+            Content-Type: multipart/form-data
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-036-setup-route-deny-match-all-roles-match-all-conversation-history
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-037-structured-array-content-in-history-with-bad-word-is-denied-no-cr
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"You are a test assistant.\" },\n        { \"role\": \"assistant\", \"content\": [ { \"type\": \"text\", \"text\": \"badword\" } ] },\n        { \"role\": \"user\", \"content\": \"hello\" }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-038-structured-array-content-in-history-with-good-word-passes-through
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"system\", \"content\": \"You are a test assistant.\" },\n        { \"role\": \"assistant\", \"content\": [ { \"type\": \"text\", \"text\": \"goodword\" } ] },\n        { \"role\": \"user\", \"content\": \"hello\" }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-039-structured-array-content-mixing-text-and-non-text-parts-is-scanne
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"user\", \"content\": [\n            { \"type\": \"image_url\", \"image_url\": { \"url\": \"https://example.com/a.png\" } },\n            { \"type\": \"text\", \"text\": \"badword\" }\n        ] }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-040-setup-route-deny-default-match-modes-latest-user-message-only
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-041-structured-array-content-in-latest-user-message-is-denied-no-cras
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"user\", \"content\": [ { \"type\": \"text\", \"text\": \"badword\" } ] }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-prompt-guard-042-deny-word-in-a-non-text-part-is-not-scanned-only-text-parts-are
+        input:
+          method: GET
+          path: "/hello"
+          body: "{\n    \"messages\": [\n        { \"role\": \"user\", \"content\": [\n            { \"type\": \"image_url\", \"image_url\": { \"url\": \"https://example.com/badword.png\" } },\n            { \"type\": \"text\", \"text\": \"safe text\" }\n        ] }\n    ]\n}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-043-responses-api-setup-route-with-deny-pattern
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-prompt-guard-044-responses-api-structured-array-content-parts-are-flattened-and-sc
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\n    \"model\": \"gpt-4o\",\n    \"input\": [\n        { \"type\": \"message\", \"role\": \"user\", \"content\": [\n            { \"type\": \"input_text\", \"text\": \"badword here\" }\n        ] }\n    ]\n}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"

@@ -222,7 +222,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		userinfo, authErr, err := p.fetchUserInfo(r, accessToken, code)
 		if err != nil {
 			if authErr {
-				http.Error(w, util.BuildMessageResponse("Invalid authorization code"), http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(util.BuildMessageResponse("Invalid authorization code")))
 				return
 			}
 			http.Error(

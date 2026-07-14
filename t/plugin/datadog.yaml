@@ -1,0 +1,179 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/datadog.t
+    tests: 13
+cases:
+  - name: datadog-corpus
+    source:
+      file: t/plugin/datadog.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+    config:
+      routes:
+        - id: datadog-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 404
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: datadog-001-sanity-check-metadata
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-002-add-plugin
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-003-testing-behaviour-with-mock-suite
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-004-testing-behaviour-with-multiple-requests
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-005-testing-behaviour-with-different-namespace
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-006-testing-behaviour-with-different-constant-tags
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-007-testing-behaviour-when-route-name-is-missing-must-fallback-to-rou
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-008-testing-behaviour-with-service-id
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-009-testing-behaviour-with-prefer-name-is-false-and-service-name-is-n
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-010-testing-behaviour-with-consumer
+        input:
+          method: GET
+          path: "/opentracing?apikey=user0"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-011-testing-behaviour-with-include-path-include-method-and-route-leve
+        input:
+          method: GET
+          path: "/articles/12345/comments?foo=bar"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: datadog-012-fails-on-invalid-constant-tags-value
+        input:
+          method: GET
+          path: "/articles/12345/comments?foo=bar"
+        output:
+          status: 404
+          body:
+            equals: "validation failed"
+      - name: datadog-013-oversized-coalesced-payload-falls-back-to-per-metric-datagrams
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

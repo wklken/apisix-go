@@ -1,0 +1,597 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow-without-case.t
+    tests: 7
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow.t
+    tests: 20
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow2.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow3.t
+    tests: 7
+cases:
+  - name: workflow-without-case-corpus
+    source:
+      file: t/plugin/workflow-without-case.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+    config:
+      routes:
+        - id: workflow-without-case-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: workflow-without-case-001-set-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-without-case-002-trigger-workflow
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: workflow-without-case-003-create-a-route-with-key-auth-limit-count-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-without-case-004-create-a-consumer-rose
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-without-case-005-create-a-consumer-jack-with-workflow-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-without-case-006-send-request-with-rose-consumer-only-the-chain-limit-count-applie
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: rose
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-without-case-007-send-request-with-jack-consumer-the-chain-limit-count-is-skipped-
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            apikey: jack
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: workflow-corpus
+    source:
+      file: t/plugin/workflow.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+    config:
+      routes:
+        - id: workflow-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: workflow-001-schema-check
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-002-set-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-003-trigger-workflow
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: workflow-004-multiple-conditions-in-one-case
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-005-missing-match-the-only-case
+        input:
+          method: GET
+          path: "/hello?foo=bad"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-006-trigger-workflow
+        input:
+          method: GET
+          path: "/hello?foo=bar"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: workflow-007-multiple-cases-with-different-actions
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-008-trigger-one-case
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: workflow-009-trigger-another-case
+        input:
+          method: GET
+          path: "/hello2"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: workflow-010-match-case-in-order
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-011-both-case-1-2-matched-trigger-the-first-cases
+        input:
+          method: GET
+          path: "/hello?foo=bar"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: workflow-012-case-1-mismatched-trigger-the-second-cases
+        input:
+          method: GET
+          path: "/hello?foo=bad"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: workflow-013-all-cases-mismatched-pass-to-upstream
+        input:
+          method: GET
+          path: "/hello1"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-014-schema-check-limit-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-015-set-actions-as-limit-count
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-016-up-the-limit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-017-the-conf-in-actions-is-isolation
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-018-cross-hit-case-1-and-case-2-up-limit-by-isolation
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-019-multiple-conditions-in-one-case
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow-020-trigger-workflow
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+  - name: workflow2-corpus
+    source:
+      file: t/plugin/workflow2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: workflow2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: workflow2-001-multiple-cases-with-different-actions-return-limit-count
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-002-cross-hit-case-1-and-case-2-trigger-actions-by-isolation
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-003-the-conf-in-actions-is-isolation
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-004-cross-hit-case-1-and-case-2-trigger-actions-by-isolation
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-005-cross-hit-case-1-and-case-2-up-limit-by-isolation-2
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-006-different-actions-with-different-limit-count-conf-up-limit-by-iso
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-007-case-1-up-limit-case-2-psssed
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow2-008-test-no-rules
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+  - name: workflow3-corpus
+    source:
+      file: t/plugin/workflow3.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+    config:
+      routes:
+        - id: workflow3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: workflow3-001-limit-conn
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow3-002-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow3-003-two-limit-conn-configurations
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow3-004-exceeding-the-burst
+        input:
+          method: GET
+          path: "/test_concurrency2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow3-005-set-up-workflow-with-limit-conn-in-global-rule-and-a-route-with-c
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow3-006-options-preflight-finished-by-cors-in-rewrite-phase-workflow-log-
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://sub.domain.com
+            Access-Control-Request-Method: GET
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: workflow3-007-clean-up
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

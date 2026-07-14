@@ -1,0 +1,717 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/request-validation.t
+    tests: 53
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/request-validation2.t
+    tests: 2
+cases:
+  - name: request-validation-corpus
+    source:
+      file: t/plugin/request-validation.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+        - 38
+        - 39
+        - 40
+        - 41
+        - 42
+        - 43
+        - 44
+        - 45
+        - 46
+        - 47
+        - 48
+        - 49
+        - 50
+        - 51
+        - 52
+        - 53
+    config:
+      routes:
+        - id: request-validation-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 505
+            headers: {}
+            body: "validation failed"
+          - status: 505
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: request-validation-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-002-missing-schema-for-header-and-body
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-003-add-plugin-with-all-combinations
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-004-required-payload-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-005-required-payload-added
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-006-add-plugin-with-header-schema
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-007-required-header-payload-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-008-required-header-added-in-header
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-009-add-route-test-request-validation-body-schema
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-010-add-route-test-request-validation-body-schema-type-is-object
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-011-add-route-test-request-validation-body-schema-type-is-array
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-012-add-route-test-request-validation-body-schema-type-is-string
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-013-add-route-test-request-validation-body-schema-type-is-number
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-014-add-route-test-request-validation-body-schema-type-is-integer
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-015-add-route-test-request-validation-body-schema-type-is-table
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-016-add-route-test-request-validation-body-schema-type-is-function
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-017-add-route-test-request-validation-body-schema-type-failure
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-018-add-route-test-request-validation-body-schema-enum-failure
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-019-add-route-test-request-validation-body-schema-enum-success
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-020-add-route-test-request-validation-body-schema-required-failure
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-021-add-route-test-request-validation-body-schema-required-success
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-022-add-route-test-request-validation-header-schema
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-023-add-route-test-request-validation-header-schema-type-is-object
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-024-add-route-test-request-validation-header-schema-type-is-array
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-025-add-route-test-request-validation-header-schema-type-is-string
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-026-add-route-test-request-validation-header-schema-type-is-number
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-027-add-route-test-request-validation-header-schema-type-is-integer
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-028-add-route-test-request-validation-header-schema-type-is-table
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-029-add-route-test-request-validation-header-schema-type-is-function
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-030-add-route-test-request-validation-header-schema-type-failure
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-031-add-route-test-request-validation-header-schema-enum-failure
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-032-add-route-test-request-validation-header-schema-enum-success
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-033-add-route-test-request-validation-header-schema-required-failure
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-034-add-route-test-request-validation-header-schema-required-success
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-035-add-route-test-request-validation-header-schema-required-success-
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-036-use-empty-header-to-hit-header-schema-required-with-custom-reject
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-037-use-bad-header-value-to-hit-header-schema-required-with-custom-re
+        input:
+          method: GET
+          path: "/opentracing"
+          headers:
+            test: abc
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-038-pass-header-schema-required-with-custom-reject-message-rule
+        input:
+          method: GET
+          path: "/opentracing"
+          headers:
+            test: a
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: request-validation-039-add-route-test-request-validation-body-schema-required-success-wi
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-040-use-empty-body-to-hit-body-schema-required-with-custom-reject-mes
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-041-use-bad-body-value-to-hit-body-schema-required-with-custom-reject
+        input:
+          method: GET
+          path: "/opentracing"
+          body: "{\"test\":\"abc\"}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-042-pass-body-schema-required-with-custom-reject-message-rule
+        input:
+          method: GET
+          path: "/opentracing"
+          body: "{\"test\":\"a\"}"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: request-validation-043-add-route-test-request-validation-header-schema-required-failure-
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-044-add-route-test-request-validation-schema-with-custom-reject-messa
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-045-add-route-test-request-validation-body-schema-required-success-wi
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-046-use-empty-body-to-hit-custom-rejected-code-rule
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 505
+          body:
+            equals: "validation failed"
+      - name: request-validation-047-use-bad-body-value-to-hit-custom-rejected-code-rule
+        input:
+          method: GET
+          path: "/opentracing"
+          body: "{\"test\":\"abc\"}"
+        output:
+          status: 505
+          body:
+            equals: "validation failed"
+      - name: request-validation-048-pass-custom-rejected-code-rule
+        input:
+          method: GET
+          path: "/opentracing"
+          body: "{\"test\":\"a\"}"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: request-validation-049-add-route-test-request-validation-header-schema-required-failure-
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-050-add-route-test-request-validation-schema-with-custom-reject-code-
+        input:
+          method: GET
+          path: "/plugin/request/validation"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: request-validation-051-add-route-for-urlencoded-post-data-validation
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation-052-test-urlencoded-post-data
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Content-Type: application/x-www-form-urlencoded
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: request-validation-053-test-urlencoded-post-data-with-charset-header
+        input:
+          method: GET
+          path: "/echo"
+          headers:
+            Content-Type: "application/x-www-form-urlencoded; charset=utf-8"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+  - name: request-validation2-corpus
+    source:
+      file: t/plugin/request-validation2.t
+      tests:
+        - 1
+        - 2
+    config:
+      routes:
+        - id: request-validation2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: request-validation2-001-json-body-with-duplicate-key
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: request-validation2-002-hit
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"k\":\"bad\",\"k\":\"good\"}"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

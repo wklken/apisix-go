@@ -1,0 +1,1346 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/kafka-logger-large-body.t
+    tests: 28
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/kafka-logger-log-format.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/kafka-logger.t
+    tests: 29
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/kafka-logger2.t
+    tests: 27
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/kafka-logger3.t
+    tests: 2
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/kafka-logger4.t
+    tests: 8
+cases:
+  - name: kafka-logger-large-body-corpus
+    source:
+      file: t/plugin/kafka-logger-large-body.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+    config:
+      routes:
+        - id: kafka-logger-large-body-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: kafka-logger-large-body-001-max-body-bytes-is-not-an-integer
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-002-set-route-meta-format-origin-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-003-hit-route-meta-format-origin-include-req-body-true
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-004-set-route-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-005-hit-route-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-006-set-route-id-1-meta-format-default-include-resp-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-007-hit-route-meta-format-default-include-resp-body-true
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-008-set-route-id-1-meta-format-origin-include-resp-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-009-hit-route-meta-format-origin-include-resp-body-true
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-010-set-route-id-1-meta-format-default-include-resp-body-true-include
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-011-hit-route-meta-format-default-include-resp-body-true-include-req-
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-012-set-route-id-1-meta-format-default-include-resp-body-false-includ
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-013-hit-route-meta-format-default-include-resp-body-false-include-req
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-014-set-route-large-body-meta-format-default-include-resp-body-true-i
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-015-hit-route-large-body-meta-format-default-include-resp-body-true-i
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: kafka-logger-large-body-016-set-route-large-body-meta-format-default-include-resp-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-017-hit-route-large-body-meta-format-default-include-resp-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: kafka-logger-large-body-018-set-route-large-body-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-019-hit-route-large-body-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: kafka-logger-large-body-020-set-route-large-body-meta-format-default-include-resp-body-true
+        input:
+          method: GET
+          path: "/large_resp"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-021-truncate-upstream-response-body-1m-to-256-bytes
+        input:
+          method: GET
+          path: "/large_resp"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: kafka-logger-large-body-022-set-route-large-body-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-023-truncate-upstream-request-body-1m-to-256-bytes
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-024-set-route-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-025-empty-request-body
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-026-add-plugin-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-027-set-route-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-large-body-028-hit-route-meta-format-default-include-req-body-true
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: kafka-logger-log-format-corpus
+    source:
+      file: t/plugin/kafka-logger-log-format.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: kafka-logger-log-format-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: kafka-logger-log-format-001-add-plugin-metadata
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-log-format-002-set-route-id-1-batch-max-size-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-log-format-003-hit-route-and-report-kafka-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-log-format-004-log-format-in-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-log-format-005-hit-route-and-report-kafka-logger
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: kafka-logger-corpus
+    source:
+      file: t/plugin/kafka-logger.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+    config:
+      routes:
+        - id: kafka-logger-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: kafka-logger-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-002-missing-broker-list
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-003-wrong-type-of-string
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-004-set-route-id-1
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-005-access
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-006-error-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-007-set-route-meta-format-origin-include-req-body-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-008-hit-route-report-log-to-kafka
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-009-set-route-meta-format-origin-include-req-body-false
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-010-hit-route-report-log-to-kafka
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-011-set-route-meta-format-default
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-012-hit-route-report-log-to-kafka
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-013-set-route-id-1-missing-key-field
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-014-access-test-key-field-is-optional
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-015-set-route-meta-format-default-missing-key-field
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-016-hit-route-report-log-to-kafka
+        input:
+          method: GET
+          path: "/hello?ab=cd"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-017-use-the-topic-with-3-partitions
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-018-report-log-to-kafka-by-different-partitions
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-019-report-log-to-kafka-by-different-partitions-in-async-mode
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-020-set-route-with-incorrect-sasl-config
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-021-hit-route-failed-to-send-data-to-kafka
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-022-set-route-with-correct-sasl-config
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-023-hit-route-send-data-to-kafka-successfully
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-024-set-route-batch-max-size-2-check-if-prometheus-is-initialized-pro
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-025-access
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-026-create-a-service-with-kafka-logger-and-three-routes-bound-to-it
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-027-hit-three-routes-should-create-batch-processor-only-once
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-028-check-api-version-schema-2-is-accepted-3-is-rejected
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger-029-report-log-to-kafka-with-api-version-2-the-broker-should-store-th
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: kafka-logger2-corpus
+    source:
+      file: t/plugin/kafka-logger2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+    config:
+      routes:
+        - id: kafka-logger2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: kafka-logger2-001-required-acks-matches-none-of-the-enum-values
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-002-report-log-to-kafka-with-required-acks-1-1
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-003-update-the-broker-list-and-cluster-name-generate-different-kafka-
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-004-use-the-topic-that-does-not-exist-on-kafka-even-if-kafka-allows-a
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-005-check-broker-list-via-schema
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-006-kafka-brokers-info-in-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-007-set-route-id-1-include-req-body-true-include-req-body-expr-array
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-008-hit-route-expr-eval-success
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-009-hit-route-expr-eval-fail
+        input:
+          method: GET
+          path: "/hello?name=zcxv"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-010-check-log-schema-include-req-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-011-check-log-schema-include-resp-body
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-012-set-route-include-resp-body-gzip
+        input:
+          method: GET
+          path: "/gzip_hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-013-hit
+        input:
+          method: GET
+          path: "/gzip_hello"
+          headers:
+            Accept-Encoding: gzip
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-014-set-route-include-resp-body-brotli
+        input:
+          method: GET
+          path: "/brotli_hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-015-hit
+        input:
+          method: GET
+          path: "/brotli_hello"
+          headers:
+            Accept-Encoding: br
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-016-set-route-id-1-include-resp-body-true-include-resp-body-expr-arra
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-017-hit-route-expr-eval-success
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-018-hit-route-expr-eval-fail
+        input:
+          method: GET
+          path: "/hello?name=zcxv"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-019-multi-level-nested-expr-conditions
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-020-hit-route-req-body-expr-and-resp-body-expr-both-eval-success
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-021-hit-route-req-body-expr-eval-success-resp-body-expr-both-eval-fai
+        input:
+          method: GET
+          path: "/hello?name=asdfgh"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-022-hit-route-req-body-expr-eval-failed-resp-body-expr-both-eval-succ
+        input:
+          method: GET
+          path: "/hello?name=zxcvbn"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-023-hit-route-req-body-expr-eval-success-resp-body-expr-both-eval-fai
+        input:
+          method: GET
+          path: "/hello?name=xxxxxx"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-024-update-route-id-1-include-req-body-true-include-req-body-expr-arr
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-025-hit-route-expr-eval-success
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-026-setup-route-with-meta-refresh-interval
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger2-027-hit-route-send-data-to-kafka-successfully
+        input:
+          method: GET
+          path: "/hello"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: kafka-logger3-corpus
+    source:
+      file: t/plugin/kafka-logger3.t
+      tests:
+        - 1
+        - 2
+    config:
+      routes:
+        - id: kafka-logger3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: kafka-logger3-001-should-drop-entries
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger3-002-data-encryption-for-brokers-sasl-config-password
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: kafka-logger4-corpus
+    source:
+      file: t/plugin/kafka-logger4.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+    config:
+      routes:
+        - id: kafka-logger4-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: kafka-logger4-001-set-route-with-correct-sasl-config-scram-sha-256
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-002-hit-route-send-data-to-kafka-successfully
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-003-set-route-with-incorrect-password-scram-sha-256
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-004-hit-route-send-data-to-kafka-unsuccessfully
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-005-set-route-with-correct-sasl-config-scram-sha-512
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-006-hit-route-send-data-to-kafka-successfully
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-007-set-route-with-incorrect-password-scram-sha-512
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: kafka-logger4-008-hit-route-send-data-to-kafka-unsuccessfully
+        input:
+          method: GET
+          path: "/hello?name=qwerty"
+          body: abcdef
+        output:
+          status: 200
+          body:
+            equals: "hello world"

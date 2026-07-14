@@ -20,17 +20,15 @@
 
 The standalone integration suite under [`t/plugin`](../t/plugin/README.md) is
 pinned to Apache APISIX commit
-`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. Its six manifests map 170
-upstream `TEST` blocks to 113 executable standalone runs. Each run writes a
-fresh `config.yaml` and `apisix.yaml`, starts the real APISIX-Go CLI, sends the
-source-equivalent request, and asserts the response, upstream request, or
-startup log.
-
-`referer-restriction.t`, `uri-blocker.t`, and `redirect2.t` currently have no
-skipped groups. Three concrete non-standalone groups remain in the earlier
-`redirect.t`, `proxy-rewrite.t`, and `response-rewrite.t` manifests: frontend
-TLS handshake behavior and two Admin API/etcd serialization checks. Generic
-source-enumeration skips are not treated as coverage.
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. It contains 99 manifests covering
+all 98 source-backed plugins marked Supported here, plus the supplemental
+`redirect2` source file. Every pinned upstream `TEST` number is mapped to an
+ordered request/assertion step. Each scenario writes a fresh `config.yaml` and
+`apisix.yaml`, starts the real APISIX-Go CLI in standalone YAML-provider mode,
+sends the request through a loopback fixture, and asserts the response,
+fixture request, or startup log. Cases that need Admin API, Lua, or an
+external service are represented by an equivalent local fixture; no `skip`
+placeholder is used.
 
 The four intentionally unregistered defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`. They require an external plugin runner or Lua/OpenResty runtime. The bounded `serverless-pre-function` and `serverless-post-function` compatibility implementations remain documented as not-required native/runtime parity.
 
@@ -83,7 +81,7 @@ The table below is the single source of truth for plugin status. The final colum
 | Authentication | [`basic-auth`](https://apisix.apache.org/zh/docs/apisix/plugins/basic-auth/) | APISIX 3.17 default | yes | 70% | Supported (monitor) | support Basic credential extraction, APISIX-style credential whitespace normalization, consumer attachment, password validation, missing/malformed authorization errors, and `hide_credentials`<br>support encrypted consumer fields through `apisix.data_encryption` | No normal Go TODO. |
 | Authentication | [`authz-keycloak`](https://apisix.apache.org/zh/docs/apisix/plugins/authz-keycloak/) | APISIX 3.17 default | yes | 85% | Supported (monitor) | support explicit `token_endpoint`, discovery, static `permissions`, lazy path resource lookup, UMA decision requests, `http_method_as_scope`, `ENFORCING` access-denied behavior, `access_denied_redirect_uri`, `ssl_verify`, timeout, keepalive settings, password-grant token generation URI, and process-shared discovery/service-account-token caching with `cache_ttl_seconds`, refresh-token reuse, and expiry leeway | Lua `http_request_decorator` functions and cross-process shared-dict fidelity remain deferred. |
 | Authentication | [`authz-casdoor`](https://apisix.apache.org/zh/docs/apisix/plugins/authz-casdoor/) | APISIX 3.17 default | yes | 85% | Supported (monitor) | support OAuth authorize redirect, per-`client_id` session cookie, callback state validation, encrypted client secrets, access token exchange against `/api/login/oauth/access_token`, token-expiry enforcement, authenticated session pass-through, and callback failure logging | Distributed/exact `resty.session` behavior remains deferred. |
-| Authentication | [`dingtalk-auth`](https://apisix.apache.org/docs/apisix/plugins/dingtalk-auth/) | APISIX 3.17 default | yes | 65% | Supported (monitor) | support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, DingTalk access token POST, access token caching, DingTalk userinfo POST, signed `dingtalk_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, Base64 JSON `X-Userinfo` forwarding, and `$external_user` request-context propagation | Exact encrypted `resty.session`, distributed state, logging, and worker-shared token-cache behavior remain deferred. |
+| Authentication | [`dingtalk-auth`](https://apisix.apache.org/docs/apisix/plugins/dingtalk-auth/) | APISIX 3.17 default | yes | 65% | Supported (monitor) | support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, APISIX-style invalid-code JSON errors, DingTalk access token POST, access token caching, DingTalk userinfo POST, signed `dingtalk_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, Base64 JSON `X-Userinfo` forwarding, and `$external_user` request-context propagation | Exact encrypted `resty.session`, distributed state, logging, and worker-shared token-cache behavior remain deferred. |
 | Authentication | [`feishu-auth`](https://apisix.apache.org/docs/apisix/plugins/feishu-auth/) | APISIX 3.17 default | yes | 65% | Supported (monitor) | support official plugin name, priority, schema, no-code redirect to `redirect_uri`, authorization code extraction from configurable header/query names, Feishu OAuth token POST with `auth_redirect_uri`, Feishu userinfo GET with Bearer token, signed `feishu_session` cookie, `cookie_expires_in`, `secret_fallbacks` verification, `ssl_verify`, timeout, clearing spoofed `X-Userinfo`, Base64 JSON `X-Userinfo` forwarding, and `$external_user` request-context propagation | Exact encrypted `resty.session`, distributed state, logging, and worker/session behavior remain deferred. |
 | Authentication | [`saml-auth`](https://apisix.apache.org/docs/apisix/plugins/saml-auth/) | APISIX 3.17 default | yes | 85% | Supported (monitor) | support official plugin name, priority, schema, HTTP-Redirect and HTTP-POST authentication requests, SP-signed SAML requests, ACS `SAMLResponse` parsing and signature/condition validation through `github.com/crewjam/saml`, signed local SAML session cookies, `secret_fallbacks` verification, SP-initiated logout redirect, logout callback cleanup, `X-Userinfo` forwarding, and local `$external_user` request context attachment when APISIX vars exist | Exact `lua-resty-saml` session/runtime behavior remains deferred. |
 | Authentication | [`wolf-rbac`](https://apisix.apache.org/zh/docs/apisix/plugins/wolf-rbac/) | APISIX 3.17 default | yes | 75% | Supported (monitor) | support `V1#appid#wolf_token` parsing, token extraction from query/header/cookie, consumer lookup by `appid`, Wolf `/wolf/rbac/access_check`, configured TLS verification, APISIX-style transient 5xx retry/backoff, user info header injection, consumer attachment, and public login/change-password/user-info APIs at `/apisix/plugin/wolf-rbac/*` | Cross-process OpenResty consumer-cache fidelity remains deferred. |

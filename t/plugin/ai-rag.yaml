@@ -1,0 +1,234 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-rag.t
+    tests: 17
+cases:
+  - name: ai-rag-corpus
+    source:
+      file: t/plugin/ai-rag.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+    config:
+      routes:
+        - id: ai-rag-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: ai-rag-001-minimal-viable-configuration
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-002-vector-search-provider-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-003-embeddings-provider-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-004-wrong-auth-header-for-embeddings-provider
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-005-send-request
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"ai_rag\":{\"vector_search\":{\"fields\":\"contentVector\"},\"embeddings\":{\"input\":\"which service is good for devops\",\"dimensions\":1024}}}"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ai-rag-006-wrong-auth-header-for-search-provider
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-007-send-request
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"ai_rag\":{\"vector_search\":{\"fields\":\"contentVector\"},\"embeddings\":{\"input\":\"which service is good for devops\",\"dimensions\":1024}}}"
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+      - name: ai-rag-008-send-request-with-empty-body
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"messages\":[]}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-rag-009-send-request-with-vector-search-fields-missing
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"ai_rag\":{\"vector_search\":{\"missing-fields\":\"something\"},\"embeddings\":{\"input\":\"which service is good for devops\",\"dimensions\":1024}}}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-rag-010-send-request-with-embedding-input-missing
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"ai_rag\":{\"vector_search\":{\"fields\":\"something\"},\"embeddings\":{\"missinginput\":\"which service is good for devops\"}}}"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: ai-rag-011-configure-plugin-with-right-auth-headers
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-012-send-request-with-embedding-input-missing
+        input:
+          method: GET
+          path: "/echo"
+          body: "{\"ai_rag\":{\"vector_search\":{\"fields\":\"something\"},\"embeddings\":{\"input\":\"which service is good for devops\"}}}"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: ai-rag-013-configure-route-for-responses-api-rag-injection-test
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-014-responses-api-rag-injection-rag-result-appended-to-input
+        input:
+          method: GET
+          path: "/v1/responses"
+          body: "{\"input\":\"which service is good for devops\",\"ai_rag\":{\"vector_search\":{\"fields\":\"something\"},\"embeddings\":{\"input\":\"which service is good for devops\"}}}"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: ai-rag-015-ssl-verify-defaults-to-true
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-016-ssl-verify-can-be-set-to-false
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: ai-rag-017-ssl-verify-false-is-passed-through-to-resty-http-request-uri
+        input:
+          method: GET
+          path: "/echo"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

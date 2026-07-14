@@ -20,10 +20,11 @@ type Manifest struct {
 }
 
 type SourceSpec struct {
-	Repository string `yaml:"repository"`
-	Commit     string `yaml:"commit"`
-	File       string `yaml:"file"`
-	Tests      int    `yaml:"tests"`
+	Repository  string `yaml:"repository"`
+	Commit      string `yaml:"commit"`
+	File        string `yaml:"file"`
+	Tests       int    `yaml:"tests"`
+	TestNumbers []int  `yaml:"test_numbers,omitempty"`
 }
 
 type Case struct {
@@ -77,15 +78,16 @@ type CaseSource struct {
 }
 
 type HTTPInput struct {
-	Method       string              `yaml:"method,omitempty"`
-	Scheme       string              `yaml:"scheme,omitempty"`
-	Version      string              `yaml:"version,omitempty"`
-	Path         string              `yaml:"path"`
-	Headers      map[string]string   `yaml:"headers,omitempty"`
-	HeaderValues map[string][]string `yaml:"header_values,omitempty"`
-	Body         string              `yaml:"body,omitempty"`
-	BodyRepeat   *RepeatedBody       `yaml:"body_repeat,omitempty"`
-	Chunked      bool                `yaml:"chunked,omitempty"`
+	Method         string              `yaml:"method,omitempty"`
+	Scheme         string              `yaml:"scheme,omitempty"`
+	Version        string              `yaml:"version,omitempty"`
+	Path           string              `yaml:"path"`
+	Headers        map[string]string   `yaml:"headers,omitempty"`
+	HeaderValues   map[string][]string `yaml:"header_values,omitempty"`
+	Body           string              `yaml:"body,omitempty"`
+	BodyRepeat     *RepeatedBody       `yaml:"body_repeat,omitempty"`
+	Chunked        bool                `yaml:"chunked,omitempty"`
+	WithoutCookies bool                `yaml:"without_cookies,omitempty"`
 }
 
 type RepeatedBody struct {
@@ -200,6 +202,18 @@ func (m *Manifest) validate() error {
 		if source.Tests <= 0 {
 			return fmt.Errorf("source %q tests must be positive", source.File)
 		}
+		if len(source.TestNumbers) > 0 {
+			if len(source.TestNumbers) != source.Tests {
+				return fmt.Errorf("source %q test_numbers must contain %d entries", source.File, source.Tests)
+			}
+			seen := make(map[int]bool, len(source.TestNumbers))
+			for _, number := range source.TestNumbers {
+				if number <= 0 || seen[number] {
+					return fmt.Errorf("source %q test_numbers must be unique and positive", source.File)
+				}
+				seen[number] = true
+			}
+		}
 		if _, ok := sourceByFile[source.File]; ok {
 			return fmt.Errorf("source file %q is duplicated", source.File)
 		}
@@ -240,7 +254,7 @@ func (m *Manifest) validate() error {
 			mapped[file] = make(map[int]string, source.Tests)
 		}
 		for _, number := range current.Source.Tests {
-			if number < 1 || number > source.Tests {
+			if !sourceHasTest(source, number) {
 				if !multiSourceForm {
 					return fmt.Errorf("case %q source test %d is outside 1..%d", name, number, source.Tests)
 				}
@@ -265,7 +279,14 @@ func (m *Manifest) validate() error {
 		}
 	}
 	for _, source := range sources {
-		for number := 1; number <= source.Tests; number++ {
+		numbers := source.TestNumbers
+		if len(numbers) == 0 {
+			numbers = make([]int, source.Tests)
+			for i := range numbers {
+				numbers[i] = i + 1
+			}
+		}
+		for _, number := range numbers {
 			if _, ok := mapped[source.File][number]; !ok {
 				if !multiSourceForm {
 					return fmt.Errorf("missing source test %d", number)
@@ -275,6 +296,13 @@ func (m *Manifest) validate() error {
 		}
 	}
 	return nil
+}
+
+func sourceHasTest(source SourceSpec, number int) bool {
+	if len(source.TestNumbers) == 0 {
+		return number >= 1 && number <= source.Tests
+	}
+	return slices.Contains(source.TestNumbers, number)
 }
 
 func (c *Case) validate() error {

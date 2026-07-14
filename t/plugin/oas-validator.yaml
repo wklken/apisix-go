@@ -1,0 +1,1607 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/oas-validator.t
+    tests: 32
+    test_numbers:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 21
+      - 22
+      - 23
+      - 24
+      - 25
+      - 26
+      - 27
+      - 28
+      - 29
+      - 30
+      - 31
+      - 32
+      - 33
+      - 34
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/oas-validator2.t
+    tests: 55
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/oas-validator3.t
+    tests: 23
+cases:
+  - name: oas-validator-corpus
+    source:
+      file: t/plugin/oas-validator.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+    config:
+      routes:
+        - id: oas-validator-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 422
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 503
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: oas-validator-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-002-open-api-string-should-be-json
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-003-create-route-correctly
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-004-test-body-validation-post
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"id\": 10, \"name\": \"doggie\", \"category\": {\"id\": 1, \"name\": \"Dogs\"}, \"photoUrls\": [\"string\"], \"tags\": [{\"id\": 1, \"name\": \"tag1\"}], \"status\": \"available\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-005-test-body-validation-put
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"id\": 10, \"name\": \"doggie\", \"category\": { \"id\": 1, \"name\": \"Dogs\"}, \"photoUrls\": [ \"string\"], \"tags\": [{ \"id\": 0, \"name\": \"string\"}], \"status\": \"available\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-006-passing-incorrect-body-should-fail
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-007-test-body-validation-with-query-params
+        input:
+          method: GET
+          path: "/api/v3/pet/findByStatus?status=pending"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-008-querying-for-married-dogs-should-fail-incorrect-query-param
+        input:
+          method: GET
+          path: "/api/v3/pet/findByStatus?status=married"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-009-test-body-validation-with-path-params
+        input:
+          method: GET
+          path: "/api/v3/pet/10"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-010-querying-with-wrong-path-uri-param-should-fail
+        input:
+          method: GET
+          path: "/api/v3/pet/wrong-id"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-011-create-route-for-skipping-body-validation
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-012-passing-incorrect-body-should-pass-validation-skip-request-body-v
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-013-create-route-for-skipping-header-validation
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-014-passing-incorrect-header-should-pass-validation-skip-request-head
+        input:
+          method: GET
+          path: "/api/v3/pet/1"
+          headers:
+            Content-Type: not-application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-015-create-route-for-skipping-query-param-validation
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-016-querying-for-incorrect-query-params-should-pass-skip-query-param-
+        input:
+          method: GET
+          path: "/api/v3/pet/findByStatus?status=married"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-017-create-route-for-skipping-path-param-validation
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-018-querying-for-incorrect-path-params-should-pass-skip-path-params-v
+        input:
+          method: GET
+          path: "/api/v3/multipleoftest"
+          body: "{\"testnumber\": 1.1312}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-021-route-setup-with-reject-if-not-match-false
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-022-invalid-body-should-still-pass-to-upstream-reject-if-not-match-is
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-023-create-route-with-explicit-reject-if-not-match-true
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-024-invalid-body-should-be-rejected-when-reject-if-not-match-is-true
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-025-create-route-with-rejection-status-code-422
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-026-invalid-body-should-return-422-when-rejection-status-code-422
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 422
+          body:
+            equals: "validation failed"
+      - name: oas-validator-027-create-route-with-rejection-status-code-503
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-028-invalid-body-should-return-503-when-rejection-status-code-503
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 503
+          body:
+            equals: "validation failed"
+      - name: oas-validator-029-schema-should-reject-rejection-status-code-399-out-of-range
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-030-schema-should-reject-rejection-status-code-600-out-of-range
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator-031-boundary-value-rejection-status-code-400-should-be-accepted
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-032-boundary-value-rejection-status-code-599-should-be-accepted
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-033-rejection-status-code-should-not-affect-behavior-when-reject-if-n
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator-034-invalid-body-should-pass-to-upstream-when-reject-if-not-match-fal
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: oas-validator2-corpus
+    source:
+      file: t/plugin/oas-validator2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+        - 38
+        - 39
+        - 40
+        - 41
+        - 42
+        - 43
+        - 44
+        - 45
+        - 46
+        - 47
+        - 48
+        - 49
+        - 50
+        - 51
+        - 52
+        - 53
+        - 54
+        - 55
+    config:
+      routes:
+        - id: oas-validator2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 422
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+    steps:
+      - name: oas-validator2-001-oas-3-1-create-route-with-spec31-json
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-002-oas-3-1-exclusiveminimum-maximum-numeric-value-within-range-shoul
+        input:
+          method: GET
+          path: "/api/v31/exclusive"
+          body: "{\"score\": 50}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-003-oas-3-1-exclusiveminimum-value-equal-to-lower-bound-0-should-fail
+        input:
+          method: GET
+          path: "/api/v31/exclusive"
+          body: "{\"score\": 0}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-004-oas-3-1-exclusivemaximum-value-equal-to-upper-bound-100-should-fa
+        input:
+          method: GET
+          path: "/api/v31/exclusive"
+          body: "{\"score\": 100}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-005-oas-3-1-if-then-else-circle-with-radius-should-pass-then-branch
+        input:
+          method: GET
+          path: "/api/v31/shape"
+          body: "{\"type\": \"circle\", \"radius\": 5}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-006-oas-3-1-if-then-circle-without-radius-should-fail
+        input:
+          method: GET
+          path: "/api/v31/shape"
+          body: "{\"type\": \"circle\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-007-oas-3-1-if-else-rectangle-with-width-and-height-should-pass-else-
+        input:
+          method: GET
+          path: "/api/v31/shape"
+          body: "{\"type\": \"rectangle\", \"width\": 10, \"height\": 5}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-008-oas-3-1-if-else-rectangle-missing-width-should-fail
+        input:
+          method: GET
+          path: "/api/v31/shape"
+          body: "{\"type\": \"rectangle\", \"height\": 5}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-009-oas-3-1-anyof-matching-first-subschema-should-pass
+        input:
+          method: GET
+          path: "/api/v31/anyof"
+          body: "{\"name\": \"doggie\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-010-oas-3-1-anyof-matching-second-subschema-should-pass
+        input:
+          method: GET
+          path: "/api/v31/anyof"
+          body: "{\"id\": 42}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-011-oas-3-1-anyof-matching-neither-subschema-should-fail
+        input:
+          method: GET
+          path: "/api/v31/anyof"
+          body: "{\"other\": \"value\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-012-oas-3-1-oneof-matching-exactly-one-subschema-should-pass
+        input:
+          method: GET
+          path: "/api/v31/oneof"
+          body: "{\"cat\": \"whiskers\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-013-oas-3-1-oneof-matching-both-subschemas-should-fail
+        input:
+          method: GET
+          path: "/api/v31/oneof"
+          body: "{\"cat\": \"whiskers\", \"dog\": \"rex\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-014-oas-3-1-allof-all-subschemas-satisfied-should-pass
+        input:
+          method: GET
+          path: "/api/v31/allof"
+          body: "{\"a\": \"hello\", \"b\": 42}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-015-oas-3-1-allof-missing-field-required-by-one-subschema-should-fail
+        input:
+          method: GET
+          path: "/api/v31/allof"
+          body: "{\"a\": \"hello\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-016-oas-3-1-route-with-spec31-json-and-reject-if-not-match-false
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-017-oas-3-1-reject-if-not-match-false-invalid-body-passes-through-to-
+        input:
+          method: GET
+          path: "/api/v31/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-018-oas-3-1-route-with-spec31-json-and-rejection-status-code-422
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-019-oas-3-1-rejection-status-code-422-invalid-body-returns-422
+        input:
+          method: GET
+          path: "/api/v31/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 422
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-020-oas-3-1-route-with-spec31-json-and-verbose-errors-true
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-021-oas-3-1-verbose-errors-true-error-response-body-contains-schema-d
+        input:
+          method: GET
+          path: "/api/v31/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-022-oas-3-1-route-with-spec31-json-and-skip-request-body-validation-t
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-023-oas-3-1-skip-request-body-validation-true-invalid-body-is-not-rej
+        input:
+          method: GET
+          path: "/api/v31/pet"
+          body: "{\"lol\": \"watdis?\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-024-oas-3-1-route-with-spec31-json-and-skip-query-param-validation-tr
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-025-oas-3-1-skip-query-param-validation-true-invalid-enum-query-param
+        input:
+          method: GET
+          path: "/api/v31/pet/findByStatus?status=married"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-026-oas-3-1-route-with-spec31-json-and-skip-path-params-validation-tr
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-027-oas-3-1-skip-path-params-validation-true-non-integer-path-param-i
+        input:
+          method: GET
+          path: "/api/v31/pet/not-an-id"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-028-oas-3-1-restore-route-with-spec31-json-no-extra-options
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-029-oas-3-1-body-validation-valid-pet-passes-plugin-upstream-returns-
+        input:
+          method: GET
+          path: "/api/v31/pet"
+          body: "{\"name\": \"doggie\", \"photoUrls\": [\"http://example.com/img.jpg\"]}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-030-oas-3-1-body-validation-missing-required-field-should-fail
+        input:
+          method: GET
+          path: "/api/v31/pet"
+          body: "{\"name\": \"doggie\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-031-oas-3-1-path-param-validation-valid-integer-id-passes-plugin
+        input:
+          method: GET
+          path: "/api/v31/pet/42"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-032-oas-3-1-path-param-validation-non-integer-id-should-fail
+        input:
+          method: GET
+          path: "/api/v31/pet/not-an-id"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-033-oas-3-1-query-param-validation-valid-enum-value-passes-plugin
+        input:
+          method: GET
+          path: "/api/v31/pet/findByStatus?status=available"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-034-oas-3-1-query-param-validation-invalid-enum-value-should-fail
+        input:
+          method: GET
+          path: "/api/v31/pet/findByStatus?status=married"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-035-oas-3-1-nullable-type-array-null-value-should-pass
+        input:
+          method: GET
+          path: "/api/v31/nullable"
+          body: "{\"value\": null}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-036-oas-3-1-nullable-type-array-string-value-should-pass
+        input:
+          method: GET
+          path: "/api/v31/nullable"
+          body: "{\"value\": \"hello\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-037-oas-3-1-nullable-type-array-integer-value-should-fail
+        input:
+          method: GET
+          path: "/api/v31/nullable"
+          body: "{\"value\": 123}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-038-oas-3-1-const-keyword-correct-value-should-pass
+        input:
+          method: GET
+          path: "/api/v31/const"
+          body: "{\"version\": \"v1\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-039-oas-3-1-const-keyword-wrong-value-should-fail
+        input:
+          method: GET
+          path: "/api/v31/const"
+          body: "{\"version\": \"v2\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-040-oas-3-1-multipleof-validation-valid-value-passes
+        input:
+          method: GET
+          path: "/api/v31/multipleoftest"
+          body: "{\"testnumber\": 1.13}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-041-oas-3-1-multipleof-validation-invalid-value-should-fail
+        input:
+          method: GET
+          path: "/api/v31/multipleoftest"
+          body: "{\"testnumber\": 1.1312}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-042-oas-3-1-create-route-with-spec31-gaps-json-components-pathitems-n
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-043-components-pathitems-valid-body-via-ref-path-should-pass
+        input:
+          method: GET
+          path: "/api/v31gap/widget"
+          body: "{\"name\": \"foo\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-044-components-pathitems-invalid-body-via-ref-path-should-fail
+        input:
+          method: GET
+          path: "/api/v31gap/widget"
+          body: "{\"notaname\": \"foo\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-045-not-keyword-value-satisfying-not-constraint-should-pass
+        input:
+          method: GET
+          path: "/api/v31gap/item"
+          body: "{\"value\": \"not-an-integer\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-046-not-keyword-value-violating-not-constraint-should-fail
+        input:
+          method: GET
+          path: "/api/v31gap/item"
+          body: "{\"value\": 42}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-047-patternproperties-matching-key-with-correct-type-should-pass
+        input:
+          method: GET
+          path: "/api/v31gap/pattern"
+          body: "{\"S_name\": \"hello\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-048-patternproperties-matching-key-with-wrong-type-should-fail
+        input:
+          method: GET
+          path: "/api/v31gap/pattern"
+          body: "{\"S_name\": 123}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-049-patternproperties-with-additionalproperties-false-non-matching-ke
+        input:
+          method: GET
+          path: "/api/v31gap/pattern"
+          body: "{\"S_name\": \"hello\", \"extra\": \"not_allowed\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-050-dynamicref-array-with-correct-element-type-should-pass
+        input:
+          method: GET
+          path: "/api/v31gap/dynref"
+          body: "{\"items\": [\"hello\", \"world\"]}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-051-dynamicref-array-with-wrong-element-type-should-fail
+        input:
+          method: GET
+          path: "/api/v31gap/dynref"
+          body: "{\"items\": [1, 2, 3]}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-052-limitation-contentmediatype-contentencoding-are-annotations-only-
+        input:
+          method: GET
+          path: "/api/v31gap/content-annotation"
+          body: "{\"data\": \"this is NOT valid base64 nor JSON\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-053-prefixitems-correct-positional-types-should-pass
+        input:
+          method: GET
+          path: "/api/v31gap/prefixitems"
+          body: "[\"hello\", 42, true]"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator2-054-prefixitems-wrong-type-at-first-position-should-fail
+        input:
+          method: GET
+          path: "/api/v31gap/prefixitems"
+          body: "[123, 42, true]"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator2-055-limitation-prefixitems-items-extra-items-beyond-prefixitems-are-v
+        input:
+          method: GET
+          path: "/api/v31gap/prefixitems"
+          body: "[\"hello\", 42, \"not_a_boolean\"]"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+  - name: oas-validator3-corpus
+    source:
+      file: t/plugin/oas-validator3.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+    config:
+      routes:
+        - id: oas-validator3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 500
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: oas-validator3-001-schema-validation-spec-url-is-accepted
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-002-schema-validation-spec-and-spec-url-are-mutually-exclusive
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-003-schema-validation-neither-spec-nor-spec-url-fails
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-004-schema-validation-spec-url-must-be-http-https
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-005-create-route-with-spec-url
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-006-request-validation-works-with-spec-url
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"id\": 10, \"name\": \"doggie\", \"category\": {\"id\": 1, \"name\": \"Dogs\"}, \"photoUrls\": [\"string\"], \"tags\": [{\"id\": 1, \"name\": \"tag1\"}], \"status\": \"available\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-007-invalid-request-body-fails-validation-with-spec-url
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"invalid\": \"body\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: oas-validator3-008-spec-url-returning-non-200-triggers-error
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-009-request-to-route-with-non-200-spec-url-returns-500
+        input:
+          method: GET
+          path: "/api/v3/pet/1"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: oas-validator3-010-spec-url-returning-invalid-json-triggers-error
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-011-request-to-route-with-invalid-json-spec-url-returns-500
+        input:
+          method: GET
+          path: "/api/v3/pet/1"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: oas-validator3-012-spec-url-with-custom-request-headers
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-013-request-validation-works-with-custom-headers-spec-url
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"id\": 10, \"name\": \"doggie\", \"category\": {\"id\": 1, \"name\": \"Dogs\"}, \"photoUrls\": [\"string\"], \"tags\": [{\"id\": 1, \"name\": \"tag1\"}], \"status\": \"available\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-014-spec-url-without-required-auth-header-fails
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-015-request-to-route-with-missing-auth-returns-500
+        input:
+          method: GET
+          path: "/api/v3/pet/1"
+        output:
+          status: 500
+          body:
+            equals: "validation failed"
+      - name: oas-validator3-016-metadata-schema-validation
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-017-metadata-schema-rejects-invalid-ttl
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-018-set-plugin-metadata-with-custom-ttl
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-019-create-route-with-spec-url-for-ttl-test
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-020-first-request-fetches-and-caches-spec
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"id\": 10, \"name\": \"doggie\", \"category\": {\"id\": 1, \"name\": \"Dogs\"}, \"photoUrls\": [\"string\"], \"tags\": [{\"id\": 1, \"name\": \"tag1\"}], \"status\": \"available\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-021-second-request-uses-cached-spec-no-refetch
+        input:
+          method: GET
+          path: "/api/v3/pet"
+          body: "{\"id\": 10, \"name\": \"doggie\", \"category\": {\"id\": 1, \"name\": \"Dogs\"}, \"photoUrls\": [\"string\"], \"tags\": [{\"id\": 1, \"name\": \"tag1\"}], \"status\": \"available\"}"
+          headers:
+            Content-Type: application/json
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-022-after-ttl-expiry-stale-validator-still-works-async-refresh
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: oas-validator3-023-clean-up-metadata
+        input:
+          method: GET
+          path: "/"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

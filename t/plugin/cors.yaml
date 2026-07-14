@@ -1,0 +1,1739 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/cors.t
+    tests: 37
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/cors2.t
+    tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/cors3.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/cors4.t
+    tests: 29
+cases:
+  - name: cors-corpus
+    source:
+      file: t/plugin/cors.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+    config:
+      routes:
+        - id: cors-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: "*"
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub2.domain.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: "headr1,headr2"
+              Access-Control-Expose-Headers: "ex-headr1,ex-headr2"
+              Access-Control-Max-Age: "50"
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://sub.domain.com
+              Vary: Origin
+              Access-Control-Allow-Methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+              Access-Control-Allow-Headers: "req-header1,req-header2"
+              Access-Control-Expose-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: "*"
+              Access-Control-Allow-Methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+              Access-Control-Expose-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 401
+            headers:
+              Access-Control-Allow-Origin: https://sub.domain.com
+              Access-Control-Allow-Methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Expose-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://sub.domain.com
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Headers: request-h
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Expose-Headers: expose-h
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://a.test.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: "headr1,headr2"
+              Access-Control-Expose-Headers: "ex-headr1,ex-headr2"
+              Access-Control-Max-Age: "50"
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://foo.example.org
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: "headr1,headr2"
+              Access-Control-Expose-Headers: "ex-headr1,ex-headr2"
+              Access-Control-Max-Age: "50"
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub.domain.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: "headr1,headr2"
+              Access-Control-Expose-Headers: "ex-headr1,ex-headr2"
+              Access-Control-Max-Age: "50"
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: cors-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-002-wrong-value-of-key
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-003-add-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-004-update-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-005-disable-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-006-set-route-default
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-007-cors-default
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: "*"
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors-008-set-route-cors-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-009-cors-specified
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub2.domain.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub2.domain.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: "headr1,headr2"
+            Access-Control-Expose-Headers:
+              equals: "ex-headr1,ex-headr2"
+            Access-Control-Max-Age:
+              equals: "50"
+            Access-Control-Allow-Credentials:
+              equals: "true"
+      - name: cors-010-cors-specified-no-match-origin
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub3.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-011-set-route-force-wildcard
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-012-cors-force-wildcard
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://sub.domain.com
+            ExternalHeader1: val
+            ExternalHeader2: val
+            ExternalHeader3: val
+            Access-Control-Request-Headers: "req-header1,req-header2"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://sub.domain.com
+            Vary:
+              equals: Origin
+            Access-Control-Allow-Methods:
+              equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+            Access-Control-Allow-Headers:
+              equals: "req-header1,req-header2"
+            Access-Control-Expose-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors-013-cors-force-wildcard-no-origin
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            ExternalHeader1: val
+            ExternalHeader2: val
+            ExternalHeader3: val
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: "*"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+            Access-Control-Expose-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors-014-options-return-directly
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-015-set-route-auth-plugins-fails
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-016-auth-failed-still-work
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://sub.domain.com
+            ExternalHeader1: val
+            ExternalHeader2: val
+            ExternalHeader3: val
+        output:
+          status: 401
+          body:
+            equals: "validation failed"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://sub.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Expose-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors-017-set-route-overwrite-upstream
+        input:
+          method: GET
+          path: "/headers"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-018-overwrite-upstream
+        input:
+          method: GET
+          path: "/headers?Access-Control-Allow-Origin=https://sub.domain.com"
+          headers:
+            Origin: https://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://sub.domain.com
+      - name: cors-019-overwrite-upstream-access-control-allow-methods
+        input:
+          method: GET
+          path: "/headers?Access-Control-Allow-Methods=methods"
+          headers:
+            Origin: https://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Methods:
+              equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+      - name: cors-020-overwrite-upstream-access-control-allow-headers
+        input:
+          method: GET
+          path: "/headers?Access-Control-Allow-Headers=a-headers"
+          headers:
+            Origin: https://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Headers:
+              equals: request-h
+      - name: cors-021-overwrite-upstream-access-control-expose-headers
+        input:
+          method: GET
+          path: "/headers?Access-Control-Expose-Headers=e-headers"
+          headers:
+            Origin: https://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Expose-Headers:
+              equals: expose-h
+      - name: cors-022-overwrite-upstream-access-control-max-age
+        input:
+          method: GET
+          path: "/headers?Access-Control-Max-Age=10"
+          headers:
+            Origin: https://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors-023-not-overwrite-upstream-access-control-allow-credentials
+        input:
+          method: GET
+          path: "/headers?Access-Control-Allow-Credentials=false"
+          headers:
+            Origin: https://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Credentials:
+              equals: "true"
+      - name: cors-024-should-not-set-to-allow-origins-when-allow-credential-is-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: cors-025-should-not-set-to-allow-methods-when-allow-credential-is-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: cors-026-should-not-set-to-allow-headers-when-allow-credential-is-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: cors-027-should-not-set-to-expose-headers-when-allow-credential-is-true
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 400
+          body:
+            matches: "validation failed"
+      - name: cors-028-set-route-regex-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-029-regex-specified
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://a.test.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://a.test.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: "headr1,headr2"
+            Access-Control-Expose-Headers:
+              equals: "ex-headr1,ex-headr2"
+            Access-Control-Max-Age:
+              equals: "50"
+            Access-Control-Allow-Credentials:
+              equals: "true"
+      - name: cors-030-regex-specified-not-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://a.test2.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-031-set-route-multiple-regex-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-032-multiple-regex-specified-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://foo.example.org
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://foo.example.org
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: "headr1,headr2"
+            Access-Control-Expose-Headers:
+              equals: "ex-headr1,ex-headr2"
+            Access-Control-Max-Age:
+              equals: "50"
+            Access-Control-Allow-Credentials:
+              equals: "true"
+      - name: cors-033-multiple-regex-specified-not-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://foo.example.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-034-origin-was-modified-by-the-proxy-rewrite-plugin
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-035-origin-is-not-affected-by-proxy-rewrite-plugins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub.domain.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: "headr1,headr2"
+            Access-Control-Expose-Headers:
+              equals: "ex-headr1,ex-headr2"
+            Access-Control-Max-Age:
+              equals: "50"
+            Access-Control-Allow-Credentials:
+              equals: "true"
+      - name: cors-036-set-route-regex-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors-037-request-without-origin-header-does-not-error-out
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+  - name: cors2-corpus
+    source:
+      file: t/plugin/cors2.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    config:
+      routes:
+        - id: cors2-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub.domain.com
+              Vary: Via
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+            body: "hello world"
+    steps:
+      - name: cors2-001-validate-allow-origins
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors2-002-set-route-regex-specified-and-allow-origins-is-default-value
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors2-003-regex-specified-not-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.test.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors2-004-regex-no-origin-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors2-005-regex-specified-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub.domain.com
+            Vary:
+              equals: Via
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+  - name: cors3-corpus
+    source:
+      file: t/plugin/cors3.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+    config:
+      routes:
+        - id: cors3-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Vary: Origin
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://test.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://domain.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Vary: Origin
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://domain.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://sub.domain.com
+              Vary: "Via, Origin"
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://foo.example.org
+              Vary: Origin
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: https://domain.com
+              Access-Control-Allow-Methods: "*"
+              Access-Control-Allow-Headers: "*"
+              Access-Control-Max-Age: "5"
+            body: "hello world"
+    steps:
+      - name: cors3-001-validate-metadata-allow-origins
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-002-set-plugin-metadata
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-003-set-route-allow-origins-by-metadata-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-004-origin-not-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://foo.example.org
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Vary:
+              equals: Origin
+      - name: cors3-005-origin-matches-with-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://test.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://test.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors3-006-origin-matches-with-allow-origins-by-metadata
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://domain.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://domain.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors3-007-set-route-multiple-allow-origins-by-metadata-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-008-origin-not-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://foo.example.org
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Vary:
+              equals: Origin
+      - name: cors3-009-origin-matches-with-first-allow-origins-by-metadata
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://domain.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://domain.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors3-010-origin-matches-with-second-allow-origins-by-metadata
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://sub.domain.com
+            resp-vary: Via
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://sub.domain.com
+            Vary:
+              equals: "Via, Origin"
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors3-011-set-route-wildcard-in-allow-origins-by-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-012-origin-matches-by-wildcard
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://foo.example.org
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://foo.example.org
+            Vary:
+              equals: Origin
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+      - name: cors3-013-set-route-allow-origins-by-metadata-specified-and-allow-origins-i
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-014-origin-not-match-because-allow-origins-invalid
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://foo.example.org
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors3-015-origin-matches-with-first-allow-origins-by-metadata
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: https://domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: https://domain.com
+            Access-Control-Allow-Methods:
+              equals: "*"
+            Access-Control-Allow-Headers:
+              equals: "*"
+            Access-Control-Max-Age:
+              equals: "5"
+  - name: cors4-corpus
+    source:
+      file: t/plugin/cors4.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+    config:
+      routes:
+        - id: cors4-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: "*"
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+              Timing-Allow-Origin: http://sub.domain.com
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: "*"
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+              Timing-Allow-Origin: http://sub.domain.com
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://one.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+            body: "hello world"
+          - status: 200
+            headers:
+              Timing-Allow-Origin: http://another.domain.com
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://one.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+              Timing-Allow-Origin: http://one.domain.com
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://two.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://one.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+              Timing-Allow-Origin: http://one.domain.com
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://two.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+            body: "hello world"
+          - status: 200
+            headers:
+              Timing-Allow-Origin: http://three.domain.com
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+              Timing-Allow-Origin: http://sub.domain.com
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://testurl.domain.com
+              Access-Control-Allow-Methods: "GET,POST"
+              Access-Control-Allow-Headers: request-h
+              Access-Control-Expose-Headers: expose-h
+              Access-Control-Max-Age: "10"
+              Timing-Allow-Origin: http://testurl.domain.com
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub.domain.com
+              Access-Control-Allow-Methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+              Access-Control-Max-Age: "3500"
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers:
+              Access-Control-Allow-Origin: http://sub.domain.com
+              Access-Control-Allow-Methods: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+              Access-Control-Expose-Headers: "ex-headr1,ex-headr2"
+              Access-Control-Max-Age: "3500"
+              Access-Control-Allow-Credentials: "true"
+            body: "hello world"
+    steps:
+      - name: cors4-001-validate-timing-allow-origins
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-002-set-route-allow-origins-default-timing-allow-origins-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-003-origin-matching
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: "*"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+            Timing-Allow-Origin:
+              equals: http://sub.domain.com
+      - name: cors4-004-origin-not-matching-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://other.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: "*"
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+      - name: cors4-005-set-route-allow-origins-same-as-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-006-origin-matching
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+            Timing-Allow-Origin:
+              equals: http://sub.domain.com
+      - name: cors4-007-origin-not-matching
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://other.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-008-set-route-allow-origins-differs-from-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-009-origin-matching-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://one.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://one.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+      - name: cors4-010-origin-matching-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://another.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Timing-Allow-Origin:
+              equals: http://another.domain.com
+      - name: cors4-011-origin-not-matching
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://notexistent.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-012-set-route-allow-origins-superset-of-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-013-origin-matching-allow-origins-and-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://one.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://one.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+            Timing-Allow-Origin:
+              equals: http://one.domain.com
+      - name: cors4-014-origin-matching-only-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://two.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://two.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+      - name: cors4-015-origin-not-matching
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://notexistent.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-016-set-route-allow-origins-and-timing-allow-origins-are-two-differen
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-017-origin-matching-allow-origins-and-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://one.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://one.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+            Timing-Allow-Origin:
+              equals: http://one.domain.com
+      - name: cors4-018-origin-matching-only-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://two.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://two.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+      - name: cors4-019-origin-matching-only-timing-allow-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://three.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Timing-Allow-Origin:
+              equals: http://three.domain.com
+      - name: cors4-020-origin-not-matching
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://notexistent.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-021-set-route-allow-origins-and-timing-allow-origins-specified-with-r
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-022-regex-specified-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+            Timing-Allow-Origin:
+              equals: http://sub.domain.com
+      - name: cors4-023-regex-no-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://other.newdomain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-024-set-route-allow-origins-and-timing-allow-origins-specified-with-d
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-025-regex-specified-match-test-priority-of-regex-over-list-of-origins
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://testurl.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://testurl.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST"
+            Access-Control-Allow-Headers:
+              equals: request-h
+            Access-Control-Expose-Headers:
+              equals: expose-h
+            Access-Control-Max-Age:
+              equals: "10"
+            Timing-Allow-Origin:
+              equals: http://testurl.domain.com
+      - name: cors4-026-set-route-expose-headers-not-specified
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-027-remove-access-control-expose-headers-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+            Access-Control-Max-Age:
+              equals: "3500"
+            Access-Control-Allow-Credentials:
+              equals: "true"
+      - name: cors4-028-set-route-expose-headers-set-value
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: cors4-029-access-control-expose-headers-match
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            Origin: http://sub.domain.com
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+          headers:
+            Access-Control-Allow-Origin:
+              equals: http://sub.domain.com
+            Access-Control-Allow-Methods:
+              equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+            Access-Control-Expose-Headers:
+              equals: "ex-headr1,ex-headr2"
+            Access-Control-Max-Age:
+              equals: "3500"
+            Access-Control-Allow-Credentials:
+              equals: "true"

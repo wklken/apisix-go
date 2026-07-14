@@ -1,0 +1,295 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/authz-casbin.t
+    tests: 21
+cases:
+  - name: authz-casbin-corpus
+    source:
+      file: t/plugin/authz-casbin.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+    config:
+      routes:
+        - id: authz-casbin-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 403
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: authz-casbin-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-002-username-missing
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-003-put-model-and-policy-text-in-metadata
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-004-enforcer-from-text-without-files
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-005-enable-authz-casbin-by-admin-api
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-006-no-username-header-passed
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: authz-casbin-007-username-passed-but-user-not-authorized
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: bob
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: authz-casbin-008-authorized-user
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: admin
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-009-authorized-user-rbac
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: alice
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-010-unauthorized-user-before-policy-update
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: jack
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: authz-casbin-011-update-model-and-policy-text-in-metadata
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-012-authorized-user-after-policy-update
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: jack
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-013-enable-authz-casbin-using-model-policy-files
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-014-authorized-user-as-per-policy
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: alice
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-015-unauthorized-user-as-per-policy
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: bob
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: authz-casbin-016-enable-authz-casbin-using-model-policy-text
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-017-authorized-user-as-per-policy
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: jack
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-018-unauthorized-user-as-per-policy
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: bob
+        output:
+          status: 403
+          body:
+            equals: "validation failed"
+      - name: authz-casbin-019-disable-authz-casbin-by-admin-api
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-020-support-different-policy-shapes-at-different-routes
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: authz-casbin-021-verify-sequence-policy1-policy2-policy1-issues-12974-12889
+        input:
+          method: GET
+          path: "/hello"
+          headers:
+            user: bob
+        output:
+          status: 200
+          body:
+            equals: "hello world"

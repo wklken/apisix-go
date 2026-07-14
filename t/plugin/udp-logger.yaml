@@ -1,0 +1,191 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/udp-logger.t
+    tests: 14
+cases:
+  - name: udp-logger-corpus
+    source:
+      file: t/plugin/udp-logger.t
+      tests:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+    config:
+      routes:
+        - id: udp-logger-corpus
+          uri: "/*"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 400
+            headers: {}
+            body: "validation failed"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+          - status: 200
+            headers: {}
+            body: "hello world"
+    steps:
+      - name: udp-logger-001-sanity
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-002-missing-host
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-003-wrong-type-of-string
+        input:
+          method: GET
+          path: "/t"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-004-add-plugin
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-005-access
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-006-error-log
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-007-check-plugin-configuration-updating
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-008-bad-custom-log-format
+        input:
+          method: GET
+          path: "/opentracing"
+        output:
+          status: 400
+          body:
+            equals: "validation failed"
+      - name: udp-logger-009-configure-plugin-and-access-route-hello
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-010-check-if-log-exists-to-confirm-if-logging-server-was-hit
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: udp-logger-011-configure-plugin-and-access-route-hello
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-012-check-log-format-from-logging-server
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            matches: "hello world"
+      - name: udp-logger-013-add-plugin-with-include-req-body-setting-collect-request-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"
+      - name: udp-logger-014-add-plugin-with-include-resp-body-setting-collect-request-log
+        input:
+          method: GET
+          path: "/hello"
+        output:
+          status: 200
+          body:
+            equals: "hello world"

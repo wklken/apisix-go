@@ -1,0 +1,897 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect-identity-headers.t
+  tests: 4
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect-redis.t
+  tests: 4
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect.t
+  tests: 54
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect10.t
+  tests: 12
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect2.t
+  tests: 21
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect3.t
+  tests: 6
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect4.t
+  tests: 6
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect5.t
+  tests: 2
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect6.t
+  tests: 8
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect7.t
+  tests: 10
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect8.t
+  tests: 8
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openid-connect9.t
+  tests: 6
+cases:
+- name: "openid-connect-identity-headers-test-001-set-up-route-with-unauth-action-pass-so-unauthenticated-requests-pass-through"
+  source:
+    file: t/plugin/openid-connect-identity-headers.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-identity-headers-test-002-access-route-without-authentication-client-supplied-x-userinfo-x-id-token-x-refresh-token-x-access-token-must-not-reach-upstream"
+  source:
+    file: t/plugin/openid-connect-identity-headers.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-identity-headers-test-003-update-route-to-bearer-only-with-embedded-rs256-public-key"
+  source:
+    file: t/plugin/openid-connect-identity-headers.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-identity-headers-test-004-access-route-with-valid-bearer-token-and-a-client-supplied-x-access-token-upstream-must-see-the-validated-token-not-the-client-value"
+  source:
+    file: t/plugin/openid-connect-identity-headers.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-redis-test-001-check-schema-with-valid-redis-session-configuration"
+  source:
+    file: t/plugin/openid-connect-redis.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-redis-test-002-check-schema-with-invalid-redis-session-configuration-port-string"
+  source:
+    file: t/plugin/openid-connect-redis.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-redis-test-003-verify-session-sharing-across-routes-with-redis-simulate-refresh-scenario"
+  source:
+    file: t/plugin/openid-connect-redis.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-redis-test-004-check-schema-with-missing-redis-configuration-when-storage-is-redis"
+  source:
+    file: t/plugin/openid-connect-redis.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-001-sanity-check-with-minimal-valid-configuration"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-002-missing-client-id"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-003-wrong-type-for-client-id"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-004-set-up-new-route-with-plugin-matching-uri-hello"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-005-verify-encrypted-field"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-006-access-route-w-o-bearer-token-should-redirect-to-authentication-endpoint-of-id-provider"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-007-modify-route-to-match-catch-all-uri-and-point-plugin-to-local-keycloak-instance"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-008-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relying-party-authentication-process"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-009-re-configure-plugin-with-respect-to-headers-that-get-sent-to-upstream"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-010-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relying-party-authentication-process"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-011-update-plugin-with-bearer-only-true"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-012-access-route-w-o-bearer-token-should-return-401-unauthorized"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-013-access-route-with-invalid-authorization-header-value-should-return-400-bad-request"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-014-update-plugin-with-id-provider-public-key-so-tokens-can-be-validated-locally"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-015-access-route-with-valid-token"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-016-update-route-uri-to-uri-where-upstream-endpoint-returns-request-headers-in-response-body"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-017-access-route-with-valid-token-in-authorization-header-upstream-should-additionally-get-the-token-in-the-x-access-token-header"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-018-update-plugin-to-only-use-authorization-header"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-019-access-route-with-valid-token-in-authorization-header-upstream-should-not-get-the-additional-x-access-token-header"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-020-switch-route-uri-back-to-hello"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-021-access-route-with-invalid-token-should-return-401"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-022-update-route-with-keycloak-introspection-endpoint-and-public-key-removed-should-now-invoke-introspection-endpoint-to-validate-tokens"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-023-obtain-valid-token-and-access-route-with-it"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-024-access-route-with-an-invalid-token"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-025-check-defaults"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-026-update-plugin-with-id-provider-jwks-endpoint-for-token-verification"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-027-obtain-valid-token-and-access-route-with-it"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-028-access-route-with-an-invalid-token"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-029-modify-route-to-match-catch-all-uri-and-add-post-logout-redirect-uri-option"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-030-access-route-w-o-bearer-token-and-request-logout-to-redirect-to-post-logout-redirect-uri"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 30
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-031-switch-route-uri-back-to-hello-and-enable-pkce"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 31
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-032-access-route-w-o-bearer-token-should-redirect-to-authentication-endpoint-of-id-provider-with-code-challenge-parameters"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 32
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-033-set-use-jwks-and-set-userinfo-header-to-validate-x-userinfo-in-request-header"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 33
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-034-access-route-to-validate-x-userinfo-in-request-header"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 34
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-035-set-up-new-route-with-plugin-matching-uri"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 35
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-036-redirect-to-post-logout-redirect-uri-when-provider-has-no-end-session-endpoint"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 36
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-037-set-up-new-route-with-plugin-matching-uri"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 37
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-038-redirect-to-end-session-endpoint-with-post-logout-redirect-uri-when-provider-exposes-it"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 38
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-039-update-plugin-config-to-use-jwk-and-bear-only-false"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 39
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-040-test-that-jwt-with-bearer-only-false-still-allows-a-valid-authorization-header"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 40
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-041-missing-session-secret"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 41
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-042-client-secret-is-optional-when-bearer-only-true-and-public-key-is-set"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 42
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-043-client-secret-is-optional-when-bearer-only-true-and-use-jwks-true"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 43
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-044-client-secret-is-required-when-bearer-only-true-but-neither-public-key-nor-use-jwks-is-set-introspection-mode"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 44
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-045-client-secret-is-optional-when-token-endpoint-auth-method-private-key-jwt"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 45
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-046-client-secret-is-optional-when-use-pkce-true-non-bearer-pkce-flow"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 46
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-047-client-secret-is-still-required-for-non-bearer-session-flow-without-special-auth-method"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 47
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-048-client-secret-is-optional-when-bearer-only-true-and-introspection-endpoint-auth-method-private-key-jwt"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 48
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-049-client-secret-stays-required-for-bearer-introspection-even-with-token-endpoint-auth-method-private-key-jwt-cross-flow-that-method-does-not-apply-to-introspection"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 49
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-050-client-secret-stays-required-for-non-bearer-session-flow-with-a-bearer-only-alternative-introspection-private-key-jwt-does-not-apply-here"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 50
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-051-configure-plugin-with-a-custom-session-cookie-name"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 51
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-052-full-oidc-login-issues-the-session-cookie-under-the-configured-cookie-name"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 52
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-053-configure-plugin-with-a-short-session-absolute-timeout"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 53
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect-test-054-session-is-rejected-once-absolute-timeout-elapses-re-initiating-authentication"
+  source:
+    file: t/plugin/openid-connect.t
+    tests:
+    - 54
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "openid-connect10-test-001-valid-session-with-flat-cookie-name-cookie-path-absolute-timeout"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-002-valid-session-with-flat-cookie-secure-cookie-same-site-idling-rolling-timeouts"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-003-backward-compatible-session-cookie-lifetime-still-accepted"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-004-build-session-opts-passes-flat-keys-through-untouched"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-005-build-session-opts-maps-deprecated-cookie-lifetime-to-absolute-timeout"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-006-build-session-opts-returns-nil-for-nil-input"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-007-build-session-opts-works-when-cookie-field-is-absent"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-008-invalid-type-for-cookie-lifetime-string-instead-of-integer"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-009-valid-session-with-redis-storage-and-flat-cookie-options"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-010-absolute-timeout-wins-when-both-it-and-cookie-lifetime-are-set"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-011-unknown-key-directly-under-session-is-rejected"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect10-test-012-invalid-cookie-same-site-value-is-rejected"
+  source:
+    file: t/plugin/openid-connect10.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-001-sanity"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-002-data-encryption-for-client-secret"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-003-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-auth"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-004-access-route-w-o-bearer-token-should-redirect-to-authentication-endpoint-of-id-provider"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-005-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-deny"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-006-access-route-w-o-bearer-token-should-return-unauthorized"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-007-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-pass"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-008-access-route-w-o-bearer-token-should-return-ok"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-009-set-up-route-with-plugin-matching-uri-hello-with-redirect-uri-use-default-value"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-010-the-value-of-redirect-uri-should-be-appended-to-apisix-redirect-in-the-original-request"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-011-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak-instance-and-set-claim-validator"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-012-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relying-party-authentication-process-and-validate-claim-successfully"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-013-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak-instance-and-set-claim-validator-with-more-strict-schema"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-014-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relying-party-authentication-process-and-fail-to-validate-claim"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-015-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-keycloak-instance-and-set-invalid-claim-schema"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-016-untrusted-source-with-forged-x-forwarded-host-should-use-http-host-instead"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-017-trusted-source-with-x-forwarded-host-should-use-x-forwarded-host"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-018-trusted-source-with-forwarded-header-takes-priority-over-x-forwarded-host"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-019-untrusted-source-with-forged-forwarded-header-should-be-ignored"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-020-data-encryption-for-client-rsa-private-key"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect2-test-021-data-encryption-for-session-redis-password"
+  source:
+    file: t/plugin/openid-connect2.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect3-test-001-set-up-new-route-access-the-auth-server-via-http-proxy"
+  source:
+    file: t/plugin/openid-connect3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect3-test-002-access-route-w-o-bearer-token-should-redirect-to-authentication-endpoint-of-id-provider"
+  source:
+    file: t/plugin/openid-connect3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect3-test-003-set-up-route-with-plugin-matching-uri-hello-with-redirect-uri-use-default-value"
+  source:
+    file: t/plugin/openid-connect3.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect3-test-004-the-value-of-redirect-uri-should-be-appended-to-apisix-redirect-in-the-original-request"
+  source:
+    file: t/plugin/openid-connect3.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect3-test-005-auto-generated-redirect-uri-preserves-non-default-port-from-host-header"
+  source:
+    file: t/plugin/openid-connect3.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect3-test-006-auto-generated-redirect-uri-omits-port-when-host-header-lacks-explicit-port"
+  source:
+    file: t/plugin/openid-connect3.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect4-test-001-set-up-new-route-access-the-auth-server-with-header-test"
+  source:
+    file: t/plugin/openid-connect4.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect4-test-002-check-the-uri-of-the-authorization-endpoint-for-passed-headers"
+  source:
+    file: t/plugin/openid-connect4.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect4-test-003-set-an-unsupported-scope-in-the-required-scopes-field"
+  source:
+    file: t/plugin/openid-connect4.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect4-test-004-access-route"
+  source:
+    file: t/plugin/openid-connect4.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect4-test-005-set-a-supported-scope-in-the-required-scopes-field"
+  source:
+    file: t/plugin/openid-connect4.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect4-test-006-access-route"
+  source:
+    file: t/plugin/openid-connect4.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect5-test-001-call-to-route-with-locking-session-storage-should-not-block-subsequent-requests-with-same-session"
+  source:
+    file: t/plugin/openid-connect5.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect5-test-002-call-to-route-with-locking-session-storage-no-authentication-and-unauth-action-deny-should-not-block-subsequent-requests-on-same-session"
+  source:
+    file: t/plugin/openid-connect5.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-001-check-configuration-of-cookie"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-002-set-up-new-route-access-the-auth-server"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-003-call-to-route-to-get-session"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-004-update-route-with-keycloak-introspection-endpoint-and-introspection-addon-headers"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-005-obtain-valid-token-and-access-route-with-it-introspection-work-as-expected-when-configured-extras-headers"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-006-access-route-with-an-invalid-token-should-fail"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-007-update-route-with-fake-keycloak-introspection-endpoint-and-introspection-addon-headers"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect6-test-008-check-http-headers-from-fake-introspection-endpoint"
+  source:
+    file: t/plugin/openid-connect6.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-001-create-route-jwt-local-audience-required"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-002-access-route-with-a-valid-token-with-audience"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-003-update-route-jwt-local-audience-required-custom-claim"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-004-access-route-with-an-invalid-token-without-audience"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-005-update-route-jwt-local-audience-required-custom-claim"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-006-access-route-with-an-valid-token-with-custom-audience-claim"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-007-update-route-jwt-local-audience-required-match-client-id"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-008-access-route-with-an-valid-token-with-client-id-as-audience"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-009-update-route-jwt-local-audience-required-match-client-id"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect7-test-010-access-route-with-an-invalid-token-without-client-id-as-audience"
+  source:
+    file: t/plugin/openid-connect7.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-001-set-up-new-route-with-wrong-valid-issuers"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-002-set-up-new-route-with-valid-valid-issuers"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-003-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-with-invalid-issuer"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-004-verification-fails-because-issuer-not-in-valid-issuer"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-005-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-with-valid-issuer"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-006-obtain-valid-token-and-access-route-with-it"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-007-update-plugin-with-id-provider-jwks-endpoint-for-token-verification-with-valid-issuer-in-discovery-endpoint"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect8-test-008-obtain-valid-token-and-access-route-with-it-use-valid-issuer-from-discovery-endpoint"
+  source:
+    file: t/plugin/openid-connect8.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect9-test-001-configure-oidc-plugin-with-small-public-key-using-environment-variable"
+  source:
+    file: t/plugin/openid-connect9.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect9-test-002-store-secret-into-vault"
+  source:
+    file: t/plugin/openid-connect9.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect9-test-003-configure-oidc-plugin-with-small-public-key-using-vault"
+  source:
+    file: t/plugin/openid-connect9.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect9-test-004-configure-oidc-plugin-with-small-public-key-using-vault-and-request-with-token-should-success"
+  source:
+    file: t/plugin/openid-connect9.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect9-test-005-configure-route-with-bearer-only-public-key-claim-schema-that-requires-an-absent-field"
+  source:
+    file: t/plugin/openid-connect9.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "openid-connect9-test-006-bearer-path-claim-schema-rejection-returns-401-with-www-authenticate-header"
+  source:
+    file: t/plugin/openid-connect9.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

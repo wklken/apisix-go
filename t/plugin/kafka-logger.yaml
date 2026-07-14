@@ -1,0 +1,621 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-logger-large-body.t
+  tests: 28
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-logger-log-format.t
+  tests: 5
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-logger.t
+  tests: 29
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-logger2.t
+  tests: 27
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-logger3.t
+  tests: 2
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/kafka-logger4.t
+  tests: 8
+cases:
+- name: "kafka-logger-large-body-test-001-max-body-bytes-is-not-an-integer"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-002-set-route-meta-format-origin-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-003-hit-route-meta-format-origin-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-004-set-route-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-005-hit-route-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-006-set-route-id-1-meta-format-default-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-007-hit-route-meta-format-default-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-008-set-route-id-1-meta-format-origin-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-009-hit-route-meta-format-origin-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-010-set-route-id-1-meta-format-default-include-resp-body-true-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-011-hit-route-meta-format-default-include-resp-body-true-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-012-set-route-id-1-meta-format-default-include-resp-body-false-include-req-body-false"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-013-hit-route-meta-format-default-include-resp-body-false-include-req-body-false"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-014-set-route-large-body-meta-format-default-include-resp-body-true-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-015-hit-route-large-body-meta-format-default-include-resp-body-true-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-016-set-route-large-body-meta-format-default-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-017-hit-route-large-body-meta-format-default-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-018-set-route-large-body-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-019-hit-route-large-body-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-020-set-route-large-body-meta-format-default-include-resp-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-021-truncate-upstream-response-body-1m-to-256-bytes"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-022-set-route-large-body-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-023-truncate-upstream-request-body-1m-to-256-bytes"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-024-set-route-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-025-empty-request-body"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-026-add-plugin-metadata"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-027-set-route-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-large-body-test-028-hit-route-meta-format-default-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger-large-body.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-log-format-test-001-add-plugin-metadata"
+  source:
+    file: t/plugin/kafka-logger-log-format.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-log-format-test-002-set-route-id-1-batch-max-size-1"
+  source:
+    file: t/plugin/kafka-logger-log-format.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-log-format-test-003-hit-route-and-report-kafka-logger"
+  source:
+    file: t/plugin/kafka-logger-log-format.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-log-format-test-004-log-format-in-plugin"
+  source:
+    file: t/plugin/kafka-logger-log-format.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-log-format-test-005-hit-route-and-report-kafka-logger"
+  source:
+    file: t/plugin/kafka-logger-log-format.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-001-sanity"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-002-missing-broker-list"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-003-wrong-type-of-string"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-004-set-route-id-1"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-005-access"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-006-error-log"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-007-set-route-meta-format-origin-include-req-body-true"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-008-hit-route-report-log-to-kafka"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-009-set-route-meta-format-origin-include-req-body-false"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-010-hit-route-report-log-to-kafka"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-011-set-route-meta-format-default"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-012-hit-route-report-log-to-kafka"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-013-set-route-id-1-missing-key-field"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-014-access-test-key-field-is-optional"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-015-set-route-meta-format-default-missing-key-field"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-016-hit-route-report-log-to-kafka"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-017-use-the-topic-with-3-partitions"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-018-report-log-to-kafka-by-different-partitions"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-019-report-log-to-kafka-by-different-partitions-in-async-mode"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-020-set-route-with-incorrect-sasl-config"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-021-hit-route-failed-to-send-data-to-kafka"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-022-set-route-with-correct-sasl-config"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-023-hit-route-send-data-to-kafka-successfully"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-024-set-route-batch-max-size-2-check-if-prometheus-is-initialized-properly"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-025-access"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-026-create-a-service-with-kafka-logger-and-three-routes-bound-to-it"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-027-hit-three-routes-should-create-batch-processor-only-once"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-028-check-api-version-schema-2-is-accepted-3-is-rejected"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger-test-029-report-log-to-kafka-with-api-version-2-the-broker-should-store-the-message-timestamp"
+  source:
+    file: t/plugin/kafka-logger.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "kafka-logger2-test-001-required-acks-matches-none-of-the-enum-values"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-002-report-log-to-kafka-with-required-acks-1-1"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-003-update-the-broker-list-and-cluster-name-generate-different-kafka-producers"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-004-use-the-topic-that-does-not-exist-on-kafka-even-if-kafka-allows-auto-create-topics-first-time-push-messages-to-kafka-would-got-this-error"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-005-check-broker-list-via-schema"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-006-kafka-brokers-info-in-log"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-007-set-route-id-1-include-req-body-true-include-req-body-expr-array"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-008-hit-route-expr-eval-success"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-009-hit-route-expr-eval-fail"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-010-check-log-schema-include-req-body"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-011-check-log-schema-include-resp-body"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-012-set-route-include-resp-body-gzip"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-013-hit"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-014-set-route-include-resp-body-brotli"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-015-hit"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-016-set-route-id-1-include-resp-body-true-include-resp-body-expr-array"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-017-hit-route-expr-eval-success"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-018-hit-route-expr-eval-fail"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-019-multi-level-nested-expr-conditions"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-020-hit-route-req-body-expr-and-resp-body-expr-both-eval-success"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-021-hit-route-req-body-expr-eval-success-resp-body-expr-both-eval-failed"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-022-hit-route-req-body-expr-eval-failed-resp-body-expr-both-eval-success"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-023-hit-route-req-body-expr-eval-success-resp-body-expr-both-eval-failed"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-024-update-route-id-1-include-req-body-true-include-req-body-expr-array"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-025-hit-route-expr-eval-success"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-026-setup-route-with-meta-refresh-interval"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger2-test-027-hit-route-send-data-to-kafka-successfully"
+  source:
+    file: t/plugin/kafka-logger2.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger3-test-001-should-drop-entries"
+  source:
+    file: t/plugin/kafka-logger3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger3-test-002-data-encryption-for-brokers-sasl-config-password"
+  source:
+    file: t/plugin/kafka-logger3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-001-set-route-with-correct-sasl-config-scram-sha-256"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-002-hit-route-send-data-to-kafka-successfully"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-003-set-route-with-incorrect-password-scram-sha-256"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-004-hit-route-send-data-to-kafka-unsuccessfully"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-005-set-route-with-correct-sasl-config-scram-sha-512"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-006-hit-route-send-data-to-kafka-successfully"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-007-set-route-with-incorrect-password-scram-sha-512"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "kafka-logger4-test-008-hit-route-send-data-to-kafka-unsuccessfully"
+  source:
+    file: t/plugin/kafka-logger4.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

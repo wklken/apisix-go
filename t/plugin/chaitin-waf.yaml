@@ -1,0 +1,140 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/chaitin-waf-reject.t
+  tests: 4
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/chaitin-waf-timeout.t
+  tests: 2
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/chaitin-waf.t
+  tests: 15
+cases:
+- name: "chaitin-waf-reject-test-001-set-route"
+  source:
+    file: t/plugin/chaitin-waf-reject.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-reject-test-002-pass"
+  source:
+    file: t/plugin/chaitin-waf-reject.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-reject-test-003-plugin-mode-monitor-prepare"
+  source:
+    file: t/plugin/chaitin-waf-reject.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-reject-test-004-plugin-mode-monitor"
+  source:
+    file: t/plugin/chaitin-waf-reject.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-timeout-test-001-set-route"
+  source:
+    file: t/plugin/chaitin-waf-timeout.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-timeout-test-002-timeout"
+  source:
+    file: t/plugin/chaitin-waf-timeout.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-001-wrong-schema-nodes-empty"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-002-wrong-schema-nodes-misses-host"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-003-sanity"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-004-pass"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-005-match-condition"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-006-no-match"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-007-matched"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-008-plugin-mode-off-prepare"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-009-plugin-mode-off"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-010-real-client-ip-false-prepare"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-011-real-client-ip-false"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-012-real-client-ip-false-ignores-trusted-x-forwarded-for"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-013-real-client-ip-true-prepare"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-014-client-ip-from-trusted-x-forwarded-for-source"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "chaitin-waf-test-015-spoofed-x-forwarded-for-from-untrusted-source-is-ignored"
+  source:
+    file: t/plugin/chaitin-waf.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

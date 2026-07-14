@@ -1,0 +1,239 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/multi-auth.t
+  tests: 22
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/multi-auth2.t
+  tests: 16
+cases:
+- name: "multi-auth-test-001-add-consumer-with-basic-auth-and-key-auth-plugins"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-002-enable-multi-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-003-verify-missing-authorization"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-004-verify-basic-auth"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-005-verify-key-auth"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-006-verify-invalid-basic-credentials"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-007-verify-invalid-api-key"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-008-enable-multi-auth-plugin-with-invalid-plugin-conf-in-first-auth-plugin"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-009-enable-multi-auth-plugin-with-invalid-plugin-conf-in-second-auth-plugins"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-010-enable-multi-auth-plugin-with-invalid-plugin-conf-in-third-auth-plugins"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-011-enable-multi-auth-plugin-with-default-plugin-conf"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-012-verify-missing-authorization"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-013-verify-basic-auth"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-014-verify-key-auth"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-015-verify-invalid-basic-credentials"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-016-verify-invalid-api-key"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-017-enable-multi-auth-plugin-using-admin-api-without-any-auth-plugins-configuration"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-018-enable-multi-auth-plugin-using-admin-api-with-auth-plugins-configuration-but-with-one-authorization-plugin"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-019-add-consumer-with-username-and-jwt-auth-plugins"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-020-sign-verify-jwt-auth"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-021-verify-multi-auth-with-plugin-config-will-cause-the-conf-version-change"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth-test-022-auth-plugin-returning-a-code-with-nil-error-message-does-not-raise"
+  source:
+    file: t/plugin/multi-auth.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "multi-auth2-test-001-add-consumer-with-basic-auth-and-key-auth-plugins"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-002-enable-multi-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-003-invalid-key-auth-apikey"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-004-valid-key-auth-apikey"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-005-invalid-basic-auth-credentials"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-006-valid-basic-auth-creds"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-007-missing-hmac-auth-authorization-header"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-008-hmac-auth-missing-algorithm"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-009-test-with-invalid-jwt-auth-token"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-010-create-public-api-route-jwt-auth-sign"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-011-add-consumer-with-username-and-jwt-auth-plugins"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-012-test-with-expired-jwt-token"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-013-test-with-jwt-token-containing-wrong-signature"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-014-verify-jwt-auth"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-015-enable-multi-auth-plugin-with-non-existent-anonymous-consumer"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "multi-auth2-test-016-invalid-basic-auth-credentials"
+  source:
+    file: t/plugin/multi-auth2.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

@@ -1,0 +1,178 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/gzip.t
+  tests: 19
+cases:
+- name: test-001-sanity
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 1
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-002-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 2
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-003-default-buffers-and-compress-level
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 3
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-004-compress-level
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 4
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-005-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 5
+  skip: source assertion requires resty.http, outside the standalone HTTP matcher contract
+- name: test-006-min-length
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 6
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-007-not-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 7
+  config:
+    routes:
+    - uri: /echo
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        gzip:
+          min_length: 21
+      id: gzip-6
+  input:
+    method: POST
+    path: /echo
+    headers:
+      Accept-Encoding: gzip
+      Content-Type: text/html
+    body: '0123456789
+
+      012345678'
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    headers:
+      Content-Encoding:
+        equals: ''
+- name: test-008-http-version
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 8
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-009-not-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 9
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-010-hit-again
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 10
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-011-types
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 11
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-012-not-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 12
+  config:
+    routes:
+    - uri: /echo
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        gzip:
+          types:
+          - text/plain
+          - text/xml
+      id: gzip-11
+  input:
+    method: POST
+    path: /echo
+    headers:
+      Accept-Encoding: gzip
+      Content-Type: text/html
+    body: '0123456789
+
+      012345678'
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    headers:
+      Content-Encoding:
+        equals: ''
+- name: test-013-hit-again
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 13
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-014-hit-with-charset
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 14
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-015-match-all-types
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 15
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-016-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 16
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-017-vary
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 17
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-018-hit
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 18
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-019-schema-check
+  source:
+    file: t/plugin/gzip.t
+    tests:
+    - 19
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case

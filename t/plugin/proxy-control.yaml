@@ -1,0 +1,30 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/proxy-control.t
+  tests: 4
+cases:
+- name: "proxy-control-test-001-proxy-request-buffering-off"
+  source:
+    file: t/plugin/proxy-control.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "proxy-control-test-002-hit-only-the-upstream-server-will-buffer-the-request"
+  source:
+    file: t/plugin/proxy-control.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "proxy-control-test-003-proxy-request-buffering-on"
+  source:
+    file: t/plugin/proxy-control.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "proxy-control-test-004-hit"
+  source:
+    file: t/plugin/proxy-control.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

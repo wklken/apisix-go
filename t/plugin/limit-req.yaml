@@ -1,0 +1,561 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/limit-req-redis-cluster.t
+  tests: 22
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/limit-req-redis.t
+  tests: 30
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/limit-req-shared-counter.t
+  tests: 3
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/limit-req.t
+  tests: 21
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/limit-req2.t
+  tests: 10
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/limit-req3.t
+  tests: 3
+cases:
+- name: "limit-req-redis-cluster-test-001-sanity"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-002-add-plugin-with-redis-cluster-with-ssl"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-003-not-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-004-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-005-update-plugin"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-006-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-007-wrong-type"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-008-disable-plugin"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-009-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-010-set-route-key-server-addr"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-011-default-rejected-code"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-012-consumer-binds-the-limit-req-plugin-and-key-is-consumer-name"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-013-route-add-key-auth-plugin"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-014-not-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-015-update-the-limit-req-plugin"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-016-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-017-key-is-consumer-name"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-018-get-consumer-name-is-empty"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-019-delete-consumer"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-020-delete-route"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-021-check-schema-failed-the-rate-attribute-is-equal-to-0"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-cluster-test-022-check-redis-cluster-keepalive-param"
+  source:
+    file: t/plugin/limit-req-redis-cluster.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-001-sanity"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-002-add-plugin-with-redis"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-003-not-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-004-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-005-verify-redis-connection-reused-times-in-debug-log"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-006-update-plugin-with-username-password"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-007-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-008-update-plugin-with-username-wrong-password"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-009-catch-wrong-pass"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-010-invalid-route-missing-redis-host"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-011-disable-plugin"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-012-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-013-set-route-key-server-addr"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-014-default-rejected-code"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-015-consumer-binds-the-limit-req-plugin-and-key-is-consumer-name"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-016-route-add-key-auth-plugin"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-017-not-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-018-update-the-limit-req-plugin"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-019-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-020-key-is-consumer-name"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-021-get-consumer-name-is-empty"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-022-delete-consumer"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-023-delete-route"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-024-check-schema-failed-the-rate-attribute-is-equal-to-0"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-025-set-route-for-hash-tag-key-format-tests-rate-100-burst-0"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-026-atomic-script-stores-state-in-a-single-hash-key"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-027-set-route-for-first-request-tests-rate-1-burst-0"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-028-first-request-is-always-admitted-even-when-burst-0-no-prior-state"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-029-set-route-for-atomic-script-concurrency-tests-rate-1-burst-0"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-redis-test-030-atomic-script-prevents-concurrent-requests-from-bypassing-rate-limit"
+  source:
+    file: t/plugin/limit-req-redis.t
+    tests:
+    - 30
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-shared-counter-test-001-consumer-jack-with-limit-req"
+  source:
+    file: t/plugin/limit-req-shared-counter.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-shared-counter-test-002-set-2-routes-with-key-auth"
+  source:
+    file: t/plugin/limit-req-shared-counter.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-shared-counter-test-003-verify-rate-limiting-shared-by-both-routes"
+  source:
+    file: t/plugin/limit-req-shared-counter.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-001-sanity"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-002-wrong-value-of-key"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-003-add-plugin"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-004-not-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-005-update-plugin"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-006-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-007-wrong-type"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-008-disable-plugin"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-009-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-010-set-route-key-server-addr"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-011-default-rejected-code"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-012-consumer-binds-the-limit-req-plugin-and-key-is-consumer-name"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-013-route-add-key-auth-plugin"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-014-not-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-015-update-the-limit-req-plugin"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-016-exceeding-the-burst"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-017-key-is-consumer-name"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-018-get-consumer-name-is-empty"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-019-delete-consumer"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-020-delete-route"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req-test-021-check-schema-failed-the-rate-attribute-is-equal-to-0"
+  source:
+    file: t/plugin/limit-req.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "limit-req2-test-001-add-plugin-for-delay-test"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-002-the-second-request-will-timeout-because-of-delay-error-code-will-be"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-003-add-nodelay-flag"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-004-the-second-request-will-not-timeout-because-of-nodelay"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-005-key-type-is-var-combination"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-006-exceed-the-burst"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-007-don-t-exceed-the-burst"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-008-request-when-key-is-missing"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-009-update-plugin-to-set-invalid-key"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req2-test-010-request-when-key-is-invalid"
+  source:
+    file: t/plugin/limit-req2.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req3-test-001-create-route-with-limit-req-plugin"
+  source:
+    file: t/plugin/limit-req3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req3-test-002-create-ssl-sni-www-test-com"
+  source:
+    file: t/plugin/limit-req3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "limit-req3-test-003-use-http-version-2-to-request"
+  source:
+    file: t/plugin/limit-req3.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

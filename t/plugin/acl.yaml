@@ -1,0 +1,935 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/acl.t
+  tests: 58
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/acl2.t
+  tests: 4
+cases:
+- name: test-001-add-consumer-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 1
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-002-add-consumer-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 2
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-003-set-allow-labels
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 3
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-004-verify-unauthorized
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 4
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            org:
+            - apache
+      id: acl-3
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 401
+    body:
+      equals: '{"message":"Missing authorization in request"}'
+- name: test-005-verify-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 5
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            org:
+            - apache
+      id: acl-3
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic amFjazoxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-006-verify-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 6
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            org:
+            - apache
+      id: acl-3
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic cm9zZToxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-007-set-allow-labels
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 7
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-008-verify-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 8
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            project:
+            - apisix
+      id: acl-7
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic amFjazoxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-009-verify-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 9
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            project:
+            - apisix
+      id: acl-7
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic cm9zZToxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+    body:
+      equals: '{"message":"The consumer is forbidden."}'
+- name: test-010-set-deny-labels
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 10
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-011-verify-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 11
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          deny_labels:
+            project:
+            - apisix
+          rejected_msg: request is forbidden
+      id: acl-10
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic amFjazoxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+    body:
+      equals: '{"message":"request is forbidden"}'
+- name: test-012-verify-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 12
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          deny_labels:
+            project:
+            - apisix
+          rejected_msg: request is forbidden
+      id: acl-10
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic cm9zZToxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-013-set-deny-labels-with-multiple-values
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 13
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-014-verify-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 14
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          deny_labels:
+            project:
+            - apisix
+            - tomcat
+      id: acl-13
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic amFjazoxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+- name: test-015-verify-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 15
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          deny_labels:
+            project:
+            - apisix
+            - tomcat
+      id: acl-13
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic cm9zZToxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+- name: test-016-set-allow-labels-with-comma
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 16
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-017-verify-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 17
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            project:
+            - http,server
+      id: acl-16
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic amFjazoxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+- name: test-018-verify-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 18
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            project:
+            - http,server
+      id: acl-16
+    consumers:
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic cm9zZToxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-019-test-acl-with-external-user
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 19
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-020-verify-infra-team
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 20
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-021-verify-infra-fake-team
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 21
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-022-verify-fake-team
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 22
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-023-set-acl-with-external-user-parsed-by-jsonpath-parser-is-table
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 23
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-024-test-acl-with-external-user-parsed-by-jsonpath-parser-is-table
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 24
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-025-set-acl-with-external-user-parsed-by-jsonpath-parser-is-segmented-text
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 25
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-026-test-acl-with-external-user-parsed-by-jsonpath-parser-is-segmented-text
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 26
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-027-set-acl-with-external-user-parsed-by-jsonpath-parser-is-json
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 27
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-028-test-acl-with-external-user-parsed-by-jsonpath-parser-is-json
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 28
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-029-set-acl-parser-segmented-text-but-can-not-extract-expect-value-by-the-invalid-separator
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 29
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-030-test-acl-with-the-invalid-separator
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 30
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-031-set-external-user-info-that-acl-can-extract-multiple-values-from-it
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 31
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-032-acl-parses-every-multi-match-value-so-a-packed-allowed-label-is-honored
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 32
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-033-use-jsonpath-to-extract-value-but-a-correct-external-user-label-field-and-external-user-label-field-parser-is-missing
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 33
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-034-test-using-jsonpath-but-a-label-key-is-missing
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 34
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-035-set-invalid-separator
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 35
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-036-test-invalid-separator-ngx-re-split-will-be-fail
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 36
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-037-set-the-parser-table-but-the-type-of-the-value-extracted-is-not-a-table
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 37
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-038-test-the-parser-is-table-but-the-type-of-the-value-extracted-is-not-a-table
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 38
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-039-set-the-parser-json-but-the-type-of-the-value-extracted-is-not-string
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 39
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-040-test-the-parser-is-json-but-the-type-of-the-value-extracted-is-not-string
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 40
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-041-set-the-parser-json-but-the-value-extracted-has-no-prefix
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 41
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-042-test-the-parser-is-json-but-the-value-extracted-has-no-prefix
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 42
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-043-set-the-parser-json-and-the-value-extracted-has-prefix-but-it-is-a-invalid-json
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 43
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-044-test-the-parser-is-json-and-the-value-extracted-has-prefix-but-it-is-a-invalid-json
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 44
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-045-set-no-parser-value-has-no-prefix-and-no-separator-external-user-label-field-as-labels-key
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 45
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-046-test-no-parser-value-has-no-prefix-and-no-separator-external-user-label-field-as-labels-key
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 46
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-047-test-schema-invalid-external-user-label-field-parser
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 47
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-048-test-schema-external-user-label-field-parser-segmented-text-but-external-user-label-field-separator-is-missing
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 48
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-049-test-schema-invalid-external-user-label-field-key-specified-but-empty
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 49
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-050-test-schema-invalid-external-user-label-field-key-specified-but-not-string
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 50
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-051-test-schema-invalid-external-user-label-field-separator-specified-but-empty
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 51
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-052-test-schema-invalid-external-user-label-field-separator-specified-but-not-string
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 52
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-053-test-schema-invalid-external-user-label-field-invalid-jsonpath-syntax
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 53
+  skip: complex response matcher
+- name: test-054-multi-match-jsonpath-parser-denied-label-hidden-inside-a-parsed-value
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 54
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-055-each-match-is-parsed-individually-before-allow-deny-matching
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 55
+  skip: "standalone conversion requires sequential external-user Lua setup; source test retained as an explicit gap"
+- name: test-056-delete-route
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 56
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-057-delete-jack
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 57
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-058-delete-rose
+  source:
+    file: t/plugin/acl.t
+    tests:
+    - 58
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-001-add-consumer-jack-with-comma-delimited-labels
+  source:
+    file: t/plugin/acl2.t
+    tests:
+    - 1
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-002-set-allow-labels
+  source:
+    file: t/plugin/acl2.t
+    tests:
+    - 2
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-003-verify-unauthorized
+  source:
+    file: t/plugin/acl2.t
+    tests:
+    - 3
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            project:
+            - apisix
+      id: acl-2
+    consumers:
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 401
+    body:
+      equals: '{"message":"Missing authorization in request"}'
+- name: test-004-verify-jack
+  source:
+    file: t/plugin/acl2.t
+    tests:
+    - 4
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        basic-auth: {}
+        acl:
+          allow_labels:
+            project:
+            - apisix
+      id: acl-2
+    consumers:
+    - username: rose
+      plugins:
+        basic-auth:
+          username: rose
+          password: '123456'
+      labels:
+        org: '["opensource","apache"]'
+        project: '["tomcat","web-server","http,server"]'
+    - username: jack
+      plugins:
+        basic-auth:
+          username: jack
+          password: '123456'
+      labels:
+        org: apache
+        project: gateway,apisix,web-server
+  input:
+    method: GET
+    path: /hello
+    headers:
+      Authorization: Basic amFjazoxMjM0NTY=
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world

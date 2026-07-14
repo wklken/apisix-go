@@ -1,0 +1,84 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/datadog.t
+  tests: 13
+cases:
+- name: "datadog-test-001-sanity-check-metadata"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-002-add-plugin"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-003-testing-behaviour-with-mock-suite"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-004-testing-behaviour-with-multiple-requests"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-005-testing-behaviour-with-different-namespace"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-006-testing-behaviour-with-different-constant-tags"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-007-testing-behaviour-when-route-name-is-missing-must-fallback-to-route-id"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-008-testing-behaviour-with-service-id"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-009-testing-behaviour-with-prefer-name-is-false-and-service-name-is-nil"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-010-testing-behaviour-with-consumer"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-011-testing-behaviour-with-include-path-include-method-and-route-level-constant-tags"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-012-fails-on-invalid-constant-tags-value"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "datadog-test-013-oversized-coalesced-payload-falls-back-to-per-metric-datagrams"
+  source:
+    file: t/plugin/datadog.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

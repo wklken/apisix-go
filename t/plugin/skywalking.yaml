@@ -1,0 +1,96 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/skywalking.t
+  tests: 15
+cases:
+- name: "skywalking-test-001-add-plugin"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-002-trigger-skywalking"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-003-change-sample-ratio"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-004-not-trigger-skywalking"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-005-disabled"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-006-not-trigger-skywalking"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-007-enable-skywalking-sample-ratio-1"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-008-test-segments-report"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-009-enable-at-both-global-and-route-levels"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-010-run-once"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-011-enable-at-global-but-disable-at-route-levels"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-012-run-once"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-013-delete-global-rule"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-014-trace-request-rejected-by-auth"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "skywalking-test-015-hit"
+  source:
+    file: t/plugin/skywalking.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

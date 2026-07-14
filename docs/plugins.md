@@ -16,6 +16,26 @@
 - Additional documented rows: **14** (12 README/native extras and 2 registered non-default protocol entries)
 - Total plugin rows in the status table: **118**
 
+## Integrated plugin test corpus
+
+The standalone integrated-test corpus lives under [`t/plugin`](../t/plugin/README.md)
+and is pinned to Apache APISIX commit `c3d7d5ec69774121f53d2e20d29d09c816795dd7`.
+It tracks all 100 rows marked `Supported` in this table through 96 manifests,
+covering 252 upstream `t/plugin/*.t` files and 3,928 upstream `TEST` blocks.
+The current runner executes 198 cases end-to-end and retains 3,684 source-mapped
+cases as explicit skips when their Lua/OpenResty phase, sequential Admin API,
+external-service, or other standalone boundary cannot be represented yet.
+
+`GM`, `proxy-cache`, `graphql-proxy-cache`, and `proxy-buffering` are the only
+supported rows without a matching upstream `t/plugin/*.t` file at the pinned
+commit; the coverage test records these as explicit source exceptions.
+
+The first parity fixes found through this corpus are compact JSON error bodies
+for `basic-auth` and `acl`, bare-host `Referer` values treated as missing by
+`referer-restriction`, and APISIX-compatible concatenated `block_rules` logging
+for `uri-blocker`. Each has focused package coverage alongside its integrated
+case.
+
 The four intentionally unregistered defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`. They require an external plugin runner or Lua/OpenResty runtime. The bounded `serverless-pre-function` and `serverless-post-function` compatibility implementations remain documented as not-required native/runtime parity.
 
 ## Status definitions

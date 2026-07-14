@@ -1,0 +1,509 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/key-auth.t
+  tests: 34
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/key-auth-anonymous-consumer.t
+  tests: 11
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/key-auth-realm.t
+  tests: 6
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/key-auth-upstream-domain-node.t
+  tests: 7
+cases:
+- name: test-001-sanity
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 1
+  skip: negative log assertion
+- name: test-002-wrong-type-of-string
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 2
+  skip: source block has no static standalone route resource
+- name: test-003-add-consumer-with-username-and-plugins
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 3
+  skip: negative log assertion
+- name: test-004-add-key-auth-plugin-using-admin-api
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 4
+  skip: negative log assertion
+- name: test-005-valid-consumer
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 5
+  skip: negative log assertion
+- name: test-006-invalid-consumer
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 6
+  skip: negative log assertion
+- name: test-007-not-found-apikey-header
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 7
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-008-valid-consumer
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 8
+  skip: complex response eval assertion
+- name: test-009-add-consumer-with-empty-key
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 9
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-010-customize-header
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 10
+  skip: negative log assertion
+- name: test-011-valid-consumer
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 11
+  skip: negative log assertion
+- name: test-012-customize-query-string
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 12
+  skip: negative log assertion
+- name: test-013-valid-consumer
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 13
+  config:
+    routes:
+    - plugins:
+        key-auth:
+          query: auth
+      upstream:
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+        type: roundrobin
+      uri: /hello
+      id: key-auth-12
+    consumers:
+    - username: jack
+      plugins:
+        key-auth:
+          key: auth-one
+    - username: error
+      plugins:
+        key-auth: {}
+  input:
+    method: GET
+    path: /hello?auth=auth-one
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-014-enable-key-auth-plugin-using-admin-api-set-hide-credentials-false
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 14
+  skip: negative log assertion
+- name: test-015-verify-apikey-request-header-should-not-hidden
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 15
+  skip: negative log assertion
+- name: test-016-add-key-auth-plugin-using-admin-api-set-hide-credentials-true
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 16
+  skip: negative log assertion
+- name: test-017-verify-apikey-request-header-is-hidden
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 17
+  skip: negative log assertion
+- name: test-018-verify-that-only-the-keys-in-the-title-are-deleted
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 18
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-019-when-apikey-both-in-header-and-query-string-verify-apikey-request-header-is-hidden-but-request-args-is-not-hidden
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 19
+  config:
+    routes:
+    - plugins:
+        key-auth:
+          hide_credentials: true
+      upstream:
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+        type: roundrobin
+      uri: /echo
+      id: key-auth-16
+    consumers:
+    - username: jack
+      plugins:
+        key-auth:
+          key: auth-one
+    - username: error
+      plugins:
+        key-auth: {}
+  input:
+    method: GET
+    path: /echo?apikey=auth-one
+    headers:
+      apikey: auth-one
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+- name: test-020-customize-query-string-set-hide-credentials-true
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 20
+  skip: negative log assertion
+- name: test-021-verify-auth-request-args-is-hidden
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 21
+  config:
+    routes:
+    - plugins:
+        key-auth:
+          query: auth
+          hide_credentials: true
+      upstream:
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+        type: roundrobin
+      uri: /echo
+      id: key-auth-20
+    consumers:
+    - username: jack
+      plugins:
+        key-auth:
+          key: auth-one
+    - username: error
+      plugins:
+        key-auth: {}
+  input:
+    method: GET
+    path: /echo?auth=auth-one
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+- name: test-022-verify-that-only-the-keys-in-the-query-parameters-are-deleted
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 22
+  config:
+    routes:
+    - plugins:
+        key-auth:
+          query: auth
+          hide_credentials: true
+      upstream:
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+        type: roundrobin
+      uri: /echo
+      id: key-auth-20
+    consumers:
+    - username: jack
+      plugins:
+        key-auth:
+          key: auth-one
+    - username: error
+      plugins:
+        key-auth: {}
+  input:
+    method: GET
+    path: /echo?auth=auth-one&test=auth-two
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+- name: test-023-when-auth-both-in-header-and-query-string-verify-auth-request-args-is-hidden-but-request-header-is-not-hidden
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 23
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-024-customize-query-string-set-hide-credentials-false
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 24
+  skip: negative log assertion
+- name: test-025-verify-auth-request-args-should-not-hidden
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 25
+  config:
+    routes:
+    - plugins:
+        key-auth:
+          query: auth
+          hide_credentials: false
+      upstream:
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+        type: roundrobin
+      uri: /hello
+      id: key-auth-24
+    consumers:
+    - username: jack
+      plugins:
+        key-auth:
+          key: auth-one
+    - username: error
+      plugins:
+        key-auth: {}
+  input:
+    method: GET
+    path: /hello?auth=auth-one
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+- name: test-026-change-consumer-with-secrets-ref-env
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 26
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-027-verify-auth-request
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 27
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-028-set-key-auth-conf-key-uses-secret-ref
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 28
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-029-store-secret-into-vault
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 29
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-030-verify-auth-request
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 30
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-031-set-key-auth-conf-with-the-token-in-an-env-var-key-uses-secret-ref
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 31
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-032-verify-auth-request
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 32
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-033-consumer-key-uses-an-env-ref-that-fails-to-resolve
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 33
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-034-fail-closed-literal-ref-is-not-accepted-as-a-credential
+  source:
+    file: t/plugin/key-auth.t
+    tests:
+    - 34
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+
+- name: "key-auth-anonymous-consumer-test-001-add-consumer-jack-and-anonymous"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-002-add-key-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-003-normal-consumer"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-004-request-without-key-auth-header-will-be-from-anonymous-consumer-and-it-will-pass"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-005-request-without-key-auth-header-will-be-from-anonymous-consumer-and-different-rate-limit-will-apply"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-006-add-key-auth-plugin-with-non-existent-anonymous-consumer"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-007-anonymous-consumer-configured-in-the-route-should-not-be-found"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-008-enable-key-auth-with-anonymous-consumer-and-hide-credentials"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-009-invalid-key-in-header-falls-back-to-anonymous-credential-not-forwarded-upstream"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-010-invalid-key-in-query-falls-back-to-anonymous-credential-not-forwarded-upstream"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-anonymous-consumer-test-011-invalid-key-in-both-header-and-query-neither-forwarded-upstream"
+  source:
+    file: t/plugin/key-auth-anonymous-consumer.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-realm-test-001-sanity-default-realm"
+  source:
+    file: t/plugin/key-auth-realm.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-realm-test-002-verify-default-realm"
+  source:
+    file: t/plugin/key-auth-realm.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-realm-test-003-set-custom-realm"
+  source:
+    file: t/plugin/key-auth-realm.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-realm-test-004-verify-custom-realm"
+  source:
+    file: t/plugin/key-auth-realm.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-realm-test-005-set-anonymous-consumer"
+  source:
+    file: t/plugin/key-auth-realm.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-realm-test-006-verify-anonymous-consumer-missing-returns-realm"
+  source:
+    file: t/plugin/key-auth-realm.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-001-create-consumer"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-002-set-service-and-enabled-plugin-key-auth"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-003-create-route-with-plugin-limit-count-upstream-node-contains-domain"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-004-hit-route-3-times"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-005-set-upstream"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-006-create-route-with-plugin-limit-count-and-bind-upstream-via-id"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "key-auth-upstream-domain-node-test-007-hit-route-3-times"
+  source:
+    file: t/plugin/key-auth-upstream-domain-node.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

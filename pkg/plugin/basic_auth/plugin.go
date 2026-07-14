@@ -69,13 +69,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			w.Header().Add("WWW-Authenticate", `Basic realm='.'`)
-			http.Error(w, `{"message": "Missing authorization in request"}`, http.StatusUnauthorized)
+			writeError(w, `{"message":"Missing authorization in request"}`, http.StatusUnauthorized)
 			return
 		}
 
 		user, pass, ok := r.BasicAuth()
 		if !ok {
-			http.Error(w, `{"message": "Invalid authorization in request"}`, http.StatusUnauthorized)
+			writeError(w, `{"message":"Invalid authorization in request"}`, http.StatusUnauthorized)
 			return
 		}
 		user = normalizeCredential(user)
@@ -83,25 +83,25 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+			writeError(w, `{"message":"Invalid user authorization"}`, http.StatusUnauthorized)
 			return
 		}
 
 		consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
 		if !exists {
-			http.Error(w, `{"message": "Missing authorization config in consumer settings"}`, http.StatusUnauthorized)
+			writeError(w, `{"message":"Missing authorization config in consumer settings"}`, http.StatusUnauthorized)
 			return
 		}
 
 		var ba basicAuth
 		err = util.Parse(consumerPluginConfig, &ba)
 		if err != nil {
-			http.Error(w, `{"message": "Invalid authorization config in consumer settings"}`, http.StatusUnauthorized)
+			writeError(w, `{"message":"Invalid authorization config in consumer settings"}`, http.StatusUnauthorized)
 			return
 		}
 
 		if pass != ba.Password {
-			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+			writeError(w, `{"message":"Invalid user authorization"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -114,6 +114,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func writeError(w http.ResponseWriter, body string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
 }
 
 func normalizeCredential(value string) string {

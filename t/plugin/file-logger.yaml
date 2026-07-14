@@ -1,0 +1,279 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/file-logger-reopen.t
+  tests: 3
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/file-logger.t
+  tests: 26
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/file-logger2.t
+  tests: 15
+cases:
+- name: "file-logger-reopen-test-001-prepare"
+  source:
+    file: t/plugin/file-logger-reopen.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-reopen-test-002-cache-file"
+  source:
+    file: t/plugin/file-logger-reopen.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-reopen-test-003-reopen-file"
+  source:
+    file: t/plugin/file-logger-reopen.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-001-sanity"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-002-add-plugin-metadata"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-003-add-plugin"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-004-verify-plugin"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-005-failed-to-open-the-path"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-006-log-format-in-plugin"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-007-verify-plugin"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-008-add-plugin-metadata"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-009-ensure-config-in-plugin-is-prior-to-the-one-in-plugin-metadata"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-010-nested-log-format-in-plugin"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-011-verify-nested-log-format-structure"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-012-deep-nested-log-format-is-truncated-and-warns"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-013-configure-metadata-path"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-014-use-metadata-path-when-plugin-config-does-not-set-it"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-015-log-format-extra-enriches-the-default-log-without-replacing-it"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-016-default-fields-stay-and-the-extra-field-is-added"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-017-log-format-extra-logs-the-pre-dns-host-for-a-domain-upstream"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-018-extra-field-keeps-the-domain-while-the-default-upstream-is-resolved"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-019-log-format-wins-and-log-format-extra-is-ignored-when-both-are-set"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-020-extra-field-absent-and-the-default-entry-is-replaced-by-log-format"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-021-route-level-log-format-extra-overrides-the-metadata-one"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-022-only-the-route-extra-field-is-present-metadata-one-is-dropped"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-023-log-format-extra-logs-the-pre-dns-host-for-a-multi-node-domain-upstream"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-024-the-picked-node-s-pre-dns-host-is-logged-regardless-of-which-one-is-chosen"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-025-multi-node-upstream-mixing-a-domain-node-and-a-raw-ip-node"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger-test-026-each-node-logs-its-own-pre-dns-host-domain-resolved-and-raw-ip-untouched"
+  source:
+    file: t/plugin/file-logger.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "file-logger2-test-001-add-plugin-with-include-resp-body-setting"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-002-verify-plugin-for-file-logger-with-response"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-003-check-file-logger-include-resp-body-with-expr"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-004-verify-file-logger-resp-with-expression-of-concern"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-005-add-plugin-metadata"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-006-add-plugin"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-007-verify-plugin"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-008-add-new-configuration-with-match"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-009-request-match"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-010-request-not-match"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-011-add-plugin-with-include-req-body-setting"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-012-verify-plugin-for-file-logger-with-request"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-013-check-file-logger-include-req-body-with-expr"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-014-verify-file-logger-req-with-expression-of-concern"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "file-logger2-test-015-collecting-response-body-gzipped-by-apisix"
+  source:
+    file: t/plugin/file-logger2.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

@@ -1,12 +1,21 @@
-source:
-  repository: https://github.com/apache/apisix
+sources:
+- repository: https://github.com/apache/apisix
   commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
   file: t/plugin/response-rewrite.t
   tests: 27
 
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/response-rewrite2.t
+  tests: 25
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/response-rewrite3.t
+  tests: 22
 cases:
   - name: schema-sanity
     source:
+      file: t/plugin/response-rewrite.t
       tests: [1]
     config:
       routes:
@@ -37,6 +46,7 @@ cases:
 
   - name: reject-invalid-status
     source:
+      file: t/plugin/response-rewrite.t
       tests: [2]
     config:
       routes:
@@ -53,6 +63,7 @@ cases:
 
   - name: reject-invalid-config
     source:
+      file: t/plugin/response-rewrite.t
       tests: [3]
     config:
       routes:
@@ -69,6 +80,7 @@ cases:
 
   - name: rewrite-headers-and-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [4, 5]
     config:
       routes:
@@ -104,6 +116,7 @@ cases:
 
   - name: rewrite-body-preserve-headers
     source:
+      file: t/plugin/response-rewrite.t
       tests: [6, 7]
     config:
       routes:
@@ -146,6 +159,7 @@ cases:
 
   - name: rewrite-location-and-status
     source:
+      file: t/plugin/response-rewrite.t
       tests: [8, 9]
     config:
       routes:
@@ -168,6 +182,7 @@ cases:
 
   - name: empty-header-value
     source:
+      file: t/plugin/response-rewrite.t
       tests: [10]
     config:
       routes:
@@ -184,6 +199,7 @@ cases:
 
   - name: reject-array-header-value
     source:
+      file: t/plugin/response-rewrite.t
       tests: [11]
     config:
       routes:
@@ -200,6 +216,7 @@ cases:
 
   - name: base64-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [12, 13]
     config:
       routes:
@@ -220,6 +237,7 @@ cases:
 
   - name: reject-invalid-base64
     source:
+      file: t/plugin/response-rewrite.t
       tests: [14]
     config:
       routes:
@@ -235,11 +253,13 @@ cases:
 
   - name: admin-etcd-clean-serialization
     source:
+      file: t/plugin/response-rewrite.t
       tests: [15]
     skip: Admin API and etcd serialization are outside standalone mode
 
   - name: valid-status-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [16]
     config:
       routes:
@@ -261,6 +281,7 @@ cases:
 
   - name: reject-invalid-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [17]
     config:
       routes:
@@ -276,6 +297,7 @@ cases:
 
   - name: matching-status-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [18, 19]
     config:
       routes:
@@ -301,6 +323,7 @@ cases:
 
   - name: nonmatching-status-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [20]
     config:
       routes:
@@ -326,6 +349,7 @@ cases:
 
   - name: empty-base64-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [21]
     config:
       routes:
@@ -341,6 +365,7 @@ cases:
 
   - name: nil-base64-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [22]
     config:
       routes:
@@ -355,6 +380,7 @@ cases:
 
   - name: response-header-variables
     source:
+      file: t/plugin/response-rewrite.t
       tests: [23, 24]
     config:
       routes:
@@ -381,6 +407,7 @@ cases:
 
   - name: empty-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [25, 26]
     config:
       routes:
@@ -400,6 +427,7 @@ cases:
 
   - name: add-header-without-colon
     source:
+      file: t/plugin/response-rewrite.t
       tests: [27]
     config:
       routes:
@@ -421,3 +449,285 @@ cases:
           equals: a
       body:
         equals: upstream
+  - name: "response-rewrite2-test-001-sanity"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 1
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-002-add-plugin-with-valid-filters"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 2
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-003-add-plugin-with-invalid-filter-required-filed"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 3
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-004-add-plugin-with-invalid-filter-scope"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 4
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-005-add-plugin-with-invalid-filter-empty-value"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 5
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-006-add-plugin-with-invalid-filter-regex-options"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 6
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-007-set-route-with-filters-and-vars-expr"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 7
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-008-check-http-body-that-matches-filters"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 8
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-009-filter-substitute-global"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 9
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-010-check-http-body-that-substitute-global"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 10
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-011-filter-replace-with-empty"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 11
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-012-check-http-body-that-replace-with-empty"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 12
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-013-filter-replace-with-words"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 13
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-014-check-http-body-that-replace-with-words"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 14
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-015-set-multiple-filters"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 15
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-016-check-http-body-that-set-multiple-filters"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 16
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-017-filters-no-any-match"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 17
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-018-check-http-body-that-filters-no-any-match"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 18
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-019-schema-check-for-headers"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 19
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-020-add-headers"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 20
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-021-hit"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 21
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-022-set-headers"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 22
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-023-hit"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 23
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-024-remove-headers"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 24
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite2-test-025-hit"
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests:
+      - 25
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-001-set-route-use-gzip-upstream"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 1
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-002-should-return-gzip-body"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 2
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-003-set-route-use-gzip-upstream-and-response-rewrite-body-conf"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 3
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-004-should-rewrite-body-and-clear-content-encoding-header"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 4
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-005-set-route-use-gzip-upstream-and-response-rewrite-filter-conf"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 5
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-006-gzip-decode-support-should-rewrite-body-and-clear-content-encoding-header"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 6
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-007-set-route-use-response-write-body-conf-and-mock-unsupported-compression-encoding-type"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 7
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-008-use-body-conf-will-ignore-encoding-should-rewrite-body-and-clear-content-encoding-header"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 8
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-009-set-route-use-response-write-filter-conf-and-mock-unsupported-compression-encoding-type"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 9
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-010-use-filter-conf-will-report-unsupported-encoding-type-error"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 10
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-011-set-route-use-response-write-plugin-but-not-use-filter-conf-or-body-conf"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 11
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-012-should-keep-content-encoding"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 12
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-013-response-write-without-filter-conf-or-body-conf-and-mock-unsupported-compression-encoding-type"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 13
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-014-should-keep-content-encoding"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 14
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-015-set-route-use-brotli-upstream"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 15
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-016-should-return-brotli-body"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 16
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-017-set-route-use-brotli-upstream-and-response-rewrite-body-conf"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 17
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-018-should-rewrite-body-and-clear-content-encoding-header"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 18
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-019-set-route-use-brotli-upstream-and-response-rewrite-filter-conf"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 19
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-020-brotli-decode-support-should-rewrite-body-and-clear-content-encoding-header"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 20
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-021-set-route-use-response-write-plugin-but-not-use-filter-conf-or-body-conf"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 21
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+  - name: "response-rewrite3-test-022-should-keep-content-encoding"
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests:
+      - 22
+    skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

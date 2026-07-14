@@ -1,0 +1,258 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/wolf-rbac.t
+  tests: 42
+cases:
+- name: "wolf-rbac-test-001-sanity"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-002-wrong-type-of-string"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-003-setup-public-api-route"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-004-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-005-enable-wolf-rbac-plugin-using-admin-api"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-006-login-failed-appid-is-missing"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-007-login-failed-appid-not-found"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-008-login-failed-username-missing"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-009-login-failed-password-missing"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-010-login-failed-username-not-found"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-011-login-failed-wrong-password"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-012-login-successfully"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-013-verify-missing-token"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-014-verify-invalid-rbac-token"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-015-verify-invalid-appid-in-rbac-token"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-016-verify-failed"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-017-verify-in-argument"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-018-verify-in-header-authorization"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-019-verify-in-header-x-rbac-token"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-020-verify-in-cookie"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-021-get-userinfo-failed-missing-token"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-022-get-userinfo-failed-invalid-rbac-token"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-023-get-userinfo"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-024-change-password-failed-old-password-incorrect"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-025-change-password"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-026-custom-headers-in-request-headers"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-027-change-password-by-post-raw-args"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-028-change-password-by-post-raw-args-greater-than-100-args-is-ok"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-029-verify-failed-server-internal-error"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-030-verify-failed-token-is-expired"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 30
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-031-set-hmac-auth-conf-appid-uses-secret-ref"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 31
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-032-store-secret-into-vault"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 32
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-033-login-successfully"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 33
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-034-set-hmac-auth-conf-with-the-token-in-an-env-var-appid-uses-secret-ref"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 34
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-035-login-successfully"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 35
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-036-add-consumer-with-echo-plugin"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 36
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-037-verify-echo-plugin-in-consumer"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 37
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-038-ssl-verify-false-is-passed-through-to-http-client"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 38
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-039-ssl-verify-true-is-passed-through-to-http-client"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 39
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-040-ssl-verify-rejects-non-boolean-value"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 40
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-041-clientip-forwarded-from-trusted-x-real-ip-source"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 41
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "wolf-rbac-test-042-spoofed-x-real-ip-from-untrusted-source-is-ignored"
+  source:
+    file: t/plugin/wolf-rbac.t
+    tests:
+    - 42
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

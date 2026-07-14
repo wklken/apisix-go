@@ -1,0 +1,811 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth-anonymous-consumer.t
+  tests: 7
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth-more-algo.t
+  tests: 17
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth-realm.t
+  tests: 6
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth.t
+  tests: 59
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth2.t
+  tests: 9
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth3.t
+  tests: 21
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/jwt-auth4.t
+  tests: 11
+cases:
+- name: "jwt-auth-anonymous-consumer-test-001-add-consumer-jack-and-anonymous"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-anonymous-consumer-test-002-add-jwt-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-anonymous-consumer-test-003-normal-consumer"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-anonymous-consumer-test-004-request-without-jwt-auth-header-will-be-from-anonymous-consumer-and-it-will-pass"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-anonymous-consumer-test-005-request-without-jwt-auth-header-will-be-from-anonymous-consumer-and-different-rate-limit-will-apply"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-anonymous-consumer-test-006-add-jwt-auth-plugin-with-non-existent-anonymous-consumer"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-anonymous-consumer-test-007-anonymous-consumer-configured-in-the-route-should-not-be-found"
+  source:
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-001-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-002-enable-jwt-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-003-create-public-api-route-jwt-auth-sign"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-004-sign-verify-in-argument"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-005-verify-invalid-jwt-token"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-006-verify-token-with-algorithm-hs384"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-007-missing-public-key-and-private-key"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-008-missing-public-key-and-private-key"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-009-sign-verify-in-argument"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-010-verify-token-with-algorithm-ps356"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-011-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-012-only-verify-nbf-claim"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-013-configured-claim-nbf-missing-from-token-rejected"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-014-verify-failed-before-nbf-claim"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-015-verify-success-after-nbf-claim"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-016-eddsa-algorithm"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-more-algo-test-017-sign-verify-in-argument"
+  source:
+    file: t/plugin/jwt-auth-more-algo.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-realm-test-001-sanity-default-realm"
+  source:
+    file: t/plugin/jwt-auth-realm.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-realm-test-002-verify-default-realm"
+  source:
+    file: t/plugin/jwt-auth-realm.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-realm-test-003-set-custom-realm"
+  source:
+    file: t/plugin/jwt-auth-realm.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-realm-test-004-verify-custom-realm"
+  source:
+    file: t/plugin/jwt-auth-realm.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-realm-test-005-set-anonymous-consumer"
+  source:
+    file: t/plugin/jwt-auth-realm.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-realm-test-006-verify-anonymous-consumer-missing-returns-realm"
+  source:
+    file: t/plugin/jwt-auth-realm.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-001-sanity"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-002-wrong-type-of-string"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-003-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-004-enable-jwt-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-005-verify-missing-token"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-006-verify-invalid-jwt-token"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-007-verify-expired-jwt-token"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-008-verify-in-header"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-009-verify-in-cookie"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-010-verify-in-header-without-bearer"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-011-verify-header-with-bearer"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-012-verify-invalid-bearer-token"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-013-delete-a-exist-consumer"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-014-add-consumer-with-username-and-plugins-with-base64-secret"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-015-enable-jwt-auth-plugin-with-base64-secret"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-016-sign-verify"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-017-verify-invalid-jwt-token"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-018-verify-invalid-signature"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-019-verify-happy-path"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-020-without-key"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-021-get-the-schema-by-schema-type"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-022-get-the-schema-by-error-schema-type"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-023-get-the-schema-by-default-schema-type"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-024-add-consumer-with-username-and-plugins-with-public-key"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-025-jwt-sign-and-verify-use-rs256-algorithm"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-026-sign-verify-use-rs256-algorithm-private-key-numbits-512"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-027-add-consumer-with-username-and-plugins-with-public-key"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-028-jwt-sign-and-verify-use-rs256-algorithm"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-029-sign-verify-use-rs256-algorithm-private-key-numbits-1024"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-030-sign-verify-use-rs256-algorithm-private-key-numbits-1024-with-extra-payload"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 30
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-031-add-consumer-with-username-and-plugins-with-public-key"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 31
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-032-jwt-sign-and-verify-use-rs256-algorithm-private-key-numbits-2048"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 32
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-033-sign-verify-use-rs256-algorithm-private-key-numbits-2048"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 33
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-034-sign-verify-use-rs256-algorithm-private-key-numbits-2048-with-extra-payload"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 34
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-035-jwt-sign-with-the-public-key-when-using-the-rs256-algorithm"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 35
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-036-jwt-sign-and-verify-rs256"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 36
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-037-sanity-algorithm-hs512"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 37
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-038-add-consumer-with-username-and-plugins-use-hs512-algorithm"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 38
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-039-jwt-sign-and-verify-use-hs512-algorithm"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 39
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-040-sign-verify-algorithm-hs512"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 40
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-041-sign-verify-algorithm-hs512-with-extra-payload"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 41
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-042-wrong-format-of-secret"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 42
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-043-when-the-exp-value-is-not-set-make-sure-the-default-value-86400-works"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 43
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-044-rs256-without-public-key"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 44
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-045-rs256-without-private-key"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 45
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-046-add-consumer-with-username-and-plugins-with-public-key-private-key-es256"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 46
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-047-jwt-sign-and-verify-use-es256-algorithm-private-key-numbits-512"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 47
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-048-sign-verify-use-es256-algorithm-private-key-numbits-512"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 48
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-049-add-consumer-missing-public-key-algorithm-rs256"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 49
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-050-add-consumer-missing-public-key-algorithm-es256"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 50
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-051-secret-is-required-when-algorithm-is-not-rs256-or-es256"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 51
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-052-hs256-token-against-rs256-consumer"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 52
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-053-add-consumer-for-default-claims-verification"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 53
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-054-enable-jwt-auth-without-claims-to-verify-default-exp-nbf-path"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 54
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-055-expired-token-with-no-claims-to-verify-configured-rejected"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 55
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-056-token-without-exp-claim-and-no-claims-to-verify-configured-accepted"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 56
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-057-enable-jwt-auth-with-an-explicit-empty-claims-to-verify-array"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 57
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-058-expired-token-with-an-explicit-empty-claims-to-verify-still-rejected"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 58
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth-test-059-malformed-signatures-must-be-rejected-with-401-not-crash-with-500"
+  source:
+    file: t/plugin/jwt-auth.t
+    tests:
+    - 59
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "jwt-auth2-test-001-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-002-enable-jwt-auth-plugin-using-admin-api-with-custom-parameter"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-003-verify-in-header"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-004-verify-in-cookie"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-005-verify-in-query"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-006-verify-in-header-without-bearer"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-007-verify-in-header-with-bearer"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-008-use-lifetime-grace-period-default-value"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth2-test-009-lifetime-grace-period-is-2-seconds"
+  source:
+    file: t/plugin/jwt-auth2.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-001-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-002-enable-jwt-auth-plugin-using-admin-api-with-custom-parameter"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-003-verify-in-header-not-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-004-verify-in-cookie-not-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-005-enable-jwt-auth-plugin-using-admin-api-without-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-006-verify-in-query-without-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-007-enable-jwt-auth-plugin-using-admin-api-with-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-008-verify-in-header-with-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-009-enable-jwt-auth-plugin-using-admin-api-with-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-010-verify-in-query-with-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-011-verify-in-cookie-with-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-012-verify-in-cookie-with-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-013-delete-exist-consumers"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-014-data-encryption-for-secret"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-015-set-jwt-auth-conf-secret-uses-secret-ref"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-016-store-secret-into-vault"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-017-verify-in-header-not-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-018-store-rsa-key-pairs-and-secret-into-vault-from-local-filesystem"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-019-create-consumer-for-rs256-algorithm-with-public-key-fetched-from-vault-and-public-key-in-consumer-schema"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-020-set-jwt-auth-conf-with-the-token-in-an-env-var-secret-uses-secret-ref"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth3-test-021-verify-in-header-not-hiding-credentials"
+  source:
+    file: t/plugin/jwt-auth3.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-001-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-002-enable-jwt-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-003-verify-in-header"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-004-ensure-secret-is-non-empty"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-005-ensure-key-is-non-empty"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-006-store-in-ctx-disabled"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-007-verify-store-in-ctx-disabled-header-with-bearer"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-008-store-in-ctx-enabled"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-009-verify-store-in-ctx-enabled-header-with-bearer"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-010-test-ed448-signature-verification-with-lua-resty-openssl"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "jwt-auth4-test-011-secret-is-required-for-hs-algorithms"
+  source:
+    file: t/plugin/jwt-auth4.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

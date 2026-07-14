@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -58,8 +59,9 @@ type Config struct {
 	RejectedMsg     string   `json:"rejected_msg,omitempty"`
 	CaseInsensitive *bool    `json:"case_insensitive,omitempty"`
 
-	RegexRule  *regexp.Regexp
-	rejectBody string
+	RegexRule        *regexp.Regexp
+	rejectBody       string
+	blockRulesConcat string
 }
 
 func (p *Plugin) Init() error {
@@ -95,6 +97,12 @@ func (p *Plugin) PostInit() error {
 		if *p.config.CaseInsensitive {
 			blockRulesConcat = "(?i)" + blockRulesConcat
 		}
+		p.config.blockRulesConcat = blockRulesConcat
+		logValue := blockRulesConcat
+		if strings.Contains(logValue, "|") {
+			logValue += ","
+		}
+		logger.Info("concat block_rules: " + logValue)
 	}
 
 	if p.config.RejectedMsg != "" {

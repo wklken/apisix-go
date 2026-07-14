@@ -1,0 +1,60 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/aws-lambda.t
+  tests: 9
+cases:
+- name: "aws-lambda-test-001-checking-iam-schema"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-002-missing-fields-in-iam-schema"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-003-create-route-with-aws-plugin-enabled"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-004-test-plugin-endpoint"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-005-check-authz-header-apikey"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-006-check-authz-header-iam-v4-signing"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-007-cleanup-route-before-encryption-test"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-008-iam-credentials-accesskey-secretkey-and-apikey-are-encrypted-at-rest"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "aws-lambda-test-009-iam-v4-signing-with-encoded-multi-value-and-valueless-query-params"
+  source:
+    file: t/plugin/aws-lambda.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

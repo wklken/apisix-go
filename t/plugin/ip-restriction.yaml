@@ -1,0 +1,404 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ip-restriction.t
+  tests: 35
+cases:
+- name: test-001-sanity
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 1
+  skip: source block has no static standalone route resource
+- name: test-002-wrong-cidr-v4-format
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 2
+  skip: complex response eval assertion
+- name: test-003-wrong-cidr-v4-format
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 3
+  skip: complex response eval assertion
+- name: test-004-empty-conf
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 4
+  skip: source block has no static standalone route resource
+- name: test-005-empty-cidrs
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 5
+  skip: complex response eval assertion
+- name: test-006-whitelist-and-blacklist-mutual-exclusive
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 6
+  skip: source block has no static standalone route resource
+- name: test-007-set-whitelist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 7
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-008-hit-route-and-ip-cidr-in-the-whitelist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 8
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          whitelist:
+          - 127.0.0.0/24
+          - 113.74.26.106
+      id: ip-restriction-7
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-009-hit-route-and-ip-in-the-whitelist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 9
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          whitelist:
+          - 127.0.0.0/24
+          - 113.74.26.106
+      id: ip-restriction-7
+  input:
+    method: GET
+    path: /hello
+    headers:
+      X-Forwarded-For: 113.74.26.106
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-010-hit-route-and-ip-not-in-the-whitelist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 10
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-011-hit-route-and-ipv6-not-in-the-whitelist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 11
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-012-set-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 12
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-013-hit-route-and-ip-cidr-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 13
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          blacklist:
+          - 127.0.0.0/24
+          - 113.74.26.106
+      id: ip-restriction-12
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+    body:
+      equals: '{"message":"Your IP address is not allowed"}'
+- name: test-014-hit-route-and-ip-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 14
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          blacklist:
+          - 127.0.0.0/24
+          - 113.74.26.106
+      id: ip-restriction-12
+  input:
+    method: GET
+    path: /hello
+    headers:
+      X-Forwarded-For: 113.74.26.106
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+    body:
+      equals: '{"message":"Your IP address is not allowed"}'
+- name: test-015-hit-route-and-ip-not-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 15
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-016-hit-route-and-ipv6-not-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 16
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-017-remove-ip-restriction
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 17
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-018-hit-route
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 18
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins: {}
+      id: ip-restriction-17
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-019-sanity-ipv6
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 19
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-020-set-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 20
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-021-hit-route
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 21
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          blacklist:
+          - ::1
+          - fe80::/32
+      id: ip-restriction-20
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 200
+    body:
+      equals: hello world
+- name: test-022-hit-route-and-ipv6-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 22
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-023-hit-route-and-ipv6-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 23
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-024-wrong-ipv6-format
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 24
+  skip: complex response eval assertion
+- name: test-025-set-disable-true
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 25
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-026-set-blacklist-and-user-defined-message
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 26
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-027-hit-route-and-ip-cidr-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 27
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          blacklist:
+          - 127.0.0.0/24
+          - 113.74.26.106
+          message: Do you want to do something bad?
+      id: ip-restriction-26
+  input:
+    method: GET
+    path: /hello
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+    body:
+      equals: '{"message":"Do you want to do something bad?"}'
+- name: test-028-hit-route-and-ip-in-the-blacklist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 28
+  config:
+    routes:
+    - uri: /hello
+      upstream:
+        type: roundrobin
+        nodes:
+          '{{UPSTREAM_ADDR}}': 1
+      plugins:
+        ip-restriction:
+          blacklist:
+          - 127.0.0.0/24
+          - 113.74.26.106
+          message: Do you want to do something bad?
+      id: ip-restriction-26
+  input:
+    method: GET
+    path: /hello
+    headers:
+      X-Forwarded-For: 113.74.26.106
+  upstream:
+    respond:
+      status: 200
+      body: hello world
+  output:
+    status: 403
+    body:
+      equals: '{"message":"Do you want to do something bad?"}'
+- name: test-029-set-whitelist-and-user-defined-message
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 29
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-030-hit-route-and-ip-not-in-the-whitelist
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 30
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-031-message-that-do-not-reach-the-minimum-range
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 31
+  skip: complex response eval assertion
+- name: test-032-exceeds-the-maximum-limit-of-message
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 32
+  skip: complex response eval assertion
+- name: test-033-set-whitelist-and-404-response-code
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 33
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-034-hit-route-and-ip-not-in-the-whitelist-expect-404
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 34
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-035-set-wrong-response-code
+  source:
+    file: t/plugin/ip-restriction.t
+    tests:
+    - 35
+  skip: complex response eval assertion

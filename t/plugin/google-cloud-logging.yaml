@@ -1,0 +1,213 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/google-cloud-logging.t
+  tests: 25
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/google-cloud-logging2.t
+  tests: 7
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/google-cloud-logging3.t
+  tests: 1
+cases:
+- name: "google-cloud-logging-test-001-full-configuration-verification-auth-file"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-002-full-configuration-verification-auth-config"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-003-basic-configuration-verification-auth-file"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-004-basic-configuration-verification-auth-config"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-005-auth-configure-undefined"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-006-set-route-identity-authentication-failed"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-007-test-route-identity-authentication-failed"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-008-set-route-no-access-to-this-scopes"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-009-test-route-no-access-to-this-scopes"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-010-set-route-succeed-write"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-011-test-route-succeed-write"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-012-set-route-customize-auth-type"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-013-test-route-customize-auth-type"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-014-set-route-customize-auth-type-error"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-015-test-route-customize-auth-type-error"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-016-set-route-file-configuration-is-successful"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-017-test-route-file-configuration-is-successful"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-018-set-route-file-configuration-is-failed"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-019-test-route-file-configuration-is-failed"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-020-set-route-https-file-configuration-is-successful"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-021-test-route-https-file-configuration-is-successful"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-022-set-route-https-file-configuration-ssl-authentication-failed-ssl-verify-true"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-023-test-route-https-file-configuration-ssl-authentication-failed-ssl-verify-true"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-024-set-route-https-file-configuration-ssl-authentication-succeed-ssl-verify-false"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging-test-025-test-route-https-file-configuration-ssl-authentication-succeed-ssl-verify-false"
+  source:
+    file: t/plugin/google-cloud-logging.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "google-cloud-logging2-test-001-set-route-verify-batch-queue-default-params"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging2-test-002-data-encryption-for-auth-config-private-key"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging2-test-003-set-route-to-test-custom-log-format"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging2-test-004-hit"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging2-test-005-bad-custom-log-format"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging2-test-006-set-route-to-test-custom-log-format-in-route"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging2-test-007-hit"
+  source:
+    file: t/plugin/google-cloud-logging2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "google-cloud-logging3-test-001-should-drop-entries-when-max-pending-entries-is-exceeded"
+  source:
+    file: t/plugin/google-cloud-logging3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

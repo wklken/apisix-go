@@ -1,0 +1,132 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/syslog.t
+  tests: 21
+cases:
+- name: "syslog-test-001-sanity"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-002-missing-port"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-003-wrong-type-of-string"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-004-add-plugin"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-005-access"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-006-flush-manually"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-007-small-flush-limit-instant-flush"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-008-check-log"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-009-check-plugin-configuration-updating"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-010-add-log-format"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-011-add-route-and-enable-syslog-plugin-batch-max-size-1"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-012-hit-route-and-report-sys-logger"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-013-check-log"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-014-log-format-in-plugin"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-015-access"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-016-check-log"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-017-test-udp-mode"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-018-hit"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-019-check-log"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-020-add-plugin-with-include-req-body-setting-collect-request-log"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "syslog-test-021-add-plugin-with-include-resp-body-setting-collect-response-log"
+  source:
+    file: t/plugin/syslog.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

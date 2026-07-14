@@ -52,6 +52,30 @@ func TestBypassMissingAllowsMissingReferer(t *testing.T) {
 	}
 }
 
+func TestBypassMissingTreatsBareHostAsMissingReferer(t *testing.T) {
+	bypassMissing := true
+	p := newTestPlugin(t, Config{
+		BypassMissing: &bypassMissing,
+		Whitelist:     []string{"allowed.example.com"},
+	})
+
+	called := false
+	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)
+	req.Header.Set("Referer", "www.allowed.example.com")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("bare-host referer should be treated as missing")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
 func TestLeadingStarMatchesHostSuffix(t *testing.T) {
 	p := newTestPlugin(t, Config{Whitelist: []string{"*.example.com"}})
 	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)

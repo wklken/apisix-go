@@ -1,0 +1,125 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ai-request-rewrite.t
+  tests: 15
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ai-request-rewrite2.t
+  tests: 4
+cases:
+- name: "ai-request-rewrite-test-001-minimal-viable-configuration"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-002-missing-prompt-field-should-not-pass"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-003-missing-auth-field-should-not-pass"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-004-missing-provider-field-should-not-pass"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-005-provider-must-be-one-of-deepseek-openai-aimlapi-openai-compatible"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-006-provider-deepseek"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-007-provider-openai-compatible"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-008-override-endpoint-works"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-009-set-route-with-wrong-auth-header"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-010-set-route-with-correct-query-param"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-011-set-route-with-wrong-query-param"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-012-prompt-passed-correctly-to-llm-service"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-013-check-llm-bad-request"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-014-check-llm-internal-server-error"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite-test-015-provider-aimlapi"
+  source:
+    file: t/plugin/ai-request-rewrite.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "ai-request-rewrite2-test-001-check-plugin-options-send-to-llm-service-correctly"
+  source:
+    file: t/plugin/ai-request-rewrite2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite2-test-002-openai-compatible-provider-should-use-with-override-endpoint"
+  source:
+    file: t/plugin/ai-request-rewrite2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite2-test-003-query-params-in-override-endpoint-should-be-sent-to-llm"
+  source:
+    file: t/plugin/ai-request-rewrite2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-request-rewrite2-test-004-send-request-without-body"
+  source:
+    file: t/plugin/ai-request-rewrite2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

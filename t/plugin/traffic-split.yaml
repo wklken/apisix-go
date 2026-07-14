@@ -1,0 +1,586 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/traffic-split.t
+  tests: 21
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/traffic-split2.t
+  tests: 22
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/traffic-split3.t
+  tests: 20
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/traffic-split4.t
+  tests: 19
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/traffic-split5.t
+  tests: 12
+cases:
+- name: test-001-schema-validation-passed
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 1
+  skip: source block has no static standalone route resource
+- name: test-002-schema-validation-passed-and-match-configuration-is-missing
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 2
+  skip: source block has no static standalone route resource
+- name: test-003-schema-validation-failed-vars-expression-operator-type-is-wrong
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 3
+  skip: complex response eval assertion
+- name: test-004-missing-rules-configuration-the-upstream-of-the-default-route-takes-effect
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 4
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-005-the-upstream-of-the-default-route-takes-effect
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 5
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-006-when-weighted-upstreams-is-empty-the-upstream-of-route-is-used-by-default
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 6
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-007-the-upstream-of-the-default-route-takes-effect
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 7
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-008-single-vars-expression-and-single-plugin-upstream-and-the-upstream-traffic-on-route-accounts-for-1-3
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 8
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-009-expression-validation-failed-return-to-the-default-route-upstream-port-1980
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 9
+  skip: complex response eval assertion
+- name: test-010-the-expression-passes-and-initiated-multiple-requests-the-upstream-traffic-of-route-accounts-for-1-3-and-the-upstream-traffic-of-plugins-accounts-for-2-3
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 10
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-011-multiple-vars-rules-and-multiple-plugin-upstream
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 11
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-012-expression-validation-failed-return-to-the-default-route-upstream-port-1980
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 12
+  skip: complex response eval assertion
+- name: test-013-the-expression-passes-and-initiated-multiple-requests-the-upstream-traffic-of-route-accounts-for-1-5-and-the-upstream-traffic-of-plugins-accounts-for-4-5
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 13
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-014-multiple-vars-rules-and-multiple-plugin-upstream-do-not-split-traffic-to-the-upstream-of-route
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 14
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-015-the-expression-passes-and-initiated-multiple-requests-do-not-split-traffic-to-the-upstream-of-route
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 15
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-016-support-multiple-ip-configuration-of-nodes-and-missing-upstream-configuration-on-route
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 16
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-017-the-expression-passes-and-initiated-multiple-requests-roundrobin-the-ip-of-nodes
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 17
+  skip: negative log assertion
+- name: test-018-host-is-domain-name
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 18
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-019-domain-name-resolved-successfully
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 19
+  skip: source assertion requires pipelined_requests, outside the standalone HTTP matcher contract
+- name: test-020-mock-grayscale-release
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 20
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-021-2-3-request-traffic-hits-the-upstream-of-the-plugin-1-3-request-traffic-hits-the-upstream-of-route
+  source:
+    file: t/plugin/traffic-split.t
+    tests:
+    - 21
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-001-vars-rule-with-set
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 1
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-002-vars-rule-with-hit
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 2
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-003-vars-rule-with-miss
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 3
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-004-the-upstream-node-is-ip-and-pass-host-is-pass
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 4
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-005-upstream-host-is-127-0-0-1
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 5
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-006-the-upstream-node-is-ip-and-pass-host-is-rewrite
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 6
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-007-upstream-host-is-test-com
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 7
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-008-the-upstream-node-is-ip-and-pass-host-is-node
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 8
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-009-upstream-host-is-localhost
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 9
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-010-the-upstream-type-is-chash-and-key-is-header
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 10
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-011-hit-routes-hash-on-custom-header
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 11
+  skip: complex response eval assertion
+- name: test-012-the-plugin-has-multiple-weighted-upstreams-upstream-method
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 12
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-013-hit-each-upstream-separately
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 13
+  skip: complex response eval assertion
+- name: test-014-the-plugin-has-multiple-weighted-upstreams-and-has-a-default-routing-weight-in-weighted-upstreams
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 14
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-015-every-weighted-upstreams-in-the-plugin-is-hit
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 15
+  skip: complex response eval assertion
+- name: test-016-set-upstream-upstream-id-1-upstream-id-2-and-add-route
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 16
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-017-hit-each-upstream-separately
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 17
+  skip: complex response eval assertion
+- name: test-018-multi-nodes-with-node-mode-to-pass-host
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 18
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-019-hit-route
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 19
+  skip: complex response eval assertion
+- name: test-020-invalid-upstream-id-should-report-failure
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 20
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-021-use-upstream-with-https-scheme
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 21
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-022-hit-route
+  source:
+    file: t/plugin/traffic-split2.t
+    tests:
+    - 22
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-001-mock-blue-green-release
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 1
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-002-release-is-equal-to-blue
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 2
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-003-release-is-equal-to-green
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 3
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-004-mock-custom-release
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 4
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-005-match-rule-passed
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 5
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-006-match-rule-failed-age-condition-did-not-match
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 6
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-007-upstream-nodes-are-array-type-and-node-is-the-domain-name
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 7
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-008-domain-name-resolved-successfully
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 8
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-009-the-nodes-of-upstream-are-array-type-with-multiple-nodes
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 9
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-010-match-rule-passed
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 10
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-011-the-upstream-node-is-an-array-type-and-has-multiple-upstream
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 11
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-012-match-rule-passed
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 12
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-013-multi-upstream-test-with-unique-upstream-key
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 13
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-014-the-upstream-key-is-unique
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 14
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-015-has-empty-upstream-test-the-upstream-key-is-unique
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 15
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-016-the-upstream-key-is-unique
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 16
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-017-the-request-header-contains-horizontal-lines
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 17
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-018-match-rule-passed
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 18
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-019-request-args-and-request-headers-contain-horizontal-lines
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 19
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-020-match-rule-passed
+  source:
+    file: t/plugin/traffic-split3.t
+    tests:
+    - 20
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-001-set-upstream-id-1
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 1
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-002-set-upstream-id-2
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 2
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-003-set-route-id-1-upstream-id-1-upstream-id-in-plugin-2-and-weighted-upstreams-does-not-have-a-structure-with-only-weight
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 3
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-004-when-match-rule-passed-use-the-upstream-id-in-plugin-and-when-it-failed-use-the-upstream-id-in-route
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 4
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-005-set-route-use-upstream-for-route-and-upstream-id-for-plugin-and-weighted-upstreams-does-not-have-a-structure-with-only-weight
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 5
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-006-when-match-rule-passed-use-the-upstream-id-in-plugin-and-when-it-failed-use-the-upstream-in-route
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 6
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-007-set-route-id-1-upstream-id-1-upstream-id-in-plugin-2-and-weighted-upstreams-has-a-structure-with-only-weight
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 7
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-008-all-requests-match-rule-passed-proxy-requests-to-the-upstream-of-route-based-on-the-structure-with-only-weight-in-weighted-upstreams
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 8
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-009-the-upstream-id-is-used-in-the-plugin
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 9
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-010-match-rule-passed-upstream-id
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 10
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-011-only-use-upstream-id-in-the-plugin
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 11
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-012-match-rule-passed-only-use-upstream-id
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 12
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-013-use-upstream-and-upstream-id-in-the-plugin
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 13
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-014-match-rule-passed-upstream-upstream-id
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 14
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-015-set-route-upstream-two-upstream-node-one-healthy-one-unhealthy
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 15
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-016-hit-routes-ensure-the-checker-is-bound-to-the-upstream
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 16
+  skip: source assertion requires resty.http, outside the standalone HTTP matcher contract
+- name: test-017-set-upstream-id-1-by-default-retries-count-number-of-nodes
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 17
+  skip: setup or schema-only source block is represented by standalone cases that follow
+- name: test-018-set-route-id-1-upstream-id-1
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 18
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-019-hit-routes
+  source:
+    file: t/plugin/traffic-split4.t
+    tests:
+    - 19
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-001-set-upstream-multiple-rules-multiple-nodes-under-each-weighted-upstreams-and-add-route
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 1
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-002-hit-different-weighted-upstreams-by-rules
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 2
+  skip: source assertion requires resty.http, outside the standalone HTTP matcher contract
+- name: test-003-set-upstream-multiple-rules-multiple-nodes-with-different-weight-under-each-weighted-upstreams-and-add-route
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 3
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-004-pick-different-nodes-by-weight
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 4
+  skip: source assertion requires resty.http, outside the standalone HTTP matcher contract
+- name: test-005-set-upstream-multiple-rules-the-first-rule-has-the-match-attribute-and-the-second-rule-does-not-and-add-route
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 5
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-006-first-rule-match-failed-and-the-second-rule-match-success
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 6
+  skip: source assertion requires resty.http, outside the standalone HTTP matcher contract
+- name: test-007-set-up-traffic-split-rule
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 7
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-008-hit-and-check-default-timeout
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 8
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-009-set-upstream-for-post-arg-id-test-case
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 9
+  skip: source block is a Lua schema or Admin API setup probe, not a standalone request-path case
+- name: test-010-post-arg-id-1-without-content-type-charset
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 10
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-011-post-arg-id-1-with-content-type-charset
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 11
+  skip: "standalone conversion currently mismatches the Go runtime; upstream setup is source-mapped and retained as an explicit gap until its fixture or implementation is corrected"
+- name: test-012-failure-after-plugin-reload
+  source:
+    file: t/plugin/traffic-split5.t
+    tests:
+    - 12
+  skip: setup or schema-only source block is represented by standalone cases that follow

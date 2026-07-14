@@ -1,0 +1,132 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/authz-casbin.t
+  tests: 21
+cases:
+- name: "authz-casbin-test-001-sanity"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-002-username-missing"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-003-put-model-and-policy-text-in-metadata"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-004-enforcer-from-text-without-files"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-005-enable-authz-casbin-by-admin-api"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-006-no-username-header-passed"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-007-username-passed-but-user-not-authorized"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-008-authorized-user"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-009-authorized-user-rbac"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-010-unauthorized-user-before-policy-update"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-011-update-model-and-policy-text-in-metadata"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-012-authorized-user-after-policy-update"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-013-enable-authz-casbin-using-model-policy-files"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-014-authorized-user-as-per-policy"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-015-unauthorized-user-as-per-policy"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-016-enable-authz-casbin-using-model-policy-text"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-017-authorized-user-as-per-policy"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-018-unauthorized-user-as-per-policy"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-019-disable-authz-casbin-by-admin-api"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-020-support-different-policy-shapes-at-different-routes"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "authz-casbin-test-021-verify-sequence-policy1-policy2-policy1-issues-12974-12889"
+  source:
+    file: t/plugin/authz-casbin.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

@@ -65,6 +65,18 @@ func TestCaseInsensitiveMatch(t *testing.T) {
 	}
 }
 
+func TestPostInitStoresConcatenatedRulesForLogging(t *testing.T) {
+	caseInsensitive := true
+	p := newTestPlugin(t, Config{
+		BlockRules:      []string{"AA", `c\d+`},
+		CaseInsensitive: &caseInsensitive,
+	})
+
+	if got, want := p.config.blockRulesConcat, `(?i)AA|c\d+`; got != want {
+		t.Fatalf("blockRulesConcat = %q, want %q", got, want)
+	}
+}
+
 func TestAllowedURIFallsThrough(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BlockRules: []string{`^/blocked`},

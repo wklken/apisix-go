@@ -2,6 +2,7 @@ package pluginintegration
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -469,11 +470,35 @@ func runCase(t *testing.T, spec Case) {
 			)
 		}
 		if spec.Output.Logs != nil {
-			if err := spec.Output.Logs.match(logs, true); err != nil {
+			if err := matchLogs(*spec.Output.Logs, logs); err != nil {
 				t.Errorf("child logs: %v\n%s", err, logs)
 			}
 		}
 	}
+}
+
+func matchLogs(matcher Matcher, logs string) error {
+	rawErr := matcher.match(logs, true)
+	if rawErr == nil {
+		return nil
+	}
+
+	var messages strings.Builder
+	for line := range strings.SplitSeq(logs, "\n") {
+		var record struct {
+			Message string `json:"msg"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err == nil && record.Message != "" {
+			messages.WriteString(record.Message)
+			messages.WriteByte('\n')
+		}
+	}
+	if messages.Len() > 0 {
+		if err := matcher.match(messages.String(), true); err == nil {
+			return nil
+		}
+	}
+	return rawErr
 }
 
 func fixtureAssertionsConfigured(assertion HTTPAssertion) bool {

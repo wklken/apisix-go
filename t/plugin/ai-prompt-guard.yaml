@@ -1,0 +1,270 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ai-prompt-guard.t
+  tests: 44
+cases:
+- name: "ai-prompt-guard-test-001-wrong-regex-should-fail-validation"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-002-setup-route-with-both-allow-and-deny-with-match-all-roles"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-003-send-request-with-good-word"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-004-send-request-with-bad-word"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-005-setup-route-with-only-deny-with-match-all-roles"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-006-send-request-with-good-word"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-007-send-request-with-bad-word"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-008-setup-route-with-only-allow-with-match-all-roles-false"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-009-send-request-with-bad-word-and-it-will-pass-for-non-user"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-010-send-request-with-bad-word"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-011-setup-route-with-only-deny-with-match-all-conversation-history"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-012-send-request-with-good-word-but-had-bad-word-in-history"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-013-setup-route-with-only-deny-with-match-all-conversation-history-false"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-014-send-request-with-good-word-but-had-bad-word-in-history"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-015-setup-route-deny-match-all-roles-pattern-match"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-016-send-request-with-good-word"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-017-responses-api-setup-route-with-deny-pattern-and-match-all-roles"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-018-responses-api-deny-pattern-in-string-input"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-019-responses-api-deny-pattern-in-instructions"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-020-responses-api-no-deny-pattern-match-passes"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-021-responses-api-deny-pattern-in-array-input-item"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-022-responses-api-setup-route-with-allow-pattern"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-023-responses-api-allow-pattern-match-passes"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-024-responses-api-allow-pattern-no-match-blocks"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-025-responses-api-setup-route-with-match-all-roles-false-only-user-content-checked"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-026-responses-api-match-all-roles-false-instructions-system-badword-is-not-checked"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-027-responses-api-match-all-roles-false-input-user-badword-is-checked"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-028-chat-completions-still-works-after-responses-api-support-regression"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-029-chat-completions-regression-deny-pattern-still-works"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-030-setup-route-with-deny-pattern-default-fail-mode-skip"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 30
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-031-non-ai-request-passes-through-by-default-skip-to-upstream"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 31
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-032-setup-route-with-fail-mode-error"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 32
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-033-non-ai-request-rejected-when-fail-mode-error"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 33
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-034-setup-route-with-deny-pattern-default-fail-mode-skip"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 34
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-035-non-json-request-passes-through-by-default-skip-to-upstream"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 35
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-036-setup-route-deny-match-all-roles-match-all-conversation-history"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 36
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-037-structured-array-content-in-history-with-bad-word-is-denied-no-crash"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 37
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-038-structured-array-content-in-history-with-good-word-passes-through-no-crash"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 38
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-039-structured-array-content-mixing-text-and-non-text-parts-is-scanned"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 39
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-040-setup-route-deny-default-match-modes-latest-user-message-only"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 40
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-041-structured-array-content-in-latest-user-message-is-denied-no-crash"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 41
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-042-deny-word-in-a-non-text-part-is-not-scanned-only-text-parts-are"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 42
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-043-responses-api-setup-route-with-deny-pattern"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 43
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "ai-prompt-guard-test-044-responses-api-structured-array-content-parts-are-flattened-and-scanned"
+  source:
+    file: t/plugin/ai-prompt-guard.t
+    tests:
+    - 44
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

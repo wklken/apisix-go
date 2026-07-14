@@ -1,0 +1,271 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/workflow-without-case.t
+  tests: 7
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/workflow.t
+  tests: 20
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/workflow2.t
+  tests: 8
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/workflow3.t
+  tests: 7
+cases:
+- name: "workflow-without-case-test-001-set-plugin"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-without-case-test-002-trigger-workflow"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-without-case-test-003-create-a-route-with-key-auth-limit-count-plugin"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-without-case-test-004-create-a-consumer-rose"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-without-case-test-005-create-a-consumer-jack-with-workflow-plugin"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-without-case-test-006-send-request-with-rose-consumer-only-the-chain-limit-count-applies"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-without-case-test-007-send-request-with-jack-consumer-the-chain-limit-count-is-skipped-so-only-the-workflow-action-counts"
+  source:
+    file: t/plugin/workflow-without-case.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-001-schema-check"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-002-set-plugin"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-003-trigger-workflow"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-004-multiple-conditions-in-one-case"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-005-missing-match-the-only-case"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-006-trigger-workflow"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-007-multiple-cases-with-different-actions"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-008-trigger-one-case"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-009-trigger-another-case"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-010-match-case-in-order"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-011-both-case-1-2-matched-trigger-the-first-cases"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-012-case-1-mismatched-trigger-the-second-cases"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-013-all-cases-mismatched-pass-to-upstream"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-014-schema-check-limit-count"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-015-set-actions-as-limit-count"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-016-up-the-limit"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-017-the-conf-in-actions-is-isolation"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-018-cross-hit-case-1-and-case-2-up-limit-by-isolation"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-019-multiple-conditions-in-one-case"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow-test-020-trigger-workflow"
+  source:
+    file: t/plugin/workflow.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "workflow2-test-001-multiple-cases-with-different-actions-return-limit-count"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-002-cross-hit-case-1-and-case-2-trigger-actions-by-isolation"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-003-the-conf-in-actions-is-isolation"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-004-cross-hit-case-1-and-case-2-trigger-actions-by-isolation"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-005-cross-hit-case-1-and-case-2-up-limit-by-isolation-2"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-006-different-actions-with-different-limit-count-conf-up-limit-by-isolation"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-007-case-1-up-limit-case-2-psssed"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow2-test-008-test-no-rules"
+  source:
+    file: t/plugin/workflow2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-001-limit-conn"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-002-exceeding-the-burst"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-003-two-limit-conn-configurations"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-004-exceeding-the-burst"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-005-set-up-workflow-with-limit-conn-in-global-rule-and-a-route-with-cors"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-006-options-preflight-finished-by-cors-in-rewrite-phase-workflow-log-phase-should-not-fail"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "workflow3-test-007-clean-up"
+  source:
+    file: t/plugin/workflow3.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

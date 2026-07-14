@@ -1,0 +1,153 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/clickhouse-logger.t
+  tests: 12
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/clickhouse-logger2.t
+  tests: 8
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/clickhouse-logger3.t
+  tests: 3
+cases:
+- name: "clickhouse-logger-test-001-full-configuration-verification"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-002-basic-configuration-verification"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-003-auth-configure-undefined"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-004-add-plugin-on-routes"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-005-add-plugin-on-routes-using-multi-clickhouse-logger"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-006-hit-route"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-007-get-log"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-008-to-show-that-different-endpoints-will-be-chosen-randomly"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-009-use-single-clickhouse-server"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-010-hit-route"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-011-get-log"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger-test-012-should-drop-entries-when-max-pending-entries-is-exceeded"
+  source:
+    file: t/plugin/clickhouse-logger.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "clickhouse-logger2-test-001-collect-response-body-option"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-002-collect-response-log"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-003-collect-response-body-with-eval-option"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-004-skip-collect-response-log-for-condition"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-005-collect-request-body-log"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-006-collect-request-body-with-eval-option"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-007-collect-request-body"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger2-test-008-skip-collect-request-body-log-for-condition"
+  source:
+    file: t/plugin/clickhouse-logger2.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger3-test-001-pass-clickhouse-user-via-environment-variable"
+  source:
+    file: t/plugin/clickhouse-logger3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger3-test-002-hit-route"
+  source:
+    file: t/plugin/clickhouse-logger3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "clickhouse-logger3-test-003-get-log"
+  source:
+    file: t/plugin/clickhouse-logger3.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

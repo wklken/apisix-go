@@ -1,0 +1,447 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/hmac-auth-anonymous-consumer.t
+  tests: 6
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/hmac-auth-realm.t
+  tests: 6
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/hmac-auth.t
+  tests: 40
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/hmac-auth2.t
+  tests: 5
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/hmac-auth3.t
+  tests: 8
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/hmac-auth4.t
+  tests: 5
+cases:
+- name: "hmac-auth-anonymous-consumer-test-001-add-consumer-jack-and-anonymous"
+  source:
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-anonymous-consumer-test-002-add-hmac-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-anonymous-consumer-test-003-request-without-hmac-auth-header-will-be-from-anonymous-consumer-and-it-will-pass"
+  source:
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-anonymous-consumer-test-004-request-without-hmac-auth-header-will-be-from-anonymous-consumer-and-different-rate-limit-will-apply"
+  source:
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-anonymous-consumer-test-005-add-hmac-auth-plugin-with-non-existent-anonymous-consumer"
+  source:
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-anonymous-consumer-test-006-anonymous-consumer-configured-in-the-route-should-not-be-found"
+  source:
+    file: t/plugin/hmac-auth-anonymous-consumer.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-realm-test-001-sanity-default-realm"
+  source:
+    file: t/plugin/hmac-auth-realm.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-realm-test-002-verify-default-realm"
+  source:
+    file: t/plugin/hmac-auth-realm.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-realm-test-003-set-custom-realm"
+  source:
+    file: t/plugin/hmac-auth-realm.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-realm-test-004-verify-custom-realm"
+  source:
+    file: t/plugin/hmac-auth-realm.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-realm-test-005-set-anonymous-consumer"
+  source:
+    file: t/plugin/hmac-auth-realm.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-realm-test-006-verify-anonymous-consumer-missing-returns-realm"
+  source:
+    file: t/plugin/hmac-auth-realm.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-001-add-consumer-with-username-and-plugins"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-002-add-consumer-with-plugin-hmac-auth-missing-secret-key"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-003-add-consumer-with-plugin-hmac-auth-missing-key-id"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-004-add-consumer-with-plugin-hmac-auth-key-id-exceeds-the-length-limit"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-005-add-consumer-with-plugin-hmac-auth-secret-key-exceeds-the-length-limit"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-006-enable-hmac-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-007-verify-missing-authorization-header"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-008-verify-missing-algorithm"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-009-verify-invalid-key-id"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-010-verify-invalid-algorithm"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-011-verify-clock-skew-exceeded"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-012-verify-missing-date"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-013-verify-invalid-gmt-format-time"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-014-verify-ok"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-015-add-route-with-0-clock-skew"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-016-add-route-with-valid-clock-skew"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-017-verify-invalid-signature"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-018-verify-invalid-signature"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-019-add-route-with-1-clock-skew"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-020-verify-invalid-gmt-format-time"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-021-update-route-with-default-clock-skew"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 21
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-022-verify-put-ok"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 22
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-023-update-route-with-signed-headers"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 23
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-024-verify-with-invalid-signed-header"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 24
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-025-verify-ok-with-signed-headers"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 25
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-026-add-consumer-with-plugin-hmac-auth-empty-configuration"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 26
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-027-add-route-with-no-allowed-algorithms"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 27
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-028-update-route-with-signed-headers"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 28
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-029-verify-authorization-header-missing"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 29
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-030-update-route-with-signed-headers"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 30
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-031-verify-error-with-the-client-only-sends-one-in-the-request-but-there-are-two-in-the-signature"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 31
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-032-verify-error-with-the-client-sends-two-in-the-request-but-there-is-only-one-in-the-signature"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 32
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-033-update-route-with-allowed-algorithms"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 33
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-034-verify-with-hmac-sha1-algorithm-not-part-of-allowed-algorithms"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 34
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-035-update-route-to-default-hmac-auth-config-no-signed-headers-override"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 35
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-036-default-signed-headers-requires-date-in-signing-headers-clause-omitted"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 36
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-037-default-signed-headers-accepts-a-request-that-binds-date-into-the-signing-string"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 37
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-038-changing-only-the-date-on-an-existing-authorization-triggers-replay-rejection"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 38
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-039-update-route-to-opt-out-of-default-signed-headers"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 39
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth-test-040-with-signed-headers-a-request-signing-only-request-target-is-accepted"
+  source:
+    file: t/plugin/hmac-auth.t
+    tests:
+    - 40
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+
+- name: "hmac-auth2-test-001-enable-the-hmac-auth-plugin"
+  source:
+    file: t/plugin/hmac-auth2.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth2-test-002-get-the-default-schema"
+  source:
+    file: t/plugin/hmac-auth2.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth2-test-003-get-the-schema-by-schema-type"
+  source:
+    file: t/plugin/hmac-auth2.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth2-test-004-get-the-schema-by-error-schema-type"
+  source:
+    file: t/plugin/hmac-auth2.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth2-test-005-enable-hmac-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/hmac-auth2.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-001-add-consumer-with-validate-request-body"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-002-enable-hmac-auth-plugin-using-admin-api"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-003-missing-body-digest-when-validate-request-body-is-enabled"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-004-verify-body-digest-not-ok"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-005-verify-body-digest-ok"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-006-enable-hmac-auth-with-a-small-max-req-body-size"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-007-request-body-larger-than-max-req-body-size-is-rejected-with-413"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth3-test-008-request-body-within-max-req-body-size-is-accepted"
+  source:
+    file: t/plugin/hmac-auth3.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth4-test-001-set-hmac-auth-conf-secret-key-uses-secret-ref"
+  source:
+    file: t/plugin/hmac-auth4.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth4-test-002-store-secret-into-vault"
+  source:
+    file: t/plugin/hmac-auth4.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth4-test-003-verify-ok"
+  source:
+    file: t/plugin/hmac-auth4.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth4-test-004-set-hmac-auth-conf-with-the-token-in-an-env-var-secret-key-uses-secret-ref"
+  source:
+    file: t/plugin/hmac-auth4.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "hmac-auth4-test-005-verify-ok"
+  source:
+    file: t/plugin/hmac-auth4.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

@@ -1,0 +1,126 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/data-mask.t
+  tests: 20
+cases:
+- name: "data-mask-test-001-mask-query"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-002-verify"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-003-mask-header"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-004-verify"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-005-mask-urlencoded-body"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-006-verify"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-007-mask-json-body"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-008-verify"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-009-plugin-within-global-rule-should-not-throw-error-for-missing-body"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-010-verify"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-011-create-plugin-with-default-value-for-max-req-post-args"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-012-verify-default-value-for-max-req-post-args"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-013-create-plugin-with-custom-max-req-post-args-value"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-014-verify-number-of-args"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-015-create-route-for-multi-value-query-param-masking"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 15
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-016-verify-multi-value-query-param-regex-masking-does-not-crash-and-masks-all-values"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 16
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-017-create-route-for-non-string-json-field-regex-masking"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 17
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-018-verify-non-string-json-field-regex-is-skipped-without-crash"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 18
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-019-create-route-for-access-log-masking-test"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 19
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "data-mask-test-020-verify-access-log-masks-sensitive-query-parameters"
+  source:
+    file: t/plugin/data-mask.t
+    tests:
+    - 20
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

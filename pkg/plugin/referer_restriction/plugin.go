@@ -2,6 +2,7 @@ package referer_restriction
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Shopify/goreferrer"
@@ -119,10 +120,10 @@ func (p *Plugin) inWhiteList(host string) bool {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		// get the referer
-		referer := goreferrer.DefaultRules.Parse(r.Header.Get("Referer"))
-
-		host := referer.Host()
+		// APISIX treats a bare host such as "www.example.com" as a missing
+		// referer. goreferrer intentionally accepts that form as http://..., so
+		// only parse absolute HTTP(S) referers here.
+		host := refererHost(r.Header.Get("Referer"))
 		if host == "" {
 			if !*p.config.BypassMissing {
 				writeJSON(w, p.message)
@@ -150,6 +151,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 	}
 	return http.HandlerFunc(fn)
+}
+
+func refererHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	referer := goreferrer.DefaultRules.Parse(value)
+	return referer.Host()
 }
 
 type hostMatcher struct {

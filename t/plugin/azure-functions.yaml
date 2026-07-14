@@ -1,0 +1,90 @@
+sources:
+- repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/azure-functions.t
+  tests: 14
+cases:
+- name: "azure-functions-test-001-sanity"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 1
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-002-function-uri-missing"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 2
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-003-create-route-with-azure-function-plugin-enabled"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 3
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-004-test-plugin-endpoint"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 4
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-005-http2-check-response-body-and-headers"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 5
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-006-check-http-2-response-headers-must-not-contain-any-connection-specific-info"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 6
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-007-check-authz-header"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 7
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-008-check-if-apikey-doesn-t-get-overridden-passed-by-client-to-the-gateway"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 8
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-009-fall-back-to-metadata-master-key"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 9
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-010-check-if-url-path-being-forwarded-correctly-by-creating-a-semi-correct-path-uri"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 10
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-011-check-multilevel-url-path-forwarding"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 11
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-012-check-url-path-forwarding-containing-multiple-slashes"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 12
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-013-check-url-path-forwarding-with-no-excess-path"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 13
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"
+- name: "azure-functions-test-014-create-route-with-azure-function-plugin-enabled"
+  source:
+    file: t/plugin/azure-functions.t
+    tests:
+    - 14
+  skip: "upstream Test::Nginx case requires Lua/Admin API setup or an external dependency; preserved as a source-complete skip until a standalone fixture is available"

@@ -1,0 +1,305 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openwhisk.t
+  tests: 21
+
+cases:
+  - name: schema
+    source:
+      tests: [1, 2, 3]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: openwhisk-valid
+              uri: /hello
+              plugins:
+                openwhisk:
+                  api_host: "http://{{UPSTREAM_ADDR}}"
+                  service_token: test:test
+                  namespace: test
+                  action: test
+        input:
+          path: /hello
+        upstream:
+          expect:
+            method: POST
+            path:
+              equals: /api/v1/namespaces/test/actions/test?blocking=true&result=true&timeout=3000
+          respond:
+            status: 200
+            body: '{"body":"done"}'
+        output:
+          status: 200
+          body:
+            equals: done
+      - name: missing-api-host
+        config:
+          routes:
+            - id: openwhisk-missing-api-host
+              uri: /hello
+              plugins:
+                openwhisk:
+                  service_token: test:test
+                  namespace: test
+                  action: test
+        input: &schema_input
+          path: /hello
+        output: &schema_error
+          status: 404
+          logs:
+            matches: 'build route openwhisk-.*fail:.*openwhisk'
+      - name: numeric-api-host
+        config:
+          routes:
+            - id: openwhisk-numeric-api-host
+              uri: /hello
+              plugins:
+                openwhisk:
+                  api_host: 3233
+                  service_token: test:test
+                  namespace: test
+                  action: test
+        input: *schema_input
+        output: *schema_error
+
+  - name: encrypted-test-params
+    source:
+      tests: [4, 5, 6, 7, 8, 9]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [qeddd145sfvddff3]
+    config:
+      routes:
+        - id: openwhisk-test-params
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: "{{FIXTURE.openwhisk.URL}}"
+              service_token: pe14btxogtzJ4qPM/W2qj0AQeUK/O5oegLkKJLkkSEsKUIjP+bgyO+qsTXuLrY/h/esLKrRulD2TOtf+Zt/Us+hxZ/svsMwXZqZ9T9/2wWyi8SKALLfTUZDiV69mxCwD2zNBze1jslMlPtdA9JFIOQ==
+              namespace: guest
+              action: test-params
+    fixtures:
+      - name: openwhisk
+        kind: http
+        expect:
+          - &test_params_expect
+            method: POST
+            path:
+              equals: /api/v1/namespaces/guest/actions/test-params?blocking=true&result=true&timeout=3000
+            headers:
+              Authorization:
+                equals: Basic MjNiYzQ2YjEtNzFmNi00ZWQ1LThjNTQtODE2YWE0ZjhjNTAyOjEyM3pPM3haQ0xyTU42djJCS0sxZFhZRnBYbFBrY2NPRnFtMTJDZEFzTWdSVTRWck5aOWx5R1ZDR3VNREdJd1A=
+          - <<: *test_params_expect
+            body:
+              equals: test=test
+          - <<: *test_params_expect
+            body:
+              equals: '{"name": "world"}'
+        respond:
+          - status: 200
+            body: '{"hello":"test"}'
+          - status: 400
+            body: '{"error":"The request content was malformed"}'
+          - status: 200
+            body: '{"hello":"world"}'
+    steps:
+      - name: get
+        input:
+          path: /hello
+        output:
+          status: 200
+          body:
+            equals: '{"hello":"test"}'
+      - name: malformed-form
+        input:
+          method: POST
+          path: /hello
+          headers:
+            Content-Type: application/x-www-form-urlencoded
+          body: test=test
+        output:
+          status: 400
+          body:
+            matches: '"error":"The request content was malformed'
+      - name: json-body
+        input:
+          method: POST
+          path: /hello
+          headers:
+            Content-Type: application/json
+          body: '{"name": "world"}'
+        output:
+          status: 200
+          body:
+            equals: '{"hello":"world"}'
+
+  - name: non-existent-action
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: openwhisk-not-found
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: "http://{{UPSTREAM_ADDR}}"
+              service_token: test:test
+              namespace: guest
+              action: non-existent
+    input:
+      method: POST
+      path: /hello
+      headers:
+        Content-Type: application/json
+      body: '{"name": "world"}'
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /api/v1/namespaces/guest/actions/non-existent?blocking=true&result=true&timeout=3000
+      respond:
+        status: 404
+        body: '{"error":"The requested resource does not exist."}'
+    output:
+      status: 404
+      body:
+        matches: '"error":"The requested resource does not exist\."'
+
+  - name: unavailable-api-host
+    source:
+      tests: [12, 13]
+    config:
+      routes:
+        - id: openwhisk-unavailable
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: http://127.0.0.1:1
+              service_token: test:test
+              namespace: guest
+              action: non-existent
+    input:
+      method: POST
+      path: /hello
+      headers:
+        Content-Type: application/json
+      body: '{"name": "world"}'
+    output:
+      status: 503
+      body:
+        equals: "failed to process openwhisk action\n"
+      logs:
+        matches: 'failed to process openwhisk action, err:'
+
+  - name: packaged-action
+    source:
+      tests: [14, 15]
+    config:
+      routes:
+        - id: openwhisk-packaged
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: "http://{{UPSTREAM_ADDR}}"
+              service_token: test:test
+              namespace: guest
+              package: pkg
+              action: testpkg
+    input:
+      path: /hello
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /api/v1/namespaces/guest/actions/pkg/testpkg?blocking=true&result=true&timeout=3000
+      respond:
+        status: 200
+        body: '{"hello":"world"}'
+    output:
+      status: 200
+      body:
+        equals: '{"hello":"world"}'
+
+  - name: action-status-code
+    source:
+      tests: [16, 17]
+    config:
+      routes:
+        - id: openwhisk-status
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: "http://{{UPSTREAM_ADDR}}"
+              service_token: test:test
+              namespace: guest
+              action: test-statuscode
+    input:
+      path: /hello
+    upstream:
+      expect:
+        path:
+          equals: /api/v1/namespaces/guest/actions/test-statuscode?blocking=true&result=true&timeout=3000
+      respond:
+        status: 200
+        body: '{"statusCode":407}'
+    output:
+      status: 407
+
+  - name: action-headers
+    source:
+      tests: [18, 19]
+    config:
+      routes:
+        - id: openwhisk-headers
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: "http://{{UPSTREAM_ADDR}}"
+              service_token: test:test
+              namespace: guest
+              action: test-headers
+    input:
+      path: /hello
+    upstream:
+      expect:
+        path:
+          equals: /api/v1/namespaces/guest/actions/test-headers?blocking=true&result=true&timeout=3000
+      respond:
+        status: 200
+        body: '{"headers":{"test":"header"}}'
+    output:
+      status: 200
+      headers:
+        Test:
+          equals: header
+
+  - name: action-body
+    source:
+      tests: [20, 21]
+    config:
+      routes:
+        - id: openwhisk-body
+          uri: /hello
+          plugins:
+            openwhisk:
+              api_host: "http://{{UPSTREAM_ADDR}}"
+              service_token: test:test
+              namespace: guest
+              action: test-body
+    input:
+      path: /hello
+    upstream:
+      expect:
+        path:
+          equals: /api/v1/namespaces/guest/actions/test-body?blocking=true&result=true&timeout=3000
+      respond:
+        status: 200
+        body: '{"body":{"test":"body"}}'
+    output:
+      status: 200
+      body:
+        equals: '{"test":"body"}'

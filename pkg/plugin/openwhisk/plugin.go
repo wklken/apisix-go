@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -170,6 +171,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		res, err := p.client.Do(actionReq)
 		if err != nil {
+			logger.Errorf("failed to process openwhisk action, err: %s", err)
 			http.Error(w, "failed to process openwhisk action", http.StatusServiceUnavailable)
 			return
 		}

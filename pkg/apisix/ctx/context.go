@@ -155,6 +155,7 @@ func AttachConsumer(r *http.Request, consumer resource.Consumer) {
 	RegisterApisixVar(r, "$consumer", consumer)
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
 	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
 	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
 }
 

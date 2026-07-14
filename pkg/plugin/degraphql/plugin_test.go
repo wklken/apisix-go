@@ -143,6 +143,16 @@ func TestPostInitRejectsInvalidGraphQLQuery(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsMisspelledOperationKeyword(t *testing.T) {
+	p := &Plugin{config: Config{Query: "uery {}"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid GraphQL query rejection")
+	}
+}
+
 func TestPostInitRequiresOperationNameForMultipleOperations(t *testing.T) {
 	p := &Plugin{config: Config{Query: "query First { viewer { id } } query Second { viewer { name } }"}}
 	if err := p.Init(); err != nil {

@@ -1,0 +1,258 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/attach-consumer-label.t
+  tests: 17
+
+cases:
+  - name: schema
+    source:
+      tests: [1, 2, 3, 4]
+    variants:
+      - name: missing-headers
+        config:
+          routes:
+            - id: attach-label-missing-headers
+              uri: /echo
+              plugins:
+                attach-consumer-label: {}
+        input:
+          path: /echo
+        output:
+          status: 404
+          logs:
+            matches: 'build route attach-label-missing-headers fail:.*missing properties.*headers'
+      - name: empty-headers
+        config:
+          routes:
+            - id: attach-label-empty-headers
+              uri: /echo
+              plugins:
+                attach-consumer-label:
+                  headers: {}
+        input:
+          path: /echo
+        output:
+          status: 404
+          logs:
+            matches: 'build route attach-label-empty-headers fail:.*minimum 1 properties'
+      - name: label-reference-requires-dollar-prefix
+        config:
+          routes:
+            - id: attach-label-invalid-reference
+              uri: /echo
+              plugins:
+                attach-consumer-label:
+                  headers:
+                    X-Consumer-Department: department
+                    X-Consumer-Company: $company
+        input:
+          path: /echo
+        output:
+          status: 404
+          logs:
+            matches: 'build route attach-label-invalid-reference fail:.*X-Consumer-Department.*does not match pattern'
+      - name: valid
+        config:
+          routes:
+            - id: attach-label-valid-schema
+              uri: /echo
+              plugins:
+                attach-consumer-label:
+                  headers:
+                    X-Consumer-Department: $department
+                    X-Consumer-Company: $company
+              upstream: &upstream
+                type: roundrobin
+                nodes:
+                  "{{UPSTREAM_ADDR}}": 1
+        input:
+          path: /echo
+        upstream: &done_fixture
+          respond:
+            status: 200
+            body: done
+        output: &done_output
+          status: 200
+          body:
+            equals: done
+
+  - name: access-without-auth
+    source:
+      tests: [6, 7]
+    config:
+      routes:
+        - id: attach-label-without-auth
+          uri: /echo
+          plugins:
+            attach-consumer-label:
+              headers:
+                X-Consumer-Department: $department
+                X-Consumer-Company: $company
+          upstream: *upstream
+    input:
+      path: /echo
+    upstream:
+      expect:
+        headers:
+          X-Consumer-Department:
+            absent: true
+          X-Consumer-Company:
+            absent: true
+      respond:
+        status: 200
+        body: done
+    output: *done_output
+
+  - name: authenticated-consumer-labels
+    source:
+      tests: [5, 8, 9]
+    config:
+      routes:
+        - id: attach-label-authenticated
+          uri: /echo
+          plugins:
+            key-auth: {}
+            attach-consumer-label:
+              headers:
+                X-Consumer-Department: $department
+                X-Consumer-Company: $company
+                X-Consumer-Role: $role
+          upstream: *upstream
+      consumers:
+        - username: jack
+          labels:
+            department: devops
+            company: api7
+          plugins:
+            key-auth:
+              key: key-a
+    input:
+      path: /echo
+      headers:
+        apikey: key-a
+        X-Consumer-Role: admin
+    upstream:
+      expect:
+        headers:
+          X-Consumer-Company:
+            equals: api7
+          X-Consumer-Department:
+            equals: devops
+          X-Consumer-Role:
+            absent: true
+      respond:
+        status: 200
+        body: done
+    output: *done_output
+
+  - name: authenticated-consumer-without-labels
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: attach-label-consumer-without-labels
+          uri: /echo
+          plugins:
+            key-auth: {}
+            attach-consumer-label:
+              headers:
+                X-Consumer-Department: $department
+                X-Consumer-Company: $company
+          upstream: *upstream
+      consumers:
+        - username: jack
+          plugins:
+            key-auth:
+              key: key-a
+    input:
+      path: /echo
+      headers:
+        apikey: key-a
+    upstream:
+      expect:
+        headers:
+          X-Consumer-Company:
+            absent: true
+          X-Consumer-Department:
+            absent: true
+      respond:
+        status: 200
+        body: done
+    output: *done_output
+
+  - name: global-rule-labels
+    source:
+      tests: [12, 13, 14, 15]
+    config:
+      routes:
+        - id: attach-label-global-rule-route
+          uri: /echo
+          plugins:
+            key-auth: {}
+          upstream: *upstream
+      consumers:
+        - username: jack
+          labels:
+            department: devops
+            company: api7
+          plugins:
+            key-auth:
+              key: key-a
+      global_rules:
+        - id: attach-label-global-rule
+          plugins:
+            attach-consumer-label:
+              headers:
+                X-Global-Consumer-Department: $department
+                X-Global-Consumer-Company: $company
+    input:
+      path: /echo
+      headers:
+        apikey: key-a
+    upstream:
+      expect:
+        headers:
+          X-Global-Consumer-Company:
+            equals: api7
+          X-Global-Consumer-Department:
+            equals: devops
+      respond:
+        status: 200
+        body: done
+    output: *done_output
+
+  - name: missing-label-removes-client-header
+    source:
+      tests: [16, 17]
+    config:
+      routes:
+        - id: attach-label-strip-client-header
+          uri: /print_request_received
+          plugins:
+            key-auth: {}
+            attach-consumer-label:
+              headers:
+                X-Consumer-Role: $role
+          upstream: *upstream
+      consumers:
+        - username: bob
+          plugins:
+            key-auth:
+              key: key-bob
+    input:
+      path: /print_request_received
+      headers:
+        apikey: key-bob
+        X-Consumer-Role: admin
+    upstream:
+      expect:
+        headers:
+          X-Consumer-Username:
+            equals: bob
+          X-Consumer-Role:
+            absent: true
+      respond:
+        status: 200
+        body: done
+    output: *done_output

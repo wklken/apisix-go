@@ -16,10 +16,12 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,6 +257,97 @@ func TestHarnessRepeatsStepsAndChecksGeneratedHeaders(t *testing.T) {
 				},
 			},
 		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessReusesResponseCookiesInLaterSteps(t *testing.T) {
+	cookiePattern := `apisix-csrf-token=[^;]+`
+	caseSpec := Case{
+		Name:   "response-cookie-sequence",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "response-cookie-sequence",
+					"uri": "/csrf",
+					"plugins": map[string]any{
+						"csrf": map[string]any{"key": "userkey", "expires": 3600},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "primary",
+				Kind: "http",
+				Respond: []HTTPResponse{
+					{Status: http.StatusOK, Body: "ok"},
+					{Status: http.StatusOK, Body: "ok"},
+				},
+			},
+		},
+		Steps: []CaseStep{
+			{
+				Name:  "issue-cookie",
+				Input: HTTPInput{Path: "/csrf"},
+				Output: HTTPOutput{
+					Status: http.StatusOK,
+					Headers: map[string]Matcher{
+						"Set-Cookie": {Matches: &cookiePattern},
+					},
+				},
+			},
+			{
+				Name: "reuse-cookie",
+				Input: HTTPInput{
+					Method:  http.MethodPost,
+					Path:    "/csrf",
+					Headers: map[string]string{"apisix-csrf-token": "{{COOKIE.apisix-csrf-token}}"},
+				},
+				Output: HTTPOutput{Status: http.StatusOK},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
+	body := "ok"
+	caseSpec := Case{
+		Name:   "repeated-request-headers",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "repeated-request-headers",
+					"uri": "/headers",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{
+			Path: "/headers",
+			HeaderValues: map[string][]string{
+				"X-Repeated": {"first", "second"},
+			},
+		},
+		Upstream: &UpstreamSpec{
+			Expect: HTTPAssertion{Headers: map[string]Matcher{
+				"X-Repeated": {Values: []string{"first", "second"}},
+			}},
+			Respond: HTTPResponse{Status: http.StatusOK, Body: body},
+		},
+		Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: &body}},
 	}
 
 	runCase(t, caseSpec)
@@ -927,10 +1020,15 @@ func runCase(t *testing.T, spec Case) {
 			return http.ErrUseLastResponse
 		},
 	}
+	client.Jar, err = cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create client cookie jar: %v", err)
+	}
 	requestFailed := false
 	logMatchers := make([]Matcher, 0, len(spec.Steps)+1)
 	bodyLengths := make(map[string]int)
 	headerHistory := make(map[string][]string)
+	capturedCookies := make(map[string]string)
 	if len(spec.Steps) > 0 {
 		for _, step := range spec.Steps {
 			t.Run(step.Name, func(t *testing.T) {
@@ -942,6 +1040,7 @@ func runCase(t *testing.T, spec Case) {
 					run := func(t *testing.T) {
 						if err := runHTTPInput(
 							t, client, address, tlsAddress, step.Input, step.Output, bodyLengths, headerHistory,
+							capturedCookies,
 						); err != nil {
 							requestFailed = true
 						}
@@ -962,7 +1061,7 @@ func runCase(t *testing.T, spec Case) {
 		}
 	} else if spec.Input.Path != "" {
 		if err := runHTTPInput(
-			t, client, address, tlsAddress, spec.Input, spec.Output, bodyLengths, headerHistory,
+			t, client, address, tlsAddress, spec.Input, spec.Output, bodyLengths, headerHistory, capturedCookies,
 		); err != nil {
 			requestFailed = true
 		}
@@ -989,7 +1088,12 @@ func runCase(t *testing.T, spec Case) {
 		if len(fixtureSpec.Expect) > 0 {
 			select {
 			case extra := <-namedFixture.requests:
-				t.Errorf("fixture %s received unexpected extra request %s %s", fixtureSpec.Name, extra.method, extra.path)
+				t.Errorf(
+					"fixture %s received unexpected extra request %s %s",
+					fixtureSpec.Name,
+					extra.method,
+					extra.path,
+				)
 			default:
 			}
 		}
@@ -1031,6 +1135,7 @@ func runHTTPInput(
 	output HTTPOutput,
 	bodyLengths map[string]int,
 	headerHistory map[string][]string,
+	capturedCookies map[string]string,
 ) error {
 	t.Helper()
 	method := input.Method
@@ -1051,14 +1156,31 @@ func runHTTPInput(
 		return err
 	}
 	for name, value := range input.Headers {
+		value, err = replaceCookiePlaceholders(value, capturedCookies)
+		if err != nil {
+			t.Errorf("resolve input header %s: %v", name, err)
+			return err
+		}
 		if strings.EqualFold(name, "Host") {
 			request.Host = value
 			continue
 		}
 		request.Header.Set(name, value)
 	}
+	for name, values := range input.HeaderValues {
+		for _, value := range values {
+			value, err = replaceCookiePlaceholders(value, capturedCookies)
+			if err != nil {
+				t.Errorf("resolve input header %s: %v", name, err)
+				return err
+			}
+			request.Header.Add(name, value)
+		}
+	}
 	if input.Version == "1.0" {
-		return runRawHTTP10Input(t, client, address, request, output, bodyLengths, headerHistory)
+		return runRawHTTP10Input(
+			t, client, address, request, output, bodyLengths, headerHistory, capturedCookies,
+		)
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -1074,7 +1196,38 @@ func runHTTPInput(
 	assertOutput(t, output, response, string(responseBody))
 	assertBodyLength(t, output, len(responseBody), bodyLengths)
 	assertGeneratedHeaders(t, output, response.Header, headerHistory)
+	captureResponseCookies(response, capturedCookies)
 	return nil
+}
+
+func replaceCookiePlaceholders(value string, cookies map[string]string) (string, error) {
+	const prefix = "{{COOKIE."
+	for {
+		start := strings.Index(value, prefix)
+		if start < 0 {
+			return value, nil
+		}
+		endOffset := strings.Index(value[start:], "}}")
+		if endOffset < 0 {
+			return "", fmt.Errorf("unterminated cookie placeholder")
+		}
+		end := start + endOffset + 2
+		name := value[start+len(prefix) : start+endOffset]
+		if name == "" {
+			return "", fmt.Errorf("cookie placeholder name is empty")
+		}
+		replacement := cookies[name]
+		if replacement == "" {
+			return "", fmt.Errorf("cookie %q has not been captured", name)
+		}
+		value = value[:start] + replacement + value[end:]
+	}
+}
+
+func captureResponseCookies(response *http.Response, captured map[string]string) {
+	for _, cookie := range response.Cookies() {
+		captured[cookie.Name] = cookie.Value
+	}
 }
 
 func runRawHTTP10Input(
@@ -1085,6 +1238,7 @@ func runRawHTTP10Input(
 	output HTTPOutput,
 	bodyLengths map[string]int,
 	headerHistory map[string][]string,
+	capturedCookies map[string]string,
 ) error {
 	t.Helper()
 	var connection net.Conn
@@ -1138,6 +1292,7 @@ func runRawHTTP10Input(
 	assertOutput(t, output, response, string(body))
 	assertBodyLength(t, output, len(body), bodyLengths)
 	assertGeneratedHeaders(t, output, response.Header, headerHistory)
+	captureResponseCookies(response, capturedCookies)
 	return nil
 }
 
@@ -1171,11 +1326,8 @@ func assertGeneratedHeaders(
 			t.Errorf("response header %s is empty", name)
 			continue
 		}
-		for _, previous := range history[name] {
-			if value == previous {
-				t.Errorf("response header %s repeated value %q", name, value)
-				break
-			}
+		if slices.Contains(history[name], value) {
+			t.Errorf("response header %s repeated value %q", name, value)
 		}
 	}
 	for name := range monotonic {

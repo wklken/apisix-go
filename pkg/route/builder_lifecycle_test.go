@@ -10,11 +10,54 @@ import (
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type recordingPlugin struct {
+	name     string
+	priority int
+	order    *[]string
+}
+
+func (p *recordingPlugin) Init() error               { return nil }
+func (p *recordingPlugin) PostInit() error           { return nil }
+func (p *recordingPlugin) Config() any               { return nil }
+func (p *recordingPlugin) GetSchema() string         { return "" }
+func (p *recordingPlugin) GetMetadataSchema() string { return "" }
+func (p *recordingPlugin) GetPriority() int          { return p.priority }
+func (p *recordingPlugin) GetName() string           { return p.name }
+func (p *recordingPlugin) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*p.order = append(*p.order, p.name)
+		next.ServeHTTP(w, r)
+	})
+}
+
+var _ pluginpkg.Plugin = (*recordingPlugin)(nil)
+
+func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T) {
+	order := []string{}
+	local := []pluginpkg.Plugin{&recordingPlugin{name: "local-auth", priority: 2500, order: &order}}
+	global := []pluginpkg.Plugin{&recordingPlugin{name: "global-label", priority: 2399, order: &order}}
+	handler := assembleRoutePluginChain(local, global).Then(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			order = append(order, "upstream")
+			w.WriteHeader(http.StatusNoContent)
+		},
+	))
+
+	response := performRouteTestRequest(t, handler, "/priority")
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if got := strings.Join(order, ","); got != "local-auth,global-label,upstream" {
+		t.Fatalf("execution order = %q, want local-auth,global-label,upstream", got)
+	}
+}
 
 func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 	delivered := make(chan struct{}, 1)

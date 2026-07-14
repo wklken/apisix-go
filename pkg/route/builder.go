@@ -254,8 +254,6 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 	localPlugins = append(localPlugins, initialized...)
-	localChain := plugin.BuildPluginChain(localPlugins...)
-
 	globalRules, err := store.ListGlobalRules()
 	if err != nil {
 		logger.Errorf("list global rules fail: %s", err)
@@ -265,13 +263,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(globalPlugins) > 0 {
-		globalChain := plugin.BuildPluginChain(globalPlugins...)
-
-		chain = globalChain.Extend(localChain)
-	} else {
-		chain = localChain
-	}
+	chain = assembleRoutePluginChain(localPlugins, globalPlugins)
 
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
@@ -280,6 +272,13 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	}
 
 	return withAIExecutionTerminal(chain, handler), nil
+}
+
+func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) alice.Chain {
+	plugins := make([]plugin.Plugin, 0, len(localPlugins)+len(globalPlugins))
+	plugins = append(plugins, localPlugins...)
+	plugins = append(plugins, globalPlugins...)
+	return plugin.BuildPluginChain(plugins...)
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {

@@ -1,0 +1,308 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/real-ip.t
+  tests: 24
+
+cases:
+  - name: schema
+    source:
+      tests: [1]
+    variants:
+      - name: missing-source
+        config:
+          routes:
+            - id: real-ip-missing-source
+              uri: /hello
+              plugins:
+                real-ip: {}
+        input:
+          path: /hello
+        output:
+          status: 404
+          logs:
+            matches: 'build route real-ip-missing-source fail:.*missing properties.*source'
+      - name: invalid-ipv4-cidr
+        config:
+          routes:
+            - id: real-ip-invalid-ipv4-cidr
+              uri: /hello
+              plugins:
+                real-ip:
+                  source: http_xff
+                  trusted_addresses: [127.0.0.1/33]
+        input:
+          path: /hello
+        output:
+          status: 404
+          logs:
+            matches: 'build route real-ip-invalid-ipv4-cidr fail:.*invalid CIDR address: 127.0.0.1/33'
+      - name: invalid-ipv6-cidr
+        config:
+          routes:
+            - id: real-ip-invalid-ipv6-cidr
+              uri: /hello
+              plugins:
+                real-ip:
+                  source: http_xff
+                  trusted_addresses: ['::1/129']
+        input:
+          path: /hello
+        output:
+          status: 404
+          logs:
+            matches: 'build route real-ip-invalid-ipv6-cidr fail:.*invalid CIDR address: ::1/129'
+
+  - name: ipv4-addresses
+    source:
+      tests: [2, 3, 4, 5, 6, 7]
+    config:
+      routes:
+        - id: real-ip-ipv4
+          uri: /hello
+          plugins:
+            real-ip:
+              source: http_xff
+            ip-restriction:
+              whitelist: [1.1.1.1]
+          upstream: &named_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - &done_response
+            status: 200
+            body: done
+          - *done_response
+    steps:
+      - name: bare-address
+        input:
+          path: /hello
+          headers:
+            XFF: 1.1.1.1
+        output: &done_output
+          status: 200
+          body:
+            equals: done
+      - name: address-with-port
+        input:
+          path: /hello
+          headers:
+            XFF: 1.1.1.1:80
+        output: *done_output
+      - name: missing-address
+        input:
+          path: /hello
+        output: &forbidden_output
+          status: 403
+      - name: malformed-address
+        input:
+          path: /hello
+          headers:
+            XFF: 1.1.1.1.1
+        output: *forbidden_output
+      - name: out-of-range-port
+        input:
+          path: /hello
+          headers:
+            XFF: 1.1.1.1:65536
+        output: *forbidden_output
+
+  - name: ipv6-addresses
+    source:
+      tests: [8, 9, 10, 11]
+    config:
+      routes:
+        - id: real-ip-ipv6
+          uri: /hello
+          plugins:
+            real-ip:
+              source: http_xff
+            ip-restriction:
+              whitelist: ['::2']
+          upstream: *named_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *done_response
+          - *done_response
+          - *done_response
+    steps:
+      - name: bare-ipv6
+        input:
+          path: /hello
+          headers:
+            XFF: '::2'
+        output: *done_output
+      - name: bracketed-ipv6-with-port
+        input:
+          path: /hello
+          headers:
+            XFF: '[::2]:80'
+        output: *done_output
+      - name: bracketed-ipv6
+        input:
+          path: /hello
+          headers:
+            XFF: '[::2]'
+        output: *done_output
+
+  - name: source-port
+    source:
+      tests: [12, 13]
+    config:
+      routes:
+        - id: real-ip-source-port
+          uri: /hello
+          plugins:
+            real-ip:
+              source: http_xff
+            response-rewrite:
+              headers:
+                remote_port: $remote_port
+          upstream: &single_upstream
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello
+      headers:
+        XFF: 1.1.1.1:7090
+    upstream: &single_fixture
+      respond: *done_response
+    output:
+      status: 200
+      headers:
+        remote_port:
+          equals: '7090'
+      body:
+        equals: done
+
+  - name: x-forwarded-for
+    source:
+      tests: [14, 15, 16, 17]
+    config:
+      routes:
+        - id: real-ip-x-forwarded-for
+          uri: /hello
+          plugins:
+            real-ip:
+              source: http_x_forwarded_for
+            ip-restriction:
+              whitelist: ['::2']
+          upstream: *named_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *done_response
+          - *done_response
+    steps:
+      - name: comma-separated
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: '::1, ::2'
+        output: *done_output
+      - name: repeated-header-lines
+        input:
+          path: /hello
+          header_values:
+            X-Forwarded-For: ['::1', '::2']
+        output: *done_output
+      - name: missing-address
+        input:
+          path: /hello
+        output: *forbidden_output
+
+  - name: plugin-trusted-addresses-reject-untrusted-peer
+    source:
+      tests: [18, 19]
+    config:
+      routes:
+        - id: real-ip-untrusted-peer
+          uri: /hello
+          plugins:
+            real-ip:
+              trusted_addresses: [192.128.0.0/16]
+              source: http_x_forwarded_for
+            ip-restriction:
+              whitelist: [1.1.1.1]
+          upstream: *single_upstream
+    input:
+      path: /hello
+      headers:
+        X-Forwarded-For: 1.1.1.1
+    upstream: *single_fixture
+    output: *forbidden_output
+
+  - name: plugin-trusted-addresses-allow-trusted-peer
+    source:
+      tests: [20, 21]
+    config:
+      routes:
+        - id: real-ip-trusted-peer
+          uri: /hello
+          plugins:
+            real-ip:
+              trusted_addresses: [192.128.0.0/16, 127.0.0.0/24]
+              source: http_x_forwarded_for
+            ip-restriction:
+              whitelist: [1.1.1.1]
+          upstream: *single_upstream
+    input:
+      path: /hello
+      headers:
+        X-Forwarded-For: 1.1.1.1
+    upstream: *single_fixture
+    output: *done_output
+
+  - name: recursive-x-forwarded-for
+    source:
+      tests: [22, 23]
+    config:
+      routes:
+        - id: real-ip-recursive
+          uri: /hello
+          plugins:
+            real-ip:
+              trusted_addresses: [192.128.0.0/16, 127.0.0.0/24]
+              source: http_x_forwarded_for
+              recursive: true
+            ip-restriction:
+              whitelist: [1.1.1.1]
+          upstream: *single_upstream
+    input:
+      path: /hello
+      headers:
+        X-Forwarded-For: 1.1.1.1, 192.128.1.1, 127.0.0.1
+    upstream: *single_fixture
+    output: *done_output
+
+  - name: global-trusted-addresses-strip-forged-forwarding
+    source:
+      tests: [24]
+    runtime:
+      apisix:
+        trusted_addresses: [192.128.0.0/16]
+    config:
+      routes:
+        - id: real-ip-global-untrusted-peer
+          uri: /hello
+          plugins:
+            real-ip:
+              trusted_addresses: [192.128.0.0/16, 127.0.0.0/24]
+              source: http_x_forwarded_for
+            ip-restriction:
+              whitelist: [1.1.1.1]
+          upstream: *single_upstream
+    input:
+      path: /hello
+      headers:
+        X-Forwarded-For: 1.1.1.1
+    upstream: *single_fixture
+    output: *forbidden_output

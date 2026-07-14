@@ -30,6 +30,40 @@ func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
 	}
 }
 
+func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
+	var gotForwardedFor string
+	handler := stripUntrustedForwardedFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusNoContent)
+	}), []string{"192.128.0.0/16"})
+	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotForwardedFor != "" {
+		t.Fatalf("X-Forwarded-For = %q, want forged header removed", gotForwardedFor)
+	}
+}
+
+func TestStripUntrustedForwardedForPreservesTrustedHeader(t *testing.T) {
+	var gotForwardedFor string
+	handler := stripUntrustedForwardedFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusNoContent)
+	}), []string{"127.0.0.0/24"})
+	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotForwardedFor != "1.1.1.1" {
+		t.Fatalf("X-Forwarded-For = %q, want trusted header preserved", gotForwardedFor)
+	}
+}
+
 func TestConfiguredServerUsesNodeListenAndHTTPTimeouts(t *testing.T) {
 	previous := config.GlobalConfig
 	t.Cleanup(func() { config.GlobalConfig = previous })

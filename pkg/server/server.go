@@ -58,6 +58,9 @@ func NewServer() (*Server, error) {
 	storage := store.NewStore("apisix-go-store.db", events)
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	var handler http.Handler = routes
+	if config.GlobalConfig != nil && len(config.GlobalConfig.Apisix.TrustedAddresses) > 0 {
+		handler = stripUntrustedForwardedFor(handler, config.GlobalConfig.Apisix.TrustedAddresses)
+	}
 	if config.GlobalConfig != nil && config.GlobalConfig.Apisix.NormalizeURILikeServlet {
 		handler = normalizeRequestPath(handler)
 	}
@@ -74,6 +77,48 @@ func NewServer() (*Server, error) {
 		events:          events,
 		storage:         storage,
 	}, nil
+}
+
+func stripUntrustedForwardedFor(next http.Handler, addresses []string) http.Handler {
+	trustedNetworks := make([]*net.IPNet, 0, len(addresses))
+	for _, address := range addresses {
+		if _, network, err := net.ParseCIDR(address); err == nil {
+			trustedNetworks = append(trustedNetworks, network)
+			continue
+		}
+		ip := net.ParseIP(address)
+		if ip == nil {
+			continue
+		}
+		bits := 128
+		if ip.To4() != nil {
+			ip = ip.To4()
+			bits = 32
+		}
+		trustedNetworks = append(trustedNetworks, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	if len(trustedNetworks) == 0 {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		remoteIP := net.ParseIP(strings.Trim(host, "[]"))
+		trusted := false
+		for _, network := range trustedNetworks {
+			if network.Contains(remoteIP) {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			r.Header.Del("X-Forwarded-For")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func normalizeRequestPath(next http.Handler) http.Handler {

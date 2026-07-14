@@ -59,7 +59,7 @@ func TestSupportedPluginManifestSelection(t *testing.T) {
 func supportedPluginNames(data []byte) ([]string, error) {
 	var plugins []string
 	seen := make(map[string]bool)
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "|---") {
 			continue
 		}

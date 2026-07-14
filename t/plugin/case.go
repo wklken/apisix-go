@@ -77,12 +77,13 @@ type CaseSource struct {
 }
 
 type HTTPInput struct {
-	Method  string            `yaml:"method,omitempty"`
-	Scheme  string            `yaml:"scheme,omitempty"`
-	Version string            `yaml:"version,omitempty"`
-	Path    string            `yaml:"path"`
-	Headers map[string]string `yaml:"headers,omitempty"`
-	Body    string            `yaml:"body,omitempty"`
+	Method       string              `yaml:"method,omitempty"`
+	Scheme       string              `yaml:"scheme,omitempty"`
+	Version      string              `yaml:"version,omitempty"`
+	Path         string              `yaml:"path"`
+	Headers      map[string]string   `yaml:"headers,omitempty"`
+	HeaderValues map[string][]string `yaml:"header_values,omitempty"`
+	Body         string              `yaml:"body,omitempty"`
 }
 
 type UpstreamSpec struct {
@@ -155,7 +156,8 @@ func loadManifest(name string, data []byte) (*Manifest, error) {
 }
 
 func (m *Manifest) validate() error {
-	singularConfigured := m.Source.Repository != "" || m.Source.Commit != "" || m.Source.File != "" || m.Source.Tests != 0
+	singularConfigured := m.Source.Repository != "" || m.Source.Commit != "" ||
+		m.Source.File != "" || m.Source.Tests != 0
 	if singularConfigured && len(m.Sources) > 0 {
 		return errors.New("exactly one of source or sources is required")
 	}
@@ -233,7 +235,13 @@ func (m *Manifest) validate() error {
 				if !multiSourceForm {
 					return fmt.Errorf("source test %d is mapped more than once by %q and %q", number, previous, name)
 				}
-				return fmt.Errorf("source test %d in %s is mapped more than once by %q and %q", number, file, previous, name)
+				return fmt.Errorf(
+					"source test %d in %s is mapped more than once by %q and %q",
+					number,
+					file,
+					previous,
+					name,
+				)
 			}
 			mapped[file][number] = name
 		}
@@ -281,7 +289,8 @@ func (c *Case) validate() error {
 
 func (c *Case) hasScenario() bool {
 	return len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" || c.Input.Path != "" ||
-		len(c.Input.Headers) > 0 || c.Input.Body != "" || c.Upstream != nil || c.Output.Status != 0 ||
+		len(c.Input.Headers) > 0 || len(c.Input.HeaderValues) > 0 || c.Input.Body != "" ||
+		c.Upstream != nil || c.Output.Status != 0 ||
 		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil || len(c.Fixtures) > 0 ||
 		c.Output.GzipBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" ||
 		len(c.Output.UniqueHeaders) > 0 || len(c.Output.MonotonicHeaders) > 0 ||
@@ -311,7 +320,8 @@ func (c *Case) validateScenario() error {
 		return errors.New("frontend TLS SNI is required")
 	}
 	if len(c.Steps) > 0 || len(c.Fixtures) > 0 {
-		if c.Input.Method != "" || c.Input.Path != "" || len(c.Input.Headers) > 0 || c.Input.Body != "" ||
+		if c.Input.Method != "" || c.Input.Path != "" || len(c.Input.Headers) > 0 ||
+			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" ||
 			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil ||
 			c.Output.GzipBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
 			c.Output.BodyLengthLessThan != "" || len(c.Output.UniqueHeaders) > 0 ||

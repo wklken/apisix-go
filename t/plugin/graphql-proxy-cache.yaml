@@ -1,170 +1,97 @@
-cases:
-    - config:
-        routes:
-            - id: graphql-proxy-cache-source-1
-              plugins:
-                graphql-proxy-cache:
-                    cache_strategy: memory
-                    cache_ttl: 60
-                    cache_zone: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: graphql-proxy-cache-source-1
-      source:
-        file: t/plugin/graphql-proxy-cache/disk.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-      steps:
-        - input:
-            body: '{"query":"{ hello }"}'
-            headers:
-                Content-Type: application/json
-            method: POST
-            path: /probe
-          name: real-graphql-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: graphql-proxy-cache-source-2
-              plugins:
-                graphql-proxy-cache:
-                    cache_strategy: memory
-                    cache_ttl: 60
-                    cache_zone: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: graphql-proxy-cache-source-2
-      source:
-        file: t/plugin/graphql-proxy-cache/graphql.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-      steps:
-        - input:
-            body: '{"query":"{ hello }"}'
-            headers:
-                Content-Type: application/json
-            method: POST
-            path: /probe
-          name: real-graphql-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: graphql-proxy-cache-source-3
-              plugins:
-                graphql-proxy-cache:
-                    cache_strategy: memory
-                    cache_ttl: 60
-                    cache_zone: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: graphql-proxy-cache-source-3
-      source:
-        file: t/plugin/graphql-proxy-cache/memory.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-      steps:
-        - input:
-            body: '{"query":"{ hello }"}'
-            headers:
-                Content-Type: application/json
-            method: POST
-            path: /probe
-          name: real-graphql-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/graphql-proxy-cache/disk.t
-      tests: 11
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/graphql-proxy-cache/graphql.t
-      tests: 21
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/graphql-proxy-cache/memory.t
-      tests: 16
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/graphql-proxy-cache/disk.t
+    tests: 11
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/graphql-proxy-cache/graphql.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/graphql-proxy-cache/memory.t
+    tests: 16
+cases:
+  - name: graphql-disk-cache
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]}
+    runtime:
+      plugin_attr:
+        proxy-cache:
+          zones:
+            - {name: graphql-integration, disk_path: '{{WORK_DIR}}/cache/graphql', disk_size: 10m}
+    config:
+      routes:
+        - id: graphql-proxy-cache-disk
+          uri: /graphql
+          plugins:
+            graphql-proxy-cache: {cache_strategy: disk, cache_zone: graphql-integration, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: '{"data":{"hello":"disk"}}'}, {status: 200, body: '{"data":{"hello":"changed"}}'}]
+    steps:
+      - name: disk-query-miss
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output:
+          status: 200
+          body: {equals: '{"data":{"hello":"disk"}}'}
+          headers: {Apisix-Cache-Status: {equals: MISS}}
+      - name: disk-query-hit
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output:
+          status: 200
+          body: {equals: '{"data":{"hello":"disk"}}'}
+          headers: {Apisix-Cache-Status: {equals: HIT}}
+  - name: graphql-memory-cache
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
+    config:
+      routes:
+        - id: graphql-proxy-cache-memory
+          uri: /graphql
+          plugins:
+            graphql-proxy-cache: {cache_strategy: memory, cache_zone: graphql-integration, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: '{"data":{"hello":"memory"}}'}, {status: 200, body: '{"data":{"hello":"changed"}}'}]
+    steps:
+      - name: memory-query-miss
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output:
+          status: 200
+          body: {equals: '{"data":{"hello":"memory"}}'}
+          headers: {Apisix-Cache-Status: {equals: MISS}}
+      - name: memory-query-hit
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output:
+          status: 200
+          body: {equals: '{"data":{"hello":"memory"}}'}
+          headers: {Apisix-Cache-Status: {equals: HIT}}
+  - name: graphql-memory-variants
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]}
+    config:
+      routes:
+        - id: graphql-proxy-cache-variants
+          uri: /graphql
+          plugins:
+            graphql-proxy-cache: {cache_strategy: memory, cache_zone: graphql-variants, cache_ttl: 60}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: '{"data":{"hello":"variant-a"}}'}, {status: 200, body: '{"data":{"hello":"variant-b"}}'}]
+    steps:
+      - name: variant-a-miss
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output:
+          status: 200
+          body: {equals: '{"data":{"hello":"variant-a"}}'}
+          headers: {Apisix-Cache-Status: {equals: MISS}}
+      - name: variant-a-hit
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output:
+          status: 200
+          body: {equals: '{"data":{"hello":"variant-a"}}'}
+          headers: {Apisix-Cache-Status: {equals: HIT}}

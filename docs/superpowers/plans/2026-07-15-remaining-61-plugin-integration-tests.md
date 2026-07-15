@@ -730,7 +730,7 @@ Expected: all commands PASS; `git status --short` contains only the intended sou
 
 Use `agent-skills:code-review-and-quality`. Review target-plugin authenticity, fixture self-fulfilling assertions, source-number grouping, process/network cleanup, protocol parser bounds, secret leakage, flaky waits/randomness, and unrelated diffs. Repair only verified findings and rerun affected focused plus final gates.
 
-- [ ] **Step 6: Commit, push, and mark PR ready**
+- [x] **Step 6: Commit, push, and mark PR ready**
 
 ```bash
 git add t/plugin/coverage_test.go t/plugin/README.md docs/plugins.md docs/superpowers/specs/2026-07-14-plugin-integration-tests-design.md docs/superpowers/plans/2026-07-15-remaining-61-plugin-integration-tests.md

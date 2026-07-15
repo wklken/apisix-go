@@ -130,6 +130,9 @@ cases:
       routes:
         - id: client-control-global-limit
           uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 31457280
           upstream: *single_upstream
     input:
       method: POST
@@ -149,6 +152,9 @@ cases:
       routes:
         - id: client-control-cleaned-global-rule
           uri: /hello
+          plugins:
+            client-control:
+              max_body_size: 0
           upstream: *single_upstream
     input:
       method: POST

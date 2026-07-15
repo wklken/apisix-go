@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -89,6 +90,174 @@ func TestManifestCorpusValidates(t *testing.T) {
 			t.Fatalf("load %s: %v", file, err)
 		}
 	}
+}
+
+func TestManifestExercisesTargetPlugin(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest *Manifest
+		plugin   string
+		want     bool
+	}{
+		{
+			name: "route plugin",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"routes": []any{map[string]any{"plugins": map[string]any{"acl": map[string]any{}}}},
+			}}}},
+			plugin: "acl",
+			want:   true,
+		},
+		{
+			name: "global plugin",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"global_rules": []any{map[string]any{"plugins": map[string]any{"error-page": map[string]any{}}}},
+			}}}},
+			plugin: "error-page",
+			want:   true,
+		},
+		{
+			name: "control plugin",
+			manifest: &Manifest{Cases: []Case{{Runtime: map[string]any{
+				"plugins": []any{"node-status"},
+			}}}},
+			plugin: "node-status",
+			want:   true,
+		},
+		{
+			name: "variant plugin",
+			manifest: &Manifest{Cases: []Case{{Variants: []CaseVariant{{Config: map[string]any{
+				"routes": []any{map[string]any{"plugins": map[string]any{"ua-restriction": map[string]any{}}}},
+			}}}}}},
+			plugin: "ua-restriction",
+			want:   true,
+		},
+		{
+			name: "fixture proxy placeholder",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"routes": []any{map[string]any{"uri": "/*", "upstream": map[string]any{}}},
+			}}}},
+			plugin: "saml-auth",
+			want:   false,
+		},
+		{
+			name: "unrelated plugin",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"routes": []any{map[string]any{"plugins": map[string]any{"mocking": map[string]any{}}}},
+			}}}},
+			plugin: "acl",
+			want:   false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := manifestExercisesPlugin(test.manifest, test.plugin); got != test.want {
+				t.Fatalf("manifestExercisesPlugin() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestManifestCorpusExercisesTargetPlugins(t *testing.T) {
+	files, err := filepath.Glob("*.yaml")
+	if err != nil {
+		t.Fatalf("discover manifests: %v", err)
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		manifest, err := loadManifest(file, data)
+		if err != nil {
+			t.Fatalf("load %s: %v", file, err)
+		}
+		pluginName := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+		if pluginName == "redirect2" {
+			pluginName = "redirect"
+		}
+		if !manifestExercisesPlugin(manifest, pluginName) {
+			t.Errorf("%s never activates target plugin %q", file, pluginName)
+		}
+		for caseIndex := range manifest.Cases {
+			caseSpec := &manifest.Cases[caseIndex]
+			if len(caseSpec.Variants) == 0 {
+				if !scenarioExercisesPlugin(caseSpec.Runtime, caseSpec.Config, pluginName) {
+					t.Errorf("%s case %q never activates target plugin %q", file, caseSpec.Name, pluginName)
+				}
+				continue
+			}
+			for variantIndex := range caseSpec.Variants {
+				variant := &caseSpec.Variants[variantIndex]
+				if !scenarioExercisesPlugin(variant.Runtime, variant.Config, pluginName) {
+					t.Errorf(
+						"%s case %q variant %q never activates target plugin %q",
+						file,
+						caseSpec.Name,
+						variant.Name,
+						pluginName,
+					)
+				}
+			}
+		}
+	}
+}
+
+func manifestExercisesPlugin(manifest *Manifest, pluginName string) bool {
+	for i := range manifest.Cases {
+		caseSpec := &manifest.Cases[i]
+		if scenarioExercisesPlugin(caseSpec.Runtime, caseSpec.Config, pluginName) {
+			return true
+		}
+		for j := range caseSpec.Variants {
+			variant := &caseSpec.Variants[j]
+			if scenarioExercisesPlugin(variant.Runtime, variant.Config, pluginName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func scenarioExercisesPlugin(runtime, config map[string]any, pluginName string) bool {
+	switch plugins := runtime["plugins"].(type) {
+	case []any:
+		for _, configured := range plugins {
+			if configured == pluginName {
+				return true
+			}
+		}
+	case []string:
+		if slices.Contains(plugins, pluginName) {
+			return true
+		}
+	}
+	return configContainsPlugin(config, pluginName)
+}
+
+func configContainsPlugin(value any, pluginName string) bool {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, nested := range current {
+			if key == "plugins" {
+				if plugins, ok := nested.(map[string]any); ok {
+					if _, configured := plugins[pluginName]; configured {
+						return true
+					}
+				}
+			}
+			if configContainsPlugin(nested, pluginName) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range current {
+			if configContainsPlugin(nested, pluginName) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func supportedPluginNames(data []byte) ([]string, error) {

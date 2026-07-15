@@ -7,804 +7,761 @@ sources:
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/acl2.t
     tests: 4
+
 cases:
-  - name: acl-corpus
+  - name: allow-consumers-by-org
     source:
       file: t/plugin/acl.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-        - 41
-        - 42
-        - 43
-        - 44
-        - 45
-        - 46
-        - 47
-        - 48
-        - 49
-        - 50
-        - 51
-        - 52
-        - 53
-        - 54
-        - 55
-        - 56
-        - 57
-        - 58
+      tests: [1, 2, 3, 4, 5, 6]
+    runtime: &consumer_runtime
+      plugins: [acl, basic-auth]
     config:
       routes:
-        - id: acl-corpus
-          uri: "/*"
-          upstream:
+        - id: acl-allow-org
+          uri: /hello
+          plugins:
+            basic-auth: {}
+            acl:
+              allow_labels:
+                org: [apache]
+          upstream: &fixture_upstream
             type: roundrobin
             nodes:
               "{{FIXTURE.primary.ADDR}}": 1
+      consumers: &consumers
+        - username: jack
+          labels:
+            org: apache
+            project: gateway,apisix,web-server
+          plugins:
+            basic-auth:
+              username: jack
+              password: "123456"
+        - username: rose
+          labels:
+            org: '["opensource","apache"]'
+            project: '["tomcat","web-server","http,server"]'
+          plugins:
+            basic-auth:
+              username: rose
+              password: "123456"
     fixtures:
-      - name: primary
+      - &hello_fixture
+        name: primary
         kind: http
         respond:
           - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
+            body: hello world
     steps:
-      - name: acl-001-add-consumer-jack
+      - name: unauthorized
         input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-002-add-consumer-rose
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-003-set-allow-labels
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-004-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
+          path: /hello
+        output: &missing_basic_auth
           status: 401
           body:
-            equals: "validation failed"
-      - name: acl-005-verify-jack
+            matches: 'Missing authorization in request'
+      - name: jack-allowed
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic amFjazoxMjM0NTY="
-        output:
+            Authorization: Basic amFjazoxMjM0NTY=
+        output: &hello_output
           status: 200
           body:
-            equals: "hello world"
-      - name: acl-006-verify-rose
+            equals: hello world
+      - name: rose-allowed
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic cm9zZToxMjM0NTY="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-007-set-allow-labels
+            Authorization: Basic cm9zZToxMjM0NTY=
+        output: *hello_output
+
+  - name: allow-consumer-by-project
+    source:
+      file: t/plugin/acl.t
+      tests: [7, 8, 9]
+    runtime: *consumer_runtime
+    config:
+      routes:
+        - id: acl-allow-project
+          uri: /hello
+          plugins:
+            basic-auth: {}
+            acl:
+              allow_labels:
+                project: [apisix]
+          upstream: *fixture_upstream
+      consumers: *consumers
+    fixtures: [*hello_fixture]
+    steps:
+      - name: jack-allowed
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-008-verify-jack
-        input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic amFjazoxMjM0NTY="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-009-verify-rose
+            Authorization: Basic amFjazoxMjM0NTY=
+        output: *hello_output
+      - name: rose-forbidden
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic cm9zZToxMjM0NTY="
-        output:
+            Authorization: Basic cm9zZToxMjM0NTY=
+        output: &acl_forbidden
           status: 403
           body:
-            equals: "validation failed"
-      - name: acl-010-set-deny-labels
+            matches: 'The consumer is forbidden\.'
+
+  - name: deny-consumer-by-project-with-custom-message
+    source:
+      file: t/plugin/acl.t
+      tests: [10, 11, 12]
+    runtime: *consumer_runtime
+    config:
+      routes:
+        - id: acl-deny-project
+          uri: /hello
+          plugins:
+            basic-auth: {}
+            acl:
+              deny_labels:
+                project: [apisix]
+              rejected_msg: request is forbidden
+          upstream: *fixture_upstream
+      consumers: *consumers
+    fixtures: [*hello_fixture]
+    steps:
+      - name: jack-forbidden
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-011-verify-jack
-        input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic amFjazoxMjM0NTY="
+            Authorization: Basic amFjazoxMjM0NTY=
         output:
           status: 403
           body:
-            equals: "validation failed"
-      - name: acl-012-verify-rose
+            matches: 'request is forbidden'
+      - name: rose-allowed
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic cm9zZToxMjM0NTY="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-013-set-deny-labels-with-multiple-values
+            Authorization: Basic cm9zZToxMjM0NTY=
+        output: *hello_output
+
+  - name: deny-consumers-by-multiple-project-values
+    source:
+      file: t/plugin/acl.t
+      tests: [13, 14, 15]
+    runtime: *consumer_runtime
+    config:
+      routes:
+        - id: acl-deny-multiple-projects
+          uri: /hello
+          plugins:
+            basic-auth: {}
+            acl:
+              deny_labels:
+                project: [apisix, tomcat]
+          upstream: *fixture_upstream
+      consumers: *consumers
+    fixtures: [*hello_fixture]
+    steps:
+      - name: jack-forbidden
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-014-verify-jack
-        input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic amFjazoxMjM0NTY="
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-015-verify-rose
+            Authorization: Basic amFjazoxMjM0NTY=
+        output: *acl_forbidden
+      - name: rose-forbidden
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic cm9zZToxMjM0NTY="
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-016-set-allow-labels-with-comma
+            Authorization: Basic cm9zZToxMjM0NTY=
+        output: *acl_forbidden
+
+  - name: preserve-comma-in-label-value
+    source:
+      file: t/plugin/acl.t
+      tests: [16, 17, 18]
+    runtime: *consumer_runtime
+    config:
+      routes:
+        - id: acl-comma-label
+          uri: /hello
+          plugins:
+            basic-auth: {}
+            acl:
+              allow_labels:
+                project: ["http,server"]
+          upstream: *fixture_upstream
+      consumers: *consumers
+    fixtures: [*hello_fixture]
+    steps:
+      - name: jack-forbidden
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-017-verify-jack
-        input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic amFjazoxMjM0NTY="
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-018-verify-rose
+            Authorization: Basic amFjazoxMjM0NTY=
+        output: *acl_forbidden
+      - name: rose-allowed
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic cm9zZToxMjM0NTY="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-019-test-acl-with-external-user
+            Authorization: Basic cm9zZToxMjM0NTY=
+        output: *hello_output
+
+  - name: external-user-query-values
+    source:
+      file: t/plugin/acl.t
+      tests: [19, 20, 21, 22]
+    runtime: &external_runtime
+      plugins: [acl, serverless-pre-function]
+    config:
+      routes:
+        - id: acl-external-query
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - >-
+                  return function(conf, ctx)
+                    local teams = {}
+                    for team in string.gmatch(ctx.var.request_uri, "team=([^&]+)") do
+                      table.insert(teams, team)
+                    end
+                    ctx.external_user = { team = teams }
+                  end
+            acl:
+              external_user_label_field: team
+              allow_labels:
+                team: [cloud, infra, devops, qa]
+          upstream: *fixture_upstream
+    fixtures: [*hello_fixture]
+    steps:
+      - name: infra-allowed
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-020-verify-infra-team
+          path: /hello?team=infra
+        output: *hello_output
+      - name: one-matching-team-allowed
         input:
-          method: GET
-          path: "/hello?team=infra"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-021-verify-infra-fake-team
+          path: /hello?team=infra&team=fake
+        output: *hello_output
+      - name: fake-forbidden
         input:
-          method: GET
-          path: "/hello?team=infra&team=fake"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-022-verify-fake-team
-        input:
-          method: GET
-          path: "/hello?team=fake"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-023-set-acl-with-external-user-parsed-by-jsonpath-parser-is-table
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-024-test-acl-with-external-user-parsed-by-jsonpath-parser-is-table
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-025-set-acl-with-external-user-parsed-by-jsonpath-parser-is-segmented
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-026-test-acl-with-external-user-parsed-by-jsonpath-parser-is-segmente
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-027-set-acl-with-external-user-parsed-by-jsonpath-parser-is-json
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-028-test-acl-with-external-user-parsed-by-jsonpath-parser-is-json
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-029-set-acl-parser-segmented-text-but-can-not-extract-expect-value-by
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-030-test-acl-with-the-invalid-separator
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-031-set-external-user-info-that-acl-can-extract-multiple-values-from-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-032-acl-parses-every-multi-match-value-so-a-packed-allowed-label-is-h
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-033-use-jsonpath-to-extract-value-but-a-correct-external-user-label-f
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-034-test-using-jsonpath-but-a-label-key-is-missing
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-035-set-invalid-separator
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-036-test-invalid-separator-ngx-re-split-will-be-fail
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-037-set-the-parser-table-but-the-type-of-the-value-extracted-is-not-a
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-038-test-the-parser-is-table-but-the-type-of-the-value-extracted-is-n
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-039-set-the-parser-json-but-the-type-of-the-value-extracted-is-not-st
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-040-test-the-parser-is-json-but-the-type-of-the-value-extracted-is-no
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-041-set-the-parser-json-but-the-value-extracted-has-no-prefix
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-042-test-the-parser-is-json-but-the-value-extracted-has-no-prefix
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-043-set-the-parser-json-and-the-value-extracted-has-prefix-but-it-is-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-044-test-the-parser-is-json-and-the-value-extracted-has-prefix-but-it
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-045-set-no-parser-value-has-no-prefix-and-no-separator-external-user-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-046-test-no-parser-value-has-no-prefix-and-no-separator-external-user
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-047-test-schema-invalid-external-user-label-field-parser
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-048-test-schema-external-user-label-field-parser-segmented-text-but-e
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-049-test-schema-invalid-external-user-label-field-key-specified-but-e
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-050-test-schema-invalid-external-user-label-field-key-specified-but-n
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-051-test-schema-invalid-external-user-label-field-separator-specified
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-052-test-schema-invalid-external-user-label-field-separator-specified
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-053-test-schema-invalid-external-user-label-field-invalid-jsonpath-sy
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: acl-054-multi-match-jsonpath-parser-denied-label-hidden-inside-a-parsed-v
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-055-each-match-is-parsed-individually-before-allow-deny-matching
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: acl-056-delete-route
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-057-delete-jack
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl-058-delete-rose
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: acl2-corpus
+          path: /hello?team=fake
+        output: *acl_forbidden
+
+  - name: external-user-table-parser
+    source:
+      file: t/plugin/acl.t
+      tests: [23, 24]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-table
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = {"cloud", "infra"} } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $.orgs..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: table
+              rejected_code: 403
+          upstream: &single_fixture_upstream
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    upstream: &hello_upstream
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output: *hello_output
+
+  - name: external-user-segmented-text-parser
+    source:
+      file: t/plugin/acl.t
+      tests: [25, 26]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-segmented
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud|infra" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $.orgs..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: segmented_text
+              external_user_label_field_separator: '\|'
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *hello_output
+
+  - name: external-user-json-parser
+    source:
+      file: t/plugin/acl.t
+      tests: [27, 28]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-json
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "[\"cloud\", \"infra\"]" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: json
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *hello_output
+
+  - name: segmented-text-invalid-separator-does-not-match
+    source:
+      file: t/plugin/acl.t
+      tests: [29, 30]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-separator-literal
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud|infra" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $.orgs..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: segmented_text
+              external_user_label_field_separator: '|'
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: external-user-multiple-jsonpath-values
+    source:
+      file: t/plugin/acl.t
+      tests: [31, 32]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-multiple
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud|infra" }, apache = { team = {"devops", "qa"} } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $.orgs..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: segmented_text
+              external_user_label_field_separator: '\|'
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *hello_output
+
+  - name: jsonpath-without-parser
+    source:
+      file: t/plugin/acl.t
+      tests: [33, 34]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-no-parser
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud,infra" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: invalid-separator-pattern
+    source:
+      file: t/plugin/acl.t
+      tests: [35, 36]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-invalid-pattern
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud,infra" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: segmented_text
+              external_user_label_field_separator: (invalid(pattern
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output:
+      status: 403
+      body:
+        matches: 'The consumer is forbidden\.'
+
+  - name: table-parser-rejects-string
+    source:
+      file: t/plugin/acl.t
+      tests: [37, 38]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-table-string
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud,infra" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: table
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: json-parser-rejects-table
+    source:
+      file: t/plugin/acl.t
+      tests: [39, 40]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-json-table
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = {"cloud", "infra"} } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: json
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: json-parser-requires-array-prefix
+    source:
+      file: t/plugin/acl.t
+      tests: [41, 42]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-json-scalar
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "cloud" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: json
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: json-parser-rejects-invalid-json
+    source:
+      file: t/plugin/acl.t
+      tests: [43, 44]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-json-invalid
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { orgs = { api7 = { team = "[cloud" } } } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: $..team
+              external_user_label_field_key: team
+              external_user_label_field_parser: json
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: default-parser-single-value
+    source:
+      file: t/plugin/acl.t
+      tests: [45, 46]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-default-parser
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { team = "cloud" } end'
+            acl:
+              allow_labels:
+                org: [api7, apache]
+                team: [cloud, infra]
+              external_user_label_field: team
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *hello_output
+
+  - name: schema-rejections
+    source:
+      file: t/plugin/acl.t
+      tests: [47, 48, 49, 50, 51, 52, 53]
+    variants:
+      - name: invalid-parser
+        runtime: &acl_runtime
+          plugins: [acl]
+        config:
+          routes:
+            - id: acl-schema-invalid-parser
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels: &schema_labels
+                    team: [cloud, infra]
+                  external_user_label_field: team
+                  external_user_label_field_parser: an-invalid-parser
+        input: &hello_input
+          path: /hello
+        output: &schema_rejected
+          status: 404
+          logs:
+            matches: 'build route acl-schema-.*fail:.*acl'
+      - name: segmented-parser-missing-separator
+        runtime: *acl_runtime
+        config:
+          routes:
+            - id: acl-schema-missing-separator
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels: *schema_labels
+                  external_user_label_field: team
+                  external_user_label_field_parser: segmented_text
+        input: *hello_input
+        output: *schema_rejected
+      - name: empty-field-key
+        runtime: *acl_runtime
+        config:
+          routes:
+            - id: acl-schema-empty-key
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels: *schema_labels
+                  external_user_label_field: team
+                  external_user_label_field_parser: segmented_text
+                  external_user_label_field_key: ""
+        input: *hello_input
+        output: *schema_rejected
+      - name: separator-object-instead-of-key
+        runtime: *acl_runtime
+        config:
+          routes:
+            - id: acl-schema-key-type
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels: *schema_labels
+                  external_user_label_field: team
+                  external_user_label_field_parser: segmented_text
+                  external_user_label_separator: {}
+        input: *hello_input
+        output: *schema_rejected
+      - name: empty-separator
+        runtime: *acl_runtime
+        config:
+          routes:
+            - id: acl-schema-empty-separator
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels: *schema_labels
+                  external_user_label_field: team
+                  external_user_label_field_parser: segmented_text
+                  external_user_label_field_separator: ""
+        input: *hello_input
+        output: *schema_rejected
+      - name: separator-not-string
+        runtime: *acl_runtime
+        config:
+          routes:
+            - id: acl-schema-separator-type
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels: *schema_labels
+                  external_user_label_field: team
+                  external_user_label_field_parser: segmented_text
+                  external_user_label_field_separator: {}
+        input: *hello_input
+        output: *schema_rejected
+      - name: invalid-jsonpath
+        runtime: *acl_runtime
+        config:
+          routes:
+            - id: acl-schema-invalid-jsonpath
+              uri: /hello
+              plugins:
+                acl:
+                  allow_labels:
+                    team: [cloud]
+                  external_user_label_field: $..([invalid
+        input: *hello_input
+        output: *schema_rejected
+
+  - name: multi-match-parser-deny
+    source:
+      file: t/plugin/acl.t
+      tests: [54, 55, 56, 57, 58]
+    runtime: *external_runtime
+    config:
+      routes:
+        - id: acl-external-multi-match-deny
+          uri: /hello
+          plugins:
+            serverless-pre-function:
+              phase: access
+              functions:
+                - 'return function(conf, ctx) ctx.external_user = { teams = { { name = "cloud" }, { name = "infra,qa" } } } end'
+            acl:
+              deny_labels:
+                name: [infra]
+              external_user_label_field: $..name
+              external_user_label_field_key: name
+              external_user_label_field_parser: segmented_text
+              external_user_label_field_separator: ','
+              rejected_code: 403
+          upstream: *single_fixture_upstream
+    upstream: *hello_upstream
+    input:
+      path: /hello
+    output: *acl_forbidden
+
+  - name: comma-delimited-consumer-labels
     source:
       file: t/plugin/acl2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
+      tests: [1, 2, 3, 4]
+    runtime: *consumer_runtime
     config:
       routes:
-        - id: acl2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
+        - id: acl2-comma-delimited
+          uri: /hello
+          plugins:
+            basic-auth: {}
+            acl:
+              allow_labels:
+                project: [apisix]
+          upstream: *fixture_upstream
+      consumers:
+        - username: jack
+          labels:
+            org: apache
+            project: gateway,apisix,web-server
+          plugins:
+            basic-auth:
+              username: jack
+              password: "123456"
+    fixtures: [*hello_fixture]
     steps:
-      - name: acl2-001-add-consumer-jack-with-comma-delimited-labels
+      - name: unauthorized
         input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl2-002-set-allow-labels
+          path: /hello
+        output: *missing_basic_auth
+      - name: jack-allowed
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: acl2-003-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: acl2-004-verify-jack
-        input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            Authorization: "Basic amFjazoxMjM0NTY="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+            Authorization: Basic amFjazoxMjM0NTY=
+        output: *hello_output

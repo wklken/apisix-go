@@ -1,465 +1,408 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ip-restriction.t
-    tests: 35
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ip-restriction.t
+  tests: 35
+
 cases:
-  - name: ip-restriction-corpus
+  - name: schema
     source:
-      file: t/plugin/ip-restriction.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
+      tests: [1, 2, 3, 4, 5, 6, 19, 24, 31, 32, 35]
+    variants:
+      - name: valid-ipv4-defaults
+        runtime: &ip_runtime
+          plugins: [ip-restriction]
+        config:
+          routes:
+            - id: ip-schema-v4
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [10.255.254.0/24, 192.168.0.0/16]
+        input: &hello_input
+          path: /hello
+        output:
+          status: 403
+          headers:
+            Content-Type:
+              equals: application/json
+          body: &default_denied_body
+            equals: '{"message":"Your IP address is not allowed"}'
+      - name: invalid-ipv4-address
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-v4-address
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [10.255.256.0/24, 192.168.0.0/16]
+        input: *hello_input
+        output: &schema_rejected
+          status: 404
+          logs:
+            matches: 'build route ip-schema-.*fail:.*ip-restriction'
+      - name: invalid-ipv4-prefix
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-v4-prefix
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [10.255.254.0/38, 192.168.0.0/16]
+        input: *hello_input
+        output: *schema_rejected
+      - name: empty-config
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-empty
+              uri: /hello
+              plugins:
+                ip-restriction: {}
+        input: *hello_input
+        output: *schema_rejected
+      - name: empty-blacklist
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-empty-blacklist
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  blacklist: []
+        input: *hello_input
+        output: *schema_rejected
+      - name: whitelist-and-blacklist-mutually-exclusive
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-both-lists
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [172.17.40.0/24]
+                  blacklist: [10.255.0.0/16]
+        input: *hello_input
+        output: *schema_rejected
+      - name: valid-ipv6
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-v6
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: ['::1', 'fe80::/32', '2001:DB8:0:23:8:800:200C:417A']
+        input: *hello_input
+        output:
+          status: 403
+          body: *default_denied_body
+      - name: invalid-ipv6
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-v6-invalid
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: ['::1/129', '::ffgg']
+        input: *hello_input
+        output: *schema_rejected
+      - name: message-empty
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-message-empty
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [127.0.0.0/24, 113.74.26.106]
+                  message: ""
+        input: *hello_input
+        output: *schema_rejected
+      - name: message-too-long
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-message-long
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [127.0.0.0/24, 113.74.26.106]
+                  message: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        input: *hello_input
+        output: *schema_rejected
+      - name: response-code-out-of-range
+        runtime: *ip_runtime
+        config:
+          routes:
+            - id: ip-schema-response-code
+              uri: /hello
+              plugins:
+                ip-restriction:
+                  whitelist: [127.0.0.0/24, 113.74.26.106]
+                  response_code: 409
+        input: *hello_input
+        output: *schema_rejected
+
+  - name: whitelist
+    source:
+      tests: [7, 8, 9, 10, 11]
+    runtime: &real_ip_runtime
+      plugins: [real-ip, ip-restriction]
     config:
       routes:
-        - id: ip-restriction-corpus
-          uri: "/*"
-          upstream:
+        - id: ip-whitelist
+          uri: /hello
+          plugins:
+            real-ip: &real_ip
+              source: http_x_forwarded_for
+              trusted_addresses: [127.0.0.0/8]
+            ip-restriction:
+              whitelist: [127.0.0.0/24, 113.74.26.106]
+          upstream: &fixture_upstream
             type: roundrobin
             nodes:
               "{{FIXTURE.primary.ADDR}}": 1
     fixtures:
+      - &hello_fixture
+        name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: cidr-allowed
+        input:
+          path: /hello
+        output: &hello_output
+          status: 200
+          body:
+            equals: hello world
+      - name: exact-ip-allowed
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 113.74.26.106
+        output: *hello_output
+      - name: ipv4-forbidden
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 114.114.114.114
+        output: &default_denied
+          status: 403
+          headers:
+            Content-Type:
+              equals: application/json
+          body: *default_denied_body
+      - name: ipv6-forbidden
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: '2001:db8::2'
+        output: *default_denied
+
+  - name: blacklist
+    source:
+      tests: [12, 13, 14, 15, 16]
+    runtime: *real_ip_runtime
+    config:
+      routes:
+        - id: ip-blacklist
+          uri: /hello
+          plugins:
+            real-ip: *real_ip
+            ip-restriction:
+              blacklist: [127.0.0.0/24, 113.74.26.106]
+          upstream: *fixture_upstream
+    fixtures:
       - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: cidr-forbidden
+        input:
+          path: /hello
+        output: *default_denied
+      - name: exact-ip-forbidden
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 113.74.26.106
+        output: *default_denied
+      - name: other-ipv4-allowed
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 114.114.114.114
+        output: *hello_output
+      - name: other-ipv6-allowed
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: '2001:db8::2'
+        output: *hello_output
+
+  - name: disabled-plugin
+    source:
+      tests: [17, 18, 25]
+    runtime: *ip_runtime
+    config:
+      routes:
+        - id: ip-disabled
+          uri: /hello
+          plugins:
+            ip-restriction:
+              blacklist: [127.0.0.0/24]
+              _meta:
+                disable: true
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output: *hello_output
+
+  - name: ipv6-blacklist
+    source:
+      tests: [20, 21, 22, 23]
+    runtime: *real_ip_runtime
+    config:
+      routes:
+        - id: ip-v6-blacklist
+          uri: /hello
+          plugins:
+            real-ip: *real_ip
+            ip-restriction:
+              blacklist: ['::1', 'fe80::/32']
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: ipv4-allowed
+        input:
+          path: /hello
+        output: *hello_output
+      - name: ipv6-address-forbidden
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: '::1'
+        output: *default_denied
+      - name: ipv6-cidr-forbidden
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 'fe80::1:1'
+        output: *default_denied
+
+  - name: blacklist-custom-message
+    source:
+      tests: [26, 27, 28]
+    runtime: *real_ip_runtime
+    config:
+      routes:
+        - id: ip-blacklist-message
+          uri: /hello
+          plugins:
+            real-ip: *real_ip
+            ip-restriction:
+              blacklist: [127.0.0.0/24, 113.74.26.106]
+              message: Do you want to do something bad?
+          upstream: *fixture_upstream
+    fixtures:
+      - &unused_fixture
+        name: primary
         kind: http
         respond:
           - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 404
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
+            body: hello world
     steps:
-      - name: ip-restriction-001-sanity
+      - name: cidr-forbidden
         input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-002-wrong-cidr-v4-format
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-003-wrong-cidr-v4-format
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-004-empty-conf
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-005-empty-cidrs
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-006-whitelist-and-blacklist-mutual-exclusive
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-007-set-whitelist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-008-hit-route-and-ip-cidr-in-the-whitelist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-009-hit-route-and-ip-in-the-whitelist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "113.74.26.106"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-010-hit-route-and-ip-not-in-the-whitelist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "114.114.114.114"
-        output:
+          path: /hello
+        output: &custom_denied
           status: 403
           body:
-            equals: "validation failed"
-      - name: ip-restriction-011-hit-route-and-ipv6-not-in-the-whitelist
+            equals: '{"message":"Do you want to do something bad?"}'
+      - name: exact-ip-forbidden
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            X-Forwarded-For: "2001:db8::2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-012-set-blacklist
+            X-Forwarded-For: 113.74.26.106
+        output: *custom_denied
+
+  - name: whitelist-custom-message
+    source:
+      tests: [29, 30]
+    runtime: *real_ip_runtime
+    config:
+      routes:
+        - id: ip-whitelist-message
+          uri: /hello
+          plugins:
+            real-ip: *real_ip
+            ip-restriction:
+              whitelist: [127.0.0.0/24, 113.74.26.106]
+              message: Do you want to do something bad?
+          upstream: *fixture_upstream
+    fixtures: [*unused_fixture]
+    steps:
+      - name: other-ip-forbidden
         input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-013-hit-route-and-ip-cidr-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-014-hit-route-and-ip-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            X-Forwarded-For: "113.74.26.106"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-015-hit-route-and-ip-not-in-the-blacklist
+            X-Forwarded-For: 114.114.114.114
+        output: *custom_denied
+
+  - name: custom-response-code
+    source:
+      tests: [33, 34]
+    runtime: *real_ip_runtime
+    config:
+      routes:
+        - id: ip-response-code
+          uri: /hello
+          plugins:
+            real-ip: *real_ip
+            ip-restriction:
+              whitelist: [127.0.0.0/24, 113.74.26.106]
+              response_code: 404
+          upstream: *fixture_upstream
+    fixtures: [*unused_fixture]
+    steps:
+      - name: other-ip-not-found
         input:
-          method: GET
-          path: "/hello"
+          path: /hello
           headers:
-            X-Forwarded-For: "114.114.114.114"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-016-hit-route-and-ipv6-not-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "2001:db8::2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-017-remove-ip-restriction
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-018-hit-route
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-019-sanity-ipv6
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-020-set-blacklist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-021-hit-route
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-022-hit-route-and-ipv6-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "::1"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-023-hit-route-and-ipv6-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: fe80::1:1
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-024-wrong-ipv6-format
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-025-set-disable-true
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-026-set-blacklist-and-user-defined-message
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-027-hit-route-and-ip-cidr-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-028-hit-route-and-ip-in-the-blacklist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "113.74.26.106"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-029-set-whitelist-and-user-defined-message
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-030-hit-route-and-ip-not-in-the-whitelist
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "114.114.114.114"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-031-message-that-do-not-reach-the-minimum-range
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-032-exceeds-the-maximum-limit-of-message
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-033-set-whitelist-and-404-response-code
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ip-restriction-034-hit-route-and-ip-not-in-the-whitelist-expect-404
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            X-Forwarded-For: "114.114.114.114"
+            X-Forwarded-For: 114.114.114.114
         output:
           status: 404
-          body:
-            equals: "validation failed"
-      - name: ip-restriction-035-set-wrong-response-code
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+          body: *default_denied_body

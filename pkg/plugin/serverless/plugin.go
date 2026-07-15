@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	lua "github.com/yuin/gopher-lua"
@@ -171,6 +172,7 @@ type luaRunner struct {
 	resp         *responseRecorder
 	originalBody string
 	sayBody      bytes.Buffer
+	luaContext   *lua.LTable
 }
 
 func newLuaRunner(r *http.Request, resp *responseRecorder) *luaRunner {
@@ -219,6 +221,7 @@ func (r *luaRunner) call(fn lua.LValue, conf Config) (luaResult, error) {
 	if err := l.PCall(2, lua.MultRet, nil); err != nil {
 		return luaResult{}, err
 	}
+	r.persistContext()
 
 	code := l.Get(1)
 	body := l.Get(2)
@@ -255,6 +258,7 @@ func (r *luaRunner) configTable(conf Config) lua.LValue {
 func (r *luaRunner) ctxTable() lua.LValue {
 	l := r.state
 	t := l.NewTable()
+	r.luaContext = t
 	if r.req == nil {
 		return t
 	}
@@ -270,6 +274,17 @@ func (r *luaRunner) ctxTable() lua.LValue {
 	vars.RawSetString("host", lua.LString(r.req.Host))
 	t.RawSetString("var", vars)
 	return t
+}
+
+func (r *luaRunner) persistContext() {
+	if r.req == nil || r.luaContext == nil {
+		return
+	}
+	externalUser := r.luaContext.RawGetString("external_user")
+	if externalUser == lua.LNil {
+		return
+	}
+	apisixctx.RegisterApisixVar(r.req, "$external_user", luaValueToGo(externalUser))
 }
 
 func (r *luaRunner) registerNgx() {

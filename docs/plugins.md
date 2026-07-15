@@ -20,15 +20,15 @@
 
 The standalone integration suite under [`t/plugin`](../t/plugin/README.md) is
 pinned to Apache APISIX commit
-`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. It contains 99 manifests covering
-all 98 source-backed plugins marked Supported here, plus the supplemental
-`redirect2` source file. Every pinned upstream `TEST` number is mapped to an
-ordered request/assertion step. Each scenario writes a fresh `config.yaml` and
-`apisix.yaml`, starts the real APISIX-Go CLI in standalone YAML-provider mode,
-sends the request through a loopback fixture, and asserts the response,
-fixture request, or startup log. Cases that need Admin API, Lua, or an
-external service are represented by an equivalent local fixture; no `skip`
-placeholder is used.
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. It contains 99 manifest files for
+the 98 source-backed plugins marked Supported here plus supplemental
+`redirect2`. The current conversion checkpoint has real target-plugin
+standalone scenarios for 37 plugins; 61 generated placeholder manifests remain
+and fail the semantic coverage gate. Source-number accounting alone is not
+treated as integration coverage. Every completed scenario writes fresh
+`config.yaml` and `apisix.yaml`, starts the real APISIX-Go CLI in standalone
+YAML-provider mode, sends requests, and asserts the response, fixture request,
+or startup log.
 
 The four intentionally unregistered defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`. They require an external plugin runner or Lua/OpenResty runtime. The bounded `serverless-pre-function` and `serverless-post-function` compatibility implementations remain documented as not-required native/runtime parity.
 

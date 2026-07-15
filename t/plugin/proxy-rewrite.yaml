@@ -89,6 +89,11 @@ cases:
       routes:
         - id: proxy-rewrite-disable-plugin
           uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /disabled
+              _meta:
+                disable: true
           upstream: *fixture_route
     input:
       path: /hello

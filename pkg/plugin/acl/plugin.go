@@ -126,6 +126,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if err := validateExternalUserLabelField(p.config.ExternalUserLabelField); err != nil {
+		return err
+	}
 	if p.config.ExternalUserLabelField == "" {
 		p.config.ExternalUserLabelField = "groups"
 	}
@@ -223,6 +226,13 @@ func containsValueWithParser(wantValues []string, value any, parser, separator s
 }
 
 func extractValuesWithParser(value any, parser, separator string) []string {
+	if matches, ok := value.(externalUserMatches); ok {
+		var values []string
+		for _, match := range matches {
+			values = append(values, extractValuesWithParser(match, parser, separator)...)
+		}
+		return values
+	}
 	switch parser {
 	case "segmented_text":
 		text, ok := value.(string)
@@ -252,6 +262,11 @@ func extractValuesWithParser(value any, parser, separator string) []string {
 		}
 		return extractValues(decoded)
 	case "table":
+		if _, ok := value.([]any); !ok {
+			if _, ok := value.([]string); !ok {
+				return nil
+			}
+		}
 		return extractValues(value)
 	default:
 		return extractValues(value)
@@ -264,33 +279,30 @@ func externalUserField(user any, path string) (any, bool) {
 		return nil, false
 	}
 
-	path = strings.TrimSpace(path)
-	if after, ok0 := strings.CutPrefix(path, "$.."); ok0 {
-		fieldPath := after
-		if fieldPath == "" {
-			return nil, false
-		}
-		segments := strings.Split(fieldPath, ".")
-		for index := range segments {
-			segments[index] = strings.TrimSpace(segments[index])
-			if segments[index] == "" {
-				return nil, false
-			}
-		}
-		return findExternalUserField(object, segments)
+	path = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(path), "$"))
+	if strings.HasPrefix(path, "..") {
+		segments := pathSegments(strings.TrimPrefix(path, ".."))
+		matches := findExternalUserFields(object, segments)
+		return externalUserMatches(matches), len(matches) > 0
 	}
-	path = strings.TrimPrefix(path, "$")
 	path = strings.TrimPrefix(path, ".")
 	if path == "" {
 		return object, true
 	}
-
-	var current any = object
-	for segment := range strings.SplitSeq(path, ".") {
-		segment = strings.TrimSpace(segment)
-		if segment == "" {
+	if prefix, suffix, ok := strings.Cut(path, ".."); ok {
+		current, found := exactExternalUserField(object, pathSegments(prefix))
+		if !found {
 			return nil, false
 		}
+		matches := findExternalUserFields(current, pathSegments(suffix))
+		return externalUserMatches(matches), len(matches) > 0
+	}
+	return exactExternalUserField(object, pathSegments(path))
+}
+
+func exactExternalUserField(object map[string]any, segments []string) (any, bool) {
+	var current any = object
+	for _, segment := range segments {
 		values, ok := current.(map[string]any)
 		if !ok {
 			return nil, false
@@ -303,34 +315,69 @@ func externalUserField(user any, path string) (any, bool) {
 	return current, true
 }
 
-func findExternalUserField(value any, segments []string) (any, bool) {
+func findExternalUserFields(value any, segments []string) []any {
 	if len(segments) == 0 {
-		return value, true
+		return []any{value}
 	}
 
+	var matches []any
 	switch typed := value.(type) {
 	case map[string]any:
 		if current, ok := typed[segments[0]]; ok {
 			if len(segments) == 1 {
-				return current, true
-			}
-			if current, ok := findExternalUserField(current, segments[1:]); ok {
-				return current, true
+				matches = append(matches, current)
+			} else if current, ok := exactExternalUserFieldValue(current, segments[1:]); ok {
+				matches = append(matches, current)
 			}
 		}
 		for _, child := range typed {
-			if current, ok := findExternalUserField(child, segments); ok {
-				return current, true
-			}
+			matches = append(matches, findExternalUserFields(child, segments)...)
 		}
 	case []any:
 		for _, child := range typed {
-			if current, ok := findExternalUserField(child, segments); ok {
-				return current, true
-			}
+			matches = append(matches, findExternalUserFields(child, segments)...)
 		}
 	}
-	return nil, false
+	return matches
+}
+
+func exactExternalUserFieldValue(value any, segments []string) (any, bool) {
+	current := value
+	for _, segment := range segments {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+type externalUserMatches []any
+
+func pathSegments(path string) []string {
+	parts := strings.Split(path, ".")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			segments = append(segments, part)
+		}
+	}
+	return segments
+}
+
+func validateExternalUserLabelField(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" || !strings.HasPrefix(path, "$") {
+		return nil
+	}
+	if strings.ContainsAny(path, "[]()") || len(pathSegments(strings.ReplaceAll(path, "..", "."))) == 0 {
+		return fmt.Errorf("invalid external_user_label_field %q", path)
+	}
+	return nil
 }
 
 func externalUserObject(user any) (map[string]any, bool) {

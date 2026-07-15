@@ -1,47 +1,248 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/lago.t
-    tests: 2
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/lago.t
+  tests: 2
+
 cases:
-  - name: lago-corpus
+  - name: schema
     source:
-      file: t/plugin/lago.t
-      tests:
-        - 1
-        - 2
+      tests: [1]
+    variants:
+      - name: valid-required-fields
+        runtime: &lago_runtime
+          plugins: [lago]
+        config:
+          routes:
+            - id: lago-schema-valid
+              uri: /hello
+              plugins:
+                lago: &valid_lago
+                  endpoint_addrs: [http://127.0.0.1:1]
+                  token: token
+                  event_transaction_id: tid
+                  event_subscription_id: sid
+                  event_code: code
+              upstream: &schema_upstream
+                type: roundrobin
+                nodes:
+                  "{{UPSTREAM_ADDR}}": 1
+        input: &hello_input
+          path: /hello
+        output: &route_built
+          status: 200
+          body:
+            equals: schema-valid
+        upstream: &schema_fixture
+          respond:
+            status: 200
+            body: schema-valid
+      - name: endpoint-addrs-must-be-array
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-address-type
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  endpoint_addrs: http://127.0.0.1:1
+        input: *hello_input
+        output: &schema_rejected
+          status: 404
+          logs:
+            matches: 'build route lago-schema-.*fail:.*lago'
+      - name: endpoint-addrs-must-not-be-empty
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-address-empty
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  endpoint_addrs: []
+        input: *hello_input
+        output: *schema_rejected
+      - name: valid-custom-endpoint-uri
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-endpoint-uri
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  endpoint_uri: /test
+              upstream: *schema_upstream
+        input: *hello_input
+        output: *route_built
+        upstream: *schema_fixture
+      - name: endpoint-uri-must-be-string
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-endpoint-uri-type
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  endpoint_uri: 1234
+        input: *hello_input
+        output: *schema_rejected
+      - name: token-must-be-string
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-token-type
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  token: 1234
+        input: *hello_input
+        output: *schema_rejected
+      - name: valid-event-properties
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-properties
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  event_properties:
+                    key: value
+              upstream: *schema_upstream
+        input: *hello_input
+        output: *route_built
+        upstream: *schema_fixture
+      - name: event-properties-must-be-object
+        runtime: *lago_runtime
+        config:
+          routes:
+            - id: lago-schema-properties-type
+              uri: /hello
+              plugins:
+                lago:
+                  <<: *valid_lago
+                  event_properties: [1, 2, 3]
+        input: *hello_input
+        output: *schema_rejected
+
+  - name: authenticated-usage-events
+    source:
+      tests: [2]
+    runtime:
+      plugins: [lago, key-auth]
     config:
       routes:
-        - id: lago-corpus
-          uri: "/*"
-          upstream:
+        - id: lago-normal
+          uri: /hello
+          plugins:
+            key-auth: {}
+            lago:
+              endpoint_addrs: ["{{FIXTURE.audit.URL}}"]
+              token: token
+              event_transaction_id: ${http_x_request_id}
+              event_subscription_id: ${http_x_consumer_username}
+              event_code: test
+              batch_max_size: 1
+          upstream: &primary_upstream
             type: roundrobin
             nodes:
               "{{FIXTURE.primary.ADDR}}": 1
+        - id: lago-expensive
+          uri: /hello1
+          plugins:
+            key-auth: {}
+            lago:
+              endpoint_addrs: ["{{FIXTURE.audit.URL}}"]
+              token: token
+              event_transaction_id: ${http_x_request_id}
+              event_subscription_id: ${http_x_consumer_username}
+              event_code: test
+              event_properties:
+                tier: expensive
+              batch_max_size: 1
+          upstream: *primary_upstream
+      consumers:
+        - username: jack_test
+          plugins:
+            key-auth:
+              key: jack_test
     fixtures:
       - name: primary
         kind: http
+        expect:
+          - path:
+              equals: /hello
+          - path:
+              equals: /hello
+          - path:
+              equals: /hello
+          - path:
+              equals: /hello1
+          - path:
+              equals: /hello1
+          - path:
+              equals: /hello1
         respond:
           - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
+            body: hello world
+      - name: audit
+        kind: http
+        expect:
+          - &normal_event
+            method: POST
+            path:
+              equals: /api/v1/events/batch
+            headers:
+              Authorization:
+                equals: Bearer token
+              Content-Type:
+                matches: '^application/json'
+            body:
+              matches: '"transaction_id":"normal-request".*"external_subscription_id":"jack_test".*"code":"test"'
+          - *normal_event
+          - *normal_event
+          - &expensive_event
+            method: POST
+            path:
+              equals: /api/v1/events/batch
+            headers:
+              Authorization:
+                equals: Bearer token
+            body:
+              matches: '"transaction_id":"expensive-request".*"external_subscription_id":"jack_test".*"code":"test".*"tier":"expensive"'
+          - *expensive_event
+          - *expensive_event
+        respond:
+          - status: 204
     steps:
-      - name: lago-001-sanity
+      - name: unauthenticated-request-rejected
         input:
-          method: GET
-          path: "/t"
+          path: /hello
         output:
+          status: 401
+          body:
+            matches: 'Missing API key'
+      - name: normal-events
+        repeat: 3
+        input:
+          path: /hello
+          headers:
+            apikey: jack_test
+            X-Request-Id: normal-request
+        output: &hello_output
           status: 200
           body:
-            equals: "hello world"
-      - name: lago-002-test
+            equals: hello world
+      - name: expensive-events
+        repeat: 3
         input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
+          path: /hello1
+          headers:
+            apikey: jack_test
+            X-Request-Id: expensive-request
+        output: *hello_output

@@ -28,29 +28,31 @@ type SourceSpec struct {
 }
 
 type Case struct {
-	Name     string         `yaml:"name"`
-	Source   CaseSource     `yaml:"source"`
-	Variants []CaseVariant  `yaml:"variants,omitempty"`
-	Runtime  map[string]any `yaml:"runtime,omitempty"`
-	Config   map[string]any `yaml:"config,omitempty"`
-	Input    HTTPInput      `yaml:"input,omitempty"`
-	Upstream *UpstreamSpec  `yaml:"upstream,omitempty"`
-	Output   HTTPOutput     `yaml:"output,omitempty"`
-	Fixtures []FixtureSpec  `yaml:"fixtures,omitempty"`
-	Steps    []CaseStep     `yaml:"steps,omitempty"`
-	TLS      *FrontendTLS   `yaml:"frontend_tls,omitempty"`
+	Name          string          `yaml:"name"`
+	Source        CaseSource      `yaml:"source"`
+	Variants      []CaseVariant   `yaml:"variants,omitempty"`
+	Runtime       map[string]any  `yaml:"runtime,omitempty"`
+	Config        map[string]any  `yaml:"config,omitempty"`
+	Input         HTTPInput       `yaml:"input,omitempty"`
+	Upstream      *UpstreamSpec   `yaml:"upstream,omitempty"`
+	Output        HTTPOutput      `yaml:"output,omitempty"`
+	Fixtures      []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Steps         []CaseStep      `yaml:"steps,omitempty"`
+	TLS           *FrontendTLS    `yaml:"frontend_tls,omitempty"`
+	AfterShutdown []FileAssertion `yaml:"after_shutdown,omitempty"`
 }
 
 type CaseVariant struct {
-	Name     string         `yaml:"name"`
-	Runtime  map[string]any `yaml:"runtime,omitempty"`
-	Config   map[string]any `yaml:"config,omitempty"`
-	Input    HTTPInput      `yaml:"input,omitempty"`
-	Upstream *UpstreamSpec  `yaml:"upstream,omitempty"`
-	Output   HTTPOutput     `yaml:"output,omitempty"`
-	Fixtures []FixtureSpec  `yaml:"fixtures,omitempty"`
-	Steps    []CaseStep     `yaml:"steps,omitempty"`
-	TLS      *FrontendTLS   `yaml:"frontend_tls,omitempty"`
+	Name          string          `yaml:"name"`
+	Runtime       map[string]any  `yaml:"runtime,omitempty"`
+	Config        map[string]any  `yaml:"config,omitempty"`
+	Input         HTTPInput       `yaml:"input,omitempty"`
+	Upstream      *UpstreamSpec   `yaml:"upstream,omitempty"`
+	Output        HTTPOutput      `yaml:"output,omitempty"`
+	Fixtures      []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Steps         []CaseStep      `yaml:"steps,omitempty"`
+	TLS           *FrontendTLS    `yaml:"frontend_tls,omitempty"`
+	AfterShutdown []FileAssertion `yaml:"after_shutdown,omitempty"`
 }
 
 type FrontendTLS struct {
@@ -66,10 +68,29 @@ type CaseStep struct {
 }
 
 type FixtureSpec struct {
-	Name    string          `yaml:"name"`
-	Kind    string          `yaml:"kind"`
-	Expect  []HTTPAssertion `yaml:"expect,omitempty"`
-	Respond []HTTPResponse  `yaml:"respond"`
+	Name           string             `yaml:"name"`
+	Kind           string             `yaml:"kind"`
+	Expect         []HTTPAssertion    `yaml:"expect,omitempty"`
+	Respond        []HTTPResponse     `yaml:"respond,omitempty"`
+	NetworkExpect  []NetworkAssertion `yaml:"network_expect,omitempty"`
+	NetworkRespond []NetworkResponse  `yaml:"network_respond,omitempty"`
+}
+
+type NetworkAssertion struct {
+	Payload       *Matcher `yaml:"payload,omitempty"`
+	PayloadBase64 *Matcher `yaml:"payload_base64,omitempty"`
+}
+
+type NetworkResponse struct {
+	Payload       string        `yaml:"payload,omitempty"`
+	PayloadBase64 string        `yaml:"payload_base64,omitempty"`
+	Close         bool          `yaml:"close,omitempty"`
+	Delay         time.Duration `yaml:"delay,omitempty"`
+}
+
+type FileAssertion struct {
+	Path *Matcher `yaml:"path"`
+	Body *Matcher `yaml:"body"`
 }
 
 type CaseSource struct {
@@ -339,20 +360,21 @@ func (c *Case) hasScenario() bool {
 		c.Output.GzipBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" ||
 		len(c.Output.UniqueHeaders) > 0 || len(c.Output.MonotonicHeaders) > 0 ||
 		len(c.Output.DifferentHeaders) > 0 || len(c.Output.Captures) > 0 ||
-		len(c.Steps) > 0 || c.TLS != nil
+		len(c.Steps) > 0 || c.TLS != nil || len(c.AfterShutdown) > 0
 }
 
 func (v *CaseVariant) caseSpec() *Case {
 	return &Case{
-		Name:     v.Name,
-		Runtime:  v.Runtime,
-		Config:   v.Config,
-		Input:    v.Input,
-		Upstream: v.Upstream,
-		Output:   v.Output,
-		Fixtures: v.Fixtures,
-		Steps:    v.Steps,
-		TLS:      v.TLS,
+		Name:          v.Name,
+		Runtime:       v.Runtime,
+		Config:        v.Config,
+		Input:         v.Input,
+		Upstream:      v.Upstream,
+		Output:        v.Output,
+		Fixtures:      v.Fixtures,
+		Steps:         v.Steps,
+		TLS:           v.TLS,
+		AfterShutdown: v.AfterShutdown,
 	}
 }
 
@@ -387,6 +409,9 @@ func (c *Case) validateScenario() error {
 				return fmt.Errorf("fixture name %q is duplicated", fixture.Name)
 			}
 			fixtureNames[fixture.Name] = true
+		}
+		if err := validateAfterShutdown(c.AfterShutdown); err != nil {
+			return err
 		}
 		stepNames := make(map[string]bool, len(c.Steps))
 		for i := range c.Steps {
@@ -434,6 +459,9 @@ func (c *Case) validateSingleScenario() error {
 		if err := c.Upstream.validate(); err != nil {
 			return err
 		}
+	}
+	if err := validateAfterShutdown(c.AfterShutdown); err != nil {
+		return err
 	}
 	data, err := yaml.Marshal(c.Config)
 	if err != nil {
@@ -536,20 +564,99 @@ func (f *FixtureSpec) validate() error {
 	if strings.TrimSpace(f.Name) == "" {
 		return errors.New("name is required")
 	}
-	if f.Kind != "http" && f.Kind != "https" {
+	supportedKinds := map[string]bool{
+		"http": true, "https": true, "tcp": true, "udp": true, "grpc": true,
+		"redis": true, "redis-cluster": true, "redis-sentinel": true,
+		"kafka": true, "dubbo": true, "ldap": true,
+	}
+	if !supportedKinds[f.Kind] {
 		return fmt.Errorf("kind %q is not supported", f.Kind)
 	}
-	if len(f.Respond) == 0 {
-		return errors.New("at least one response is required")
+	if f.Kind == "http" || f.Kind == "https" {
+		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
+			return fmt.Errorf("%s fixture must use expect/respond", f.Kind)
+		}
+		if len(f.Respond) == 0 {
+			return errors.New("at least one response is required")
+		}
+		for i := range f.Respond {
+			if err := f.Respond[i].validate(); err != nil {
+				return fmt.Errorf("response %d: %w", i+1, err)
+			}
+		}
+		for i := range f.Expect {
+			if err := f.Expect[i].validate(); err != nil {
+				return fmt.Errorf("expectation %d: %w", i+1, err)
+			}
+		}
+		return nil
 	}
-	for i := range f.Respond {
-		if err := f.Respond[i].validate(); err != nil {
-			return fmt.Errorf("response %d: %w", i+1, err)
+	if len(f.Expect) > 0 || len(f.Respond) > 0 {
+		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)
+	}
+	if len(f.NetworkExpect) == 0 {
+		return errors.New("at least one network expectation is required")
+	}
+	if len(f.NetworkRespond) == 0 {
+		return errors.New("at least one network response is required")
+	}
+	if len(f.NetworkRespond) != len(f.NetworkExpect) {
+		return errors.New("network_expect and network_respond must contain the same number of entries")
+	}
+	if f.Kind == "udp" {
+		for i, response := range f.NetworkRespond {
+			if response.Close {
+				return fmt.Errorf("network response %d: UDP fixture cannot close a datagram connection", i+1)
+			}
 		}
 	}
-	for i := range f.Expect {
-		if err := f.Expect[i].validate(); err != nil {
-			return fmt.Errorf("expectation %d: %w", i+1, err)
+	for i, assertion := range f.NetworkExpect {
+		if err := assertion.validate(); err != nil {
+			return fmt.Errorf("network expectation %d: %w", i+1, err)
+		}
+	}
+	for i, response := range f.NetworkRespond {
+		if err := response.validate(); err != nil {
+			return fmt.Errorf("network response %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func (a NetworkAssertion) validate() error {
+	if (a.Payload == nil) == (a.PayloadBase64 == nil) {
+		return errors.New("exactly one of payload or payload_base64 is required")
+	}
+	matcher := a.Payload
+	if matcher == nil {
+		matcher = a.PayloadBase64
+	}
+	return matcher.validate(matcherBody)
+}
+
+func (r NetworkResponse) validate() error {
+	if r.Payload != "" && r.PayloadBase64 != "" {
+		return errors.New("payload and payload_base64 must not both be configured")
+	}
+	if r.Delay < 0 {
+		return errors.New("delay must not be negative")
+	}
+	return nil
+}
+
+func validateAfterShutdown(assertions []FileAssertion) error {
+	for i, assertion := range assertions {
+		if assertion.Path == nil || assertion.Path.Equals == nil {
+			return fmt.Errorf("after_shutdown assertion %d path must use equals", i+1)
+		}
+		if !strings.HasPrefix(*assertion.Path.Equals, "{{WORK_DIR}}/") {
+			return fmt.Errorf("after_shutdown assertion %d path must begin with {{WORK_DIR}}/", i+1)
+		}
+		if assertion.Body == nil {
+			return fmt.Errorf("after_shutdown assertion %d body is required", i+1)
+		}
+		if err := assertion.Body.validate(matcherBody); err != nil {
+			return fmt.Errorf("after_shutdown assertion %d body: %w", i+1, err)
 		}
 	}
 	return nil

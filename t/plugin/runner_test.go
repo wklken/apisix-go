@@ -910,7 +910,10 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 	return &fixtureServer{server: server, requests: requests}
 }
 
-func startNamedFixture(spec FixtureSpec) *fixtureServer {
+func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
+	if spec.Kind != "http" && spec.Kind != "https" {
+		return startNetworkFixture(spec)
+	}
 	requests := make(chan capturedRequest, len(spec.Respond)+len(spec.Expect)+1)
 	var responseMu sync.Mutex
 	nextResponse := 0
@@ -944,7 +947,7 @@ func startNamedFixture(spec FixtureSpec) *fixtureServer {
 	} else {
 		server = httptest.NewServer(handler)
 	}
-	return &fixtureServer{server: server, requests: requests}
+	return &fixtureServer{server: server, requests: requests}, nil
 }
 
 func writeFixtureResponse(w http.ResponseWriter, response HTTPResponse, requestBody string) {
@@ -975,6 +978,38 @@ func writeFixtureResponse(w http.ResponseWriter, response HTTPResponse, requestB
 
 func (f *fixtureServer) address() string {
 	return strings.TrimPrefix(strings.TrimPrefix(f.server.URL, "http://"), "https://")
+}
+
+func (f *fixtureServer) url() string {
+	return f.server.URL
+}
+
+func (f *fixtureServer) close() {
+	f.server.Close()
+}
+
+func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	for i, expected := range spec.Expect {
+		select {
+		case received := <-f.requests:
+			assertUpstreamRequest(t, expected, received)
+		case <-time.After(2 * time.Second):
+			t.Errorf("fixture %s did not receive expected request %d", spec.Name, i+1)
+		}
+	}
+	if len(spec.Expect) > 0 {
+		select {
+		case extra := <-f.requests:
+			t.Errorf(
+				"fixture %s received unexpected extra request %s %s",
+				spec.Name,
+				extra.method,
+				extra.path,
+			)
+		default:
+		}
+	}
 }
 
 func (f *fixtureServer) host() string {
@@ -1257,7 +1292,7 @@ func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]
 		data = bytes.ReplaceAll(data, []byte(placeholder), []byte(value))
 	}
 	if bytes.Contains(data, []byte("{{FIXTURE.")) || bytes.Contains(data, []byte("{{UPSTREAM_")) ||
-		bytes.Contains(data, []byte("{{APISIX_")) {
+		bytes.Contains(data, []byte("{{APISIX_")) || bytes.Contains(data, []byte("{{WORK_DIR}}")) {
 		return nil, fmt.Errorf("configuration contains an unknown fixture placeholder")
 	}
 	return data, nil
@@ -1279,14 +1314,19 @@ func runCase(t *testing.T, spec Case) {
 		replacements["{{UPSTREAM_HOST}}"] = fixture.host()
 		replacements["{{UPSTREAM_PORT}}"] = fixture.port()
 	}
-	namedFixtures := make(map[string]*fixtureServer, len(spec.Fixtures))
+	workDir := t.TempDir()
+	replacements["{{WORK_DIR}}"] = workDir
+	namedFixtures := make(map[string]namedFixture, len(spec.Fixtures))
 	for _, fixtureSpec := range spec.Fixtures {
-		namedFixture := startNamedFixture(fixtureSpec)
-		defer namedFixture.server.Close()
+		namedFixture, err := startNamedFixture(fixtureSpec)
+		if err != nil {
+			t.Fatalf("start fixture %s: %v", fixtureSpec.Name, err)
+		}
+		defer namedFixture.close()
 		namedFixtures[fixtureSpec.Name] = namedFixture
 		prefix := "{{FIXTURE." + fixtureSpec.Name
 		replacements[prefix+".ADDR}}"] = namedFixture.address()
-		replacements[prefix+".URL}}"] = namedFixture.server.URL
+		replacements[prefix+".URL}}"] = namedFixture.url()
 		replacements[prefix+".HOST}}"] = namedFixture.host()
 		replacements[prefix+".PORT}}"] = namedFixture.port()
 	}
@@ -1317,7 +1357,6 @@ func runCase(t *testing.T, spec Case) {
 			t.Fatalf("prepare frontend TLS: %v", err)
 		}
 	}
-	workDir := t.TempDir()
 	confDir := filepath.Join(workDir, "conf")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatalf("create conf directory: %v", err)
@@ -1450,33 +1489,14 @@ func runCase(t *testing.T, spec Case) {
 		}
 	}
 	for _, fixtureSpec := range spec.Fixtures {
-		namedFixture := namedFixtures[fixtureSpec.Name]
-		for i, expected := range fixtureSpec.Expect {
-			select {
-			case received := <-namedFixture.requests:
-				assertUpstreamRequest(t, expected, received)
-			case <-time.After(2 * time.Second):
-				t.Errorf("fixture %s did not receive expected request %d", fixtureSpec.Name, i+1)
-			}
-		}
-		if len(fixtureSpec.Expect) > 0 {
-			select {
-			case extra := <-namedFixture.requests:
-				t.Errorf(
-					"fixture %s received unexpected extra request %s %s",
-					fixtureSpec.Name,
-					extra.method,
-					extra.path,
-				)
-			default:
-			}
-		}
+		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
 	}
 
 	if err := process.stop(); err != nil {
 		t.Errorf("stop APISIX: %v", err)
 	}
 	stopped = true
+	assertAfterShutdown(t, spec.AfterShutdown, replacements)
 	logs, err := process.logs()
 	if err != nil {
 		t.Errorf("read APISIX logs: %v", err)

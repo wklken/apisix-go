@@ -39,6 +39,93 @@ func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsTCPFixture(t *testing.T) {
+	payload := "hello"
+	response := "ok"
+	manifest := validManifest()
+	manifest.Cases[0].Config = map[string]any{"routes": []any{}}
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "sink",
+		Kind: "tcp",
+		NetworkExpect: []NetworkAssertion{{
+			Payload: &Matcher{Equals: &payload},
+		}},
+		NetworkRespond: []NetworkResponse{{Payload: response}},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "send",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsMixedHTTPAndNetworkFixtureFields(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name:    "sink",
+		Kind:    "tcp",
+		Respond: []HTTPResponse{{Status: 200}},
+	}}
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "send",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "tcp fixture must use network_expect/network_respond") {
+		t.Fatalf("validate() error = %v, want mixed fixture rejection", err)
+	}
+}
+
+func TestManifestRejectsUnsafeFileAssertion(t *testing.T) {
+	body := "ok"
+	path := "relative.txt"
+	manifest := validManifest()
+	manifest.Cases[0].AfterShutdown = []FileAssertion{{
+		Path: &Matcher{Equals: &path},
+		Body: &Matcher{Equals: &body},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "path must begin with {{WORK_DIR}}/") {
+		t.Fatalf("validate() error = %v, want unsafe path rejection", err)
+	}
+}
+
+func TestManifestRejectsUDPFixtureClose(t *testing.T) {
+	payload := "hello"
+	manifest := validManifest()
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "sink",
+		Kind: "udp",
+		NetworkExpect: []NetworkAssertion{{
+			Payload: &Matcher{Equals: &payload},
+		}},
+		NetworkRespond: []NetworkResponse{{Payload: "ok", Close: true}},
+	}}
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "send",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "UDP fixture cannot close") {
+		t.Fatalf("validate() error = %v, want UDP close rejection", err)
+	}
+}
+
 func TestManifestMultipleSources(t *testing.T) {
 	body := "ok"
 	manifest := &Manifest{

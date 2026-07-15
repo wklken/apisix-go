@@ -72,6 +72,14 @@ func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
 		fixture.server = httptest.NewUnstartedServer(http.HandlerFunc(fixture.serveGRPCRequest))
 		fixture.server.EnableHTTP2 = true
 		fixture.server.StartTLS()
+	case "redis", "redis-cluster", "redis-sentinel":
+		return startRedisFixture(spec)
+	case "kafka":
+		return startKafkaFixture(spec)
+	case "dubbo":
+		return startDubboFixture(spec)
+	case "ldap":
+		return startLDAPFixture(spec)
 	default:
 		return nil, fmt.Errorf("network fixture kind %q is not implemented", spec.Kind)
 	}

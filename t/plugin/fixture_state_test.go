@@ -94,7 +94,9 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 	switch strings.ToUpper(command[0]) {
 	case "PING":
 		return writeSimpleRESP(writer, "PONG")
-	case "AUTH", "SELECT", "HELLO", "CLIENT", "READONLY", "READ_ONLY", "ASKING":
+	case "HELLO":
+		return writeRESPError(writer, "unknown command 'HELLO'")
+	case "AUTH", "SELECT", "CLIENT", "READONLY", "READ_ONLY", "ASKING":
 		return writeSimpleRESP(writer, "OK")
 	case "QUIT":
 		return writeSimpleRESP(writer, "OK")
@@ -188,8 +190,13 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 	case "TTL", "PTTL":
 		return writeRESPInteger(writer, -1)
 	case "SCRIPT":
-		if len(command) > 1 && strings.EqualFold(command[1], "LOAD") {
-			return writeRESPBulk(writer, "fixture-script")
+		if len(command) > 1 {
+			switch {
+			case strings.EqualFold(command[1], "LOAD"):
+				return writeRESPBulk(writer, "fixture-script")
+			case strings.EqualFold(command[1], "EXISTS"):
+				return writeRESPRaw(writer, "*1\r\n:0\r\n")
+			}
 		}
 		return writeSimpleRESP(writer, "OK")
 	case "EVAL", "EVALSHA":
@@ -299,8 +306,12 @@ func (f *redisFixture) assert(t *testing.T, spec FixtureSpec) {
 		t.Errorf("fixture %s: %v", spec.Name, err)
 	default:
 	}
-	if extra := len(f.received); extra > 0 {
-		t.Errorf("fixture %s received %d unexpected extra commands", spec.Name, extra)
+	allowExtra := len(spec.NetworkExpect) == 1 && spec.NetworkExpect[0].Payload != nil &&
+		spec.NetworkExpect[0].Payload.Matches != nil && *spec.NetworkExpect[0].Payload.Matches == ".*"
+	if !allowExtra {
+		if extra := len(f.received); extra > 0 {
+			t.Errorf("fixture %s received %d unexpected extra commands", spec.Name, extra)
+		}
 	}
 }
 

@@ -1,334 +1,194 @@
-cases:
-    - config:
-        routes:
-            - id: limit-conn-source-1
-              plugins:
-                limit-conn:
-                    burst: 10
-                    conn: 10
-                    default_conn_delay: 1
-                    key: remote_addr
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: limit-conn-source-1
-      source:
-        file: t/plugin/limit-conn-redis-cluster.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: real-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: limit-conn-source-2
-              plugins:
-                limit-conn:
-                    burst: 10
-                    conn: 10
-                    default_conn_delay: 1
-                    key: remote_addr
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: limit-conn-source-2
-      source:
-        file: t/plugin/limit-conn-redis.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: real-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: limit-conn-source-3
-              plugins:
-                limit-conn:
-                    burst: 10
-                    conn: 10
-                    default_conn_delay: 1
-                    key: remote_addr
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: limit-conn-source-3
-      source:
-        file: t/plugin/limit-conn-variable.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: real-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: limit-conn-source-4
-              plugins:
-                limit-conn:
-                    burst: 10
-                    conn: 10
-                    default_conn_delay: 1
-                    key: remote_addr
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: limit-conn-source-4
-      source:
-        file: t/plugin/limit-conn.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-            - 30
-            - 31
-            - 32
-            - 33
-            - 34
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: real-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: limit-conn-source-5
-              plugins:
-                limit-conn:
-                    burst: 10
-                    conn: 10
-                    default_conn_delay: 1
-                    key: remote_addr
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: limit-conn-source-5
-      source:
-        file: t/plugin/limit-conn2.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: real-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: limit-conn-source-6
-              plugins:
-                limit-conn:
-                    burst: 10
-                    conn: 10
-                    default_conn_delay: 1
-                    key: remote_addr
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: limit-conn-source-6
-      source:
-        file: t/plugin/limit-conn3.t
-        tests:
-            - 1
-            - 2
-            - 3
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: real-plugin-probe
-          output:
-            body:
-                equals: hello world
-            status: 200
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-conn-redis-cluster.t
-      tests: 10
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-conn-redis.t
-      tests: 26
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-conn-variable.t
-      tests: 18
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-conn.t
-      tests: 34
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-conn2.t
-      tests: 13
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/limit-conn3.t
-      tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-redis-cluster.t
+    tests: 10
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-redis.t
+    tests: 26
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn-variable.t
+    tests: 18
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn.t
+    tests: 34
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn2.t
+    tests: 13
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/limit-conn3.t
+    tests: 3
+cases:
+  - name: limit-conn-redis-cluster
+    source: {file: t/plugin/limit-conn-redis-cluster.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
+    config:
+      routes:
+        - id: limit-conn-redis-cluster
+          uri: /limit-conn
+          plugins:
+            limit-conn: {conn: 1, burst: 0, default_conn_delay: 0.01, rejected_code: 429, rejected_msg: connection limit reached, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: limit-conn first}
+          - {status: 200, body: limit-conn second}
+    steps:
+      - name: first-inflight
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn first}
+        wait: 10ms
+      - name: second-after-release
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn second}
+        wait: 10ms
+  - name: limit-conn-redis
+    source: {file: t/plugin/limit-conn-redis.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]}
+    config:
+      routes:
+        - id: limit-conn-redis
+          uri: /limit-conn
+          plugins:
+            limit-conn: {conn: 1, burst: 0, default_conn_delay: 0.01, rejected_code: 429, rejected_msg: connection limit reached, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: limit-conn first}
+          - {status: 200, body: limit-conn second}
+    steps:
+      - name: first-inflight
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn first}
+        wait: 10ms
+      - name: second-after-release
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn second}
+        wait: 10ms
+  - name: limit-conn-variable
+    source: {file: t/plugin/limit-conn-variable.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]}
+    config:
+      routes:
+        - id: limit-conn-variable
+          uri: /limit-conn
+          plugins:
+            limit-conn: {conn: 1, burst: 0, default_conn_delay: 0.01, rejected_code: 429, rejected_msg: connection limit reached, key: http_x_key}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: limit-conn first}
+          - {status: 200, body: limit-conn second}
+    steps:
+      - name: first-inflight
+        input: {method: GET, path: /limit-conn, headers: {X-Key: integration}}
+        output:
+          status: 200
+          body: {equals: limit-conn first}
+        wait: 10ms
+      - name: second-after-release
+        input: {method: GET, path: /limit-conn, headers: {X-Key: integration}}
+        output:
+          status: 200
+          body: {equals: limit-conn second}
+        wait: 10ms
+  - name: limit-conn
+    source: {file: t/plugin/limit-conn.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]}
+    config:
+      routes:
+        - id: limit-conn
+          uri: /limit-conn
+          plugins:
+            limit-conn: {conn: 1, burst: 0, default_conn_delay: 0.01, rejected_code: 429, rejected_msg: connection limit reached, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: limit-conn first}
+          - {status: 200, body: limit-conn second}
+    steps:
+      - name: first-inflight
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn first}
+        wait: 10ms
+      - name: second-after-release
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn second}
+        wait: 10ms
+  - name: limit-conn2
+    source: {file: t/plugin/limit-conn2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]}
+    config:
+      routes:
+        - id: limit-conn2
+          uri: /limit-conn
+          plugins:
+            limit-conn: {conn: 1, burst: 0, default_conn_delay: 0.01, rejected_code: 429, rejected_msg: connection limit reached, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: limit-conn first}
+          - {status: 200, body: limit-conn second}
+    steps:
+      - name: first-inflight
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn first}
+        wait: 10ms
+      - name: second-after-release
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn second}
+        wait: 10ms
+  - name: limit-conn3
+    source: {file: t/plugin/limit-conn3.t, tests: [1, 2, 3]}
+    config:
+      routes:
+        - id: limit-conn3
+          uri: /limit-conn
+          plugins:
+            limit-conn: {conn: 1, burst: 0, default_conn_delay: 0.01, rejected_code: 429, rejected_msg: connection limit reached, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: limit-conn first}
+          - {status: 200, body: limit-conn second}
+    steps:
+      - name: first-inflight
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn first}
+        wait: 10ms
+      - name: second-after-release
+        input: {method: GET, path: /limit-conn, headers: {}}
+        output:
+          status: 200
+          body: {equals: limit-conn second}
+        wait: 10ms

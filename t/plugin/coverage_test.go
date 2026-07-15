@@ -164,40 +164,53 @@ func TestManifestCorpusExercisesTargetPlugins(t *testing.T) {
 		t.Fatalf("discover manifests: %v", err)
 	}
 	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		manifest, err := loadManifest(file, data)
-		if err != nil {
-			t.Fatalf("load %s: %v", file, err)
-		}
-		pluginName := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-		if pluginName == "redirect2" {
-			pluginName = "redirect"
-		}
-		if !manifestExercisesPlugin(manifest, pluginName) {
-			t.Errorf("%s never activates target plugin %q", file, pluginName)
-		}
-		for caseIndex := range manifest.Cases {
-			caseSpec := &manifest.Cases[caseIndex]
-			if len(caseSpec.Variants) == 0 {
-				if !scenarioExercisesPlugin(caseSpec.Runtime, caseSpec.Config, pluginName) {
-					t.Errorf("%s case %q never activates target plugin %q", file, caseSpec.Name, pluginName)
-				}
-				continue
+		file := file
+		pluginName := manifestPluginName(file)
+		t.Run(pluginName, func(t *testing.T) {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatalf("read %s: %v", file, err)
 			}
-			for variantIndex := range caseSpec.Variants {
-				variant := &caseSpec.Variants[variantIndex]
-				if !scenarioExercisesPlugin(variant.Runtime, variant.Config, pluginName) {
-					t.Errorf(
-						"%s case %q variant %q never activates target plugin %q",
-						file,
-						caseSpec.Name,
-						variant.Name,
-						pluginName,
-					)
-				}
+			manifest, err := loadManifest(file, data)
+			if err != nil {
+				t.Fatalf("load %s: %v", file, err)
+			}
+			assertManifestExercisesTargetPlugin(t, file, manifest, pluginName)
+		})
+	}
+}
+
+func manifestPluginName(file string) string {
+	pluginName := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	if pluginName == "redirect2" {
+		return "redirect"
+	}
+	return pluginName
+}
+
+func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Manifest, pluginName string) {
+	t.Helper()
+	if !manifestExercisesPlugin(manifest, pluginName) {
+		t.Errorf("%s never activates target plugin %q", file, pluginName)
+	}
+	for caseIndex := range manifest.Cases {
+		caseSpec := &manifest.Cases[caseIndex]
+		if len(caseSpec.Variants) == 0 {
+			if !scenarioExercisesPlugin(caseSpec.Runtime, caseSpec.Config, pluginName) {
+				t.Errorf("%s case %q never activates target plugin %q", file, caseSpec.Name, pluginName)
+			}
+			continue
+		}
+		for variantIndex := range caseSpec.Variants {
+			variant := &caseSpec.Variants[variantIndex]
+			if !scenarioExercisesPlugin(variant.Runtime, variant.Config, pluginName) {
+				t.Errorf(
+					"%s case %q variant %q never activates target plugin %q",
+					file,
+					caseSpec.Name,
+					variant.Name,
+					pluginName,
+				)
 			}
 		}
 	}

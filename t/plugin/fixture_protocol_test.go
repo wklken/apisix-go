@@ -127,15 +127,16 @@ func (f *kafkaFixture) responseFor(message protocol.Message) (protocol.Message, 
 	case *saslauthenticate.Request:
 		return &saslauthenticate.Response{}, nil, nil
 	case *metadata.Request:
-		topic := "apisix"
-		if len(request.TopicNames) > 0 && request.TopicNames[0] != "" {
-			topic = request.TopicNames[0]
+		topics := request.TopicNames
+		if len(topics) == 0 {
+			topics = []string{"apisix", "integration"}
 		}
-		return &metadata.Response{
-			Brokers:      []metadata.ResponseBroker{{NodeID: 0, Host: f.host(), Port: int32(mustPort(f.port()))}},
-			ClusterID:    "fixture",
-			ControllerID: 0,
-			Topics: []metadata.ResponseTopic{{
+		responseTopics := make([]metadata.ResponseTopic, 0, len(topics))
+		for _, topic := range topics {
+			if topic == "" {
+				continue
+			}
+			responseTopics = append(responseTopics, metadata.ResponseTopic{
 				Name: topic,
 				Partitions: []metadata.ResponsePartition{{
 					PartitionIndex: 0,
@@ -143,7 +144,13 @@ func (f *kafkaFixture) responseFor(message protocol.Message) (protocol.Message, 
 					ReplicaNodes:   []int32{0},
 					IsrNodes:       []int32{0},
 				}},
-			}},
+			})
+		}
+		return &metadata.Response{
+			Brokers:      []metadata.ResponseBroker{{NodeID: 0, Host: f.host(), Port: int32(mustPort(f.port()))}},
+			ClusterID:    "fixture",
+			ControllerID: 0,
+			Topics:       responseTopics,
 		}, nil, nil
 	case *produce.Request:
 		payload, err := kafkaProducePayload(request)
@@ -237,6 +244,11 @@ func (f *kafkaFixture) assert(t *testing.T, spec FixtureSpec) {
 				t.Errorf("fixture %s payload %d: %v", spec.Name, i+1, err)
 			}
 		case <-time.After(3 * time.Second):
+			select {
+			case err := <-f.errors:
+				t.Errorf("fixture %s: %v", spec.Name, err)
+			default:
+			}
 			t.Errorf("fixture %s did not receive expected payload %d", spec.Name, i+1)
 		}
 	}
@@ -416,7 +428,7 @@ func TestKafkaFixtureAcceptsProduceMessage(t *testing.T) {
 	defer fixture.close()
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(fixture.address()),
-		Topic:        "apisix",
+		Topic:        "integration",
 		BatchSize:    1,
 		RequiredAcks: 1,
 		ReadTimeout:  2 * time.Second,

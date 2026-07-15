@@ -132,11 +132,46 @@ func TestHandlerRejectsMissingAuthorization(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if got := rr.Header().Get("WWW-Authenticate"); got != `Basic realm='.'` {
-		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Basic realm='.'`)
+	if got := rr.Header().Get("WWW-Authenticate"); got != `Basic realm="basic"` {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Basic realm="basic"`)
 	}
 	if !strings.Contains(rr.Body.String(), "Missing authorization in request") {
 		t.Fatalf("body = %q, want missing authorization message", rr.Body.String())
+	}
+}
+
+func TestHandlerUsesAnonymousConsumerOnMissingAuthorization(t *testing.T) {
+	addBasicAuthConsumer(t, "anonymous-basic-user", "unused")
+	p := newTestPlugin(t, Config{AnonymousConsumer: "anonymous-basic-user"})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "anonymous-basic-user" {
+			t.Fatalf("consumer_name = %v, want anonymous-basic-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
+func TestHandlerUsesConfiguredRealm(t *testing.T) {
+	p := newTestPlugin(t, Config{Realm: "secure-zone"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("WWW-Authenticate"); got != `Basic realm="secure-zone"` {
+		t.Fatalf("WWW-Authenticate = %q, want configured realm", got)
 	}
 }
 

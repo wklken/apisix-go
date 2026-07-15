@@ -242,6 +242,27 @@ func TestHandlerValidatesRequestBodyDigestAndRestoresBody(t *testing.T) {
 	}
 }
 
+func TestHandlerValidatesRequestTargetOnlySignature(t *testing.T) {
+	addHMACConsumer(t, "target-user", "my-access-key", "my-secret-key")
+	p := newTestPlugin(t, Config{SignedHeaders: []string{}, ClockSkew: 1_000_000_000})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Date", "Thu, 24 Sep 2020 06:39:52 GMT")
+	params := signatureParams{KeyID: "my-access-key", Algorithm: "hmac-sha256", Headers: []string{"@request-target"}, Signature: ""}
+	generated, err := generateSignature(req, "my-secret-key", params)
+	if err != nil {
+		t.Fatalf("generateSignature() error = %v", err)
+	}
+	req.Header.Set("Authorization", `Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target",signature="`+base64.StdEncoding.EncodeToString(generated)+`"`)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 	addHMACConsumer(t, "hide-user", "hide-hmac-key", "hmac-secret")
 	hideCredentials := true

@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"errors"
 	"sync"
 	"testing"
 
@@ -108,6 +109,21 @@ func TestConsumerKVConcurrentReadAndUpdate(t *testing.T) {
 		}
 	}()
 	group.Wait()
+}
+
+func TestConsumerKVDoesNotIndexUnresolvedKeyAuthReference(t *testing.T) {
+	consumerStore := &Store{
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+	}
+	value := []byte(`{"username":"alice","plugins":{"key-auth":{"key":"$env://MISSING_KEY"}}}`)
+
+	if err := consumerStore.consumerKVAdd([]byte("alice"), value); err != nil {
+		t.Fatalf("consumerKVAdd() error = %v", err)
+	}
+	if _, err := consumerStore.GetConsumerNameByPluginKey("key-auth", "$env://MISSING_KEY"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unresolved key lookup error = %v, want ErrNotFound", err)
+	}
 }
 
 func encryptForTest(t *testing.T, key string, value string) string {

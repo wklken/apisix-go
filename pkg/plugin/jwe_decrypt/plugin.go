@@ -202,9 +202,12 @@ func decryptJWE(token jweToken, rawConfig any) ([]byte, error) {
 
 	secret := []byte(cfg.Secret)
 	if cfg.IsBase64Encoded {
-		decoded, err := base64.RawURLEncoding.DecodeString(cfg.Secret)
+		decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(cfg.Secret, "="))
 		if err != nil {
-			return nil, err
+			decoded, err = base64.StdEncoding.DecodeString(cfg.Secret)
+			if err != nil {
+				return nil, err
+			}
 		}
 		secret = decoded
 	}
@@ -222,5 +225,7 @@ func decryptJWE(token jweToken, rawConfig any) ([]byte, error) {
 	}
 
 	ciphertextAndTag := append(append([]byte{}, token.ciphertext...), token.tag...)
-	return gcm.Open(nil, token.iv, ciphertextAndTag, []byte(token.protectedHeader))
+	// APISIX's resty.aes GCM implementation authenticates the ciphertext
+	// without the protected header as additional authenticated data.
+	return gcm.Open(nil, token.iv, ciphertextAndTag, nil)
 }

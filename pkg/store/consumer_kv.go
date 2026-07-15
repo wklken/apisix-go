@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -65,11 +66,13 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 		if err != nil {
 			return err
 		}
-		k := fmt.Sprintf("key-auth:%s", ka.Key)
-		s.consumerKV[k] = id
+		if !strings.HasPrefix(ka.Key, "$") {
+			k := fmt.Sprintf("key-auth:%s", ka.Key)
+			s.consumerKV[k] = id
 
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+			// add to consumerToKeys
+			s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		}
 	}
 
 	// if "basic-auth" in consumer.Plugins

@@ -1,77 +1,368 @@
-cases:
-    - config:
-        consumers:
-            - plugins:
-                key-auth:
-                    key: integration
-              username: integration
-        routes:
-            - id: key-auth-source-1
-              plugins:
-                key-auth: {}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: key-auth-source-1
-      source:
-        file: t/plugin/key-auth.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-            - 30
-            - 31
-            - 32
-            - 33
-            - 34
-      steps:
-        - input:
-            headers:
-                apikey: integration
-            method: GET
-            path: /probe
-          name: real-plugin-authenticates-consumer
-          output:
-            body:
-                equals: hello world
-            status: 200
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/key-auth.t
-      tests: 34
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/key-auth.t
+    tests: 34
+
+cases:
+  - name: schema-and-basic-credentials
+    source:
+      tests: [1, 2, 3, 4, 5, 6, 7, 8]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            key-auth: {key: auth-one}
+        - username: user-13
+          plugins:
+            key-auth: {key: auth-13}
+      routes:
+        - id: key-auth-basic
+          uri: /hello
+          plugins:
+            key-auth: {}
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: valid-consumer
+        input:
+          path: /hello
+          headers: {apikey: auth-one}
+        output: {status: 200, body: {equals: hello world}}
+      - name: invalid-consumer
+        input:
+          path: /hello
+          headers: {apikey: invalid}
+        output:
+          status: 401
+          body: {equals: '{"message":"Invalid API key in request"}'}
+      - name: missing-header
+        input: {path: /hello}
+        output:
+          status: 401
+          body: {equals: '{"message":"Missing API key in request"}'}
+
+  - name: invalid-consumer-key-schema
+    source:
+      tests: [9]
+    config:
+      consumers:
+        - username: invalid
+          plugins:
+            key-auth: {}
+      routes:
+        - id: key-auth-invalid-consumer
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: rejected-empty-consumer-key
+        input: {path: /hello}
+        output:
+          status: 401
+          body: {matches: 'Missing API key in request|Invalid API key in request'}
+
+  - name: custom-header-credential
+    source:
+      tests: [10, 11]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: key-auth-custom-header
+          uri: /hello
+          plugins:
+            key-auth: {header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: custom-header
+        input:
+          path: /hello
+          headers: {Authorization: auth-one}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: custom-query-credential
+    source:
+      tests: [12, 13]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: key-auth-custom-query
+          uri: /hello
+          plugins: {key-auth: {query: auth}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: custom-query
+        input: {path: "/hello?auth=auth-one"}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: header-credential-preserved
+    source:
+      tests: [14, 15]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: key-auth-header-preserved
+          uri: /echo
+          plugins: {key-auth: {hide_credentials: false}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /echo}
+            headers: {apikey: {equals: auth-one}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: preserved-header
+        input:
+          path: /echo
+          headers: {apikey: auth-one}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: header-credential-hidden
+    source:
+      tests: [16, 17, 18, 19]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: key-auth-header-hidden
+          uri: /echo
+          plugins: {key-auth: {hide_credentials: true}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: "/echo"}
+            headers:
+              apikey: {absent: true}
+          - path: {equals: "/echo"}
+            headers:
+              apikey: {absent: true}
+              test: {equals: auth-two}
+          - path: {equals: "/echo?apikey=auth-one"}
+            headers:
+              apikey: {absent: true}
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: hidden-header
+        input:
+          path: /echo
+          headers: {apikey: auth-one}
+        output: {status: 200, body: {equals: hello world}}
+      - name: only-plugin-header-hidden
+        input:
+          path: /echo
+          headers: {apikey: auth-one, test: auth-two}
+        output: {status: 200, body: {equals: hello world}}
+      - name: query-credential-does-not-hide-header
+        input:
+          path: /echo?apikey=auth-one
+          headers: {apikey: auth-one}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: query-credential-hidden
+    source:
+      tests: [20, 21, 22, 23]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: key-auth-query-hidden
+          uri: /echo
+          plugins: {key-auth: {query: auth, hide_credentials: true}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: "/echo"}
+            headers:
+              auth: {absent: true}
+          - path: {equals: "/echo?test=auth-two"}
+            headers:
+              auth: {absent: true}
+          - path: {equals: "/echo"}
+            headers:
+              auth: {equals: auth-one}
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: hidden-query
+        input: {path: "/echo?auth=auth-one"}
+        output: {status: 200, body: {equals: hello world}}
+      - name: only-plugin-query-hidden
+        input: {path: "/echo?auth=auth-one&test=auth-two"}
+        output: {status: 200, body: {equals: hello world}}
+      - name: header-preserved-when-query-authenticates
+        input:
+          path: "/echo?auth=auth-one"
+          headers: {auth: auth-one}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: query-credential-preserved
+    source:
+      tests: [24, 25]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: key-auth-query-preserved
+          uri: /hello
+          plugins: {key-auth: {query: auth, hide_credentials: false}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: "/hello?auth=auth-one"}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: query-preserved
+        input: {path: "/hello?auth=auth-one"}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: environment-secret-reference
+    source:
+      tests: [26, 27]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: authone}}
+      routes:
+        - id: key-auth-env-secret
+          uri: /hello
+          plugins: {key-auth: {query: auth}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: resolved-environment-credential
+        input: {path: "/hello?auth=authone"}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: vault-secret-reference
+    source:
+      tests: [28, 29, 30]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: authtwo}}
+      routes:
+        - id: key-auth-vault-secret
+          uri: /hello
+          plugins: {key-auth: {query: auth}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: resolved-vault-credential
+        input: {path: "/hello?auth=authtwo"}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: vault-secret-environment-token
+    source:
+      tests: [31, 32]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: authtwo}}
+      routes:
+        - id: key-auth-vault-env
+          uri: /hello
+          plugins: {key-auth: {query: auth}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: resolved-vault-environment-credential
+        input: {path: "/hello?auth=authtwo"}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: unresolved-secret-fails-closed
+    source:
+      tests: [33, 34]
+    config:
+      consumers:
+        - username: jack
+          plugins: {key-auth: {key: '$env://KEYAUTH_UNRESOLVED_SECRET'}}
+      routes:
+        - id: key-auth-unresolved
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: literal-reference-is-not-credential
+        input:
+          path: /hello
+          headers: {apikey: '$env://KEYAUTH_UNRESOLVED_SECRET'}
+        output:
+          status: 401
+          body: {equals: '{"message":"Invalid API key in request"}'}

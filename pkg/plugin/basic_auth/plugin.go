@@ -2,6 +2,7 @@ package basic_auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -30,12 +31,22 @@ const schema = `
 	  "hide_credentials": {
 		"type": "boolean",
 		"default": false
+	  },
+	  "realm": {
+		"type": "string",
+		"default": "basic"
+	  },
+	  "anonymous_consumer": {
+		"type": "string",
+		"minLength": 1
 	  }
 	}
 }`
 
 type Config struct {
-	HideCredentials *bool `json:"hide_credentials"`
+	HideCredentials   *bool  `json:"hide_credentials"`
+	Realm             string `json:"realm"`
+	AnonymousConsumer string `json:"anonymous_consumer,omitempty"`
 }
 
 func (p *Plugin) Init() error {
@@ -50,6 +61,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
 		p.config.HideCredentials = &hideCredentials
+	}
+	if p.config.Realm == "" {
+		p.config.Realm = "basic"
 	}
 
 	return nil
@@ -68,14 +82,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			w.Header().Add("WWW-Authenticate", `Basic realm='.'`)
-			http.Error(w, `{"message": "Missing authorization in request"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			p.writeAuthError(w, `{"message": "Missing authorization in request"}`)
 			return
 		}
 
 		user, pass, ok := r.BasicAuth()
 		if !ok {
-			http.Error(w, `{"message": "Invalid authorization in request"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			p.writeAuthError(w, `{"message": "Invalid authorization in request"}`)
 			return
 		}
 		user = normalizeCredential(user)
@@ -83,25 +102,37 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			p.writeAuthError(w, `{"message": "Invalid user authorization"}`)
 			return
 		}
 
 		consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
 		if !exists {
-			http.Error(w, `{"message": "Missing authorization config in consumer settings"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			p.writeAuthError(w, `{"message": "Missing authorization config in consumer settings"}`)
 			return
 		}
 
 		var ba basicAuth
 		err = util.Parse(consumerPluginConfig, &ba)
 		if err != nil {
-			http.Error(w, `{"message": "Invalid authorization config in consumer settings"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			p.writeAuthError(w, `{"message": "Invalid authorization config in consumer settings"}`)
 			return
 		}
 
 		if pass != ba.Password {
-			http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+			if p.attachAnonymousConsumer(w, r, next) {
+				return
+			}
+			p.writeAuthError(w, `{"message": "Invalid user authorization"}`)
 			return
 		}
 
@@ -114,6 +145,27 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request, next http.Handler) bool {
+	if p.config.AnonymousConsumer == "" {
+		return false
+	}
+
+	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
+	if err != nil {
+		p.writeAuthError(w, `{"message": "Invalid user authorization"}`)
+		return true
+	}
+
+	ctx.AttachConsumer(r, consumer)
+	next.ServeHTTP(w, r)
+	return true
+}
+
+func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {
+	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, p.config.Realm))
+	http.Error(w, body, http.StatusUnauthorized)
 }
 
 func normalizeCredential(value string) string {

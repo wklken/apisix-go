@@ -124,6 +124,29 @@ func TestHandlerDecryptsBase64EncodedConsumerSecret(t *testing.T) {
 	}
 }
 
+func TestHandlerDecryptsStdBase64EncodedConsumerSecret(t *testing.T) {
+	secret := []byte("abcdefghijklmnopqrstuvwxyz123456")
+	encodedSecret := base64.StdEncoding.EncodeToString(secret)
+	addJWEConsumer(t, "jwe-std-base64-user", "kid-std-base64", encodedSecret, true)
+	p := newTestPlugin(t, Config{})
+	token := makeCompactJWE(t, "kid-std-base64", secret, "std-base64-secret")
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Authorization", token)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "std-base64-secret" {
+			t.Fatalf("Authorization header = %q, want decrypted plaintext", got)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandlerRejectsMissingTokenWhenStrict(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
@@ -214,7 +237,7 @@ func makeCompactJWE(t *testing.T, kid string, secret []byte, plaintext string) s
 	if err != nil {
 		t.Fatalf("new gcm: %v", err)
 	}
-	sealed := gcm.Seal(nil, iv, []byte(plaintext), []byte(protectedHeader))
+	sealed := gcm.Seal(nil, iv, []byte(plaintext), nil)
 	tagStart := len(sealed) - gcm.Overhead()
 
 	return strings.Join([]string{

@@ -62,6 +62,14 @@ const schema = `
       "type": "string",
       "default": "datadog"
     },
+    "host": {
+      "type": "string"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
     "batch_max_size": {
       "type": "integer",
       "minimum": 1,
@@ -96,6 +104,8 @@ type Config struct {
 	IncludePath     bool     `json:"include_path,omitempty"`
 	IncludeMethod   bool     `json:"include_method,omitempty"`
 	ConstantTags    []string `json:"constant_tags,omitempty"`
+	Host            string   `json:"host,omitempty"`
+	Port            int      `json:"port,omitempty"`
 	BatchName       string   `json:"name,omitempty"`
 	BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 	MaxRetryCount   int      `json:"max_retry_count,omitempty"`
@@ -111,6 +121,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		IncludePath     bool     `json:"include_path,omitempty"`
 		IncludeMethod   bool     `json:"include_method,omitempty"`
 		ConstantTags    []string `json:"constant_tags,omitempty"`
+		Host            string   `json:"host,omitempty"`
+		Port            int      `json:"port,omitempty"`
 		BatchName       string   `json:"name,omitempty"`
 		BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 		MaxRetryCount   int      `json:"max_retry_count,omitempty"`
@@ -131,6 +143,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.IncludePath = decoded.IncludePath
 	c.IncludeMethod = decoded.IncludeMethod
 	c.ConstantTags = decoded.ConstantTags
+	c.Host = decoded.Host
+	c.Port = decoded.Port
 	c.BatchName = decoded.BatchName
 	c.BatchMaxSize = decoded.BatchMaxSize
 	c.MaxRetryCount = decoded.MaxRetryCount
@@ -196,6 +210,12 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 	p.metadata = loadMetadata()
+	if p.config.Host != "" {
+		p.metadata.Host = p.config.Host
+	}
+	if p.config.Port != 0 {
+		p.metadata.Port = p.config.Port
+	}
 	p.BatchProcessor = logger_batch.New(logger_batch.Config{
 		Name:            p.config.BatchName,
 		BatchMaxSize:    p.config.BatchMaxSize,

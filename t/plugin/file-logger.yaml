@@ -4,6 +4,9 @@ cases:
             - id: file-logger-source-1
               plugins:
                 file-logger:
+                    log_format:
+                        path: $uri
+                        status: $status
                     path: '{{WORK_DIR}}/integration.log'
               upstream:
                 nodes:
@@ -28,16 +31,22 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: file-log-request
           output:
             body:
                 equals: hello world
             status: 200
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/integration.log'}
+          body: {matches: '"path":"/probe"'}
     - config:
         routes:
             - id: file-logger-source-2
               plugins:
                 file-logger:
+                    log_format:
+                        path: $uri
+                        status: $status
                     path: '{{WORK_DIR}}/integration.log'
               upstream:
                 nodes:
@@ -85,16 +94,22 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: file-log-request
           output:
             body:
                 equals: hello world
             status: 200
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/integration.log'}
+          body: {matches: '"path":"/probe"'}
     - config:
         routes:
             - id: file-logger-source-3
               plugins:
                 file-logger:
+                    log_format:
+                        path: $uri
+                        status: $status
                     path: '{{WORK_DIR}}/integration.log'
               upstream:
                 nodes:
@@ -131,11 +146,14 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: file-log-request
           output:
             body:
                 equals: hello world
             status: 200
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/integration.log'}
+          body: {matches: '"path":"/probe"'}
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

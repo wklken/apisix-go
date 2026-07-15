@@ -4,7 +4,7 @@
 >
 > Official comparison baseline: Apache APISIX `release/3.17` (104 default plugins). Evidence is maintained against `pkg/plugin/init.go`, the plugin packages, route/proxy integration, focused tests, and the repository verification gate.
 >
-> Status audit: 2026-07-14.
+> Status audit: 2026-07-15.
 
 ## Summary
 
@@ -27,7 +27,8 @@ and passes the semantic coverage gate. Every scenario writes fresh
 `config.yaml` and `apisix.yaml`, starts the real APISIX-Go CLI in standalone
 YAML-provider mode, sends requests, and asserts the response, fixture request,
 or startup log. External services are replaced by deterministic per-case
-loopback fixtures; no placeholder or skip reason is treated as coverage.
+loopback fixtures, including TCP/TLS-TCP, UDP, gRPC, Redis, Kafka, Dubbo, and
+LDAP protocol fixtures; no placeholder or skip reason is treated as coverage.
 
 The four intentionally unregistered defaults are `ext-plugin-pre-req`, `ext-plugin-post-req`, `ext-plugin-post-resp`, and `inspect`. They require an external plugin runner or Lua/OpenResty runtime. The bounded `serverless-pre-function` and `serverless-post-function` compatibility implementations remain documented as not-required native/runtime parity.
 

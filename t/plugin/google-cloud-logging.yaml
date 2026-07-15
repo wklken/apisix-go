@@ -4,11 +4,30 @@ cases:
             - id: google-cloud-logging-source-1
               plugins:
                 google-cloud-logging:
+                    batch_max_size: 1
+                    inactive_timeout: 1
                     auth_config:
                         client_email: integration@example.org
-                        private_key: '-----BEGIN PRIVATE KEY-----\ninvalid\n-----END PRIVATE KEY-----'
+                        private_key: &google_key |
+                            -----BEGIN PRIVATE KEY-----
+                            MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8wggJbAgEAAoGBAKelw5sMmKEiq8tf
+                            ZkXFcsAwfYASttNm1kDDRBf2LlM6F+AqovgCbtgDCG2CR6d6ZSc2VI2KwGqVmz04
+                            xTD5G8ynPp0nantvG8wBIbPNFJxVxqTAdNPcPHN7idQ2Y8wifj6eDljpPyIDhd3k
+                            blABvc7ZqP9E9Cv/PWyfVPW5IsZTAgMBAAECgYAu2SnCSFDWpqOvX2drE/QvNN29
+                            Tn18sf4pdueucoMbit5lLEUCXVuwTZirUX7IlHFz9cDHFQEUR95ry1N/jf1wTXF0
+                            q9dMK1sOxeIxD5u87IT/YUFOGR37PpfzBqr4lXBqSFHOr3pnMyboyYzl/hsR5QkC
+                            ytxBICCR17uQAU1z0QJBANSScivNYrzQA+jLrnUUMerY3VJUy7OelC7aOvM+w0Wg
+                            g2y7wLWcG0vQpJEeLh6xXPxu/98Q57gDkUjEu4G8c30CQQDJ5cHY63WIHr3SX+6s
+                            cqO5tklJKB7TYBxZXJKLRewW6xkzcjMXlLsZzn9oFtr5e6ggcyvvViQmjH9UBxNC
+                            s6oPAkApUp6nLTH4imd4JcAwOlDJ2oaLrrg6nqUnxnyXNKg5LM7foFAB/erAfjq/
+                            iyJkDQ6Kc/mBn4OsHeVsQ/I/cibxAkBfHMf3guU5nRHbu6nav5717DQWLLpo5cw1
+                            JPE8f1I7ccHLhK8hGsYR4EARL0M1aNXJg7hc5f3d0y5gzXx7XdxtAkATXODoxB8h
+                            KbxxbtNMlYkGCrYKfZgiZWstfYYAOliciGSqmHE2eqED/424yuTO9m4PIyKXKWwS
+                            JKuSmg0k5oxG
+                            -----END PRIVATE KEY-----
                         project_id: integration
                         token_uri: '{{FIXTURE.sink.URL}}/token'
+                        entries_uri: '{{FIXTURE.sink.URL}}/entries'
                         type: service_account
               upstream:
                 nodes:
@@ -24,7 +43,15 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {equals: /token}
+            - method: POST
+              path: {equals: /entries}
           respond:
+            - body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'
+              status: 200
+              headers: {}
             - body: ok
               headers: {}
               status: 200
@@ -61,21 +88,25 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: google-cloud-logging-source-2
               plugins:
                 google-cloud-logging:
+                    batch_max_size: 1
+                    inactive_timeout: 1
                     auth_config:
                         client_email: integration@example.org
-                        private_key: '-----BEGIN PRIVATE KEY-----\ninvalid\n-----END PRIVATE KEY-----'
+                        private_key: *google_key
                         project_id: integration
                         token_uri: '{{FIXTURE.sink.URL}}/token'
+                        entries_uri: '{{FIXTURE.sink.URL}}/entries'
                         type: service_account
               upstream:
                 nodes:
@@ -91,7 +122,15 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {equals: /token}
+            - method: POST
+              path: {equals: /entries}
           respond:
+            - body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'
+              status: 200
+              headers: {}
             - body: ok
               headers: {}
               status: 200
@@ -110,21 +149,25 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: google-cloud-logging-source-3
               plugins:
                 google-cloud-logging:
+                    batch_max_size: 1
+                    inactive_timeout: 1
                     auth_config:
                         client_email: integration@example.org
-                        private_key: '-----BEGIN PRIVATE KEY-----\ninvalid\n-----END PRIVATE KEY-----'
+                        private_key: *google_key
                         project_id: integration
                         token_uri: '{{FIXTURE.sink.URL}}/token'
+                        entries_uri: '{{FIXTURE.sink.URL}}/entries'
                         type: service_account
               upstream:
                 nodes:
@@ -140,7 +183,15 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {equals: /token}
+            - method: POST
+              path: {equals: /entries}
           respond:
+            - body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}'
+              status: 200
+              headers: {}
             - body: ok
               headers: {}
               status: 200
@@ -153,11 +204,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

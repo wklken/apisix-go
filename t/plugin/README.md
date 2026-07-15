@@ -19,8 +19,9 @@ placeholder reasons such as "requires setup or an external dependency" are not
 accepted as coverage. The semantic corpus gate also rejects generic fixture
 proxies that never configure the named plugin. Cases that need a local
 dependency use a fixture declared in the same manifest; they are not represented
-as skips. Network fixtures cover TCP/UDP and protocol logger surfaces, and
-`{{WORK_DIR}}` keeps file assertions inside the per-case temporary directory.
+as skips. Network fixtures cover TCP, TLS-over-TCP, UDP, gRPC, Redis, Kafka,
+Dubbo, and LDAP protocol surfaces, and `{{WORK_DIR}}` keeps file assertions
+inside the per-case temporary directory.
 
 ## Run
 
@@ -62,10 +63,10 @@ An HTTP case contains:
 - optional `upstream`: HTTP/HTTPS fixture expectations and response;
 - `output`: expected status plus optional header, body, and log assertions.
 
-Configuration-rejection cases omit `input` and `output.status`; they require an
-`output.logs` matcher proving the intended route/plugin initialization failure.
-The runner then checks startup logs without sending a request through the
-intentionally rejected route.
+Configuration-rejection cases send their declared request to the rejected route;
+they require an `output.status` assertion and an `output.logs` matcher proving
+the intended route/plugin initialization failure. This keeps invalid
+configuration cases observable at the APISIX-Go HTTP boundary.
 
 When one upstream block contains multiple independent inputs, `variants`
 declares one complete standalone scenario for each input. Every variant gets

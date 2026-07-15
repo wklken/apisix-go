@@ -56,8 +56,9 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-denies-without-consumer
+          name: casbin-policy-denies-anonymous-request
           output:
+            body: {matches: 'Access Denied'}
             status: 403
 sources:
     - repository: https://github.com/apache/apisix

@@ -1,5 +1,12 @@
 cases:
     - config:
+        consumers:
+            - username: key-user
+              plugins:
+                key-auth: {key: integration-key}
+            - username: basic-user
+              plugins:
+                basic-auth: {username: basic-user, password: secret}
         routes:
             - id: multi-auth-source-1
               plugins:
@@ -16,6 +23,12 @@ cases:
         - kind: http
           name: primary
           respond:
+            - body: hello world
+              headers: {}
+              status: 200
+            - body: hello world
+              headers: {}
+              status: 200
             - body: hello world
               headers: {}
               status: 200
@@ -49,10 +62,29 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-without-auth
+          name: missing-credentials-are-rejected
           output:
             status: 401
+        - input:
+            headers: {apikey: integration-key}
+            method: GET
+            path: /probe
+          name: key-auth-alternative-allows-request
+          output: {body: {equals: hello world}, status: 200}
+        - input:
+            headers: {Authorization: 'Basic YmFzaWMtdXNlcjpzZWNyZXQ='}
+            method: GET
+            path: /probe
+          name: basic-auth-alternative-allows-request
+          output: {body: {equals: hello world}, status: 200}
     - config:
+        consumers:
+            - username: key-user
+              plugins:
+                key-auth: {key: integration-key}
+            - username: basic-user
+              plugins:
+                basic-auth: {username: basic-user, password: secret}
         routes:
             - id: multi-auth-source-2
               plugins:
@@ -69,6 +101,12 @@ cases:
         - kind: http
           name: primary
           respond:
+            - body: hello world
+              headers: {}
+              status: 200
+            - body: hello world
+              headers: {}
+              status: 200
             - body: hello world
               headers: {}
               status: 200
@@ -96,9 +134,21 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-without-auth
+          name: missing-credentials-are-rejected
           output:
             status: 401
+        - input:
+            headers: {apikey: integration-key}
+            method: GET
+            path: /probe
+          name: key-auth-alternative-allows-request
+          output: {body: {equals: hello world}, status: 200}
+        - input:
+            headers: {Authorization: 'Basic YmFzaWMtdXNlcjpzZWNyZXQ='}
+            method: GET
+            path: /probe
+          name: basic-auth-alternative-allows-request
+          output: {body: {equals: hello world}, status: 200}
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

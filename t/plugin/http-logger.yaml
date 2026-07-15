@@ -21,6 +21,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -41,11 +44,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: http-logger-source-2
@@ -68,6 +72,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -109,11 +116,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: http-logger-source-3
@@ -136,6 +144,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -169,11 +180,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: http-logger-source-4
@@ -196,6 +208,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -218,11 +233,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: http-logger-source-5
@@ -245,6 +261,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -286,11 +305,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: http-logger-source-6
@@ -313,6 +333,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -340,11 +363,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
     - config:
         routes:
             - id: http-logger-source-7
@@ -367,6 +391,9 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '.*'}
           respond:
             - body: ok
               headers: {}
@@ -381,11 +408,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

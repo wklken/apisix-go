@@ -52,7 +52,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: tcp-log-delivered
           output:
             body:
                 equals: hello world

@@ -28,7 +28,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '"code":105.*"topic":"integration"'
           network_respond:
             - payload: ok
       name: rocketmq-logger-source-1
@@ -44,7 +44,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: rocketmq-log-format-request
           output:
             body:
                 equals: hello world
@@ -79,7 +79,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '"code":105.*"topic":"integration"'
           network_respond:
             - payload: ok
       name: rocketmq-logger-source-2
@@ -109,7 +109,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: rocketmq-log-request
           output:
             body:
                 equals: hello world
@@ -144,7 +144,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '"code":105.*"topic":"integration"'
           network_respond:
             - payload: ok
       name: rocketmq-logger-source-3
@@ -173,7 +173,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: rocketmq-log-variant-request
           output:
             body:
                 equals: hello world

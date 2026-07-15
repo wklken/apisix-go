@@ -565,7 +565,7 @@ func (f *FixtureSpec) validate() error {
 		return errors.New("name is required")
 	}
 	supportedKinds := map[string]bool{
-		"http": true, "https": true, "tcp": true, "udp": true, "grpc": true,
+		"http": true, "https": true, "tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
 		"redis": true, "redis-cluster": true, "redis-sentinel": true,
 		"kafka": true, "dubbo": true, "ldap": true,
 	}

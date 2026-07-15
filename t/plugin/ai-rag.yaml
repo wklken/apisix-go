@@ -27,6 +27,17 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {equals: /embed}
+              headers:
+                api-key: {equals: integration}
+              body: {matches: 'hello'}
+            - method: POST
+              path: {equals: /search}
+              headers:
+                api-key: {equals: integration}
+              body: {matches: 'vectorQueries'}
           respond:
             - body: '{"data":[{"embedding":[0.1,0.2,0.3]}]}'
               headers: {}
@@ -62,7 +73,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: rag-requests-rewrite-and-enrich-upstream
           output:
             body:
                 equals: hello world

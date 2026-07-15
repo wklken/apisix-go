@@ -77,7 +77,7 @@ type Case struct {
 }
 ```
 
-`{{FIXTURE.<name>.ADDR}}`, `.HOST`, `.PORT`, and `.URL` continue to work. Add `{{WORK_DIR}}` for files created inside the scenario's temporary directory. Network fixture kinds are exactly `tcp`, `udp`, `grpc`, `redis`, `redis-cluster`, `redis-sentinel`, `kafka`, `dubbo`, and `ldap`; unknown kinds fail manifest validation.
+`{{FIXTURE.<name>.ADDR}}`, `.HOST`, `.PORT`, and `.URL` continue to work. Add `{{WORK_DIR}}` for files created inside the scenario's temporary directory. Network fixture kinds are exactly `tcp`, `tls-tcp`, `udp`, `grpc`, `redis`, `redis-cluster`, `redis-sentinel`, `kafka`, `dubbo`, and `ldap`; unknown kinds fail manifest validation.
 
 ---
 

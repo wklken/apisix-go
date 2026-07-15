@@ -56,7 +56,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /probe
-          name: real-graphql-plugin-probe
+          name: graphql-query-consumes-real-quota
           output:
             body:
                 equals: hello world

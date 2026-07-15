@@ -7,6 +7,7 @@ cases:
                     bearer_only: true
                     client_id: integration-client
                     discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    introspection_endpoint: '{{FIXTURE.auth.URL}}/introspect'
                     ssl_verify: false
               upstream:
                 nodes:
@@ -16,8 +17,23 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: GET
+              path: {equals: /probe}
+              headers:
+                X-Access-Token: {equals: token}
           respond:
             - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: auth
+          expect:
+            - method: POST
+              path: {equals: /introspect}
+              body: {matches: 'token=token'}
+          respond:
+            - body: '{"active":true,"sub":"integration"}'
               headers: {}
               status: 200
       name: openid-connect-source-1
@@ -30,11 +46,14 @@ cases:
             - 4
       steps:
         - input:
+            headers:
+                Authorization: Bearer token
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-introspection-attaches-identity
           output:
-            status: 401
+            body: {equals: hello world}
+            status: 200
     - config:
         routes:
             - id: openid-connect-source-2
@@ -68,7 +87,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -154,7 +173,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: redis-session-config-request-is-rejected
           output:
             status: 401
     - config:
@@ -198,7 +217,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -251,7 +270,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -289,7 +308,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -327,7 +346,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -361,7 +380,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -401,7 +420,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -443,7 +462,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -483,7 +502,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
     - config:
@@ -521,7 +540,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: bearer-only-request-is-rejected
           output:
             status: 401
 sources:

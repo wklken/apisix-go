@@ -14,6 +14,10 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {matches: 'hello'}
           respond:
             - body: hello world
               headers: {}
@@ -73,11 +77,21 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: allowed-prompt-reaches-upstream
           output:
             body:
                 equals: hello world
             status: 200
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"forbidden"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: denied-prompt-is-rejected
+          output:
+            body: {matches: "Request contains prohibited content"}
+            status: 400
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

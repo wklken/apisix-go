@@ -25,7 +25,7 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: tcp
+        - kind: kafka
           name: sink
           network_expect:
             - payload:
@@ -68,7 +68,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: kafka-record-delivered
           output:
             body:
                 equals: hello world
@@ -100,7 +100,7 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: tcp
+        - kind: kafka
           name: sink
           network_expect:
             - payload:
@@ -120,7 +120,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: kafka-record-delivered
           output:
             body:
                 equals: hello world
@@ -152,7 +152,7 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: tcp
+        - kind: kafka
           name: sink
           network_expect:
             - payload:
@@ -196,7 +196,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: kafka-record-delivered
           output:
             body:
                 equals: hello world
@@ -228,7 +228,7 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: tcp
+        - kind: kafka
           name: sink
           network_expect:
             - payload:
@@ -270,7 +270,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: kafka-record-delivered
           output:
             body:
                 equals: hello world
@@ -302,7 +302,7 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: tcp
+        - kind: kafka
           name: sink
           network_expect:
             - payload:
@@ -319,7 +319,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: kafka-record-delivered
           output:
             body:
                 equals: hello world
@@ -351,7 +351,7 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: tcp
+        - kind: kafka
           name: sink
           network_expect:
             - payload:
@@ -374,7 +374,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: kafka-record-delivered
           output:
             body:
                 equals: hello world

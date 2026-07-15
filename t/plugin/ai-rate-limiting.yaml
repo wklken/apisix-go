@@ -5,9 +5,11 @@ cases:
               plugins:
                 ai-rate-limiting:
                     rules:
-                        - count: 10
+                        - count: 1
                           key: ${remote_addr}
                           time_window: 60
+                    rejected_code: 429
+                    rejected_msg: integration quota exceeded
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -17,7 +19,7 @@ cases:
         - kind: http
           name: primary
           respond:
-            - body: hello world
+            - body: '{"choices":[],"usage":{"total_tokens":1}}'
               headers: {}
               status: 200
       name: ai-rate-limiting-source-1
@@ -36,11 +38,21 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: quota-allows-first-request
           output:
             body:
-                equals: hello world
+                equals: '{"choices":[],"usage":{"total_tokens":1}}'
             status: 200
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: quota-rejects-after-limit
+          output:
+            body: {matches: 'integration quota exceeded'}
+            status: 429
     - config:
         routes:
             - id: ai-rate-limiting-source-2
@@ -86,7 +98,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: expression-rate-limit-request
           output:
             body:
                 equals: hello world
@@ -163,7 +175,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: token-rate-limit-request
           output:
             body:
                 equals: hello world

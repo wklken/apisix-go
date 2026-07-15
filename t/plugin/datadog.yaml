@@ -1,12 +1,20 @@
 cases:
     - config:
+        plugin_attr:
+            datadog:
+                host: '{{FIXTURE.sink.HOST}}'
+                port: '{{FIXTURE.sink.PORT}}'
+                namespace: integration
+                constant_tags:
+                    - source:integration
         routes:
             - id: datadog-source-1
               plugins:
                 datadog:
-                    apikey: integration
+                    batch_max_size: 1
                     host: '{{FIXTURE.sink.HOST}}'
-                    port: 443
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -19,12 +27,22 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: http
+        - kind: udp
           name: sink
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
+          network_expect:
+            - payload: {matches: '.*'}
+            - payload: {matches: '.*'}
+            - payload: {matches: '.*'}
+            - payload: {matches: '.*'}
+            - payload: {matches: '.*'}
+            - payload: {matches: '.*'}
+          network_respond:
+            - payload: ''
+            - payload: ''
+            - payload: ''
+            - payload: ''
+            - payload: ''
+            - payload: ''
       name: datadog-source-1
       source:
         file: t/plugin/datadog.t
@@ -46,7 +64,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: datadog-metrics-delivered
           output:
             body:
                 equals: hello world

@@ -33,7 +33,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: error-log-logger-route-preserves-upstream
           output:
             body:
                 equals: hello world
@@ -70,7 +70,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: error-log-logger-kafka-route-preserves-upstream
           output:
             body:
                 equals: hello world
@@ -108,7 +108,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: error-log-logger-skywalking-route-preserves-upstream
           output:
             body:
                 equals: hello world
@@ -153,7 +153,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: error-log-logger-route-preserves-upstream
           output:
             body:
                 equals: hello world

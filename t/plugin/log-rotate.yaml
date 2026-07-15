@@ -3,7 +3,15 @@ cases:
         routes:
             - id: log-rotate-source-1
               plugins:
-                log-rotate: {}
+                log-rotate:
+                    access_log: '{{WORK_DIR}}/logs/access.log'
+                    error_log: '{{WORK_DIR}}/logs/error.log'
+                    max_kept: 2
+                    max_size: 1
+                file-logger:
+                    log_format:
+                        path: $uri
+                    path: '{{WORK_DIR}}/logs/access.log'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -30,16 +38,28 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: access-log-is-written
           output:
             body:
                 equals: hello world
             status: 200
+          repeat: 2
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/logs/access.log'}
+          body: {matches: '"path":"/probe"'}
     - config:
         routes:
             - id: log-rotate-source-2
               plugins:
-                log-rotate: {}
+                log-rotate:
+                    access_log: '{{WORK_DIR}}/logs/access.log'
+                    error_log: '{{WORK_DIR}}/logs/error.log'
+                    max_kept: 2
+                    max_size: 1
+                file-logger:
+                    log_format:
+                        path: $uri
+                    path: '{{WORK_DIR}}/logs/access.log'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -65,16 +85,28 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: access-log-rotation-request
           output:
             body:
                 equals: hello world
             status: 200
+          repeat: 2
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/logs/access.log'}
+          body: {matches: '"path":"/probe"'}
     - config:
         routes:
             - id: log-rotate-source-3
               plugins:
-                log-rotate: {}
+                log-rotate:
+                    access_log: '{{WORK_DIR}}/logs/access.log'
+                    error_log: '{{WORK_DIR}}/logs/error.log'
+                    max_kept: 2
+                    max_size: 1
+                file-logger:
+                    log_format:
+                        path: $uri
+                    path: '{{WORK_DIR}}/logs/access.log'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
@@ -101,11 +133,15 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: access-log-rotation-request
           output:
             body:
                 equals: hello world
             status: 200
+          repeat: 2
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/logs/access.log'}
+          body: {matches: '"path":"/probe"'}
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

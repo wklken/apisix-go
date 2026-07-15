@@ -52,8 +52,10 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-redirects-to-cas
+          name: unauthenticated-request-redirects-to-cas
           output:
+            headers:
+                Location: {matches: 'cas/login'}
             status: 307
 sources:
     - repository: https://github.com/apache/apisix

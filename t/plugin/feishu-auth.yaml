@@ -44,8 +44,10 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-redirects-to-feishu
+          name: unauthenticated-request-redirects-to-feishu
           output:
+            headers:
+                Location: {matches: 'example.org/callback'}
             status: 302
 sources:
     - repository: https://github.com/apache/apisix

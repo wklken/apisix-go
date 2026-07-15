@@ -15,6 +15,10 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {matches: 'integration'}
           respond:
             - body: hello world
               headers: {}
@@ -47,7 +51,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: prompt-decorator-rewrites-upstream-request
           output:
             body:
                 equals: hello world

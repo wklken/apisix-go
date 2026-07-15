@@ -17,12 +17,22 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: GET
+              path: {equals: /probe}
+              headers:
+                X-User: {equals: integration}
           respond:
             - body: hello world
               headers: {}
               status: 200
         - kind: http
           name: auth
+          expect:
+            - method: GET
+              path: {equals: /check}
+              headers:
+                Authorization: {equals: Bearer integration}
           respond:
             - body: ok
               headers:
@@ -57,7 +67,9 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+            headers:
+                Authorization: Bearer integration
+          name: auth-check-propagates-upstream-headers
           output:
             body:
                 equals: hello world
@@ -80,12 +92,22 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: GET
+              path: {equals: /probe}
+              headers:
+                X-User: {equals: integration}
           respond:
             - body: hello world
               headers: {}
               status: 200
         - kind: http
           name: auth
+          expect:
+            - method: GET
+              path: {equals: /check}
+              headers:
+                Authorization: {equals: Bearer integration}
           respond:
             - body: ok
               headers:
@@ -104,7 +126,9 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+            headers:
+                Authorization: Bearer integration
+          name: auth-check-propagates-upstream-headers
           output:
             body:
                 equals: hello world
@@ -127,12 +151,22 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: GET
+              path: {equals: /probe}
+              headers:
+                X-User: {equals: integration}
           respond:
             - body: hello world
               headers: {}
               status: 200
         - kind: http
           name: auth
+          expect:
+            - method: GET
+              path: {equals: /check}
+              headers:
+                Authorization: {equals: Bearer integration}
           respond:
             - body: ok
               headers:
@@ -148,7 +182,9 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+            headers:
+                Authorization: Bearer integration
+          name: auth-check-propagates-upstream-headers
           output:
             body:
                 equals: hello world

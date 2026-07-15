@@ -1,5 +1,11 @@
 cases:
     - config:
+        consumers:
+            - username: wolf-user
+              plugins:
+                wolf-rbac:
+                    appid: integration
+                    server: '{{FIXTURE.auth.URL}}'
         routes:
             - id: wolf-rbac-source-1
               plugins:
@@ -14,8 +20,24 @@ cases:
       fixtures:
         - kind: http
           name: primary
+          expect:
+            - method: GET
+              path: {equals: /probe}
+              headers:
+                X-Username: {equals: integration}
           respond:
             - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: auth
+          expect:
+            - method: GET
+              path: {matches: '^/wolf/rbac/access_check\?.*action=GET.*'}
+              headers:
+                X-Rbac-Token: {equals: token}
+          respond:
+            - body: '{"ok":true,"reason":"","data":{"userInfo":{"id":"1","username":"integration"}}}'
               headers: {}
               status: 200
       name: wolf-rbac-source-1
@@ -66,11 +88,14 @@ cases:
             - 42
       steps:
         - input:
+            headers:
+                Authorization: V1#integration#token
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: wolf-permission-check-allows-user
           output:
-            status: 401
+            body: {equals: hello world}
+            status: 200
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

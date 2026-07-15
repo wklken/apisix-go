@@ -5,7 +5,8 @@ cases:
               plugins:
                 authz-keycloak:
                     client_id: integration
-                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    permissions: [/probe]
+                    token_endpoint: '{{FIXTURE.auth.URL}}/token'
                     ssl_verify: false
               upstream:
                 nodes:
@@ -17,6 +18,18 @@ cases:
           name: primary
           respond:
             - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: auth
+          expect:
+            - method: POST
+              path: {equals: /token}
+              body: {matches: 'grant_type'}
+              headers:
+                Authorization: {equals: Bearer token}
+          respond:
+            - body: '{}'
               headers: {}
               status: 200
       name: authz-keycloak-source-1
@@ -43,11 +56,14 @@ cases:
             - 18
       steps:
         - input:
+            headers:
+                Authorization: Bearer token
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: keycloak-uma-token-allows-permission
           output:
-            status: 401
+            body: {equals: hello world}
+            status: 200
     - config:
         routes:
             - id: authz-keycloak-source-2
@@ -95,7 +111,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: discovery-failure-rejects-request
           output:
             status: 401
     - config:
@@ -129,7 +145,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: discovery-failure-rejects-request
           output:
             status: 401
     - config:
@@ -164,7 +180,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: discovery-failure-rejects-request
           output:
             status: 401
     - config:
@@ -196,7 +212,7 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: discovery-failure-rejects-request
           output:
             status: 401
 sources:

@@ -12,12 +12,12 @@ cases:
                 type: roundrobin
               uri: /probe
       fixtures:
-        - kind: http
+        - kind: dubbo
           name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
+          network_expect:
+            - payload_base64: {matches: '^2rvG'}
+          network_respond:
+            - payload_base64: 2rsAFAAAAAAAAAABAAAACzEKcmVzcG9uc2UK
       name: http-dubbo-source-1
       source:
         file: t/plugin/http-dubbo.t
@@ -31,9 +31,10 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-reports-dubbo-upstream-error
+          name: dubbo-request-is-serialized-and-decoded
           output:
-            status: 502
+            body: {equals: response}
+            status: 200
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

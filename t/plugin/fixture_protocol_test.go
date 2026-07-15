@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -89,7 +90,7 @@ func (f *kafkaFixture) serveConnection(connection net.Conn) {
 	for {
 		version, correlation, _, message, err := protocol.ReadRequest(reader)
 		if err != nil {
-			if err != io.EOF {
+			if err != io.EOF && !errors.Is(err, io.ErrUnexpectedEOF) {
 				f.errors <- fmt.Errorf("read Kafka request: %w", err)
 			}
 			return
@@ -104,9 +105,6 @@ func (f *kafkaFixture) serveConnection(connection net.Conn) {
 		}
 		if err := protocol.WriteResponse(connection, version, correlation, response); err != nil {
 			f.errors <- fmt.Errorf("write Kafka response: %w", err)
-			return
-		}
-		if len(f.expect) > 0 && len(f.received) >= len(f.expect) {
 			return
 		}
 	}

@@ -57,6 +57,14 @@ func TestPostInitSetsDatadogDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitUsesRouteEndpoint(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "127.0.0.9", Port: 9125})
+
+	if p.metadata.Host != "127.0.0.9" || p.metadata.Port != 9125 {
+		t.Fatalf("metadata endpoint = %s:%d, want 127.0.0.9:9125", p.metadata.Host, p.metadata.Port)
+	}
+}
+
 func TestPostInitPreservesExplicitPreferNameFalse(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

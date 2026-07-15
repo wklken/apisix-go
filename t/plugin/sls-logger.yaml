@@ -4,11 +4,13 @@ cases:
             - id: sls-logger-source-1
               plugins:
                 sls-logger:
+                    batch_max_size: 1
+                    inactive_timeout: 1
                     access_key_id: integration
                     access_key_secret: integration
                     host: '{{FIXTURE.sink.HOST}}'
                     logstore: integration
-                    port: 80
+                    port: '{{FIXTURE.sink.PORT}}'
                     project: integration
               upstream:
                 nodes:
@@ -22,12 +24,12 @@ cases:
             - body: hello world
               headers: {}
               status: 200
-        - kind: http
+        - kind: tls-tcp
           name: sink
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
+          network_expect:
+            - payload: {matches: '.*'}
+          network_respond:
+            - payload: ''
       name: sls-logger-source-1
       source:
         file: t/plugin/sls-logger.t
@@ -53,11 +55,12 @@ cases:
         - input:
             method: GET
             path: /probe
-          name: real-plugin-probe
+          name: log-delivered-to-sink
           output:
             body:
                 equals: hello world
             status: 200
+          wait: 2s
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

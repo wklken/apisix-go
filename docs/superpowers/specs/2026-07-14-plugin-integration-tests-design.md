@@ -147,14 +147,17 @@ escape the isolated loopback standalone process. Runtime overrides represent
 upstream `.t` sections such as `yaml_config` and `extra_yaml_config`.
 
 `config` is an arbitrary standalone resource mapping. The runner marshals it as
-`conf/apisix.yaml`, replaces `{{UPSTREAM_ADDR}}` with the current fixture
-listener, and appends the required `#END` marker. The placeholder is allowed
-only when the case declares an `upstream` fixture.
+`conf/apisix.yaml`, replaces fixture placeholders such as
+`{{FIXTURE.sink.ADDR}}`, and appends the required `#END` marker. A case may
+declare HTTP, TCP/TLS-TCP, UDP, gRPC, Redis, Kafka, Dubbo, or LDAP fixtures;
+fixture request assertions are evaluated against the real bytes or HTTP
+request received by the local listener.
 
 `input.method` defaults to `GET`. For HTTP cases, `input.path` is required and
 must begin with `/`. Request headers and body are optional. Configuration-
-rejection cases omit `input` and assert only `output.logs`, so the runner does
-not send a request through a route that intentionally failed to build.
+rejection cases send the declared request to the rejected route and assert both
+the client status and the target-plugin startup log; the runner does not
+silently count a route that was never exercised.
 
 `upstream.respond` defaults to status `200`, empty headers, and an empty body.
 `upstream.expect`, when present, can assert the received method, path, Host,
@@ -254,8 +257,8 @@ The runner fails before startup for:
 - `{{UPSTREAM_ADDR}}` without an upstream fixture.
 - any source test number missing, repeated, below 1, or above the pinned source
   count;
-- a skipped case without a reason, or a non-skipped case without config and
-  either HTTP assertions or a log-only rejection assertion.
+- a skipped case without a reason, or a case without standalone config,
+  request input, and a response, fixture, file, or startup-log assertion.
 
 Runtime failures report:
 

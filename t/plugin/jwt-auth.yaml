@@ -196,7 +196,7 @@ cases:
         input:
           path: "/hello?jwt=eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJhYWEiOiIxMSIsImJiIjoiMjIyIiwia2V5IjoidXNlci1rZXktSFM1MTIiLCJuYmYiOjE3MjcyNzQ5ODN9.s6E3-wNJypgJL71MxoyTTHBDeqdrGQddFjkhLlh3ZN6IZwgpFRlFT1_8suQg9dWUDHGQqgejULyLPhmBMIbw2A"
         output: {status: 200, body: {equals: hello world}}
-      - name: missing-token-uses-real-plugin
+      - name: missing-token-is-rejected-by-jwt-auth
         input: {path: /hello}
         output: {status: 401, body: {matches: 'Missing JWT token in request'}}
 

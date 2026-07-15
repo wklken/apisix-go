@@ -25,6 +25,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -104,7 +110,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -135,6 +141,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -154,7 +166,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -185,6 +197,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -218,7 +236,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -249,6 +267,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -284,7 +308,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -315,6 +339,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -334,7 +364,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -365,6 +395,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -394,7 +430,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -425,6 +461,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -447,7 +489,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -478,6 +520,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -497,7 +545,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -528,6 +576,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -547,7 +601,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -578,6 +632,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -610,7 +670,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -641,6 +701,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -684,7 +750,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -715,6 +781,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -749,7 +821,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -780,6 +852,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -806,7 +884,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -837,6 +915,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -859,7 +943,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -890,6 +974,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -917,7 +1007,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -948,6 +1038,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -968,7 +1064,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -999,6 +1095,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -1053,7 +1155,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -1084,6 +1186,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -1107,7 +1215,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
@@ -1138,6 +1246,12 @@ cases:
               status: 200
         - kind: http
           name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/.*'}
+              headers:
+                Authorization: {equals: Bearer integration}
+              body: {matches: 'integration|hello'}
           respond:
             - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
               headers: {}
@@ -1171,7 +1285,7 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /v1/chat/completions
-          name: real-ai-plugin-request
+          name: provider-request-is-asserted
           output:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'

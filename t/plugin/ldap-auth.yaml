@@ -1,11 +1,16 @@
 cases:
     - config:
+        consumers:
+            - username: ldap-user
+              plugins:
+                ldap-auth:
+                    user_dn: cn=alice,dc=example,dc=org
         routes:
             - id: ldap-auth-source-1
               plugins:
                 ldap-auth:
                     base_dn: dc=example,dc=org
-                    ldap_uri: ldap://127.0.0.1:1
+                    ldap_uri: '{{FIXTURE.ldap.URL}}'
                     use_tls: false
               upstream:
                 nodes:
@@ -19,6 +24,12 @@ cases:
             - body: hello world
               headers: {}
               status: 200
+        - kind: ldap
+          name: ldap
+          network_expect:
+            - payload_base64: {matches: '^MC'}
+          network_respond:
+            - payload: ''
       name: ldap-auth-source-1
       source:
         file: t/plugin/ldap-auth-realm.t
@@ -32,18 +43,26 @@ cases:
             - 7
       steps:
         - input:
+            headers:
+                Authorization: Basic YWxpY2U6c2VjcmV0
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: ldap-bind-authenticates-consumer
           output:
-            status: 401
+            body: {equals: hello world}
+            status: 200
     - config:
+        consumers:
+            - username: ldap-user
+              plugins:
+                ldap-auth:
+                    user_dn: cn=alice,dc=example,dc=org
         routes:
             - id: ldap-auth-source-2
               plugins:
                 ldap-auth:
                     base_dn: dc=example,dc=org
-                    ldap_uri: ldap://127.0.0.1:1
+                    ldap_uri: '{{FIXTURE.ldap.URL}}'
                     use_tls: false
               upstream:
                 nodes:
@@ -57,6 +76,12 @@ cases:
             - body: hello world
               headers: {}
               status: 200
+        - kind: ldap
+          name: ldap
+          network_expect:
+            - payload_base64: {matches: '^MC'}
+          network_respond:
+            - payload: ''
       name: ldap-auth-source-2
       source:
         file: t/plugin/ldap-auth.t
@@ -91,11 +116,14 @@ cases:
             - 28
       steps:
         - input:
+            headers:
+                Authorization: Basic YWxpY2U6c2VjcmV0
             method: GET
             path: /probe
-          name: real-plugin-rejects-unauthenticated-request
+          name: ldap-bind-authenticates-consumer
           output:
-            status: 401
+            body: {equals: hello world}
+            status: 200
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

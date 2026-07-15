@@ -60,6 +60,22 @@ func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
 		fixture.listener = listener
 		fixture.wg.Add(1)
 		go fixture.serveTCP()
+	case "tls-tcp":
+		certPEM, keyPEM, err := generateFrontendCertificate("localhost")
+		if err != nil {
+			return nil, fmt.Errorf("generate TLS TCP fixture certificate: %w", err)
+		}
+		certificate, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("load TLS TCP fixture certificate: %w", err)
+		}
+		listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{certificate}})
+		if err != nil {
+			return nil, fmt.Errorf("listen TLS TCP fixture: %w", err)
+		}
+		fixture.listener = listener
+		fixture.wg.Add(1)
+		go fixture.serveTCP()
 	case "udp":
 		packet, err := net.ListenPacket("udp", "127.0.0.1:0")
 		if err != nil {

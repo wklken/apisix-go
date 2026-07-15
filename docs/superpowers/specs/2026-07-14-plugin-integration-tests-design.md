@@ -31,18 +31,19 @@ Version 1 includes:
 - a mechanical coverage check that rejects missing or duplicated source test
   numbers.
 
-Version 1 does not include:
+The standalone contract deliberately does not include:
 
 - automatic parsing or execution of upstream `.t` files;
 - arbitrary Lua, NGINX directives, Admin API setup, or Test::Nginx semantics;
-- external services such as etcd, Redis, Kafka, OpenID providers, or cloud APIs;
-- frontend TLS, stream, or multi-worker integration fixtures;
+- live external services such as etcd, Redis, Kafka, OpenID providers, or cloud APIs;
+- multi-worker integration fixtures;
 - parallel case execution.
 
 Upstream `.t` files are converted manually because their setup sections can
 contain arbitrary Lua, Admin API calls, server directives, concurrency, and
 external dependencies. The declarative format records the behavior being
-ported instead of trying to emulate that execution environment.
+ported, while deterministic loopback fixtures provide the external protocol
+boundaries needed by the standalone process.
 
 ## Directory Layout
 
@@ -52,9 +53,8 @@ t/plugin/
 ├── case.go
 ├── case_test.go
 ├── runner_test.go
-├── redirect.yaml
-├── proxy-rewrite.yaml
-└── response-rewrite.yaml
+├── <plugin>.yaml
+└── ...
 ```
 
 - `case.go` defines strict YAML decoding, validation, matching, and fixture
@@ -85,8 +85,9 @@ The manifest validator requires the union of every `case.source.tests` list to
 equal the integer range `1..source.tests` exactly. Missing and duplicated
 numbers fail before integration processes start. Setup-only upstream blocks are
 paired with the behavior block that consumes their configuration. A source
-block outside standalone Go plugin scope remains represented by a case with a
-non-empty `skip` reason so the gap is visible rather than silently omitted.
+block is not counted as covered unless its case activates the target plugin and
+runs a request/assertion against the standalone process; external setup is
+represented by a local fixture rather than a skip.
 
 1. identify the source upstream tests;
 2. provide optional APISIX runtime-configuration overrides;
@@ -268,47 +269,22 @@ The runner must stop the child and fixture server on all exit paths. A graceful
 shutdown timeout falls back to killing the child and is itself reported as a
 test failure.
 
-## Initial Converted Cases
+## Complete Manifest Corpus
 
-The three manifests account for all 132 upstream `TEST` blocks using 86 local
-cases. Eighty-three cases execute; three explicit skip cases account for four
-source blocks outside standalone Go plugin scope.
-
-### `redirect.yaml`
-
-Thirty local cases account for all 48 upstream blocks. They cover schema
-defaults, fixed and variable-expanded URI redirects, escaped dollar syntax,
-missing variables, absolute URI construction, every HTTPS-port precedence
-branch, invalid mutually exclusive fields, method-specific HTTP-to-HTTPS
-status codes, regex match and fallthrough, URI encoding, query-string append,
-and forwarded-protocol handling. Tests 28 and 29 form one explicit skip case
-because they exercise an APISIX frontend TLS listener and certificate handshake,
-not redirect plugin logic, and the Go server does not expose a TLS listener.
-
-### `proxy-rewrite.yaml`
-
-Thirty-six local cases account for all 57 upstream blocks. They cover schema
-acceptance and rejection, enable/disable configuration, host and scheme rewrite,
-legacy and structured header operations, empty-value removal, URI and query
-rewrite, regex capture and precedence, invalid patterns and values, request
-variables, missing variables, host ports, and safe versus unsafe raw request URI
-handling. Test 35 is an explicit skip because it checks Admin API/etcd
-serialization rather than standalone request behavior.
-
-### `response-rewrite.yaml`
-
-Twenty local cases account for all 27 upstream blocks. They cover schema
-acceptance and rejection, header set/remove/add behavior, body replacement,
-redirect status and location, base64 decoding and validation, conditional
-status expressions, empty and nil bodies, response variables, and empty-body
-rewrites. Test 15 is an explicit skip because it checks Admin API/etcd
-serialization rather than standalone response behavior.
+The corpus contains 99 manifests: one for each of the 98 source-backed plugins
+marked Supported in `docs/plugins.md`, plus the supplemental `redirect2` source
+manifest. Every source test number is assigned exactly once, every executable
+case configures its target plugin in a standalone resource, and every case
+starts the real APISIX-Go process before sending its request and evaluating the
+response or fixture assertion. Redis, Kafka, LDAP, cloud, tracing, and logger
+dependencies are deterministic loopback fixtures owned by the case; no source
+block is represented by a skip or a placeholder reason.
 
 The upstream expected behavior remains authoritative for converted cases. If a
-selected case exposes a Go implementation mismatch, the implementation is
-fixed within that plugin's converted scope. The assertion must not be weakened
-to preserve an incompatible current behavior. Native/OpenResty-only semantics
-remain outside scope and must not be approximated silently.
+case exposes a Go implementation mismatch, the implementation is fixed within
+that plugin's converted scope with a focused regression test. Native/OpenResty-
+only semantics remain outside the Go-native contract and are documented rather
+than approximated silently.
 
 ## Commands and Gate Integration
 
@@ -340,16 +316,14 @@ standard library. It does not add a new dependency.
 The design is implemented when:
 
 1. `t/plugin` contains the strict declarative runner and documented schema.
-2. The three initial plugin manifests trace every case to upstream `.t` test
-   numbers.
-3. The manifest coverage validator proves all 48 redirect, 57 proxy-rewrite,
-   and 27 response-rewrite source blocks are represented exactly once.
+2. The complete manifest set traces every case to upstream `.t` test numbers.
+3. The manifest coverage validator proves every pinned source test number is
+   represented exactly once.
 4. Each executable case launches the real APISIX-Go command in standalone YAML mode and
    uses isolated temporary state.
 5. Client response and optional fixture-upstream request assertions fail with
    actionable diagnostics.
-6. The three skip cases are emitted visibly with their concrete non-plugin
-   reasons; no source block is omitted silently.
+6. No source block is omitted or represented by a skip placeholder.
 7. `source .envrc && make test-integration` passes.
 8. `source .envrc && go test ./... -count=1` passes.
 9. `source .envrc && make lint` passes.

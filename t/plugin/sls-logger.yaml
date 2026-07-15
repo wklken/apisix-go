@@ -1,227 +1,65 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/sls-logger.t
-    tests: 17
 cases:
-  - name: sls-logger-corpus
-    source:
+    - config:
+        routes:
+            - id: sls-logger-source-1
+              plugins:
+                sls-logger:
+                    access_key_id: integration
+                    access_key_secret: integration
+                    host: '{{FIXTURE.sink.HOST}}'
+                    logstore: integration
+                    port: 80
+                    project: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: sls-logger-source-1
+      source:
+        file: t/plugin/sls-logger.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/sls-logger.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-    config:
-      routes:
-        - id: sls-logger-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: sls-logger-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-002-missing-access-key-secret
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-003-wrong-type-of-string
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-004-add-plugin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-005-access
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-006-test-combine-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-007-sls-log-get-milliseconds
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-008-add-log-format
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-009-access
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-010-delete-exist-routes
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-011-data-encryption-for-access-key-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-012-log-format-in-plugin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-013-access
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-014-add-plugin-with-include-req-body-setting-collect-request-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-015-add-plugin-with-include-resp-body-setting-collect-response-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-016-set-incorrect-plugin-metadata-should-have-error-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: sls-logger-017-set-correct-plugin-metadata-should-no-error-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 17

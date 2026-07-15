@@ -1,535 +1,110 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/multi-auth.t
-    tests: 22
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/multi-auth2.t
-    tests: 16
 cases:
-  - name: multi-auth-corpus
-    source:
+    - config:
+        routes:
+            - id: multi-auth-source-1
+              plugins:
+                multi-auth:
+                    auth_plugins:
+                        - key-auth: {}
+                        - basic-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: multi-auth-source-1
+      source:
+        file: t/plugin/multi-auth.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-without-auth
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: multi-auth-source-2
+              plugins:
+                multi-auth:
+                    auth_plugins:
+                        - key-auth: {}
+                        - basic-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: multi-auth-source-2
+      source:
+        file: t/plugin/multi-auth2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-without-auth
+          output:
+            status: 401
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/multi-auth.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-    config:
-      routes:
-        - id: multi-auth-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: multi-auth-001-add-consumer-with-basic-auth-and-key-auth-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-002-enable-multi-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-003-verify-missing-authorization
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth-004-verify-basic-auth
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-005-verify-key-auth
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-006-verify-invalid-basic-credentials
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic YmFyOmJhcgo="
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth-007-verify-invalid-api-key
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: auth-two
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth-008-enable-multi-auth-plugin-with-invalid-plugin-conf-in-first-auth-p
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: multi-auth-009-enable-multi-auth-plugin-with-invalid-plugin-conf-in-second-auth-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: multi-auth-010-enable-multi-auth-plugin-with-invalid-plugin-conf-in-third-auth-p
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: multi-auth-011-enable-multi-auth-plugin-with-default-plugin-conf
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-012-verify-missing-authorization
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth-013-verify-basic-auth
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-014-verify-key-auth
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-015-verify-invalid-basic-credentials
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic YmFyOmJhcgo="
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth-016-verify-invalid-api-key
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: auth-two
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth-017-enable-multi-auth-plugin-using-admin-api-without-any-auth-plugins
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: multi-auth-018-enable-multi-auth-plugin-using-admin-api-with-auth-plugins-config
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: multi-auth-019-add-consumer-with-username-and-jwt-auth-plugins
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-020-sign-verify-jwt-auth
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-021-verify-multi-auth-with-plugin-config-will-cause-the-conf-version-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth-022-auth-plugin-returning-a-code-with-nil-error-message-does-not-rais
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: multi-auth2-corpus
-    source:
+      tests: 22
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/multi-auth2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-    config:
-      routes:
-        - id: multi-auth2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: multi-auth2-001-add-consumer-with-basic-auth-and-key-auth-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-002-enable-multi-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-003-invalid-key-auth-apikey
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: "123"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-004-valid-key-auth-apikey
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-005-invalid-basic-auth-credentials
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic YmFyOmJhcgo="
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-006-valid-basic-auth-creds
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-007-missing-hmac-auth-authorization-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-008-hmac-auth-missing-algorithm
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",headers=\"@request-target date\" ,signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-009-test-with-invalid-jwt-auth-token
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-010-create-public-api-route-jwt-auth-sign
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-011-add-consumer-with-username-and-jwt-auth-plugins
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-012-test-with-expired-jwt-token
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-013-test-with-jwt-token-containing-wrong-signature
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNnJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: multi-auth2-014-verify-jwt-auth
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-015-enable-multi-auth-plugin-with-non-existent-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: multi-auth2-016-invalid-basic-auth-credentials
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
+      tests: 16

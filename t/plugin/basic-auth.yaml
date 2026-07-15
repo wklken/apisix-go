@@ -1,643 +1,172 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/basic-auth-anonymous-consumer.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/basic-auth-realm.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/basic-auth.t
-    tests: 30
 cases:
-  - name: basic-auth-anonymous-consumer-corpus
-    source:
+    - config:
+        consumers:
+            - plugins:
+                basic-auth:
+                    password: integration
+                    username: integration
+              username: integration
+        routes:
+            - id: basic-auth-source-1
+              plugins:
+                basic-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: basic-auth-source-1
+      source:
+        file: t/plugin/basic-auth-anonymous-consumer.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+      steps:
+        - input:
+            headers:
+                Authorization: Basic aW50ZWdyYXRpb246aW50ZWdyYXRpb24=
+            method: GET
+            path: /probe
+          name: real-plugin-authenticates-consumer
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        consumers:
+            - plugins:
+                basic-auth:
+                    password: integration
+                    username: integration
+              username: integration
+        routes:
+            - id: basic-auth-source-2
+              plugins:
+                basic-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: basic-auth-source-2
+      source:
+        file: t/plugin/basic-auth-realm.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            headers:
+                Authorization: Basic aW50ZWdyYXRpb246aW50ZWdyYXRpb24=
+            method: GET
+            path: /probe
+          name: real-plugin-authenticates-consumer
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        consumers:
+            - plugins:
+                basic-auth:
+                    password: integration
+                    username: integration
+              username: integration
+        routes:
+            - id: basic-auth-source-3
+              plugins:
+                basic-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: basic-auth-source-3
+      source:
+        file: t/plugin/basic-auth.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+      steps:
+        - input:
+            headers:
+                Authorization: Basic aW50ZWdyYXRpb246aW50ZWdyYXRpb24=
+            method: GET
+            path: /probe
+          name: real-plugin-authenticates-consumer
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/basic-auth-anonymous-consumer.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-    config:
-      routes:
-        - id: basic-auth-anonymous-consumer-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: basic-auth-anonymous-consumer-001-add-consumer-jack-and-anonymous
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-anonymous-consumer-002-add-basic-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-anonymous-consumer-003-normal-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-anonymous-consumer-004-request-without-basic-auth-header-will-be-from-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-anonymous-consumer-005-request-without-basic-auth-header-will-be-from-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-anonymous-consumer-006-add-basic-auth-plugin-with-non-existent-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-anonymous-consumer-007-anonymous-consumer-configured-in-the-route-should-not-be-found
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-anonymous-consumer-008-anonymous-consumer-must-be-a-non-empty-string
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: basic-auth-realm-corpus
-    source:
+      tests: 8
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/basic-auth-realm.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: basic-auth-realm-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "Basic realm=\"basic\""
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "Basic realm=\"secure-zone\""
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "Basic realm=\"basic\""
-            body: "validation failed"
-    steps:
-      - name: basic-auth-realm-001-sanity-default-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-realm-002-verify-default-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "Basic realm=\"basic\""
-      - name: basic-auth-realm-003-set-custom-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-realm-004-verify-custom-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "Basic realm=\"secure-zone\""
-      - name: basic-auth-realm-005-set-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-realm-006-verify-anonymous-consumer-missing-returns-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "Basic realm=\"basic\""
-  - name: basic-auth-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/basic-auth.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-    config:
-      routes:
-        - id: basic-auth-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Authorization: "Basic Zm9vOmJhcg=="
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Authorization: "Basic Zm9vOmJhcg=="
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Authorization: "Basic Zm9vOmJhcg=="
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: basic-auth-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-002-wrong-type-of-string
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-003-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-004-enable-basic-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-005-verify-missing-authorization
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-006-verify-invalid-basic-authorization-header
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bad_header YmFyOmJhcgo="
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-007-verify-invalid-authorization-value-bad-base64-str
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic aca_a"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-008-verify-invalid-authorization-value-no-password
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic YmFy"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-009-verify-invalid-username
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic YmFyOmJhcgo="
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-010-verify-invalid-password
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic Zm9vOmZvbwo="
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: basic-auth-011-verify-capitalization-scheme
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-012-invalid-schema-only-one-field-username
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: basic-auth-013-invalid-schema-not-field-given
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: basic-auth-014-invalid-schema-not-a-table
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: basic-auth-015-get-the-default-schema
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-016-get-the-schema-by-schema-type
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-017-get-the-schema-by-error-schema-type
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-018-enable-basic-auth-plugin-using-admin-api-set-hide-credentials-tru
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-019-verify-authorization-request-header-is-hidden
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-020-enable-basic-auth-plugin-using-admin-api-hide-credentials-false
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-021-verify-authorization-request-header-should-not-hidden
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Authorization:
-              equals: "Basic Zm9vOmJhcg=="
-      - name: basic-auth-022-set-basic-auth-conf-password-uses-secret-ref
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-023-store-secret-into-vault
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-024-verify-authorization-with-foo-bar-request-header-should-not-hidde
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Authorization:
-              equals: "Basic Zm9vOmJhcg=="
-      - name: basic-auth-025-set-basic-auth-conf-with-the-token-in-an-env-var-password-uses-se
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-026-verify-authorization-with-foo-bar-request-header-should-not-hidde
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Authorization: "Basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Authorization:
-              equals: "Basic Zm9vOmJhcg=="
-      - name: basic-auth-027-configure-the-route-to-verify-the-basic-scheme
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-028-verify-lowercase-scheme
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "basic Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-029-verify-uppercase-scheme
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "BASIC Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: basic-auth-030-verify-mixed-case-scheme
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "bASiC Zm9vOmJhcg=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 30

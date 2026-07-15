@@ -1,269 +1,121 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/log-rotate.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/log-rotate2.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/log-rotate3.t
-    tests: 6
 cases:
-  - name: log-rotate-corpus
-    source:
+    - config:
+        routes:
+            - id: log-rotate-source-1
+              plugins:
+                log-rotate: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: log-rotate-source-1
+      source:
+        file: t/plugin/log-rotate.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: log-rotate-source-2
+              plugins:
+                log-rotate: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: log-rotate-source-2
+      source:
+        file: t/plugin/log-rotate2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: log-rotate-source-3
+              plugins:
+                log-rotate: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: log-rotate-source-3
+      source:
+        file: t/plugin/log-rotate3.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/log-rotate.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: log-rotate-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: log-rotate-001-log-rotate
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate-002-in-current-log
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate-003-fix-ensure-only-one-timer-is-running
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate-004-disable-log-rotate-via-hot-reload
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate-005-check-file-changes-disable-compression
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate-006-reopen-plugin-and-access-logs-even-if-one-configured-log-file-is-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-  - name: log-rotate2-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/log-rotate2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-    config:
-      routes:
-        - id: log-rotate2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: log-rotate2-001-log-rotate-with-enable-log-file-compression
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate2-002-in-current-log-with-enable-log-file-compression
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate2-003-check-file-changes-enable-compression
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate2-004-test-rotate-time-align
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate2-005-max-kept-effective-on-compression-files
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: log-rotate3-corpus
-    source:
+      tests: 5
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/log-rotate3.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: log-rotate3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: log-rotate3-001-log-rotate-by-max-size
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate3-002-in-current-log
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate3-003-check-file-changes
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate3-004-max-kept-effective-on-differently-named-compression-files
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate3-005-check-whether-new-log-files-were-created
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: log-rotate3-006-do-not-rotate-access-log-files-when-access-log-is-disable
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 6

@@ -280,8 +280,8 @@ func externalUserField(user any, path string) (any, bool) {
 	}
 
 	path = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(path), "$"))
-	if strings.HasPrefix(path, "..") {
-		segments := pathSegments(strings.TrimPrefix(path, ".."))
+	if path, ok := strings.CutPrefix(path, ".."); ok {
+		segments := pathSegments(path)
 		matches := findExternalUserFields(object, segments)
 		return externalUserMatches(matches), len(matches) > 0
 	}

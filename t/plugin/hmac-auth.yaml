@@ -1,1004 +1,264 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/hmac-auth-anonymous-consumer.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/hmac-auth-realm.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/hmac-auth.t
-    tests: 40
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/hmac-auth2.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/hmac-auth3.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/hmac-auth4.t
-    tests: 5
 cases:
-  - name: hmac-auth-anonymous-consumer-corpus
-    source:
+    - config:
+        routes:
+            - id: hmac-auth-source-1
+              plugins:
+                hmac-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: hmac-auth-source-1
+      source:
+        file: t/plugin/hmac-auth-anonymous-consumer.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: hmac-auth-source-2
+              plugins:
+                hmac-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: hmac-auth-source-2
+      source:
+        file: t/plugin/hmac-auth-realm.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: hmac-auth-source-3
+              plugins:
+                hmac-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: hmac-auth-source-3
+      source:
+        file: t/plugin/hmac-auth.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+            - 35
+            - 36
+            - 37
+            - 38
+            - 39
+            - 40
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: hmac-auth-source-4
+              plugins:
+                hmac-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: hmac-auth-source-4
+      source:
+        file: t/plugin/hmac-auth2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: hmac-auth-source-5
+              plugins:
+                hmac-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: hmac-auth-source-5
+      source:
+        file: t/plugin/hmac-auth3.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: hmac-auth-source-6
+              plugins:
+                hmac-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: hmac-auth-source-6
+      source:
+        file: t/plugin/hmac-auth4.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/hmac-auth-anonymous-consumer.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: hmac-auth-anonymous-consumer-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: hmac-auth-anonymous-consumer-001-add-consumer-jack-and-anonymous
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-anonymous-consumer-002-add-hmac-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-anonymous-consumer-003-request-without-hmac-auth-header-will-be-from-anonymous-consumer-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-anonymous-consumer-004-request-without-hmac-auth-header-will-be-from-anonymous-consumer-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-anonymous-consumer-005-add-hmac-auth-plugin-with-non-existent-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-anonymous-consumer-006-anonymous-consumer-configured-in-the-route-should-not-be-found
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-  - name: hmac-auth-realm-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/hmac-auth-realm.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: hmac-auth-realm-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "hmac realm=\"hmac\""
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "hmac realm=\"my-hmac-realm\""
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "hmac realm=\"hmac\""
-            body: "validation failed"
-    steps:
-      - name: hmac-auth-realm-001-sanity-default-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-realm-002-verify-default-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "hmac realm=\"hmac\""
-      - name: hmac-auth-realm-003-set-custom-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-realm-004-verify-custom-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "hmac realm=\"my-hmac-realm\""
-      - name: hmac-auth-realm-005-set-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-realm-006-verify-anonymous-consumer-missing-returns-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "hmac realm=\"hmac\""
-  - name: hmac-auth-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/hmac-auth.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-    config:
-      routes:
-        - id: hmac-auth-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: hmac-auth-001-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-002-add-consumer-with-plugin-hmac-auth-missing-secret-key
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-003-add-consumer-with-plugin-hmac-auth-missing-key-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-004-add-consumer-with-plugin-hmac-auth-key-id-exceeds-the-length-limi
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-005-add-consumer-with-plugin-hmac-auth-secret-key-exceeds-the-length-
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-006-enable-hmac-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-007-verify-missing-authorization-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-008-verify-missing-algorithm
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",headers=\"@request-target date\" ,signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-009-verify-invalid-key-id
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"sdf\",algorithm=\"hmac-sha256\",headers=\"@request-target date\",signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-010-verify-invalid-algorithm
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",algorithm=\"ljlj\",headers=\"@request-target date\",signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-011-verify-clock-skew-exceeded
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",algorithm=\"hmac-sha256\",headers=\"@request-target date\",signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-012-verify-missing-date
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",algorithm=\"hmac-sha256\",headers=\"@request-target date\",signature=\"asdf\""
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-013-verify-invalid-gmt-format-time
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",algorithm=\"hmac-sha256\",headers=\"@request-target date\",signature=\"asdf\""
-            Date: adfsdf
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-014-verify-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-015-add-route-with-0-clock-skew
-        input:
-          method: GET
-          path: "/hello"
-          body: "-- error_code: 400"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: hmac-auth-016-add-route-with-valid-clock-skew
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-017-verify-invalid-signature
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",algorithm=\"hmac-sha256\",headers=\"@request-target date\",signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-018-verify-invalid-signature
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Signature keyId=\"my-access-key\",algorithm=\"hmac-sha256\",headers=\"@request-target date\",signature=\"asdf\""
-            Date: "Thu, 24 Sep 2020 06:39:52 GMT"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-019-add-route-with-1-clock-skew
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-020-verify-invalid-gmt-format-time
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-021-update-route-with-default-clock-skew
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-022-verify-put-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-023-update-route-with-signed-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-024-verify-with-invalid-signed-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-025-verify-ok-with-signed-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-026-add-consumer-with-plugin-hmac-auth-empty-configuration
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-027-add-route-with-no-allowed-algorithms
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-028-update-route-with-signed-headers
-        input:
-          method: GET
-          path: "/headers"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-029-verify-authorization-header-missing
-        input:
-          method: GET
-          path: "/headers"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-030-update-route-with-signed-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-031-verify-error-with-the-client-only-sends-one-in-the-request-but-th
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-032-verify-error-with-the-client-sends-two-in-the-request-but-there-i
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-033-update-route-with-allowed-algorithms
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-034-verify-with-hmac-sha1-algorithm-not-part-of-allowed-algorithms
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth-035-update-route-to-default-hmac-auth-config-no-signed-headers-overri
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-036-default-signed-headers-requires-date-in-signing-headers-clause-om
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: hmac-auth-037-default-signed-headers-accepts-a-request-that-binds-date-into-the
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-038-changing-only-the-date-on-an-existing-authorization-triggers-repl
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-039-update-route-to-opt-out-of-default-signed-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth-040-with-signed-headers-a-request-signing-only-request-target-is-acce
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: hmac-auth2-corpus
-    source:
+      tests: 40
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/hmac-auth2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-    config:
-      routes:
-        - id: hmac-auth2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: hmac-auth2-001-enable-the-hmac-auth-plugin
-        input:
-          method: GET
-          path: "/uri"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth2-002-get-the-default-schema
-        input:
-          method: GET
-          path: "/uri"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth2-003-get-the-schema-by-schema-type
-        input:
-          method: GET
-          path: "/uri"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth2-004-get-the-schema-by-error-schema-type
-        input:
-          method: GET
-          path: "/uri"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth2-005-enable-hmac-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: hmac-auth3-corpus
-    source:
+      tests: 5
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/hmac-auth3.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-    config:
-      routes:
-        - id: hmac-auth3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 413
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: hmac-auth3-001-add-consumer-with-validate-request-body
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth3-002-enable-hmac-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth3-003-missing-body-digest-when-validate-request-body-is-enabled
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth3-004-verify-body-digest-not-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: hmac-auth3-005-verify-body-digest-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth3-006-enable-hmac-auth-with-a-small-max-req-body-size
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth3-007-request-body-larger-than-max-req-body-size-is-rejected-with-413
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 413
-          body:
-            equals: "validation failed"
-      - name: hmac-auth3-008-request-body-within-max-req-body-size-is-accepted
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: hmac-auth4-corpus
-    source:
+      tests: 8
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/hmac-auth4.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-    config:
-      routes:
-        - id: hmac-auth4-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: hmac-auth4-001-set-hmac-auth-conf-secret-key-uses-secret-ref
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth4-002-store-secret-into-vault
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth4-003-verify-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth4-004-set-hmac-auth-conf-with-the-token-in-an-env-var-secret-key-uses-s
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: hmac-auth4-005-verify-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 5

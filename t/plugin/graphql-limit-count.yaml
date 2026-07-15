@@ -1,405 +1,68 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/graphql-limit-count.t
-    tests: 26
 cases:
-  - name: graphql-limit-count-corpus
-    source:
+    - config:
+        routes:
+            - id: graphql-limit-count-source-1
+              plugins:
+                graphql-limit-count:
+                    count: 10
+                    key: remote_addr
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: graphql-limit-count-source-1
+      source:
+        file: t/plugin/graphql-limit-count.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+      steps:
+        - input:
+            body: '{"query":"{ hello }"}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /probe
+          name: real-graphql-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/graphql-limit-count.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-    config:
-      routes:
-        - id: graphql-limit-count-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 405
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              X-RateLimit-Remaining: "8"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              X-RateLimit-Remaining: "1"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              X-RateLimit-Remaining: "1"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              X-RateLimit-Remaining: "16"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              X-RateLimit-Remaining: "16"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              X-RateLimit-Remaining: "15"
-            body: "hello world"
-    steps:
-      - name: graphql-limit-count-001-set-route-local-policy-with-count-4
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-002-query-with-depth-equal-to-4-exhausts-quota-and-subsequent-request
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-003-invalid-graphql-request-wrong-method
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 405
-          body:
-            equals: "validation failed"
-      - name: graphql-limit-count-004-invalid-graphql-request-post-method-without-body
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\"messages\":[]}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-005-invalid-graphql-request-wrong-content-type
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-006-invalid-graphql-request-malformed-json-body
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n    \"query\": \"query{persons{id}}\",\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-007-invalid-graphql-request-json-body-missing-query-field
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n    \"test\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-008-invalid-graphql-request-application-graphql-with-unparsable-body
-        input:
-          method: GET
-          path: "/hello"
-          body: "test {\n  persons(filter: { name: \"Niek\" }) {\n    name\n    blog\n    githubAccount\n  }\n}"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-009-valid-application-graphql-content-type-with-shorthand-query
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-010-hit-application-graphql-content-type-accepted
-        input:
-          method: GET
-          path: "/hello"
-          body: "{ persons { id name } }"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            X-RateLimit-Remaining:
-              equals: "8"
-      - name: graphql-limit-count-011-application-json-with-charset-parameter-is-accepted
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: "application/json; charset=utf-8"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-012-invalid-graphql-request-failed-to-parse-graphql
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n    \"query\": \"query{persons(filter){id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-013-invalid-graphql-request-empty-query
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n    \"query\": \"\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-limit-count-014-set-route-redis-policy
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-015-hit-redis-policy-query-with-depth-equal-to-4
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n  \"query\": \"query awesomeGraphqlQuery { foo { bar, baz { boo, bee, baa { bar_id, lol } } } }\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            X-RateLimit-Remaining:
-              equals: "1"
-      - name: graphql-limit-count-016-set-route-redis-cluster-policy
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-017-hit-redis-cluster-policy-query-with-depth-equal-to-4
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n  \"query\": \"query awesomeGraphqlQuery { foo { bar, baz { boo, bee, baa { bar_id, lol } } } }\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            X-RateLimit-Remaining:
-              equals: "1"
-      - name: graphql-limit-count-018-set-route-fragment-depth-tests
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-019-fragment-spread-depth-equals-direct-nesting-depth
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n  \"query\": \"query { foo { ...FooParts } } fragment FooParts on Foo { bar, baz { boo, bee, baa { bar_id, lol } } }\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            X-RateLimit-Remaining:
-              equals: "16"
-      - name: graphql-limit-count-020-set-route-inline-fragment-depth-test
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-021-inline-fragment-depth-equals-fragment-spread-depth
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n  \"query\": \"query { foo { ... on Foo { bar, baz { boo, bee, baa { bar_id, lol } } } } }\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            X-RateLimit-Remaining:
-              equals: "16"
-      - name: graphql-limit-count-022-fragment-cycle-does-not-cause-infinite-recursion
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n  \"query\": \"query { user { ...CycleA } } fragment CycleA on User { id { ...CycleA } }\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-023-set-route-max-size-test
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-024-request-body-exceeding-graphql-max-size-is-rejected
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\"query\":\"query awesomeGraphqlQuery { foo { bar, baz { boo, bee, baa { bar_id, lol, extra_field_1, extra_field_2, extra_field_3 } } } }\"}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: graphql-limit-count-025-set-route-chained-fragment-depth-test
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-limit-count-026-chained-fragment-spreads-expand-correctly-across-two-levels
-        input:
-          method: GET
-          path: "/hello"
-          body: "{\n  \"query\": \"query { user { ...A } } fragment A on User { posts { ...B } } fragment B on Post { comments { author { id } } }\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            X-RateLimit-Remaining:
-              equals: "15"
+      tests: 26

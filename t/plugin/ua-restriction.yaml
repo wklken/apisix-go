@@ -292,6 +292,10 @@ cases:
           routes:
             - id: ua-removal-removed
               uri: /hello
+              plugins:
+                ua-restriction:
+                  _meta:
+                    disable: true
               upstream: *fixture_upstream
         fixtures:
           - name: primary

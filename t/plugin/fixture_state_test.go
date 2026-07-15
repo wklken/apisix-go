@@ -20,8 +20,6 @@ type redisFixture struct {
 	errors    chan error
 	done      chan struct{}
 	closeOnce sync.Once
-	sequence  sync.Mutex
-	next      int
 	stateMu   sync.Mutex
 	values    map[string]string
 	integers  map[string]int64
@@ -63,16 +61,14 @@ func (f *redisFixture) serve() {
 			f.errors <- fmt.Errorf("accept Redis fixture connection: %w", err)
 			return
 		}
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
+		f.wg.Go(func() {
 			f.serveConnection(connection)
-		}()
+		})
 	}
 }
 
 func (f *redisFixture) serveConnection(connection net.Conn) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	reader := bufio.NewReader(connection)
 	for {
 		command, err := readRESPCommand(reader)
@@ -240,7 +236,8 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 	if len(command) > 1 {
 		script = command[1]
 	}
-	if strings.Contains(script, "redis.call(\"INCR\"") && strings.Contains(script, "redis.call(\"DECR\"") {
+	if strings.Contains(script, "redis.call(\"INCR\"") &&
+		strings.Contains(script, "redis.call(\"DECR\"") {
 		return writeRESPArray(writer, []string{"1", "0"})
 	}
 	return writeRESPInteger(writer, 1)
@@ -248,7 +245,10 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 
 func (f *redisFixture) writeClusterResponse(writer io.Writer, command []string) error {
 	if len(command) > 1 && strings.EqualFold(command[1], "SLOTS") {
-		return writeRESPRaw(writer, "*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$9\r\n127.0.0.1\r\n:"+f.port()+"\r\n")
+		return writeRESPRaw(
+			writer,
+			"*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$9\r\n127.0.0.1\r\n:"+f.port()+"\r\n",
+		)
 	}
 	return writeSimpleRESP(writer, "OK")
 }
@@ -309,7 +309,7 @@ func TestRedisFixtureServesRESP(t *testing.T) {
 		Name: "redis",
 		Kind: "redis",
 		NetworkExpect: []NetworkAssertion{{
-			Payload: &Matcher{Equals: stringPointer("PING")},
+			Payload: &Matcher{Equals: new("PING")},
 		}},
 		NetworkRespond: []NetworkResponse{{Payload: "ignored"}},
 	}
@@ -322,7 +322,7 @@ func TestRedisFixtureServesRESP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial Redis fixture: %v", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	if _, err := io.WriteString(connection, "*1\r\n$4\r\nPING\r\n"); err != nil {
 		t.Fatalf("write Redis command: %v", err)
 	}
@@ -341,10 +341,10 @@ func TestRedisFixtureSupportsStatefulCommands(t *testing.T) {
 		Name: "redis-state",
 		Kind: "redis",
 		NetworkExpect: []NetworkAssertion{
-			{Payload: &Matcher{Equals: stringPointer("SET quota 1 NX EX 60")}},
-			{Payload: &Matcher{Equals: stringPointer("INCR quota")}},
-			{Payload: &Matcher{Equals: stringPointer("HSET hash field 1")}},
-			{Payload: &Matcher{Equals: stringPointer("HGET hash field")}},
+			{Payload: &Matcher{Equals: new("SET quota 1 NX EX 60")}},
+			{Payload: &Matcher{Equals: new("INCR quota")}},
+			{Payload: &Matcher{Equals: new("HSET hash field 1")}},
+			{Payload: &Matcher{Equals: new("HGET hash field")}},
 		},
 		NetworkRespond: make([]NetworkResponse, 4),
 	}
@@ -357,9 +357,14 @@ func TestRedisFixtureSupportsStatefulCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial Redis fixture: %v", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	reader := bufio.NewReader(connection)
-	commands := [][]string{{"SET", "quota", "1", "NX", "EX", "60"}, {"INCR", "quota"}, {"HSET", "hash", "field", "1"}, {"HGET", "hash", "field"}}
+	commands := [][]string{
+		{"SET", "quota", "1", "NX", "EX", "60"},
+		{"INCR", "quota"},
+		{"HSET", "hash", "field", "1"},
+		{"HGET", "hash", "field"},
+	}
 	wantResponses := []string{"+OK\r\n", ":2\r\n", ":1\r\n", "$1\r\n1\r\n"}
 	for i, command := range commands {
 		if err := writeRESPCommand(connection, command); err != nil {
@@ -408,7 +413,7 @@ func readRESPCommand(reader *bufio.Reader) ([]string, error) {
 		return nil, fmt.Errorf("invalid RESP command count %q", line)
 	}
 	command := make([]string, 0, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		line, err = reader.ReadString('\n')
 		if err != nil {
 			return nil, err

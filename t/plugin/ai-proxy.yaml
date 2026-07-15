@@ -1,4359 +1,1255 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-anthropic.t
-    tests: 64
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-azure-openai.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-bedrock-single.t
-    tests: 18
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-bedrock.t
-    tests: 20
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-client-disconnect.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-fixture.t
-    tests: 14
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-flush.t
-    tests: 7
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-gemini.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-openrouter.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-passthrough.t
-    tests: 17
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-protocol-conversion.t
-    tests: 28
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-request-body-override.t
-    tests: 19
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-stream-limits.t
-    tests: 11
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-upstream-vars.t
-    tests: 7
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy-vertex-ai.t
-    tests: 12
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy.openai-compatible.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy.t
-    tests: 39
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy2.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/ai-proxy3.t
-    tests: 18
 cases:
-  - name: ai-proxy-anthropic-corpus
-    source:
+    - config:
+        routes:
+            - id: ai-proxy-source-1
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-1
+      source:
+        file: t/plugin/ai-proxy-anthropic.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+            - 35
+            - 36
+            - 37
+            - 38
+            - 39
+            - 40
+            - 41
+            - 42
+            - 43
+            - 44
+            - 45
+            - 46
+            - 47
+            - 48
+            - 49
+            - 50
+            - 51
+            - 52
+            - 53
+            - 54
+            - 55
+            - 56
+            - 57
+            - 58
+            - 59
+            - 60
+            - 61
+            - 62
+            - 63
+            - 64
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-2
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-2
+      source:
+        file: t/plugin/ai-proxy-azure-openai.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-3
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-3
+      source:
+        file: t/plugin/ai-proxy-bedrock-single.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-4
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-4
+      source:
+        file: t/plugin/ai-proxy-bedrock.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-5
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-5
+      source:
+        file: t/plugin/ai-proxy-client-disconnect.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-6
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-6
+      source:
+        file: t/plugin/ai-proxy-fixture.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-7
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-7
+      source:
+        file: t/plugin/ai-proxy-flush.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-8
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-8
+      source:
+        file: t/plugin/ai-proxy-gemini.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-9
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-9
+      source:
+        file: t/plugin/ai-proxy-openrouter.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-10
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-10
+      source:
+        file: t/plugin/ai-proxy-passthrough.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-11
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-11
+      source:
+        file: t/plugin/ai-proxy-protocol-conversion.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-12
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-12
+      source:
+        file: t/plugin/ai-proxy-request-body-override.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-13
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-13
+      source:
+        file: t/plugin/ai-proxy-stream-limits.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-14
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-14
+      source:
+        file: t/plugin/ai-proxy-upstream-vars.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-15
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-15
+      source:
+        file: t/plugin/ai-proxy-vertex-ai.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-16
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-16
+      source:
+        file: t/plugin/ai-proxy.openai-compatible.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-17
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-17
+      source:
+        file: t/plugin/ai-proxy.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+            - 35
+            - 36
+            - 37
+            - 38
+            - 39
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-18
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-18
+      source:
+        file: t/plugin/ai-proxy2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+    - config:
+        routes:
+            - id: ai-proxy-source-19
+              plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer integration
+                    override:
+                        endpoint: '{{FIXTURE.sink.URL}}'
+                    provider: openai-compatible
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /v1/chat/completions
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+              headers: {}
+              status: 200
+      name: ai-proxy-source-19
+      source:
+        file: t/plugin/ai-proxy3.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+      steps:
+        - input:
+            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /v1/chat/completions
+          name: real-ai-plugin-request
+          output:
+            body:
+                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-anthropic.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-        - 41
-        - 42
-        - 43
-        - 44
-        - 45
-        - 46
-        - 47
-        - 48
-        - 49
-        - 50
-        - 51
-        - 52
-        - 53
-        - 54
-        - 55
-        - 56
-        - 57
-        - 58
-        - 59
-        - 60
-        - 61
-        - 62
-        - 63
-        - 64
-    config:
-      routes:
-        - id: ai-proxy-anthropic-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-anthropic-001-set-route-for-request-conversion-tests-capture-forwarded-body
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-002-simple-text-message-conversion
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-003-system-prompt-as-string
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":512,\"system\":\"You are helpful.\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-004-system-prompt-as-content-blocks-array-with-cache-control
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":512,\"system\":[{\"type\":\"text\",\"text\":\"You are a coding assistant.\",\"cache_control\":{\"type\":\"ephemeral\"}},{\"type\":\"text\",\"text\":\"Always write tests.\"}],\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-005-tool-use-in-assistant-message-tool-calls-conversion
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather?\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_abc\",\"name\":\"get_weather\",\"input\":{\"location\":\"SF\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_abc\",\"content\":\"Sunny, 72F\"}]}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-006-response-with-tool-calls-anthropic-tool-use-blocks
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Get the weather\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-with-tool-calls.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-007-response-with-reasoning-content-thinking-block
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"Think about this\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-with-reasoning.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-008-cached-tokens-deducted-from-input-tokens
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-with-reasoning.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-009-error-response-passthrough
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"nonexistent\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-error.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-010-response-with-multiple-tool-calls-text-text-block-tool-use-blocks
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"check weather and time\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/chat-with-multiple-tool-calls.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-011-null-prompt-tokens-details-does-not-crash
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/null-details.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-012-null-usage-object-handled-gracefully
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/null-usage.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-013-null-message-fields-handled-gracefully
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/null-message.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-014-null-function-in-tool-calls-handled-gracefully
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"call tool\"}]}"
-          headers:
-            Content-Type: application/json
-            X-AI-Fixture: openai/null-function.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-015-whitelist-body-unknown-fields-are-not-forwarded
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-016-tool-choice-conversion-auto-any-tool-none
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-017-disable-parallel-tool-use-parallel-tool-calls-false
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-018-thinking-config-budget-thresholds
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-019-image-content-block-conversion
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-020-document-pdf-content-block-conversion
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-021-tool-result-with-array-content-text-image
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-022-empty-tools-array-does-not-produce-tools-field-bug-1-fix
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-023-response-format-from-output-config-format-json-schema
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-024-only-json-schema-output-formats-become-response-format
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-025-cache-control-stripped-from-tool-definitions
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-026-tool-use-with-empty-input-no-arguments
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-027-header-conversion-x-api-key-authorization-remove-anthropic
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-028-header-conversion-does-not-overwrite-existing-authorization
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-029-billing-header-cch-stripping
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-030-streaming-reasoning-content-delta-thinking-block-events
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-031-streaming-null-empty-finish-reason-does-not-stop-stream
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-032-streaming-usage-deferred-to-final-chunk-after-finish-reason
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-033-streaming-dynamic-content-block-index-thinking-text-tool
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-034-streaming-duplicate-chunks-after-message-stop-are-ignored
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-035-multiple-tool-results-in-single-user-message-separate-tool-messag
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-036-text-alongside-tool-results-tool-messages-first-then-text-message
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-037-mixed-text-tool-use-in-assistant-message
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-038-stop-sequences-stop-conversion
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-039-image-with-url-source-type
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-040-stream-true-adds-stream-options-include-usage
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-041-cache-control-stripped-from-system-messages-and-tools
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-042-metadata-user-id-user-field
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-043-anthropic-built-in-tools-are-silently-skipped
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-044-ping-sse-event-pass-through
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-045-tool-name-truncation-and-mapping
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-046-service-tier-passthrough
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-047-set-route-for-native-anthropic-protocol-built-in-var-tests
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-048-anthropic-streaming-accumulates-total-tokens-from-split-message-s
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":1024,\"stream\":true}"
-          headers:
-            X-AI-Fixture: anthropic/messages-streaming.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-049-anthropic-streaming-detects-tool-use-in-content-block-start-as-to
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather?\"}],\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":1024,\"stream\":true}"
-          headers:
-            X-AI-Fixture: anthropic/messages-streaming-with-tool-use.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-050-anthropic-non-streaming-writes-cache-tokens-to-access-log
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":1024}"
-          headers:
-            X-AI-Fixture: anthropic/messages-with-cache.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-051-anthropic-streaming-writes-cache-tokens-to-access-log
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":1024,\"stream\":true}"
-          headers:
-            X-AI-Fixture: anthropic/messages-streaming-with-cache.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-052-tool-choice-is-dropped-when-no-tools-are-forwarded-to-upstream
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-053-streaming-done-after-message-start-without-content-block-emits-me
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-054-malformed-tool-call-arguments-fall-back-to-empty-input-instead-of
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-055-tool-call-arguments-that-decode-to-non-object-fall-back-to-empty-
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-056-tool-results-precede-the-trailing-text-message-parallel-tool-call
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-057-media-alongside-tool-results-is-preserved-after-the-tool-messages
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-058-tool-result-only-no-extra-content-emits-no-trailing-message
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-059-adaptive-thinking-reasoning-effort-from-output-config-effort
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-060-response-format-from-output-format-json-schema-beta-shape
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-061-tool-use-in-history-uses-the-same-sanitized-name-as-the-tool-defi
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-062-a-rewritten-tool-name-does-not-take-a-name-another-tool-already-o
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-063-content-block-shaping-depends-on-the-role
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-anthropic-064-tool-choice-follows-the-declared-tool-name
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-azure-openai-corpus
-    source:
+      tests: 64
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-azure-openai.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-    config:
-      routes:
-        - id: ai-proxy-azure-openai-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-azure-openai-001-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-azure-openai-002-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-azure-openai-003-set-route-with-stream-true-sse
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-azure-openai-004-test-is-sse-works-as-expected
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-bedrock-single-corpus
-    source:
+      tests: 4
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-bedrock-single.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-    config:
-      routes:
-        - id: ai-proxy-bedrock-single-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Content-Type: application/vnd.amazon.eventstream
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-bedrock-single-001-set-route-with-bedrock-provider-single-ai-proxy
-        input:
-          method: GET
-          path: "/single-ai/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-002-send-bedrock-converse-request
-        input:
-          method: GET
-          path: "/single-ai/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-single-003-send-request-with-system-prompt
-        input:
-          method: GET
-          path: "/single-ai/converse"
-          body: "{\"system\":[{\"text\":\"You are a mathematician\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}],\"inferenceConfig\":{\"maxTokens\":1024}}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-single-004-verify-token-usage-in-response
-        input:
-          method: GET
-          path: "/single-ai/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-single-005-schema-validation-missing-required-auth-aws-fields
-        input:
-          method: GET
-          path: "/single-ai/converse2"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-bedrock-single-006-unsupported-protocol-error-request-to-non-converse-uri
-        input:
-          method: GET
-          path: "/single-ai/bedrock-chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-007-send-request-to-non-converse-uri-should-fail-with-unsupported-pro
-        input:
-          method: GET
-          path: "/single-ai/bedrock-chat"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: ai-proxy-bedrock-single-008-set-route-with-inference-profile-arn-as-model
-        input:
-          method: GET
-          path: "/single-ai/arn/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-009-send-request-with-arn-model-passes-through-sigv4-url-encoding
-        input:
-          method: GET
-          path: "/single-ai/arn/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-single-010-set-route-with-session-token-in-auth-aws
-        input:
-          method: GET
-          path: "/single-ai/session/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-011-send-request-with-session-token-verify-x-amz-security-token-propa
-        input:
-          method: GET
-          path: "/single-ai/session/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-single-012-route-with-default-endpoint-no-override-passes-schema-validation
-        input:
-          method: GET
-          path: "/single-ai/default/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-013-model-from-request-body-no-options-model-on-route
-        input:
-          method: GET
-          path: "/single-ai/body-model-only/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-014-send-request-with-body-supplied-model-path-is-built-from-body-mod
-        input:
-          method: GET
-          path: "/single-ai/body-model-only/converse"
-          body: "{\"model\":\"anthropic.claude-3-5-sonnet-20241022-v2:0\",\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-single-015-missing-model-both-on-route-and-in-body-clear-400-error
-        input:
-          method: GET
-          path: "/single-ai/body-model-only/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: ai-proxy-bedrock-single-016-route-for-streaming-single-ai-proxy-no-path-on-endpoint
-        input:
-          method: GET
-          path: "/single-ai/stream/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-single-017-stream-request-hits-converse-stream-and-forwards-eventstream-byte
-        input:
-          method: GET
-          path: "/single-ai/stream/converse"
-          body: "{\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Say hi\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-          headers:
-            Content-Type:
-              equals: application/vnd.amazon.eventstream
-      - name: ai-proxy-bedrock-single-018-non-stream-request-on-the-same-route-still-hits-converse
-        input:
-          method: GET
-          path: "/single-ai/stream/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-  - name: ai-proxy-bedrock-corpus
-    source:
+      tests: 18
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-bedrock.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-    config:
-      routes:
-        - id: ai-proxy-bedrock-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Content-Type: application/vnd.amazon.eventstream
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-bedrock-001-set-route-with-bedrock-provider
-        input:
-          method: GET
-          path: "/ai/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-002-send-bedrock-converse-request
-        input:
-          method: GET
-          path: "/ai/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-003-send-request-with-system-prompt
-        input:
-          method: GET
-          path: "/ai/converse"
-          body: "{\"system\":[{\"text\":\"You are a mathematician\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}],\"inferenceConfig\":{\"maxTokens\":1024}}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-004-verify-token-usage-in-response
-        input:
-          method: GET
-          path: "/ai/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-005-schema-validation-missing-required-auth-aws-fields
-        input:
-          method: GET
-          path: "/ai/converse2"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-bedrock-006-unsupported-protocol-error-request-to-non-converse-uri
-        input:
-          method: GET
-          path: "/ai/bedrock-chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-007-send-request-to-non-converse-uri-should-fail-with-unsupported-pro
-        input:
-          method: GET
-          path: "/ai/bedrock-chat"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: ai-proxy-bedrock-008-set-route-with-inference-profile-arn-as-model
-        input:
-          method: GET
-          path: "/ai/arn/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-009-send-request-with-arn-model-passes-through-sigv4-url-encoding
-        input:
-          method: GET
-          path: "/ai/arn/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-010-set-route-with-session-token-in-auth-aws
-        input:
-          method: GET
-          path: "/ai/session/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-011-send-request-with-session-token-verify-x-amz-security-token-propa
-        input:
-          method: GET
-          path: "/ai/session/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-012-route-with-default-endpoint-no-override-passes-schema-validation
-        input:
-          method: GET
-          path: "/ai/default/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-013-route-without-options-model-passes-schema-validation
-        input:
-          method: GET
-          path: "/ai/body-model/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-014-model-from-request-body-no-options-model-on-route
-        input:
-          method: GET
-          path: "/ai/body-model-only/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-015-send-request-with-body-supplied-model-path-is-built-from-body-mod
-        input:
-          method: GET
-          path: "/ai/body-model-only/converse"
-          body: "{\"model\":\"anthropic.claude-3-5-sonnet-20241022-v2:0\",\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-bedrock-016-missing-model-both-on-route-and-in-body-clear-400-error
-        input:
-          method: GET
-          path: "/ai/body-model-only/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: ai-proxy-bedrock-017-route-for-streaming-no-path-on-endpoint-model-from-options
-        input:
-          method: GET
-          path: "/ai/stream/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-018-stream-request-hits-converse-stream-and-forwards-eventstream-byte
-        input:
-          method: GET
-          path: "/ai/stream/converse"
-          body: "{\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Say hi\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-          headers:
-            Content-Type:
-              equals: application/vnd.amazon.eventstream
-      - name: ai-proxy-bedrock-019-stream-request-aggregates-response-text-and-token-usage
-        input:
-          method: GET
-          path: "/ai/stream/converse"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-bedrock-020-non-stream-request-still-hits-converse-control
-        input:
-          method: GET
-          path: "/ai/stream/converse"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"What is 1+1?\"}]}]}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-  - name: ai-proxy-client-disconnect-corpus
-    source:
+      tests: 20
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-client-disconnect.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-    config:
-      routes:
-        - id: ai-proxy-client-disconnect-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-client-disconnect-001-set-route-for-client-disconnect-test
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-client-disconnect-002-client-disconnect-aborts-upstream-read-early
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-client-disconnect-003-set-route-for-async-flush-disconnect-test
-        input:
-          method: GET
-          path: "/anything-async-flush"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-client-disconnect-004-async-flush-disconnect-still-aborts-upstream-read-early
-        input:
-          method: GET
-          path: "/anything-async-flush"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-fixture-corpus
-    source:
+      tests: 4
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-fixture.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-    config:
-      routes:
-        - id: ai-proxy-fixture-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 500
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-fixture-001-set-route-pointing-to-test-server-fixture-based-mock
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-002-json-fixture-openai-chat-completion
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-003-sse-fixture-openai-streaming-chat-completion
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/chat-streaming.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-004-missing-x-ai-fixture-header-falls-back-to-auth-check
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-fixture-005-nonexistent-fixture-returns-error-direct-test
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 500
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-fixture-006-set-route-for-anthropic-messages-endpoint
-        input:
-          method: GET
-          path: "/anthropic"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-007-json-fixture-anthropic-messages
-        input:
-          method: GET
-          path: "/anthropic"
-          body: "{\"model\":\"claude-3-5-sonnet-20241022\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":100}"
-          headers:
-            X-AI-Fixture: anthropic/messages-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-008-sse-fixture-anthropic-streaming-messages
-        input:
-          method: GET
-          path: "/anthropic"
-          body: "{\"model\":\"claude-3-5-sonnet-20241022\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":100,\"stream\":true}"
-          headers:
-            X-AI-Fixture: anthropic/messages-streaming.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-009-protocol-conversion-sse-fixture-deepseek-usage-null
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true}"
-          headers:
-            X-AI-Fixture: protocol-conversion/deepseek-usage-null.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-010-model-template-substitution-in-fixture
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-model-echo.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-011-custom-status-code-via-x-ai-fixture-status-direct-test
-        input:
-          method: GET
-          path: "/anthropic"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-012-path-traversal-prevention-direct-test
-        input:
-          method: GET
-          path: "/anthropic"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-013-embeddings-fixture
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"text-embedding-3-small\",\"input\":\"hello\"}"
-          headers:
-            X-AI-Fixture: openai/embeddings-list.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-fixture-014-tool-calling-fixture
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"weather in Paris\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-tools.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-flush-corpus
-    source:
+      tests: 14
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-flush.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-    config:
-      routes:
-        - id: ai-proxy-flush-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-flush-001-create-route-with-streaming-flush-interval-ms-0-per-chunk-sync-fl
-        input:
-          method: GET
-          path: "/flush-default"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-flush-002-interval-ms-0-per-chunk-flush-flush-thread-must-not-appear-sync-f
-        input:
-          method: GET
-          path: "/flush-default"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-flush-003-create-route-with-streaming-flush-interval-ms-50-background-threa
-        input:
-          method: GET
-          path: "/flush-interval"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-flush-004-interval-ms-50-background-thread-flush-flush-thread-log-must-appe
-        input:
-          method: GET
-          path: "/flush-interval"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-flush-005-streaming-flush-interval-ms-schema-rejects-negative-value
-        input:
-          method: GET
-          path: "/flush-interval"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-flush-006-streaming-flush-interval-ms-0-is-accepted-disables-background-thr
-        input:
-          method: GET
-          path: "/flush-interval"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-flush-007-omitting-streaming-flush-interval-ms-applies-default-value-of-10
-        input:
-          method: GET
-          path: "/flush-interval"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-gemini-corpus
-    source:
+      tests: 7
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-gemini.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-    config:
-      routes:
-        - id: ai-proxy-gemini-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-gemini-001-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-gemini-002-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-gemini-003-set-route-with-stream-true-sse
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-gemini-004-test-is-sse-works-as-expected
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-openrouter-corpus
-    source:
+      tests: 4
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-openrouter.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-    config:
-      routes:
-        - id: ai-proxy-openrouter-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-openrouter-001-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-openrouter-002-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-openrouter-003-set-route-with-stream-true-sse
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-openrouter-004-test-is-sse-works-as-expected
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-passthrough-corpus
-    source:
+      tests: 4
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-passthrough.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-    config:
-      routes:
-        - id: ai-proxy-passthrough-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-passthrough-001-set-route-for-images-generation-passthrough
-        input:
-          method: GET
-          path: "/v1/images/generations"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-002-images-generation-request-goes-through-passthrough-protocol
-        input:
-          method: GET
-          path: "/v1/images/generations"
-          body: "{\"model\":\"dall-e-3\",\"prompt\":\"A cute baby sea otter\",\"n\":1,\"size\":\"1024x1024\"}"
-          headers:
-            X-AI-Fixture: openai/images-generation.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-passthrough-003-passthrough-protocol-is-detected-last-chat-still-matches
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-004-request-with-messages-field-matches-openai-chat-not-passthrough
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-passthrough-005-passthrough-uses-override-endpoint-path
-        input:
-          method: GET
-          path: "/v1/images/generations"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-006-passthrough-with-override-endpoint-uses-endpoint-path-not-request
-        input:
-          method: GET
-          path: "/v1/images/generations"
-          body: "{\"model\":\"gpt-4o\",\"prompt\":\"test\"}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-passthrough-007-set-route-with-model-rewrite-for-passthrough
-        input:
-          method: GET
-          path: "/v1/images/generations"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-008-passthrough-rewrites-model-from-options
-        input:
-          method: GET
-          path: "/v1/images/generations"
-          body: "{\"model\":\"dall-e-2\",\"prompt\":\"test\",\"n\":1}"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-passthrough-009-protocol-detection-unit-test
-        input:
-          method: GET
-          path: "/v1/images/generations"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-010-set-route-for-passthrough-query-method-forwarding
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-011-passthrough-forwards-the-client-query-string-to-the-upstream
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args?name=foo"
-          body: "{\"prompt\":\"x\"}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-passthrough-012-set-route-for-passthrough-method-forwarding
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-013-passthrough-forwards-the-client-http-method-to-the-upstream
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite"
-          body: "{\"prompt\":\"x\"}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-014-set-route-whose-override-endpoint-carries-its-own-query-args
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-015-client-query-overrides-the-endpoint-query-on-conflicting-keys
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args?name=fromclient&ckey=cval"
-          body: "{\"prompt\":\"x\"}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-016-set-route-whose-auth-query-seeds-a-gateway-managed-credential
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-passthrough-017-client-query-cannot-override-the-configured-auth-query-credential
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args?akey=attacker&zname=foo"
-          body: "{\"prompt\":\"x\"}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-protocol-conversion-corpus
-    source:
+      tests: 17
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-protocol-conversion.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-    config:
-      routes:
-        - id: ai-proxy-protocol-conversion-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-protocol-conversion-001-set-up-route-anthropic-protocol-auto-detected-via-exact-v1-messag
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-002-send-anthropic-request-to-v1-messages-and-verify-protocol-convers
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{ \"model\": \"claude-3-5-sonnet-20241022\", \"messages\": [ { \"role\": \"user\",\"content\": \"hello\" } ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-protocol-conversion-003-missing-messages-field-returns-400
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{ \"model\": \"claude-3-5-sonnet-20241022\" }"
-          headers:
-            Authorization: "Bearer token"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-protocol-conversion-004-malformed-json-body-returns-400
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "this is not valid json"
-          headers:
-            Authorization: "Bearer token"
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-protocol-conversion-005-messages-field-is-wrong-type-non-array
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{ \"model\": \"claude-3-5-sonnet-20241022\", \"messages\": \"hello\" }"
-          headers:
-            Authorization: "Bearer token"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-protocol-conversion-006-messages-is-an-empty-array
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{ \"model\": \"claude-3-5-sonnet-20241022\", \"messages\": [] }"
-          headers:
-            Authorization: "Bearer token"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-protocol-conversion-007-set-up-route-for-stream-test-exact-uri-v1-messages-triggers-anthr
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-008-send-anthropic-stream-request-and-verify-sse-conversion
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-protocol-conversion-009-set-up-route-for-system-prompt-conversion-test
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-010-system-prompt-is-converted-to-openai-messages-0-with-role-system
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-protocol-conversion-011-set-up-route-for-tool-calling-conversion-test
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-012-tool-calling-request-response-conversion-anthropic-openai
-        input:
-          method: GET
-          path: "/v1/messages"
-          body: "{\"model\":\"claude-3-5-sonnet-20241022\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris?\"}],\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get weather\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}},\"required\":[\"location\"]}}]}"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-tools.json
-            test-type: tools
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-protocol-conversion-013-set-up-route-for-null-finish-reason-test
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-014-message-stop-emitted-only-once-finish-reason-as-json-null-must-no
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-015-set-up-route-for-openrouter-style-double-finish-reason-chunk-test
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-016-openrouter-sends-two-finish-reason-chunks-message-stop-must-appea
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-017-set-up-route-for-deepseek-style-usage-null-crash-test
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-018-deepseek-sends-usage-null-on-non-final-chunks-must-not-crash-cont
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-019-set-up-route-for-first-chunk-role-content-test-openrouter-pattern
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-020-first-chunk-contains-both-role-and-content-simultaneously-content
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-021-sse-encode-output-must-end-with-n-n-sse-spec-requires-blank-line-
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-022-empty-sse-data-frames-between-real-chunks-must-not-trigger-json-d
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-023-sse-encode-handles-edge-cases-correctly
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-024-set-up-route-for-usage-only-final-chunk-test
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-025-usage-in-a-separate-chunk-after-message-stop-message-delta-with-u
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-026-anthropic-sse-error-event-should-be-logged-at-warn-level
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-027-set-up-route-for-response-format-mismatch-test-openai-compatible-
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-protocol-conversion-028-streaming-502-when-converter-receives-mismatched-upstream-respons
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-request-body-override-corpus
-    source:
+      tests: 28
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-request-body-override.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-    config:
-      routes:
-        - id: ai-proxy-request-body-override-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-request-body-override-001-schema-rejects-unknown-fields-in-llm-options
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-request-body-override-002-schema-rejects-unknown-target-protocol-key-in-request-body
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-request-body-override-003-a-ai-proxy-forwards-the-original-body-when-it-is-not-rewritten
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-004-b-ai-proxy-multi-forwards-the-original-body-when-it-is-not-rewrit
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-005-c-build-request-does-not-reuse-raw-body-after-an-earlier-rewrite
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-006-llm-options-openai-provider-maps-max-tokens-to-max-completion-tok
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-007-llm-options-openai-compatible-provider-maps-max-tokens-to-max-tok
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-008-llm-options-openai-responses-api-maps-max-tokens-to-max-output-to
-        input:
-          method: GET
-          path: "/v1/responses"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-009-llm-options-ai-proxy-multi-per-instance-override
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-010-llm-options-always-force-overwrites-client-value
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-011-request-body-openai-chat-override-writes-fields-on-outgoing-body
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-012-request-body-non-force-deep-merge-fills-missing-nested-keys-witho
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-013-request-body-array-values-are-replaced-wholesale-stop-sequences
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-014-request-body-override-keyed-by-non-matching-target-protocol-is-ig
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-015-request-body-default-mode-client-value-takes-priority
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-016-request-body-force-override-mode-override-overwrites-client-field
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-017-request-body-override-applies-to-target-protocol-after-converter
-        input:
-          method: GET
-          path: "/v1/messages"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-018-ai-proxy-multi-per-instance-request-body-override
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-request-body-override-019-both-llm-options-and-request-body-coexist-request-body-wins
-        input:
-          method: GET
-          path: "/chat"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-stream-limits-corpus
-    source:
+      tests: 19
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-stream-limits.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-    config:
-      routes:
-        - id: ai-proxy-stream-limits-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 502
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 502
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 413
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: ai-proxy-stream-limits-001-set-route-with-max-stream-duration-ms-against-runaway-sse-upstrea
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-002-max-stream-duration-ms-aborts-the-stream-within-budget
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-003-set-route-with-max-response-bytes-against-runaway-sse-upstream
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-004-max-response-bytes-aborts-the-stream-after-byte-budget
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-005-set-route-for-non-streaming-oversized-content-length
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-006-non-streaming-response-with-oversized-content-length-is-rejected
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 502
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-stream-limits-007-schema-rejects-non-positive-max-stream-duration-ms
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-stream-limits-008-set-route-with-max-response-bytes-against-chunked-no-cl-upstream
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-009-chunked-non-streaming-response-exceeding-max-response-bytes-retur
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 502
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-stream-limits-010-set-route-with-max-req-body-size-to-bound-the-request-body
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-stream-limits-011-request-body-larger-than-max-req-body-size-is-rejected-with-413
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\": [{\"role\": \"user\", \"content\": \"this request body is well over ten bytes\"}]}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 413
-          body:
-            equals: "validation failed"
-  - name: ai-proxy-upstream-vars-corpus
-    source:
+      tests: 11
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-upstream-vars.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-    config:
-      routes:
-        - id: ai-proxy-upstream-vars-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-upstream-vars-001-set-route-with-ai-proxy-pointing-to-mock-server
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-upstream-vars-002-non-streaming-request-populates-upstream-variables-in-access-log
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-upstream-vars-003-streaming-request-populates-upstream-variables-in-access-log
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/chat-streaming.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-upstream-vars-004-upstream-uri-and-upstream-host-are-populated-with-the-target-path
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-upstream-vars-005-set-route-with-serverless-plugin-to-log-upstream-response-length
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-upstream-vars-006-non-streaming-request-has-non-zero-upstream-response-length
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-upstream-vars-007-streaming-request-has-non-zero-upstream-response-length
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/chat-streaming.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-vertex-ai-corpus
-    source:
+      tests: 7
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy-vertex-ai.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-    config:
-      routes:
-        - id: ai-proxy-vertex-ai-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy-vertex-ai-001-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-vertex-ai-002-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-vertex-ai-003-request-embeddings-check-values-field-in-response
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"input\": \"Your text string goes here\"}"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: vertex-ai/predictions-embeddings.json
-            test-type: vertex-embeddings
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-vertex-ai-004-request-embeddings-check-token-count-field-in-response
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"input\": \"Your text string goes here\"}"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: vertex-ai/predictions-embeddings.json
-            test-type: vertex-embeddings
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-vertex-ai-005-set-route-with-right-auth-gcp-service-account
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-vertex-ai-006-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            test-type: header_forwarding
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-vertex-ai-007-check-gcp-access-token-caching-works
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-vertex-ai-008-set-route-with-multiple-instances-and-gcp-service-account
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-vertex-ai-009-check-gcp-access-token-caching-works
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-vertex-ai-010-set-ai-proxy-multi-with-health-checks
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-vertex-ai-011-check-health-check-works
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-vertex-ai-012-vertex-predict-path-function-uses-ctx-var-llm-model
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy.openai-compatible-corpus
-    source:
+      tests: 12
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy.openai-compatible.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-    config:
-      routes:
-        - id: ai-proxy.openai-compatible-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy.openai-compatible-001-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy.openai-compatible-002-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy.openai-compatible-003-override-path
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy.openai-compatible-004-set-route-with-stream-true-sse
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy.openai-compatible-005-test-is-sse-works-as-expected
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy-corpus
-    source:
+      tests: 5
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-    config:
-      routes:
-        - id: ai-proxy-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 500
-            headers:
-              Content-Type: application/json
-            body: "validation failed"
-    steps:
-      - name: ai-proxy-001-minimal-viable-configuration
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-002-unsupported-provider
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-003-set-route-with-wrong-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-004-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-005-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-006-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-007-send-request-with-empty-body
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\":[]}"
-          headers:
-            Authorization: "Bearer token"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-008-send-request-with-wrong-method-get-should-work
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-009-wrong-json-in-request-body-should-give-error
-        input:
-          method: GET
-          path: "/anything"
-          body: "{}\"messages\": [ { \"role\": \"system\", \"cont"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-010-content-type-should-be-json
-        input:
-          method: GET
-          path: "/anything"
-          body: prompt%3Dwhat%2520is%25201%2520%252B%25201
-          headers:
-            Content-Type: application/x-www-form-urlencoded
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: ai-proxy-011-model-options-being-merged-to-request-body
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-012-override-path
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-013-set-route-with-stream-true-sse
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-014-test-is-sse-works-as-expected
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-015-proxy-embedding-endpoint
-        input:
-          method: GET
-          path: "/embeddings"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-016-send-request-to-embedding-api
-        input:
-          method: GET
-          path: "/embeddings"
-          body: "{\n    \"input\": \"The food was delicious and the waiter...\"\n}"
-          headers:
-            X-AI-Fixture: openai/embeddings-list.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-017-proxy-to-a-http-endpoint-without-explicit-port
-        input:
-          method: GET
-          path: "/post"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-018-send-request-to-post-api-should-work
-        input:
-          method: GET
-          path: "/post"
-          body: "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-019-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-020-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            test-type: header_forwarding
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-021-set-route-with-right-auth-header
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-022-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            test-type: header_forwarding
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-023-send-request-with-authorization-header
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer wrong token"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-024-b-accept-encoding-header-should-be-stripped-before-forwarding-to-
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            test-type: header_forwarding
-            Accept-Encoding: "gzip, deflate"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-025-responses-api-set-route
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-026-responses-api-should-not-inject-stream-options
-        input:
-          method: GET
-          path: "/v1/responses"
-          body: "{ \"model\": \"gpt-4o\", \"input\": \"What is 1+1?\", \"stream\": false }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/responses-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-027-responses-api-with-stream-true-should-not-inject-stream-options
-        input:
-          method: GET
-          path: "/v1/responses"
-          body: "{ \"model\": \"gpt-4o\", \"input\": \"What is 1+1?\", \"stream\": true }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/responses-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-028-responses-api-with-instructions-field
-        input:
-          method: GET
-          path: "/v1/responses"
-          body: "{ \"model\": \"gpt-4o\", \"input\": \"What is 1+1?\", \"instructions\": \"You are a math tutor\", \"stream\": false }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/responses-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-029-chat-completions-still-works-after-responses-api-support-regressi
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy-030-set-route-for-fragmented-sse-test
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-031-fragmented-sse-one-event-split-across-two-tcp-chunks
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-032-multiple-sse-events-in-a-single-chunk
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-033-set-route-for-responses-api-non-streaming-test
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-034-responses-api-non-streaming-passthrough-token-usage-extracted
-        input:
-          method: GET
-          path: "/v1/responses"
-          body: "{ \"model\": \"gpt-4o\", \"input\": \"What is 1+1?\" }"
-          headers:
-            Authorization: "Bearer token"
-            X-AI-Fixture: openai/responses-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-035-set-route-for-responses-api-streaming-test
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-036-responses-api-streaming-passthrough-token-usage-extracted-from-re
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-037-auth-query-should-not-be-mutated-across-requests-when-endpoint-ha
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-038-set-route-to-an-upstream-that-returns-5xx-with-an-error-body
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy-039-single-instance-ai-proxy-returns-the-upstream-5xx-error-body-to-t
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-        output:
-          status: 500
-          body:
-            equals: "validation failed"
-          headers:
-            Content-Type:
-              equals: application/json
-  - name: ai-proxy2-corpus
-    source:
+      tests: 39
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-    config:
-      routes:
-        - id: ai-proxy2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy2-001-set-route-with-wrong-query-param
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy2-002-send-request-wrong-api-key-rejected-by-upstream
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: ai-proxy2-003-set-route-with-right-query-param
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy2-004-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy2-005-set-route-without-overriding-the-endpoint-url
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy2-006-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: ai-proxy2-007-query-params-in-override-endpoint-should-be-sent-to-llm
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy2-008-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{ \"messages\": [ { \"role\": \"system\", \"content\": \"You are a mathematician\" }, { \"role\": \"user\", \"content\": \"What is 1+1?\"} ] }"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: ai-proxy3-corpus
-    source:
+      tests: 8
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy3.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-    config:
-      routes:
-        - id: ai-proxy3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: ai-proxy3-001-set-access-log
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-002-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\":[{\"role\":\"system\",\"content\":\"You are a mathematician\"},{\"role\":\"user\",\"content\":\"What is 1+1?\"}], \"model\": \"gpt-4\"}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy3-003-proxy-to-null-content-ai-endpoint
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-004-send-request
-        input:
-          method: GET
-          path: "/anything"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"What is 1+1?\"}], \"model\": \"gpt-4\"}"
-          headers:
-            X-AI-Fixture: openai/null-content.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy3-005-create-a-ai-proxy-multi-route-with-delay-streaming-ai-endpoint-ev
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-006-assert-access-log-contains-right-llm-variable
-        input:
-          method: GET
-          path: "/anything"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-007-set-route-for-built-in-access-log-variable-test
-        input:
-          method: GET
-          path: "/log-vars"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-008-non-streaming-request-writes-llm-built-in-vars-to-access-log
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"What is 1+1?\"}],\"model\":\"gpt-4o\",\"user\":\"alice\"}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy3-009-streaming-request-writes-llm-built-in-vars-to-access-log
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model\":\"gpt-4o\",\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/chat-multi-chunk.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-010-response-with-cached-tokens-writes-llm-cache-read-input-tokens-to
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Solve this\"}],\"model\":\"gpt-4o\"}"
-          headers:
-            X-AI-Fixture: openai/chat-with-reasoning.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: ai-proxy3-011-response-with-tool-calls-sets-llm-has-tool-calls-true-and-llm-too
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather?\"}],\"model\":\"gpt-4o\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{}}}]}"
-          headers:
-            X-AI-Fixture: openai/chat-with-tool-calls.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-012-safety-identifier-field-is-used-as-llm-end-user-id
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model\":\"gpt-4o\",\"safety_identifier\":\"user-xyz\"}"
-          headers:
-            X-AI-Fixture: openai/chat-basic.json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-013-openai-chat-streaming-detects-tool-calls-delta-and-sets-llm-has-t
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather?\"}],\"model\":\"gpt-4o\",\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/chat-streaming-with-tool-calls.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-014-set-route-for-responses-api-built-in-var-tests
-        input:
-          method: GET
-          path: "/ai/v1/responses"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-015-responses-api-streaming-sets-llm-cache-read-input-tokens-and-llm-
-        input:
-          method: GET
-          path: "/ai/v1/responses"
-          body: "{\"input\":\"Hello\",\"model\":\"gpt-4o-mini\",\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/responses-streaming-with-cache.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-016-responses-api-streaming-detects-function-call-in-response-output-
-        input:
-          method: GET
-          path: "/ai/v1/responses"
-          body: "{\"input\":\"What is the weather?\",\"model\":\"gpt-4o-mini\",\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/responses-streaming-with-tool-call.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-017-openai-chat-streaming-writes-cache-and-reasoning-tokens-to-access
-        input:
-          method: GET
-          path: "/log-vars"
-          body: "{\"messages\":[{\"role\":\"user\",\"content\":\"Solve this\"}],\"model\":\"gpt-4o\",\"stream\":true}"
-          headers:
-            X-AI-Fixture: openai/chat-streaming-with-cache.sse
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: ai-proxy3-018-responses-api-non-streaming-writes-cache-and-reasoning-tokens-to-
-        input:
-          method: GET
-          path: "/ai/v1/responses"
-          body: "{\"input\":\"Solve this\",\"model\":\"gpt-4o-mini\"}"
-          headers:
-            X-AI-Fixture: openai/responses-with-cache.json
-        output:
-          status: 200
-          body:
-            matches: "hello world"
+      tests: 18

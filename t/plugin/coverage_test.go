@@ -164,7 +164,6 @@ func TestManifestCorpusExercisesTargetPlugins(t *testing.T) {
 		t.Fatalf("discover manifests: %v", err)
 	}
 	for _, file := range files {
-		file := file
 		pluginName := manifestPluginName(file)
 		t.Run(pluginName, func(t *testing.T) {
 			data, err := os.ReadFile(file)

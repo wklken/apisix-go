@@ -118,6 +118,24 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	}
 }
 
+func TestNewWriterLeavesTopicForPerMessageRouting(t *testing.T) {
+	p := &Plugin{config: Config{
+		BrokerList: map[string]int{"127.0.0.1": 9092},
+		KafkaTopic: "apisix-logs",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	writer, err := p.newWriter()
+	if err != nil {
+		t.Fatalf("newWriter() error = %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+	if writer.Topic != "" {
+		t.Fatalf("writer topic = %q, want empty for per-message topic", writer.Topic)
+	}
+}
+
 func TestPostInitAcceptsDeprecatedBrokerListAndAppliesDefaults(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{

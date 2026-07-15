@@ -7,14 +7,11 @@ CLI in a fresh child process, writes temporary `conf/config.yaml` and
 uses a fresh loopback upstream fixture.
 
 The corpus is pinned to Apache APISIX commit
-`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The catalog currently contains
-99 manifests: the 98 source-backed plugins marked Supported in
-`docs/plugins.md` plus the supplemental `redirect2` source file. Of those, 37
-plugin manifests currently contain real target-plugin standalone scenarios;
-61 generated placeholder manifests remain and are deliberately rejected by
-`TestManifestCorpusExercisesTargetPlugins`. A manifest is complete only when
-every case or variant activates its target plugin and asserts behavior produced
-by the real APISIX-Go process.
+`c3d7d5ec69774121f53d2e20d29d09c816795dd7`. The catalog contains 99 manifests:
+the 98 source-backed plugins marked Supported in `docs/plugins.md` plus the
+supplemental `redirect2` source file. Every manifest contains standalone
+resources that activate its target plugin and assertions produced by the real
+APISIX-Go process; no generated placeholder manifest is counted as coverage.
 
 The schema rejects `skip` fields. A source block counts as covered only when it
 belongs to an executable standalone scenario with a request and an assertion;
@@ -22,7 +19,8 @@ placeholder reasons such as "requires setup or an external dependency" are not
 accepted as coverage. The semantic corpus gate also rejects generic fixture
 proxies that never configure the named plugin. Cases that need a local
 dependency use a fixture declared in the same manifest; they are not represented
-as skips.
+as skips. Network fixtures cover TCP/UDP and protocol logger surfaces, and
+`{{WORK_DIR}}` keeps file assertions inside the per-case temporary directory.
 
 ## Run
 

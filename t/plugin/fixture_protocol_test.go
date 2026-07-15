@@ -71,21 +71,19 @@ func (f *kafkaFixture) serve() {
 		f.connectionsMu.Lock()
 		f.connections[connection] = struct{}{}
 		f.connectionsMu.Unlock()
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
+		f.wg.Go(func() {
 			defer func() {
 				f.connectionsMu.Lock()
 				delete(f.connections, connection)
 				f.connectionsMu.Unlock()
 			}()
 			f.serveConnection(connection)
-		}()
+		})
 	}
 }
 
 func (f *kafkaFixture) serveConnection(connection net.Conn) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
 	reader := bufio.NewReader(connection)
 	for {
@@ -296,16 +294,14 @@ func (f *dubboFixture) serve() {
 			f.errors <- fmt.Errorf("accept Dubbo fixture connection: %w", err)
 			return
 		}
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
+		f.wg.Go(func() {
 			f.serveConnection(connection)
-		}()
+		})
 	}
 }
 
 func (f *dubboFixture) serveConnection(connection net.Conn) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	for {
 		frame, err := readDubboFrame(connection)
 		if err != nil {
@@ -371,6 +367,7 @@ func (f *dubboFixture) host() string {
 	host, _, _ := net.SplitHostPort(f.address())
 	return host
 }
+
 func (f *dubboFixture) port() string {
 	_, port, _ := net.SplitHostPort(f.address())
 	return port
@@ -383,6 +380,7 @@ func (f *dubboFixture) close() {
 		f.wg.Wait()
 	})
 }
+
 func (f *dubboFixture) assert(t *testing.T, spec FixtureSpec) {
 	t.Helper()
 	for i, expected := range spec.NetworkExpect {
@@ -407,7 +405,7 @@ func TestKafkaFixtureAcceptsProduceMessage(t *testing.T) {
 		Name: "kafka",
 		Kind: "kafka",
 		NetworkExpect: []NetworkAssertion{{
-			Payload: &Matcher{Equals: stringPointer("log-entry")},
+			Payload: &Matcher{Equals: new("log-entry")},
 		}},
 		NetworkRespond: []NetworkResponse{{Payload: "ignored"}},
 	}
@@ -440,7 +438,7 @@ func TestDubboFixtureReturnsResponseFrame(t *testing.T) {
 		Name: "dubbo",
 		Kind: "dubbo",
 		NetworkExpect: []NetworkAssertion{{
-			PayloadBase64: &Matcher{Equals: stringPointer(base64.StdEncoding.EncodeToString(request))},
+			PayloadBase64: &Matcher{Equals: new(base64.StdEncoding.EncodeToString(request))},
 		}},
 		NetworkRespond: []NetworkResponse{{
 			PayloadBase64: base64.StdEncoding.EncodeToString(response),
@@ -455,7 +453,7 @@ func TestDubboFixtureReturnsResponseFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial Dubbo fixture: %v", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	if _, err := connection.Write(request); err != nil {
 		t.Fatalf("write Dubbo request: %v", err)
 	}

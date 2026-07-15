@@ -1,1128 +1,152 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/proxy-cache/disk.t
-    tests: 29
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/proxy-cache/memory.t
-    tests: 47
 cases:
-  - name: disk-corpus
-    source:
+    - config:
+        routes:
+            - id: proxy-cache-source-1
+              plugins:
+                proxy-cache:
+                    cache_strategy: memory
+                    cache_ttl: 60
+                    cache_zone: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: proxy-cache-source-1
+      source:
+        file: t/plugin/proxy-cache/disk.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: proxy-cache-source-2
+              plugins:
+                proxy-cache:
+                    cache_strategy: memory
+                    cache_ttl: 60
+                    cache_zone: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: proxy-cache-source-2
+      source:
+        file: t/plugin/proxy-cache/memory.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+            - 35
+            - 36
+            - 37
+            - 38
+            - 39
+            - 40
+            - 41
+            - 42
+            - 43
+            - 44
+            - 45
+            - 46
+            - 47
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/proxy-cache/disk.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-    config:
-      routes:
-        - id: disk-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: BYPASS
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 404
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "validation failed"
-          - status: 404
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "validation failed"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: BYPASS
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 404
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: Foo
-              Cache-Control: bar
-              Expires: any
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: disk-001-sanity-check-missing-cache-zone-field-the-default-value-is-disk-c
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-002-sanity-check-invalid-type-for-cache-method
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-003-sanity-check-invalid-type-for-cache-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-004-sanity-check-invalid-type-for-cache-bypass
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-005-sanity-check-invalid-type-for-no-cache
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-006-sanity-check-illegal-character-for-cache-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-007-sanity-check-normal-case
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-008-hit-route-cache-miss
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-009-hit-route-cache-hit
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-010-hit-route-cache-bypass
-        input:
-          method: GET
-          path: "/hello?bypass=1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: BYPASS
-      - name: disk-011-purge-cache
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-012-hit-route-nocache
-        input:
-          method: GET
-          path: "/hello?no_cache=1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-013-hit-route-there-s-no-cache-indeed
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-014-hit-route-will-be-cached
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-015-hit-route-not-found
-        input:
-          method: GET
-          path: "/hello-not-found"
-        output:
-          status: 404
-          body:
-            matches: "validation failed"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-016-hit-route-404-there-s-no-cache-indeed
-        input:
-          method: GET
-          path: "/hello-not-found"
-        output:
-          status: 404
-          body:
-            matches: "validation failed"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-017-hit-route-will-be-cached
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-018-hit-route-head-method-mismatch-cache-method
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: BYPASS
-      - name: disk-019-hide-cache-headers-false
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-020-hit-route-catch-the-cache-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-021-purge-cache
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-022-purge-cache-not-found
-        input:
-          method: GET
-          path: "/hello-world"
-        output:
-          status: 404
-          body:
-            equals: "validation failed"
-      - name: disk-023-invalid-cache-zone
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-024-sanity-check-invalid-variable-for-cache-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-025-don-t-override-cache-relative-headers
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-026-hit-route
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Apisix-Cache-Status: Foo
-            Cache-Control: bar
-            Expires: any
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: Foo
-            Cache-Control:
-              equals: bar
-            Expires:
-              equals: any
-      - name: disk-027-sanity-check-invalid-method-for-cache-method
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: disk-028-nil-vars-for-cache-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-029-hit-route-with-nil-vars-in-cache-key
-        input:
-          method: GET
-          path: "/hello?bar=a"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: memory-corpus
-    source:
+      tests: 29
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/proxy-cache/memory.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-        - 41
-        - 42
-        - 43
-        - 44
-        - 45
-        - 46
-        - 47
-    config:
-      routes:
-        - id: memory-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: BYPASS
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 404
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "validation failed"
-          - status: 404
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "validation failed"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 404
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: Foo
-              Cache-Control: bar
-              Expires: any
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: EXPIRED
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: STALE
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: STALE
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: BYPASS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: BYPASS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 504
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: memory-001-sanity-check-invalid-cache-strategy
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: memory-002-sanity-check-invalid-cache-zone-when-specifying-cache-strategy-as
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: memory-003-sanity-check-normal-case-for-memory-strategy
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-004-hit-route-cache-miss
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-005-hit-route-cache-hit
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-006-hit-route-cache-bypass
-        input:
-          method: GET
-          path: "/hello?bypass=1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: BYPASS
-      - name: memory-007-purge-cache
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-008-hit-route-nocache
-        input:
-          method: GET
-          path: "/hello?no_cache=1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-009-hit-route-there-s-no-cache-indeed
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-010-hit-route-will-be-cached
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-011-hit-route-not-found
-        input:
-          method: GET
-          path: "/hello-not-found"
-        output:
-          status: 404
-          body:
-            matches: "validation failed"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-012-hit-route-404-there-s-no-cache-indeed
-        input:
-          method: GET
-          path: "/hello-not-found"
-        output:
-          status: 404
-          body:
-            matches: "validation failed"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-013-hit-route-head-method
-        input:
-          method: GET
-          path: "/hello-world"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-014-hit-route-head-method-there-s-no-cache
-        input:
-          method: GET
-          path: "/hello-world"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-015-purge-cache
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-016-purge-cache-not-found
-        input:
-          method: GET
-          path: "/hello-world"
-        output:
-          status: 404
-          body:
-            equals: "validation failed"
-      - name: memory-017-hide-cache-headers-false
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-018-hit-route-catch-the-cache-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-019-don-t-override-cache-relative-headers
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-020-hit-route
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Apisix-Cache-Status: Foo
-            Cache-Control: bar
-            Expires: any
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: Foo
-            Cache-Control:
-              equals: bar
-            Expires:
-              equals: any
-      - name: memory-021-set-cache-ttl-to-1
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-022-hit-route-miss
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-023-hit-route-hit
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-024-hit-route-miss
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: EXPIRED
-      - name: memory-025-enable-cache-control-option
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-026-hit-route-miss
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cache-Control: "max-age=60"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-027-hit-route-request-header-cache-control-with-max-age
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cache-Control: "max-age=1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: STALE
-      - name: memory-028-hit-route-request-header-cache-control-with-min-fresh
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cache-Control: "min-fresh=300"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: STALE
-      - name: memory-029-purge-cache
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-030-hit-route-request-header-cache-control-with-no-store
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cache-Control: no-store
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: BYPASS
-      - name: memory-031-hit-route-request-header-cache-control-with-no-cache
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cache-Control: no-cache
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: BYPASS
-      - name: memory-032-hit-route-response-header-cache-control-with-private
-        input:
-          method: GET
-          path: "/hello?cc=private"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-033-hit-route-response-header-cache-control-with-no-store
-        input:
-          method: GET
-          path: "/hello?cc=no-store"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-034-hit-route-response-header-cache-control-with-no-cache
-        input:
-          method: GET
-          path: "/hello?cc=no-cache"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-035-hit-route-request-header-cache-control-with-only-if-cached
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cache-Control: only-if-cached
-        output:
-          status: 504
-          body:
-            equals: "validation failed"
-      - name: memory-036-configure-plugin-without-memory-cache-zone-for-cache-strategy-mem
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: memory-037-proxy-cache-refuses-to-cache-authenticated-responses-that-set-a-s
-        input:
-          method: GET
-          path: "/profile"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-038-proxy-cache-refuses-to-cache-responses-with-set-cookie-by-default
-        input:
-          method: GET
-          path: "/profile"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-039-proxy-cache-honors-upstream-cache-control-private-regardless-of-c
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-040-consumer-isolation-partitions-the-cache-key-by-consumer
-        input:
-          method: GET
-          path: "/me-cacheable"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-041-vary-accept-encoding-partitions-cache-entries
-        input:
-          method: GET
-          path: "/vary-encoding"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-042-vary-refuses-to-cache
-        input:
-          method: GET
-          path: "/vary-star"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-043-vary-list-with-multiple-headers-order-independent-signature
-        input:
-          method: GET
-          path: "/vary-multi"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-044-purge-clears-every-variant-under-the-base-key
-        input:
-          method: GET
-          path: "/vary-encoding"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-045-purge-deletes-an-expired-entry-and-returns-200-not-404
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-046-proxy-cache-refuses-to-cache-a-plugin-generated-set-cookie-api-br
-        input:
-          method: GET
-          path: "/server-error"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-047-purge-clears-variants-even-after-the-vary-index-has-expired
-        input:
-          method: GET
-          path: "/vary-ttl"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 47

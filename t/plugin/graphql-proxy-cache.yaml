@@ -1,781 +1,170 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/graphql-proxy-cache/disk.t
-    tests: 11
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/graphql-proxy-cache/graphql.t
-    tests: 21
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/graphql-proxy-cache/memory.t
-    tests: 16
 cases:
-  - name: disk-corpus
-    source:
+    - config:
+        routes:
+            - id: graphql-proxy-cache-source-1
+              plugins:
+                graphql-proxy-cache:
+                    cache_strategy: memory
+                    cache_ttl: 60
+                    cache_zone: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: graphql-proxy-cache-source-1
+      source:
+        file: t/plugin/graphql-proxy-cache/disk.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+      steps:
+        - input:
+            body: '{"query":"{ hello }"}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /probe
+          name: real-graphql-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: graphql-proxy-cache-source-2
+              plugins:
+                graphql-proxy-cache:
+                    cache_strategy: memory
+                    cache_ttl: 60
+                    cache_zone: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: graphql-proxy-cache-source-2
+      source:
+        file: t/plugin/graphql-proxy-cache/graphql.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+      steps:
+        - input:
+            body: '{"query":"{ hello }"}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /probe
+          name: real-graphql-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: graphql-proxy-cache-source-3
+              plugins:
+                graphql-proxy-cache:
+                    cache_strategy: memory
+                    cache_ttl: 60
+                    cache_zone: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: graphql-proxy-cache-source-3
+      source:
+        file: t/plugin/graphql-proxy-cache/memory.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+      steps:
+        - input:
+            body: '{"query":"{ hello }"}'
+            headers:
+                Content-Type: application/json
+            method: POST
+            path: /probe
+          name: real-graphql-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/graphql-proxy-cache/disk.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-    config:
-      routes:
-        - id: disk-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-    steps:
-      - name: disk-001-set-route
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: disk-002-post-method-cache-miss
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-003-post-method-cache-hit
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-004-get-method-cache-miss
-        input:
-          method: GET
-          path: "/graphql?query=query%7Bpersons%7Bid%7D%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-005-get-method-cache-hit
-        input:
-          method: GET
-          path: "/graphql?query=query%7Bpersons%7Bid%7D%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-006-get-with-variables-cache-miss
-        input:
-          method: GET
-          path: "/graphql?query=query%20(%24name%3A%20String!)%20%7B%0A%20%20persons(filter%3A%20%7B%20name%3A%20%24name%20%7D)%20%7B%0A%20%20%20%20name%0A%20%20%20%20blog%0A%20%20%20%20githubAccount%0A%20%20%7D%0A%7D%0A&variables=%7B%22name%22%3A%22Niek%22%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-007-get-with-variables-cache-hit
-        input:
-          method: GET
-          path: "/graphql?query=query%20(%24name%3A%20String!)%20%7B%0A%20%20persons(filter%3A%20%7B%20name%3A%20%24name%20%7D)%20%7B%0A%20%20%20%20name%0A%20%20%20%20blog%0A%20%20%20%20githubAccount%0A%20%20%7D%0A%7D%0A&variables=%7B%22name%22%3A%22Niek%22%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-008-post-with-variables-cache-miss
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query($name:String!){persons(filter:{name:$name}){name\\nblog\\ngithubAccount}}\",\n    \"variables\": \"{\\\"name\\\": \\\"Niek\\\"}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-009-post-with-variables-cache-hit
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query($name:String!){persons(filter:{name:$name}){name\\nblog\\ngithubAccount}}\",\n    \"variables\": \"{\\\"name\\\": \\\"Niek\\\"}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: disk-010-post-by-grapgql-data-cache-miss
-        input:
-          method: GET
-          path: "/graphql"
-          body: "query {\n  persons(filter: { name: \"Niek\" }) {\n    name\n    blog\n    githubAccount\n  }\n}"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: disk-011-post-by-grapgql-data-cache-hit
-        input:
-          method: GET
-          path: "/graphql"
-          body: "query {\n  persons(filter: { name: \"Niek\" }) {\n    name\n    blog\n    githubAccount\n  }\n}"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-  - name: graphql-corpus
-    source:
+      tests: 11
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/graphql-proxy-cache/graphql.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-    config:
-      routes:
-        - id: graphql-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 405
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: BYPASS
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 404
-            headers: {}
-            body: "validation failed"
-          - status: 404
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: graphql-001-set-route-zone-not-exists
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-002-set-route-wrong-cache-strategy
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-003-set-route-normal
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-004-invalid-graphql-request-wrong-method
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 405
-          body:
-            equals: "validation failed"
-      - name: graphql-005-invalid-graphql-request-get-method-without-args
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-006-invalid-graphql-request-get-method-without-args
-        input:
-          method: GET
-          path: "/graphql?query=query%20(%24name%3A%20String!)%20%7B%0A%20%20persons(filter%3A%20%7B%20name%3A%20%24name%20%7D)%20%7B%0A%20%20%20%20name%0A%20%20%20%20blog%0A%20%20%20%20githubAccount%0A%20%20%7D%0A%7D%0A&variables=%7B%22name%22%3A%22Niek%22%7D"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-007-invalid-graphql-request-no-query
-        input:
-          method: GET
-          path: "/graphql?test=test"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-008-invalid-graphql-request-post-method-without-body
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\"messages\":[]}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-009-invalid-graphql-request-wrong-content-type
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-010-invalid-graphql-request-wrong-json
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}}\",\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-011-invalid-graphql-request-no-query
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"test\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-012-invalid-graphql-request-graphql-data-no-query
-        input:
-          method: GET
-          path: "/graphql"
-          body: "test {\n  persons(filter: { name: \"Niek\" }) {\n    name\n    blog\n    githubAccount\n  }\n}"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-013-invalid-graphql-request-failed-to-parse-graphql
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons(filter){id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-014-invalid-graphql-request-empty-query
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: graphql-015-query-contains-mutation-will-bypass
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}} mutation{addTalk(talk:{title:\\\"apisix\\\"}){id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: BYPASS
-      - name: graphql-016-purge-memory-cache-normal
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-017-purge-disk-cache-normal
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: graphql-018-purge-cache-wrong-route-id
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/disk/xxx/abc"
-        output:
-          status: 404
-          body:
-            equals: "validation failed"
-      - name: graphql-019-purge-cache-wrong-cache-key
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/disk/1/abc"
-        output:
-          status: 404
-          body:
-            equals: "validation failed"
-      - name: graphql-020-purge-cache-invalid-strategy
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/invalid/1/abc"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: graphql-021-purge-cache-strategy-mismatch
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/memory/1/abc"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-  - name: memory-corpus
-    source:
+      tests: 21
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/graphql-proxy-cache/memory.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-    config:
-      routes:
-        - id: memory-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: MISS
-            body: "hello world"
-          - status: 200
-            headers:
-              Apisix-Cache-Status: HIT
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: memory-001-set-route
-        input:
-          method: GET
-          path: "/graphql"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-002-post-method-cache-miss
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-003-post-method-cache-hit
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query{persons{id}}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-004-get-method-cache-miss
-        input:
-          method: GET
-          path: "/graphql?query=query%7Bpersons%7Bid%7D%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-005-get-method-cache-hit
-        input:
-          method: GET
-          path: "/graphql?query=query%7Bpersons%7Bid%7D%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-006-get-with-variables-cache-miss
-        input:
-          method: GET
-          path: "/graphql?query=query%20(%24name%3A%20String!)%20%7B%0A%20%20persons(filter%3A%20%7B%20name%3A%20%24name%20%7D)%20%7B%0A%20%20%20%20name%0A%20%20%20%20blog%0A%20%20%20%20githubAccount%0A%20%20%7D%0A%7D%0A&variables=%7B%22name%22%3A%22Niek%22%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-007-get-with-variables-cache-hit
-        input:
-          method: GET
-          path: "/graphql?query=query%20(%24name%3A%20String!)%20%7B%0A%20%20persons(filter%3A%20%7B%20name%3A%20%24name%20%7D)%20%7B%0A%20%20%20%20name%0A%20%20%20%20blog%0A%20%20%20%20githubAccount%0A%20%20%7D%0A%7D%0A&variables=%7B%22name%22%3A%22Niek%22%7D"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-008-post-with-variables-cache-miss
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query($name:String!){persons(filter:{name:$name}){name\\nblog\\ngithubAccount}}\",\n    \"variables\": \"{\\\"name\\\": \\\"Niek\\\"}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-009-post-with-variables-cache-hit
-        input:
-          method: GET
-          path: "/graphql"
-          body: "{\n    \"query\": \"query($name:String!){persons(filter:{name:$name}){name\\nblog\\ngithubAccount}}\",\n    \"variables\": \"{\\\"name\\\": \\\"Niek\\\"}\"\n}"
-          headers:
-            Content-Type: application/json
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-010-post-by-grapgql-data-cache-miss
-        input:
-          method: GET
-          path: "/graphql"
-          body: "query {\n  persons(filter: { name: \"Niek\" }) {\n    name\n    blog\n    githubAccount\n  }\n}"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: MISS
-      - name: memory-011-post-by-grapgql-data-cache-hit
-        input:
-          method: GET
-          path: "/graphql"
-          body: "query {\n  persons(filter: { name: \"Niek\" }) {\n    name\n    blog\n    githubAccount\n  }\n}"
-          headers:
-            Content-Type: application/graphql
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Apisix-Cache-Status:
-              equals: HIT
-      - name: memory-012-consumer-isolation-partitions-the-cache-key-by-consumer
-        input:
-          method: GET
-          path: "/graphql-auth"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-013-consumer-isolation-false-lets-consumers-share-cached-responses
-        input:
-          method: GET
-          path: "/graphql-auth"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-014-cache-key-includes-host-route-id-so-two-routes-do-not-collide
-        input:
-          method: GET
-          path: "/PATH"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-015-cache-key-includes-host-so-different-host-headers-do-not-share-ca
-        input:
-          method: GET
-          path: "/graphql-host-iso"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: memory-016-purge-clears-every-vary-variant-not-just-the-base-key
-        input:
-          method: GET
-          path: "/apisix/plugin/graphql-proxy-cache/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 16

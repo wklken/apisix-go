@@ -1,1785 +1,356 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth-anonymous-consumer.t
-    tests: 7
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth-more-algo.t
-    tests: 17
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth-realm.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth.t
-    tests: 59
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth2.t
-    tests: 9
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth3.t
-    tests: 21
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/jwt-auth4.t
-    tests: 11
 cases:
-  - name: jwt-auth-anonymous-consumer-corpus
-    source:
+    - config:
+        routes:
+            - id: jwt-auth-source-1
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-1
+      source:
+        file: t/plugin/jwt-auth-anonymous-consumer.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: jwt-auth-source-2
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-2
+      source:
+        file: t/plugin/jwt-auth-more-algo.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: jwt-auth-source-3
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-3
+      source:
+        file: t/plugin/jwt-auth-realm.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: jwt-auth-source-4
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-4
+      source:
+        file: t/plugin/jwt-auth.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+            - 35
+            - 36
+            - 37
+            - 38
+            - 39
+            - 40
+            - 41
+            - 42
+            - 43
+            - 44
+            - 45
+            - 46
+            - 47
+            - 48
+            - 49
+            - 50
+            - 51
+            - 52
+            - 53
+            - 54
+            - 55
+            - 56
+            - 57
+            - 58
+            - 59
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: jwt-auth-source-5
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-5
+      source:
+        file: t/plugin/jwt-auth2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: jwt-auth-source-6
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-6
+      source:
+        file: t/plugin/jwt-auth3.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: jwt-auth-source-7
+              plugins:
+                jwt-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: jwt-auth-source-7
+      source:
+        file: t/plugin/jwt-auth4.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth-anonymous-consumer.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-    config:
-      routes:
-        - id: jwt-auth-anonymous-consumer-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: jwt-auth-anonymous-consumer-001-add-consumer-jack-and-anonymous
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-anonymous-consumer-002-add-jwt-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-anonymous-consumer-003-normal-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-anonymous-consumer-004-request-without-jwt-auth-header-will-be-from-anonymous-consumer-a
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-anonymous-consumer-005-request-without-jwt-auth-header-will-be-from-anonymous-consumer-a
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-anonymous-consumer-006-add-jwt-auth-plugin-with-non-existent-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-anonymous-consumer-007-anonymous-consumer-configured-in-the-route-should-not-be-found
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-  - name: jwt-auth-more-algo-corpus
-    source:
+      tests: 7
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth-more-algo.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-    config:
-      routes:
-        - id: jwt-auth-more-algo-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: jwt-auth-more-algo-001-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-002-enable-jwt-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-003-create-public-api-route-jwt-auth-sign
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-004-sign-verify-in-argument
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-005-verify-invalid-jwt-token
-        input:
-          method: GET
-          path: "/hello?jwt=invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-more-algo-006-verify-token-with-algorithm-hs384
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.yM8L6f3cGZxKqflMJlf0DqfQVpHUxupqgM3JWETyRQ8Iag1HiRrHILEA-A2rhmEq
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-007-missing-public-key-and-private-key
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-more-algo-008-missing-public-key-and-private-key
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-009-sign-verify-in-argument
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-010-verify-token-with-algorithm-ps356
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: eyJhbGciOiJQUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Ind3dy5iZWpzb24uY29tIiwic3ViIjoiZGVtbyIsImtleSI6InVzZXIta2V5MiIsImV4cCI6MjA4OTcyNDA1N30.cKaijeZ4ydKVKCC37UZObPFj_kVsdiScEuGwK_G9JBjg0dcRnL8Xvr6Ofp8kDJz16FO2vy8FHgA_9HVjVpzehNe-AbtYJ88Qopy2pAQHsottGuQe3jgAt-yBI5chf26GzpqTtyymteg-lt-cW6EoP4gVHfXEbzQaOZt0wmdNBX17jISKW70okdxrp7cJKbv4hXQXjhYwKY8h0jYnGb-RhuHXRwWFhp6TZVV57Lfpi1yUDm6GqXM42W7owOOwjUqS8-7KYv1iugQzTo7qcVjPic7X5Wug7N-4t8BRM9jZkUiNrAY2BoxxBMUUru4fd201KY23p4bZDwQFpg6MVck7XA
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-011-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/apisix/plugin/jwt/sign"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-012-only-verify-nbf-claim
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-013-configured-claim-nbf-missing-from-token-rejected
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.SJNbFYR1qlIOD7D8aItkB9hYxdhc0d_JGaLgVjOCDOAHd8CSJuHp_R6YQniRDq8S
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: jwt-auth-more-algo-014-verify-failed-before-nbf-claim
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMSwibmJmIjoyMjI5NjcxODc0fQ.RJynr34TyCesYHwvDwOwETi1vOfZXKqc_wvQJ3pijBfrx1x5IF3O1CCUCvd5lMYf
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: jwt-auth-more-algo-015-verify-success-after-nbf-claim
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMSwibmJmIjoxNzI5Njc1MDQyfQ.IycpH4Lc48BHSxUBXBNDXGawvNgi_6a-qsa-xnhYFLooeWc8DyX8zLadvyEFpMPq
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-016-eddsa-algorithm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-more-algo-017-sign-verify-in-argument
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: jwt-auth-realm-corpus
-    source:
+      tests: 17
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth-realm.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: jwt-auth-realm-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "Bearer realm=\"jwt\""
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "Bearer realm=\"my-jwt-realm\""
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers:
-              WWW-Authenticate: "Bearer realm=\"jwt\""
-            body: "validation failed"
-    steps:
-      - name: jwt-auth-realm-001-sanity-default-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-realm-002-verify-default-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "Bearer realm=\"jwt\""
-      - name: jwt-auth-realm-003-set-custom-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-realm-004-verify-custom-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "Bearer realm=\"my-jwt-realm\""
-      - name: jwt-auth-realm-005-set-anonymous-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-realm-006-verify-anonymous-consumer-missing-returns-realm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-          headers:
-            WWW-Authenticate:
-              equals: "Bearer realm=\"jwt\""
-  - name: jwt-auth-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-        - 41
-        - 42
-        - 43
-        - 44
-        - 45
-        - 46
-        - 47
-        - 48
-        - 49
-        - 50
-        - 51
-        - 52
-        - 53
-        - 54
-        - 55
-        - 56
-        - 57
-        - 58
-        - 59
-    config:
-      routes:
-        - id: jwt-auth-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: jwt-auth-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-002-wrong-type-of-string
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-003-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-004-enable-jwt-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-005-verify-missing-token
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-006-verify-invalid-jwt-token
-        input:
-          method: GET
-          path: "/hello?jwt=invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-007-verify-expired-jwt-token
-        input:
-          method: GET
-          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-008-verify-in-header
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-009-verify-in-cookie
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cookie: "jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-010-verify-in-header-without-bearer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-011-verify-header-with-bearer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-012-verify-invalid-bearer-token
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "bearer invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-013-delete-a-exist-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-014-add-consumer-with-username-and-plugins-with-base64-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-015-enable-jwt-auth-plugin-with-base64-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-016-sign-verify
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-017-verify-invalid-jwt-token
-        input:
-          method: GET
-          path: "/hello?jwt=invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-018-verify-invalid-signature
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-019-verify-happy-path
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0._kNmXeH1uYVAvApFTONk2Z3Gh-a4XfGrjmqd_ahoOI0"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-020-without-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-021-get-the-schema-by-schema-type
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-022-get-the-schema-by-error-schema-type
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-023-get-the-schema-by-default-schema-type
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-024-add-consumer-with-username-and-plugins-with-public-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-025-jwt-sign-and-verify-use-rs256-algorithm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-026-sign-verify-use-rs256-algorithm-private-key-numbits-512
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-027-add-consumer-with-username-and-plugins-with-public-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-028-jwt-sign-and-verify-use-rs256-algorithm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-029-sign-verify-use-rs256-algorithm-private-key-numbits-1024
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-030-sign-verify-use-rs256-algorithm-private-key-numbits-1024-with-ext
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-031-add-consumer-with-username-and-plugins-with-public-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-032-jwt-sign-and-verify-use-rs256-algorithm-private-key-numbits-2048
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-033-sign-verify-use-rs256-algorithm-private-key-numbits-2048
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-034-sign-verify-use-rs256-algorithm-private-key-numbits-2048-with-ext
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-035-jwt-sign-with-the-public-key-when-using-the-rs256-algorithm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-036-jwt-sign-and-verify-rs256
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-037-sanity-algorithm-hs512
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-038-add-consumer-with-username-and-plugins-use-hs512-algorithm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-039-jwt-sign-and-verify-use-hs512-algorithm
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-040-sign-verify-algorithm-hs512
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-041-sign-verify-algorithm-hs512-with-extra-payload
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-042-wrong-format-of-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-043-when-the-exp-value-is-not-set-make-sure-the-default-value-86400-w
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-044-rs256-without-public-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-045-rs256-without-private-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-046-add-consumer-with-username-and-plugins-with-public-key-private-ke
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-047-jwt-sign-and-verify-use-es256-algorithm-private-key-numbits-512
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-048-sign-verify-use-es256-algorithm-private-key-numbits-512
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-049-add-consumer-missing-public-key-algorithm-rs256
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-050-add-consumer-missing-public-key-algorithm-es256
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-051-secret-is-required-when-algorithm-is-not-rs256-or-es256
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-052-hs256-token-against-rs256-consumer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-053-add-consumer-for-default-claims-verification
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-054-enable-jwt-auth-without-claims-to-verify-default-exp-nbf-path
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-055-expired-token-with-no-claims-to-verify-configured-rejected
-        input:
-          method: GET
-          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-056-token-without-exp-claim-and-no-claims-to-verify-configured-accept
-        input:
-          method: GET
-          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSJ9._7aoTZdzQDT0r9swHTcHb3nsujexcGjSTU-LRzTRVyY"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-057-enable-jwt-auth-with-an-explicit-empty-claims-to-verify-array
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth-058-expired-token-with-an-explicit-empty-claims-to-verify-still-rejec
-        input:
-          method: GET
-          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth-059-malformed-signatures-must-be-rejected-with-401-not-crash-with-500
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: jwt-auth2-corpus
-    source:
+      tests: 59
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-    config:
-      routes:
-        - id: jwt-auth2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: jwt-auth2-001-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-002-enable-jwt-auth-plugin-using-admin-api-with-custom-parameter
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-003-verify-in-header
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-004-verify-in-cookie
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cookie: "jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-005-verify-in-query
-        input:
-          method: GET
-          path: "/hello?jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-006-verify-in-header-without-bearer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            jwt-header: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-007-verify-in-header-with-bearer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            jwt-header: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth2-008-use-lifetime-grace-period-default-value
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: jwt-auth2-009-lifetime-grace-period-is-2-seconds
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: jwt-auth3-corpus
-    source:
+      tests: 9
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth3.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-    config:
-      routes:
-        - id: jwt-auth3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-            body: "hello world"
-          - status: 200
-            headers:
-              Cookie: "jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-            body: "hello world"
-    steps:
-      - name: jwt-auth3-001-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-002-enable-jwt-auth-plugin-using-admin-api-with-custom-parameter
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-003-verify-in-header-not-hiding-credentials
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            jwt-header:
-              equals: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-      - name: jwt-auth3-004-verify-in-cookie-not-hiding-credentials
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            Cookie: "jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            Cookie:
-              equals: "jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-      - name: jwt-auth3-005-enable-jwt-auth-plugin-using-admin-api-without-hiding-credentials
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-006-verify-in-query-without-hiding-credentials
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args?foo=bar&hello=world&jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-007-enable-jwt-auth-plugin-using-admin-api-with-hiding-credentials
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-008-verify-in-header-with-hiding-credentials
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            jwt-header: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-009-enable-jwt-auth-plugin-using-admin-api-with-hiding-credentials
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-010-verify-in-query-with-hiding-credentials
-        input:
-          method: GET
-          path: "/plugin_proxy_rewrite_args?foo=bar&hello=world&jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-011-verify-in-cookie-with-hiding-credentials
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-012-verify-in-cookie-with-hiding-credentials
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Cookie: "hello=world; jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs; foo=bar"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-013-delete-exist-consumers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-014-data-encryption-for-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-015-set-jwt-auth-conf-secret-uses-secret-ref
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-016-store-secret-into-vault
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-017-verify-in-header-not-hiding-credentials
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            jwt-header:
-              equals: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-      - name: jwt-auth3-018-store-rsa-key-pairs-and-secret-into-vault-from-local-filesystem
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-019-create-consumer-for-rs256-algorithm-with-public-key-fetched-from-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-020-set-jwt-auth-conf-with-the-token-in-an-env-var-secret-uses-secret
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth3-021-verify-in-header-not-hiding-credentials
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            jwt-header:
-              equals: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
-  - name: jwt-auth4-corpus
-    source:
+      tests: 21
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/jwt-auth4.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-    config:
-      routes:
-        - id: jwt-auth4-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: jwt-auth4-001-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-002-enable-jwt-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-003-verify-in-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-004-ensure-secret-is-non-empty
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: jwt-auth4-005-ensure-key-is-non-empty
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: jwt-auth4-006-store-in-ctx-disabled
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-007-verify-store-in-ctx-disabled-header-with-bearer
-        input:
-          method: GET
-          path: "/jwt-auth-no-ctx"
-          headers:
-            Authorization: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsIm5iZiI6MTcyNzI3NDk4M30.N6ebc4U5ms976pwKZ_iQ88w_uJKqUVNtTYZ_nXhRpWo"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: jwt-auth4-008-store-in-ctx-enabled
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-009-verify-store-in-ctx-enabled-header-with-bearer
-        input:
-          method: GET
-          path: "/jwt-auth-ctx"
-          headers:
-            Authorization: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsIm5iZiI6MTcyNzI3NDk4M30.N6ebc4U5ms976pwKZ_iQ88w_uJKqUVNtTYZ_nXhRpWo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-010-test-ed448-signature-verification-with-lua-resty-openssl
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: jwt-auth4-011-secret-is-required-for-hs-algorithms
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
+      tests: 11

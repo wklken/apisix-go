@@ -1379,7 +1379,6 @@ func runCase(t *testing.T, spec Case) {
 	if err := os.WriteFile(filepath.Join(confDir, "apisix.yaml"), standaloneConfig, 0o600); err != nil {
 		t.Fatalf("write standalone config: %v", err)
 	}
-
 	process, err := startAPISIX(workDir)
 	if err != nil {
 		t.Fatalf("start APISIX: %v", err)
@@ -1489,6 +1488,9 @@ func runCase(t *testing.T, spec Case) {
 		}
 	}
 	for _, fixtureSpec := range spec.Fixtures {
+		if len(fixtureSpec.NetworkExpect) > 0 {
+			continue
+		}
 		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
 	}
 
@@ -1496,6 +1498,12 @@ func runCase(t *testing.T, spec Case) {
 		t.Errorf("stop APISIX: %v", err)
 	}
 	stopped = true
+	for _, fixtureSpec := range spec.Fixtures {
+		if len(fixtureSpec.NetworkExpect) == 0 {
+			continue
+		}
+		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
+	}
 	assertAfterShutdown(t, spec.AfterShutdown, replacements)
 	logs, err := process.logs()
 	if err != nil {

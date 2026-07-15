@@ -1,464 +1,77 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/key-auth.t
-    tests: 34
 cases:
-  - name: key-auth-corpus
-    source:
+    - config:
+        consumers:
+            - plugins:
+                key-auth:
+                    key: integration
+              username: integration
+        routes:
+            - id: key-auth-source-1
+              plugins:
+                key-auth: {}
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: key-auth-source-1
+      source:
+        file: t/plugin/key-auth.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+      steps:
+        - input:
+            headers:
+                apikey: integration
+            method: GET
+            path: /probe
+          name: real-plugin-authenticates-consumer
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/key-auth.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-    config:
-      routes:
-        - id: key-auth-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              apikey: auth-one
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              test: auth-two
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers:
-              auth: auth-one
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: key-auth-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-002-wrong-type-of-string
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-003-add-consumer-with-username-and-plugins
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-004-add-key-auth-plugin-using-admin-api
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-005-valid-consumer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-006-invalid-consumer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: "123"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: key-auth-007-not-found-apikey-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: key-auth-008-valid-consumer
-        input:
-          method: GET
-          path: "/add_more_consumer"
-          headers:
-            apikey: auth-13
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: key-auth-009-add-consumer-with-empty-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: key-auth-010-customize-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-011-valid-consumer
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-012-customize-query-string
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-013-valid-consumer
-        input:
-          method: GET
-          path: "/hello?auth=auth-one"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-014-enable-key-auth-plugin-using-admin-api-set-hide-credentials-false
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-015-verify-apikey-request-header-should-not-hidden
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            apikey:
-              equals: auth-one
-      - name: key-auth-016-add-key-auth-plugin-using-admin-api-set-hide-credentials-true
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-017-verify-apikey-request-header-is-hidden
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-018-verify-that-only-the-keys-in-the-title-are-deleted
-        input:
-          method: GET
-          path: "/echo"
-          headers:
-            apikey: auth-one
-            test: auth-two
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            test:
-              equals: auth-two
-      - name: key-auth-019-when-apikey-both-in-header-and-query-string-verify-apikey-request
-        input:
-          method: GET
-          path: "/echo?apikey=auth-one"
-          headers:
-            apikey: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-020-customize-query-string-set-hide-credentials-true
-        input:
-          method: GET
-          path: "/echo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-021-verify-auth-request-args-is-hidden
-        input:
-          method: GET
-          path: "/echo?auth=auth-one"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-022-verify-that-only-the-keys-in-the-query-parameters-are-deleted
-        input:
-          method: GET
-          path: "/echo?auth=auth-one&test=auth-two"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-023-when-auth-both-in-header-and-query-string-verify-auth-request-arg
-        input:
-          method: GET
-          path: "/echo?auth=auth-one"
-          headers:
-            auth: auth-one
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-          headers:
-            auth:
-              equals: auth-one
-      - name: key-auth-024-customize-query-string-set-hide-credentials-false
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-025-verify-auth-request-args-should-not-hidden
-        input:
-          method: GET
-          path: "/hello?auth=auth-one"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-026-change-consumer-with-secrets-ref-env
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-027-verify-auth-request
-        input:
-          method: GET
-          path: "/hello?auth=authone"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-028-set-key-auth-conf-key-uses-secret-ref
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-029-store-secret-into-vault
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-030-verify-auth-request
-        input:
-          method: GET
-          path: "/hello?auth=authtwo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-031-set-key-auth-conf-with-the-token-in-an-env-var-key-uses-secret-re
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-032-verify-auth-request
-        input:
-          method: GET
-          path: "/hello?auth=authtwo"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-033-consumer-key-uses-an-env-ref-that-fails-to-resolve
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: key-auth-034-fail-closed-literal-ref-is-not-accepted-as-a-credential
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            apikey: "$env://KEYAUTH_UNRESOLVED_SECRET"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
+      tests: 34

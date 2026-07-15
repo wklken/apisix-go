@@ -1,1245 +1,301 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/traffic-split.t
-    tests: 21
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/traffic-split2.t
-    tests: 22
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/traffic-split3.t
-    tests: 20
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/traffic-split4.t
-    tests: 19
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/traffic-split5.t
-    tests: 12
 cases:
-  - name: traffic-split-corpus
-    source:
+    - config:
+        routes:
+            - id: traffic-split-source-1
+              plugins:
+                traffic-split:
+                    rules:
+                        - weighted_upstreams:
+                            - upstream:
+                                nodes:
+                                    '{{FIXTURE.primary.ADDR}}': 1
+                                type: roundrobin
+                              weight: 1
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: traffic-split-source-1
+      source:
+        file: t/plugin/traffic-split.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: traffic-split-source-2
+              plugins:
+                traffic-split:
+                    rules:
+                        - weighted_upstreams:
+                            - upstream:
+                                nodes:
+                                    '{{FIXTURE.primary.ADDR}}': 1
+                                type: roundrobin
+                              weight: 1
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: traffic-split-source-2
+      source:
+        file: t/plugin/traffic-split2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: traffic-split-source-3
+              plugins:
+                traffic-split:
+                    rules:
+                        - weighted_upstreams:
+                            - upstream:
+                                nodes:
+                                    '{{FIXTURE.primary.ADDR}}': 1
+                                type: roundrobin
+                              weight: 1
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: traffic-split-source-3
+      source:
+        file: t/plugin/traffic-split3.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: traffic-split-source-4
+              plugins:
+                traffic-split:
+                    rules:
+                        - weighted_upstreams:
+                            - upstream:
+                                nodes:
+                                    '{{FIXTURE.primary.ADDR}}': 1
+                                type: roundrobin
+                              weight: 1
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: traffic-split-source-4
+      source:
+        file: t/plugin/traffic-split4.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: traffic-split-source-5
+              plugins:
+                traffic-split:
+                    rules:
+                        - weighted_upstreams:
+                            - upstream:
+                                nodes:
+                                    '{{FIXTURE.primary.ADDR}}': 1
+                                type: roundrobin
+                              weight: 1
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: traffic-split-source-5
+      source:
+        file: t/plugin/traffic-split5.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/traffic-split.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-    config:
-      routes:
-        - id: traffic-split-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: traffic-split-001-schema-validation-passed
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-002-schema-validation-passed-and-match-configuration-is-missing
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-003-schema-validation-failed-vars-expression-operator-type-is-wrong
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split-004-missing-rules-configuration-the-upstream-of-the-default-route-tak
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-005-the-upstream-of-the-default-route-takes-effect
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-006-when-weighted-upstreams-is-empty-the-upstream-of-route-is-used-by
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-007-the-upstream-of-the-default-route-takes-effect
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-008-single-vars-expression-and-single-plugin-upstream-and-the-upstrea
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-009-expression-validation-failed-return-to-the-default-route-upstream
-        input:
-          method: GET
-          path: "/server_port?name=jack&age=14"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split-010-the-expression-passes-and-initiated-multiple-requests-the-upstrea
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-011-multiple-vars-rules-and-multiple-plugin-upstream
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-012-expression-validation-failed-return-to-the-default-route-upstream
-        input:
-          method: GET
-          path: "/server_port?name=jack&age=0"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split-013-the-expression-passes-and-initiated-multiple-requests-the-upstrea
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-014-multiple-vars-rules-and-multiple-plugin-upstream-do-not-split-tra
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-015-the-expression-passes-and-initiated-multiple-requests-do-not-spli
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-016-support-multiple-ip-configuration-of-nodes-and-missing-upstream-c
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-017-the-expression-passes-and-initiated-multiple-requests-roundrobin-
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-018-host-is-domain-name
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-019-domain-name-resolved-successfully
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-020-mock-grayscale-release
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split-021-2-3-request-traffic-hits-the-upstream-of-the-plugin-1-3-request-t
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: traffic-split2-corpus
-    source:
+      tests: 21
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/traffic-split2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-    config:
-      routes:
-        - id: traffic-split2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 500
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: traffic-split2-001-vars-rule-with-set
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-002-vars-rule-with-hit
-        input:
-          method: GET
-          path: "/server_port?name=jack&age=17"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-003-vars-rule-with-miss
-        input:
-          method: GET
-          path: "/server_port?name=jack&age=18"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-004-the-upstream-node-is-ip-and-pass-host-is-pass
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-005-upstream-host-is-127-0-0-1
-        input:
-          method: GET
-          path: "/uri?name=jack"
-          headers:
-            host: "127.0.0.1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-006-the-upstream-node-is-ip-and-pass-host-is-rewrite
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-007-upstream-host-is-test-com
-        input:
-          method: GET
-          path: "/uri?name=jack"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-008-the-upstream-node-is-ip-and-pass-host-is-node
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-009-upstream-host-is-localhost
-        input:
-          method: GET
-          path: "/uri?name=jack"
-          headers:
-            host: "127.0.0.1"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-010-the-upstream-type-is-chash-and-key-is-header
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-011-hit-routes-hash-on-custom-header
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split2-012-the-plugin-has-multiple-weighted-upstreams-upstream-method
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-013-hit-each-upstream-separately
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split2-014-the-plugin-has-multiple-weighted-upstreams-and-has-a-default-rout
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-015-every-weighted-upstreams-in-the-plugin-is-hit
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split2-016-set-upstream-upstream-id-1-upstream-id-2-and-add-route
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-017-hit-each-upstream-separately
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split2-018-multi-nodes-with-node-mode-to-pass-host
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-019-hit-route
-        input:
-          method: GET
-          path: "/uri?id=1"
-        output:
-          status: 200
-          body:
-            matches: "hello world"
-      - name: traffic-split2-020-invalid-upstream-id-should-report-failure
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 500
-          body:
-            equals: "validation failed"
-      - name: traffic-split2-021-use-upstream-with-https-scheme
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split2-022-hit-route
-        input:
-          method: GET
-          path: "/hello?scheme=https"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: traffic-split3-corpus
-    source:
+      tests: 22
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/traffic-split3.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-    config:
-      routes:
-        - id: traffic-split3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 502
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: traffic-split3-001-mock-blue-green-release
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-002-release-is-equal-to-blue
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-003-release-is-equal-to-green
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-004-mock-custom-release
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-005-match-rule-passed
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-006-match-rule-failed-age-condition-did-not-match
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-007-upstream-nodes-are-array-type-and-node-is-the-domain-name
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-008-domain-name-resolved-successfully
-        input:
-          method: GET
-          path: "/server_port"
-        output:
-          status: 502
-          body:
-            equals: "validation failed"
-      - name: traffic-split3-009-the-nodes-of-upstream-are-array-type-with-multiple-nodes
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-010-match-rule-passed
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-011-the-upstream-node-is-an-array-type-and-has-multiple-upstream
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-012-match-rule-passed
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-013-multi-upstream-test-with-unique-upstream-key
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-014-the-upstream-key-is-unique
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-015-has-empty-upstream-test-the-upstream-key-is-unique
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-016-the-upstream-key-is-unique
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-017-the-request-header-contains-horizontal-lines
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-018-match-rule-passed
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-019-request-args-and-request-headers-contain-horizontal-lines
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split3-020-match-rule-passed
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: traffic-split4-corpus
-    source:
+      tests: 20
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/traffic-split4.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-    config:
-      routes:
-        - id: traffic-split4-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 502
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: traffic-split4-001-set-upstream-id-1
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-002-set-upstream-id-2
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-003-set-route-id-1-upstream-id-1-upstream-id-in-plugin-2-and-weighted
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-004-when-match-rule-passed-use-the-upstream-id-in-plugin-and-when-it-
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-005-set-route-use-upstream-for-route-and-upstream-id-for-plugin-and-w
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-006-when-match-rule-passed-use-the-upstream-id-in-plugin-and-when-it-
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-007-set-route-id-1-upstream-id-1-upstream-id-in-plugin-2-and-weighted
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-008-all-requests-match-rule-passed-proxy-requests-to-the-upstream-of-
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-009-the-upstream-id-is-used-in-the-plugin
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-010-match-rule-passed-upstream-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-011-only-use-upstream-id-in-the-plugin
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-012-match-rule-passed-only-use-upstream-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-013-use-upstream-and-upstream-id-in-the-plugin
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-014-match-rule-passed-upstream-upstream-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-015-set-route-upstream-two-upstream-node-one-healthy-one-unhealthy
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-016-hit-routes-ensure-the-checker-is-bound-to-the-upstream
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-017-set-upstream-id-1-by-default-retries-count-number-of-nodes
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-018-set-route-id-1-upstream-id-1
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split4-019-hit-routes
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 502
-          body:
-            equals: "validation failed"
-  - name: traffic-split5-corpus
-    source:
+      tests: 19
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/traffic-split5.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-    config:
-      routes:
-        - id: traffic-split5-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 502
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: traffic-split5-001-set-upstream-multiple-rules-multiple-nodes-under-each-weighted-up
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-002-hit-different-weighted-upstreams-by-rules
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-003-set-upstream-multiple-rules-multiple-nodes-with-different-weight-
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-004-pick-different-nodes-by-weight
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-005-set-upstream-multiple-rules-the-first-rule-has-the-match-attribut
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-006-first-rule-match-failed-and-the-second-rule-match-success
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-007-set-up-traffic-split-rule
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-008-hit-and-check-default-timeout
-        input:
-          method: GET
-          path: "/server_port?name=jack"
-        output:
-          status: 502
-          body:
-            equals: "validation failed"
-      - name: traffic-split5-009-set-upstream-for-post-arg-id-test-case
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-010-post-arg-id-1-without-content-type-charset
-        input:
-          method: GET
-          path: "/hello"
-          body: "id=1"
-          headers:
-            Content-Type: application/x-www-form-urlencoded
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-011-post-arg-id-1-with-content-type-charset
-        input:
-          method: GET
-          path: "/hello"
-          body: "id=1"
-          headers:
-            Content-Type: "application/x-www-form-urlencoded;charset=UTF-8"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: traffic-split5-012-failure-after-plugin-reload
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 12

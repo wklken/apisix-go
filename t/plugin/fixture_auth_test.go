@@ -54,16 +54,14 @@ func (f *ldapFixture) serve() {
 			f.errors <- fmt.Errorf("accept LDAP fixture connection: %w", err)
 			return
 		}
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
+		f.wg.Go(func() {
 			f.serveConnection(connection)
-		}()
+		})
 	}
 }
 
 func (f *ldapFixture) serveConnection(connection net.Conn) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	for {
 		packet, err := readLDAPPacket(connection)
 		if err != nil {
@@ -170,18 +168,6 @@ func encodeLDAPBindSuccess(messageID byte) string {
 	return encodeBase64(packet)
 }
 
-func encodeLDAPSearchDone(messageID byte) string {
-	packet := []byte{
-		0x30, 0x0c,
-		0x02, 0x01, messageID,
-		0x65, 0x07,
-		0x0a, 0x01, 0x00,
-		0x04, 0x00,
-		0x04, 0x00,
-	}
-	return encodeBase64(packet)
-}
-
 func encodeBase64(payload []byte) string {
 	return base64.StdEncoding.EncodeToString(payload)
 }
@@ -199,6 +185,7 @@ func (f *ldapFixture) host() string {
 	host, _, _ := net.SplitHostPort(f.address())
 	return host
 }
+
 func (f *ldapFixture) port() string {
 	_, port, _ := net.SplitHostPort(f.address())
 	return port
@@ -211,6 +198,7 @@ func (f *ldapFixture) close() {
 		f.wg.Wait()
 	})
 }
+
 func (f *ldapFixture) assert(t *testing.T, spec FixtureSpec) {
 	t.Helper()
 	for i, expected := range spec.NetworkExpect {
@@ -247,7 +235,7 @@ func TestLDAPFixtureReturnsBindSuccess(t *testing.T) {
 		Name: "ldap",
 		Kind: "ldap",
 		NetworkExpect: []NetworkAssertion{{
-			PayloadBase64: &Matcher{Equals: stringPointer(base64.StdEncoding.EncodeToString(request))},
+			PayloadBase64: &Matcher{Equals: new(base64.StdEncoding.EncodeToString(request))},
 		}},
 		NetworkRespond: []NetworkResponse{{
 			PayloadBase64: base64.StdEncoding.EncodeToString(response),
@@ -262,7 +250,7 @@ func TestLDAPFixtureReturnsBindSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial LDAP fixture: %v", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	if _, err := connection.Write(request); err != nil {
 		t.Fatalf("write LDAP bind: %v", err)
 	}

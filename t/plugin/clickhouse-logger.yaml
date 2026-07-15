@@ -1,343 +1,160 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/clickhouse-logger.t
-    tests: 12
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/clickhouse-logger2.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/clickhouse-logger3.t
-    tests: 3
 cases:
-  - name: clickhouse-logger-corpus
-    source:
+    - config:
+        routes:
+            - id: clickhouse-logger-source-1
+              plugins:
+                clickhouse-logger:
+                    database: default
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+                    logtable: logs
+                    password: integration
+                    user: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: clickhouse-logger-source-1
+      source:
+        file: t/plugin/clickhouse-logger.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: clickhouse-logger-source-2
+              plugins:
+                clickhouse-logger:
+                    database: default
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+                    logtable: logs
+                    password: integration
+                    user: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: clickhouse-logger-source-2
+      source:
+        file: t/plugin/clickhouse-logger2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: clickhouse-logger-source-3
+              plugins:
+                clickhouse-logger:
+                    database: default
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+                    logtable: logs
+                    password: integration
+                    user: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: clickhouse-logger-source-3
+      source:
+        file: t/plugin/clickhouse-logger3.t
+        tests:
+            - 1
+            - 2
+            - 3
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/clickhouse-logger.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-    config:
-      routes:
-        - id: clickhouse-logger-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: clickhouse-logger-001-full-configuration-verification
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-002-basic-configuration-verification
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-003-auth-configure-undefined
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-004-add-plugin-on-routes
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-005-add-plugin-on-routes-using-multi-clickhouse-logger
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-006-hit-route
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-007-get-log
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-008-to-show-that-different-endpoints-will-be-chosen-randomly
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-009-use-single-clickhouse-server
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-010-hit-route
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-011-get-log
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger-012-should-drop-entries-when-max-pending-entries-is-exceeded
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: clickhouse-logger2-corpus
-    source:
+      tests: 12
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/clickhouse-logger2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-    config:
-      routes:
-        - id: clickhouse-logger2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: clickhouse-logger2-001-collect-response-body-option
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-002-collect-response-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-003-collect-response-body-with-eval-option
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-004-skip-collect-response-log-for-condition
-        input:
-          method: GET
-          path: "/hello?foo=unknown"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-005-collect-request-body-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-006-collect-request-body-with-eval-option
-        input:
-          method: GET
-          path: "/hello?foo=bar"
-          body: "{\"sample\":\"hello\"}"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-007-collect-request-body
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger2-008-skip-collect-request-body-log-for-condition
-        input:
-          method: GET
-          path: "/hello?foo=unknown"
-          body: "{\"sample\":\"hello\"}"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: clickhouse-logger3-corpus
-    source:
+      tests: 8
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/clickhouse-logger3.t
-      tests:
-        - 1
-        - 2
-        - 3
-    config:
-      routes:
-        - id: clickhouse-logger3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: clickhouse-logger3-001-pass-clickhouse-user-via-environment-variable
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger3-002-hit-route
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: clickhouse-logger3-003-get-log
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 3

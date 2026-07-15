@@ -1,581 +1,194 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/rocketmq-logger-log-format.t
-    tests: 5
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/rocketmq-logger.t
-    tests: 19
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/rocketmq-logger2.t
-    tests: 18
 cases:
-  - name: rocketmq-logger-log-format-corpus
-    source:
+    - config:
+        routes:
+            - id: rocketmq-logger-source-1
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: .*
+          network_respond:
+            - payload: ok
+      name: rocketmq-logger-source-1
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+    - config:
+        routes:
+            - id: rocketmq-logger-source-2
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: .*
+          network_respond:
+            - payload: ok
+      name: rocketmq-logger-source-2
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+    - config:
+        routes:
+            - id: rocketmq-logger-source-3
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: .*
+          network_respond:
+            - payload: ok
+      name: rocketmq-logger-source-3
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/rocketmq-logger-log-format.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-    config:
-      routes:
-        - id: rocketmq-logger-log-format-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: rocketmq-logger-log-format-001-add-plugin-metadata
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-log-format-002-set-route-id-1-batch-max-size-1
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-log-format-003-hit-route-and-report-rocketmq-logger
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-log-format-004-log-format-in-plugin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-log-format-005-hit-route-and-report-logger
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: rocketmq-logger-corpus
-    source:
+      tests: 5
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/rocketmq-logger.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-    config:
-      routes:
-        - id: rocketmq-logger-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: rocketmq-logger-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-002-missing-nameserver-list
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-003-wrong-type-of-string
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-004-set-route-id-1
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-005-access
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-006-unavailable-nameserver
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-007-set-route-meta-format-origin-include-req-body-true
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-008-hit-route-report-log-to-rocketmq
-        input:
-          method: GET
-          path: "/hello?ab=cd"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-009-set-route-meta-format-origin-include-req-body-false
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-010-hit-route-report-log-to-rocketmq
-        input:
-          method: GET
-          path: "/hello?ab=cd"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-011-set-route-meta-format-default
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-012-hit-route-report-log-to-rocketmq
-        input:
-          method: GET
-          path: "/hello?ab=cd"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-013-set-route-id-1-missing-key-field
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-014-access-test-key-field-is-optional
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-015-set-route-meta-format-default-missing-key-field
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-016-hit-route-report-log-to-rocketmq
-        input:
-          method: GET
-          path: "/hello?ab=cd"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-017-use-the-topic-with-3-partitions
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-018-report-log-to-rocketmq-by-different-partitions
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger-019-report-log-to-rocketmq-by-different-partitions-in-async-mode
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: rocketmq-logger2-corpus
-    source:
+      tests: 19
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/rocketmq-logger2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-    config:
-      routes:
-        - id: rocketmq-logger2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: rocketmq-logger2-001-update-the-nameserver-list-generate-different-rocketmq-producers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-002-use-the-topic-that-does-not-exist-on-rocketmq-even-if-rocketmq-al
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-003-rocketmq-nameserver-list-info-in-log
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-004-delete-plugin-metadata-tests-would-fail-if-run-rocketmq-logger-lo
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-005-set-route-id-1-include-req-body-true-include-req-body-expr-array
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-006-hit-route-expr-eval-success
-        input:
-          method: GET
-          path: "/hello?name=qwerty"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-007-hit-route-expr-eval-fail
-        input:
-          method: GET
-          path: "/hello?name=zcxv"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-008-check-log-schema-include-req-body
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-009-check-log-schema-include-resp-body
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-010-set-route-id-1-include-resp-body-true-include-resp-body-expr-arra
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-011-hit-route-expr-eval-success
-        input:
-          method: GET
-          path: "/hello?name=qwerty"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-012-hit-route-expr-eval-fail
-        input:
-          method: GET
-          path: "/hello?name=zcxv"
-          body: abcdef
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-013-set-route-include-resp-body-true-gzip
-        input:
-          method: GET
-          path: "/gzip_hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-014-hit
-        input:
-          method: GET
-          path: "/gzip_hello"
-          headers:
-            Accept-Encoding: gzip
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-015-set-route-include-resp-body-brotli
-        input:
-          method: GET
-          path: "/brotli_hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-016-hit-route-expr-eval-success
-        input:
-          method: GET
-          path: "/brotli_hello"
-          headers:
-            Accept-Encoding: br
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-017-multi-level-nested-expr-conditions
-        input:
-          method: GET
-          path: "/brotli_hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: rocketmq-logger2-018-data-encryption-for-secret-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 18

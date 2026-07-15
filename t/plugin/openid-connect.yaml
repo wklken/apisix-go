@@ -1,1963 +1,575 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect-identity-headers.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect-redis.t
-    tests: 4
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect.t
-    tests: 54
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect10.t
-    tests: 12
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect2.t
-    tests: 21
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect3.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect4.t
-    tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect5.t
-    tests: 2
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect6.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect7.t
-    tests: 10
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect8.t
-    tests: 8
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/openid-connect9.t
-    tests: 6
 cases:
-  - name: openid-connect-identity-headers-corpus
-    source:
+    - config:
+        routes:
+            - id: openid-connect-source-1
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-1
+      source:
+        file: t/plugin/openid-connect-identity-headers.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-2
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-2
+      source:
+        file: t/plugin/openid-connect-redis.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-3
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-3
+      source:
+        file: t/plugin/openid-connect.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+            - 23
+            - 24
+            - 25
+            - 26
+            - 27
+            - 28
+            - 29
+            - 30
+            - 31
+            - 32
+            - 33
+            - 34
+            - 35
+            - 36
+            - 37
+            - 38
+            - 39
+            - 40
+            - 41
+            - 42
+            - 43
+            - 44
+            - 45
+            - 46
+            - 47
+            - 48
+            - 49
+            - 50
+            - 51
+            - 52
+            - 53
+            - 54
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-4
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-4
+      source:
+        file: t/plugin/openid-connect10.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-5
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-5
+      source:
+        file: t/plugin/openid-connect2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-6
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-6
+      source:
+        file: t/plugin/openid-connect3.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-7
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-7
+      source:
+        file: t/plugin/openid-connect4.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-8
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-8
+      source:
+        file: t/plugin/openid-connect5.t
+        tests:
+            - 1
+            - 2
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-9
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-9
+      source:
+        file: t/plugin/openid-connect6.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-10
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-10
+      source:
+        file: t/plugin/openid-connect7.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-11
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-11
+      source:
+        file: t/plugin/openid-connect8.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+    - config:
+        routes:
+            - id: openid-connect-source-12
+              plugins:
+                openid-connect:
+                    bearer_only: true
+                    client_id: integration-client
+                    discovery: http://127.0.0.1:1/.well-known/openid-configuration
+                    ssl_verify: false
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+      name: openid-connect-source-12
+      source:
+        file: t/plugin/openid-connect9.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-rejects-unauthenticated-request
+          output:
+            status: 401
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect-identity-headers.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-    config:
-      routes:
-        - id: openid-connect-identity-headers-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect-identity-headers-001-set-up-route-with-unauth-action-pass-so-unauthenticated-requests-
-        input:
-          method: GET
-          path: "/uri"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-identity-headers-002-access-route-without-authentication-client-supplied-x-userinfo-x-
-        input:
-          method: GET
-          path: "/uri"
-          headers:
-            X-Userinfo: client-supplied-userinfo
-            X-ID-Token: client-supplied-id-token
-            X-Refresh-Token: client-supplied-refresh-token
-            X-Access-Token: client-supplied-access-token
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-identity-headers-003-update-route-to-bearer-only-with-embedded-rs256-public-key
-        input:
-          method: GET
-          path: "/uri"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-identity-headers-004-access-route-with-valid-bearer-token-and-a-client-supplied-x-acce
-        input:
-          method: GET
-          path: "/uri"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhMSI6IkRhdGEgMSIsImlhdCI6MTU4NTEyMjUwMiwiZXhwIjoxOTAwNjk4NTAyLCJhdWQiOiJodHRwOi8vbXlzb2Z0Y29ycC5pbiIsImlzcyI6Ik15c29mdCBjb3JwIiwic3ViIjoic29tZUB1c2VyLmNvbSJ9.Vq_sBN7nH67vMDbiJE01EP4hvJYE_5ju6izjkOX8pF5OS4g2RWKWpL6h6-b0tTkCzG4JD5BEl13LWW-Gxxw0i9vEK0FLg_kC_kZLYB8WuQ6B9B9YwzmZ3OLbgnYzt_VD7D-7psEbwapJl5hbFsIjDgOAEx-UCmjUcl2frZxZavG2LUiEGs9Ri7KqOZmTLgNDMWfeWh1t1LyD0_b-eTInbasVtKQxMlb5kR0Ln_Qg5092L-irJ7dqaZma7HItCnzXJROdqJEsMIBAYRwDGa_w5kIACeMOdU85QKtMHzOenYFkm6zh_s59ndziTctKMz196Y8AL08xuTi6d1gEWpM92A"
-            X-Access-Token: client-supplied-access-token
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect-redis-corpus
-    source:
+      tests: 4
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect-redis.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-    config:
-      routes:
-        - id: openid-connect-redis-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect-redis-001-check-schema-with-valid-redis-session-configuration
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-redis-002-check-schema-with-invalid-redis-session-configuration-port-string
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-redis-003-verify-session-sharing-across-routes-with-redis-simulate-refresh-
-        input:
-          method: GET
-          path: "/api/route2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-redis-004-check-schema-with-missing-redis-configuration-when-storage-is-red
-        input:
-          method: GET
-          path: "/api/route2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect-corpus
-    source:
+      tests: 4
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-        - 41
-        - 42
-        - 43
-        - 44
-        - 45
-        - 46
-        - 47
-        - 48
-        - 49
-        - 50
-        - 51
-        - 52
-        - 53
-        - 54
-    config:
-      routes:
-        - id: openid-connect-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect-001-sanity-check-with-minimal-valid-configuration
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-002-missing-client-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-003-wrong-type-for-client-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-004-set-up-new-route-with-plugin-matching-uri-hello
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-005-verify-encrypted-field
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-006-access-route-w-o-bearer-token-should-redirect-to-authentication-e
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect-007-modify-route-to-match-catch-all-uri-and-point-plugin-to-local-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-008-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relyin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-009-re-configure-plugin-with-respect-to-headers-that-get-sent-to-upst
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-010-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relyin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-011-update-plugin-with-bearer-only-true
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-012-access-route-w-o-bearer-token-should-return-401-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: openid-connect-013-access-route-with-invalid-authorization-header-value-should-retur
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: foo
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: openid-connect-014-update-plugin-with-id-provider-public-key-so-tokens-can-be-valida
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-015-access-route-with-valid-token
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-016-update-route-uri-to-uri-where-upstream-endpoint-returns-request-h
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-017-access-route-with-valid-token-in-authorization-header-upstream-sh
-        input:
-          method: GET
-          path: "/uri"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhMSI6IkRhdGEgMSIsImlhdCI6MTU4NTEyMjUwMiwiZXhwIjoxOTAwNjk4NTAyLCJhdWQiOiJodHRwOi8vbXlzb2Z0Y29ycC5pbiIsImlzcyI6Ik15c29mdCBjb3JwIiwic3ViIjoic29tZUB1c2VyLmNvbSJ9.Vq_sBN7nH67vMDbiJE01EP4hvJYE_5ju6izjkOX8pF5OS4g2RWKWpL6h6-b0tTkCzG4JD5BEl13LWW-Gxxw0i9vEK0FLg_kC_kZLYB8WuQ6B9B9YwzmZ3OLbgnYzt_VD7D-7psEbwapJl5hbFsIjDgOAEx-UCmjUcl2frZxZavG2LUiEGs9Ri7KqOZmTLgNDMWfeWh1t1LyD0_b-eTInbasVtKQxMlb5kR0Ln_Qg5092L-irJ7dqaZma7HItCnzXJROdqJEsMIBAYRwDGa_w5kIACeMOdU85QKtMHzOenYFkm6zh_s59ndziTctKMz196Y8AL08xuTi6d1gEWpM92A"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-018-update-plugin-to-only-use-authorization-header
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-019-access-route-with-valid-token-in-authorization-header-upstream-sh
-        input:
-          method: GET
-          path: "/uri"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhMSI6IkRhdGEgMSIsImlhdCI6MTU4NTEyMjUwMiwiZXhwIjoxOTAwNjk4NTAyLCJhdWQiOiJodHRwOi8vbXlzb2Z0Y29ycC5pbiIsImlzcyI6Ik15c29mdCBjb3JwIiwic3ViIjoic29tZUB1c2VyLmNvbSJ9.Vq_sBN7nH67vMDbiJE01EP4hvJYE_5ju6izjkOX8pF5OS4g2RWKWpL6h6-b0tTkCzG4JD5BEl13LWW-Gxxw0i9vEK0FLg_kC_kZLYB8WuQ6B9B9YwzmZ3OLbgnYzt_VD7D-7psEbwapJl5hbFsIjDgOAEx-UCmjUcl2frZxZavG2LUiEGs9Ri7KqOZmTLgNDMWfeWh1t1LyD0_b-eTInbasVtKQxMlb5kR0Ln_Qg5092L-irJ7dqaZma7HItCnzXJROdqJEsMIBAYRwDGa_w5kIACeMOdU85QKtMHzOenYFkm6zh_s59ndziTctKMz196Y8AL08xuTi6d1gEWpM92A"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-020-switch-route-uri-back-to-hello
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-021-access-route-with-invalid-token-should-return-401
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: openid-connect-022-update-route-with-keycloak-introspection-endpoint-and-public-key-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-023-obtain-valid-token-and-access-route-with-it
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-024-access-route-with-an-invalid-token
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-025-check-defaults
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-026-update-plugin-with-id-provider-jwks-endpoint-for-token-verificati
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-027-obtain-valid-token-and-access-route-with-it
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-028-access-route-with-an-invalid-token
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-029-modify-route-to-match-catch-all-uri-and-add-post-logout-redirect-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-030-access-route-w-o-bearer-token-and-request-logout-to-redirect-to-p
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-031-switch-route-uri-back-to-hello-and-enable-pkce
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-032-access-route-w-o-bearer-token-should-redirect-to-authentication-e
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect-033-set-use-jwks-and-set-userinfo-header-to-validate-x-userinfo-in-re
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-034-access-route-to-validate-x-userinfo-in-request-header
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-035-set-up-new-route-with-plugin-matching-uri
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-036-redirect-to-post-logout-redirect-uri-when-provider-has-no-end-ses
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect-037-set-up-new-route-with-plugin-matching-uri
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-038-redirect-to-end-session-endpoint-with-post-logout-redirect-uri-wh
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect-039-update-plugin-config-to-use-jwk-and-bear-only-false
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-040-test-that-jwt-with-bearer-only-false-still-allows-a-valid-authori
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-041-missing-session-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-042-client-secret-is-optional-when-bearer-only-true-and-public-key-is
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-043-client-secret-is-optional-when-bearer-only-true-and-use-jwks-true
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-044-client-secret-is-required-when-bearer-only-true-but-neither-publi
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-045-client-secret-is-optional-when-token-endpoint-auth-method-private
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-046-client-secret-is-optional-when-use-pkce-true-non-bearer-pkce-flow
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-047-client-secret-is-still-required-for-non-bearer-session-flow-witho
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-048-client-secret-is-optional-when-bearer-only-true-and-introspection
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-049-client-secret-stays-required-for-bearer-introspection-even-with-t
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-050-client-secret-stays-required-for-non-bearer-session-flow-with-a-b
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-051-configure-plugin-with-a-custom-session-cookie-name
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-052-full-oidc-login-issues-the-session-cookie-under-the-configured-co
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-053-configure-plugin-with-a-short-session-absolute-timeout
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect-054-session-is-rejected-once-absolute-timeout-elapses-re-initiating-a
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect10-corpus
-    source:
+      tests: 54
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect10.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-    config:
-      routes:
-        - id: openid-connect10-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect10-001-valid-session-with-flat-cookie-name-cookie-path-absolute-timeout
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-002-valid-session-with-flat-cookie-secure-cookie-same-site-idling-rol
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-003-backward-compatible-session-cookie-lifetime-still-accepted
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-004-build-session-opts-passes-flat-keys-through-untouched
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-005-build-session-opts-maps-deprecated-cookie-lifetime-to-absolute-ti
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-006-build-session-opts-returns-nil-for-nil-input
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-007-build-session-opts-works-when-cookie-field-is-absent
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-008-invalid-type-for-cookie-lifetime-string-instead-of-integer
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-009-valid-session-with-redis-storage-and-flat-cookie-options
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-010-absolute-timeout-wins-when-both-it-and-cookie-lifetime-are-set
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-011-unknown-key-directly-under-session-is-rejected
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect10-012-invalid-cookie-same-site-value-is-rejected
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect2-corpus
-    source:
+      tests: 12
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-    config:
-      routes:
-        - id: openid-connect2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect2-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-002-data-encryption-for-client-secret
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-003-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-au
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-004-access-route-w-o-bearer-token-should-redirect-to-authentication-e
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-005-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-de
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-006-access-route-w-o-bearer-token-should-return-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-007-set-up-route-with-plugin-matching-uri-hello-with-unauth-action-pa
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-008-access-route-w-o-bearer-token-should-return-ok
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-009-set-up-route-with-plugin-matching-uri-hello-with-redirect-uri-use
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-010-the-value-of-redirect-uri-should-be-appended-to-apisix-redirect-i
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-011-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-k
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-012-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relyin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-013-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-k
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-014-access-route-w-o-bearer-token-and-go-through-the-full-oidc-relyin
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-015-set-up-route-with-plugin-matching-uri-and-point-plugin-to-local-k
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 400
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-016-untrusted-source-with-forged-x-forwarded-host-should-use-http-hos
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-017-trusted-source-with-x-forwarded-host-should-use-x-forwarded-host
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-018-trusted-source-with-forwarded-header-takes-priority-over-x-forwar
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-019-untrusted-source-with-forged-forwarded-header-should-be-ignored
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect2-020-data-encryption-for-client-rsa-private-key
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect2-021-data-encryption-for-session-redis-password
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect3-corpus
-    source:
+      tests: 21
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect3.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: openid-connect3-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: openid-connect3-001-set-up-new-route-access-the-auth-server-via-http-proxy
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect3-002-access-route-w-o-bearer-token-should-redirect-to-authentication-e
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect3-003-set-up-route-with-plugin-matching-uri-hello-with-redirect-uri-use
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect3-004-the-value-of-redirect-uri-should-be-appended-to-apisix-redirect-i
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect3-005-auto-generated-redirect-uri-preserves-non-default-port-from-host-
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect3-006-auto-generated-redirect-uri-omits-port-when-host-header-lacks-exp
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-  - name: openid-connect4-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect4.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: openid-connect4-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 302
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect4-001-set-up-new-route-access-the-auth-server-with-header-test
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect4-002-check-the-uri-of-the-authorization-endpoint-for-passed-headers
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 302
-          body:
-            equals: "validation failed"
-      - name: openid-connect4-003-set-an-unsupported-scope-in-the-required-scopes-field
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect4-004-access-route
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect4-005-set-a-supported-scope-in-the-required-scopes-field
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect4-006-access-route
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect5-corpus
-    source:
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect5.t
-      tests:
-        - 1
-        - 2
-    config:
-      routes:
-        - id: openid-connect5-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: openid-connect5-001-call-to-route-with-locking-session-storage-should-not-block-subse
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect5-002-call-to-route-with-locking-session-storage-no-authentication-and-
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-  - name: openid-connect6-corpus
-    source:
+      tests: 2
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect6.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-    config:
-      routes:
-        - id: openid-connect6-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: openid-connect6-001-check-configuration-of-cookie
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-002-set-up-new-route-access-the-auth-server
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-003-call-to-route-to-get-session
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-004-update-route-with-keycloak-introspection-endpoint-and-introspecti
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-005-obtain-valid-token-and-access-route-with-it-introspection-work-as
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-006-access-route-with-an-invalid-token-should-fail
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-007-update-route-with-fake-keycloak-introspection-endpoint-and-intros
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect6-008-check-http-headers-from-fake-introspection-endpoint
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-  - name: openid-connect7-corpus
-    source:
+      tests: 8
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect7.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-    config:
-      routes:
-        - id: openid-connect7-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: openid-connect7-001-create-route-jwt-local-audience-required
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-002-access-route-with-a-valid-token-with-audience
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-003-update-route-jwt-local-audience-required-custom-claim
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-004-access-route-with-an-invalid-token-without-audience
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: openid-connect7-005-update-route-jwt-local-audience-required-custom-claim
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-006-access-route-with-an-valid-token-with-custom-audience-claim
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-007-update-route-jwt-local-audience-required-match-client-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-008-access-route-with-an-valid-token-with-client-id-as-audience
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-009-update-route-jwt-local-audience-required-match-client-id
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect7-010-access-route-with-an-invalid-token-without-client-id-as-audience
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-  - name: openid-connect8-corpus
-    source:
+      tests: 10
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect8.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-    config:
-      routes:
-        - id: openid-connect8-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 400
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: openid-connect8-001-set-up-new-route-with-wrong-valid-issuers
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 400
-          body:
-            matches: "validation failed"
-      - name: openid-connect8-002-set-up-new-route-with-valid-valid-issuers
-        input:
-          method: GET
-          path: "/"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect8-003-update-plugin-with-id-provider-jwks-endpoint-for-token-verificati
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect8-004-verification-fails-because-issuer-not-in-valid-issuer
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect8-005-update-plugin-with-id-provider-jwks-endpoint-for-token-verificati
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect8-006-obtain-valid-token-and-access-route-with-it
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect8-007-update-plugin-with-id-provider-jwks-endpoint-for-token-verificati
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect8-008-obtain-valid-token-and-access-route-with-it-use-valid-issuer-from
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: openid-connect9-corpus
-    source:
+      tests: 8
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/openid-connect9.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-    config:
-      routes:
-        - id: openid-connect9-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: openid-connect9-001-configure-oidc-plugin-with-small-public-key-using-environment-var
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect9-002-store-secret-into-vault
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect9-003-configure-oidc-plugin-with-small-public-key-using-vault
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect9-004-configure-oidc-plugin-with-small-public-key-using-vault-and-reque
-        input:
-          method: GET
-          path: "/hello"
-          body: "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3NhbXBsZXMuYXV0aDAuY29tLyIsInN1YiI6InRlc3Qtc3ViamVjdCIsImF1ZCI6ImtieXVG RGlkTExtMjgwTEl3VkZpYXpPcWpPM3R5OEtIIiwic2NvcGUiOiJhcGlzaXgiLCJpYXQiOjEwMDAwMDAwLCJleHAiOjI1MDAwMDAwMDB9.bfcZsd4ABgo0GoLT8EwfnKgf AWbnJZbZ3kOtqyeSkXYqGlSmgMNW3q5Kx1SGjMNhEKVG_KrFfsPrQmcTljSPZA"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect9-005-configure-route-with-bearer-only-public-key-claim-schema-that-req
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: openid-connect9-006-bearer-path-claim-schema-rejection-returns-401-with-www-authentic
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3NhbXBsZXMuYXV0aDAuY29tLyIsInN1YiI6InRlc3Qtc3ViamVjdCIsImF1ZCI6ImtieXVGRGlkTExtMjgwTEl3VkZpYXpPcWpPM3R5OEtIIiwic2NvcGUiOiJhcGlzaXgiLCJpYXQiOjEwMDAwMDAwLCJleHAiOjI1MDAwMDAwMDB9.yWPMyXHuhiBP3q0xUkg3Iwu8dvXWlaVGBqPC8y8hC1MYoCcj687X85o9mvw1Mz_kGgKHNvDYrl5EQ3B3LAM4OA"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
+      tests: 6

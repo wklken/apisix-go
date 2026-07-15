@@ -99,16 +99,14 @@ func (f *networkFixture) serveTCP() {
 			f.errors <- fmt.Errorf("accept TCP fixture connection: %w", err)
 			return
 		}
-		f.wg.Add(1)
-		go func() {
-			defer f.wg.Done()
+		f.wg.Go(func() {
 			f.handleTCPConnection(connection)
-		}()
+		})
 	}
 }
 
 func (f *networkFixture) handleTCPConnection(connection net.Conn) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	for {
 		index := f.nextResponse()
 		if index >= len(f.expect) {
@@ -374,7 +372,7 @@ func TestHarnessRunsTCPFixture(t *testing.T) {
 		Steps: []CaseStep{{
 			Name:   "request",
 			Input:  HTTPInput{Path: "/tcp"},
-			Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: stringPointer("ok")}},
+			Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: new("ok")}},
 		}},
 	}
 
@@ -388,7 +386,7 @@ func TestHarnessRunsUDPFixture(t *testing.T) {
 		Name: "sink",
 		Kind: "udp",
 		NetworkExpect: []NetworkAssertion{{
-			PayloadBase64: &Matcher{Equals: stringPointer(base64.StdEncoding.EncodeToString(payload))},
+			PayloadBase64: &Matcher{Equals: new(base64.StdEncoding.EncodeToString(payload))},
 		}},
 		NetworkRespond: []NetworkResponse{{
 			PayloadBase64: base64.StdEncoding.EncodeToString(response),
@@ -403,7 +401,7 @@ func TestHarnessRunsUDPFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial UDP fixture: %v", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	if _, err := connection.Write(payload); err != nil {
 		t.Fatalf("write UDP payload: %v", err)
 	}
@@ -423,7 +421,7 @@ func TestHarnessRunsGRPCFixture(t *testing.T) {
 		Name: "collector",
 		Kind: "grpc",
 		NetworkExpect: []NetworkAssertion{{
-			PayloadBase64: &Matcher{Equals: stringPointer(base64.StdEncoding.EncodeToString(payload))},
+			PayloadBase64: &Matcher{Equals: new(base64.StdEncoding.EncodeToString(payload))},
 		}},
 		NetworkRespond: []NetworkResponse{{Payload: "accepted"}},
 	}
@@ -461,11 +459,7 @@ func TestHarnessAssertsFileAfterShutdown(t *testing.T) {
 	}
 	body := "flushed"
 	assertAfterShutdown(t, []FileAssertion{{
-		Path: &Matcher{Equals: stringPointer("{{WORK_DIR}}/output.log")},
+		Path: &Matcher{Equals: new("{{WORK_DIR}}/output.log")},
 		Body: &Matcher{Equals: &body},
 	}}, map[string]string{"{{WORK_DIR}}": workDir})
-}
-
-func stringPointer(value string) *string {
-	return &value
 }

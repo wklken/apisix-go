@@ -1,474 +1,198 @@
-sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/skywalking-logger.t
-    tests: 14
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/skywalking-logger2.t
-    tests: 1
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/skywalking.t
-    tests: 15
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/skywalking2.t
-    tests: 2
 cases:
-  - name: skywalking-logger-corpus
-    source:
+    - config:
+        routes:
+            - id: skywalking-source-1
+              plugins:
+                skywalking:
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: skywalking-source-1
+      source:
+        file: t/plugin/skywalking-logger.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: skywalking-source-2
+              plugins:
+                skywalking:
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: skywalking-source-2
+      source:
+        file: t/plugin/skywalking-logger2.t
+        tests:
+            - 1
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: skywalking-source-3
+              plugins:
+                skywalking:
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: skywalking-source-3
+      source:
+        file: t/plugin/skywalking.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+    - config:
+        routes:
+            - id: skywalking-source-4
+              plugins:
+                skywalking:
+                    endpoint_addr: '{{FIXTURE.sink.URL}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: skywalking-source-4
+      source:
+        file: t/plugin/skywalking2.t
+        tests:
+            - 1
+            - 2
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: real-plugin-probe
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/skywalking-logger.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-    config:
-      routes:
-        - id: skywalking-logger-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: skywalking-logger-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-002-full-schema-check
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-003-uri-is-missing
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-004-add-plugin
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-005-access-local-server
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-006-test-trace-context-header
-        input:
-          method: GET
-          path: "/opentracing"
-          headers:
-            sw8: "1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-1-QVBJU0lY-QVBJU0lYIEluc3RhbmNlIE5hbWU=-L2dldA==-dXBzdHJlYW0gc2VydmljZQ=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-007-test-wrong-trace-context-header
-        input:
-          method: GET
-          path: "/opentracing"
-          headers:
-            sw8: "1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-1-QVBJU0lY-QVBJU0lYIEluc3RhbmNlIE5hbWU=-L2dldA=="
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-008-add-plugin-metadata
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-009-access-local-server-and-test-log-format
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-010-log-format-in-plugin
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-011-access-local-server-and-test-log-format
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-012-test-serviceinstance-hostname
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-013-add-plugin-with-include-req-body-setting-collect-request-log
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-logger-014-add-plugin-with-include-resp-body-setting-collect-response-log
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: skywalking-logger2-corpus
-    source:
+      tests: 14
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/skywalking-logger2.t
-      tests:
-        - 1
-    config:
-      routes:
-        - id: skywalking-logger2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: skywalking-logger2-001-should-drop-entries-when-max-pending-entries-is-exceededa
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: skywalking-corpus
-    source:
+      tests: 1
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/skywalking.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-    config:
-      routes:
-        - id: skywalking-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-    steps:
-      - name: skywalking-001-add-plugin
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-002-trigger-skywalking
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-003-change-sample-ratio
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-004-not-trigger-skywalking
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-005-disabled
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-006-not-trigger-skywalking
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-007-enable-skywalking-sample-ratio-1
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-008-test-segments-report
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-009-enable-at-both-global-and-route-levels
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-010-run-once
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-011-enable-at-global-but-disable-at-route-levels
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-012-run-once
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-013-delete-global-rule
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-014-trace-request-rejected-by-auth
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking-015-hit
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-  - name: skywalking2-corpus
-    source:
+      tests: 15
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/skywalking2.t
-      tests:
-        - 1
-        - 2
-    config:
-      routes:
-        - id: skywalking2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
-    fixtures:
-      - name: primary
-        kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-    steps:
-      - name: skywalking2-001-add-plugin
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: skywalking2-002-trigger-skywalking
-        input:
-          method: GET
-          path: "/opentracing"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
+      tests: 2

@@ -1,938 +1,264 @@
 sources:
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/consumer-restriction.t
-    tests: 53
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/consumer-restriction2.t
-    tests: 18
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/consumer-restriction.t, tests: 53}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/consumer-restriction2.t, tests: 18}
 cases:
-  - name: consumer-restriction-corpus
-    source:
-      file: t/plugin/consumer-restriction.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
-        - 19
-        - 20
-        - 21
-        - 22
-        - 23
-        - 24
-        - 25
-        - 26
-        - 27
-        - 28
-        - 29
-        - 30
-        - 31
-        - 32
-        - 33
-        - 34
-        - 35
-        - 36
-        - 37
-        - 38
-        - 39
-        - 40
-        - 41
-        - 42
-        - 43
-        - 44
-        - 45
-        - 46
-        - 47
-        - 48
-        - 49
-        - 50
-        - 51
-        - 52
-        - 53
+  - name: consumer-whitelist
+    source: {file: t/plugin/consumer-restriction.t, tests: [1, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16]}
     config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+        - username: jack2
+          plugins: {key-auth: {key: auth-two}}
       routes:
-        - id: consumer-restriction-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
+        - id: consumer-whitelist
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction: {whitelist: [jack1]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: consumer-restriction-001-sanity
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-002-blacklist-whitelist-allowed-by-methods
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-003-add-consumer-jack1
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-004-add-consumer-jack2
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-005-set-whitelist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-006-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-007-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-008-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-009-set-blacklist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-010-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-011-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-012-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-013-set-whitelist-without-authorization
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-014-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-015-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-016-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-017-set-blacklist-without-authorization
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-018-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-019-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-020-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-021-set-allowed-by-methods
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-022-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-023-set-allowed-by-methods
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-024-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-025-test-blacklist-priority
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-026-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-027-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-028-whitelist-blacklist-priority
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-029-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-030-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction-031-remove-consumer-restriction
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-032-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-033-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-034-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-035-create-service-id-1
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-036-add-consumer-with-plugin-hmac-auth-and-consumer-restriction-and-s
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-037-route-binding-hmac-auth-plug-in-and-whitelist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-038-verify-valid-whitelist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-039-create-service-id-2
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-040-route-binding-hmac-auth-plug-in-and-invalid-whitelist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-041-verify-invalid-whitelist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: consumer-restriction-042-add-consumer-with-plugin-hmac-auth-and-consumer-restriction-and-s
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-043-route-binding-hmac-auth-plug-in-and-blacklist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-044-verify-valid-blacklist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: consumer-restriction-045-route-binding-hmac-auth-plug-in-and-invalid-blacklist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-046-verify-invalid-blacklist-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-047-update-consumer-with-plugin-hmac-auth-and-consumer-restriction-an
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-048-verify-valid-whitelist-route-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-049-update-consumer-with-plugin-hmac-auth-and-consumer-restriction-an
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-050-verify-valid-blacklist-route-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            matches: "validation failed"
-      - name: consumer-restriction-051-delete-route-id-1
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-052-delete-service-id-is-1
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction-053-delete-service-id-is-2
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-  - name: consumer-restriction2-corpus
-    source:
-      file: t/plugin/consumer-restriction2.t
-      tests:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 7
-        - 8
-        - 9
-        - 10
-        - 11
-        - 12
-        - 13
-        - 14
-        - 15
-        - 16
-        - 17
-        - 18
+      - {name: missing, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing API key in request"}'}}}
+      - {name: allowed, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: rejected, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+
+  - name: consumer-blacklist
+    source: {file: t/plugin/consumer-restriction.t, tests: [2, 9, 10, 11, 12, 17, 18, 19, 20, 25, 26, 27]}
     config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+        - username: jack2
+          plugins: {key-auth: {key: auth-two}}
       routes:
-        - id: consumer-restriction2-corpus
-          uri: "/*"
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{FIXTURE.primary.ADDR}}": 1
+        - id: consumer-blacklist
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction: {blacklist: [jack1], rejected_msg: request is forbidden}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond:
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 403
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
-          - status: 200
-            headers: {}
-            body: "hello world"
-          - status: 401
-            headers: {}
-            body: "validation failed"
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: consumer-restriction2-001-create-consumer-group-group1
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-002-create-consumer-group-group2
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-003-consumer-jack1-with-consumer-group-group1
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-004-consumer-jack2-with-consumer-group-group2
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-005-consumer-jack3-with-no-consumer-group
-        input:
-          method: GET
-          path: "/t"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-006-set-whitelist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-007-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction2-008-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-009-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction2-010-set-blacklist
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-011-verify-unauthorized
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction2-012-verify-jack1
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMTk6MTIzNDU2"
-        output:
-          status: 403
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction2-013-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjA6MTIzNDU2"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-014-verify-jack2
-        input:
-          method: GET
-          path: "/hello"
-          headers:
-            Authorization: "Basic amFjazIwMjE6MTIzNDU2"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction2-015-set-blacklist-with-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-016-hit
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
-      - name: consumer-restriction2-017-set-whitelist-with-service-id
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 200
-          body:
-            equals: "hello world"
-      - name: consumer-restriction2-018-hit
-        input:
-          method: GET
-          path: "/hello"
-        output:
-          status: 401
-          body:
-            equals: "validation failed"
+      - {name: blocked, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: allowed, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: allowed-by-method
+    source: {file: t/plugin/consumer-restriction.t, tests: [21, 22, 23, 24]}
+    config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: consumer-method
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction: {allowed_by_methods: [{user: jack1, methods: [POST, GET]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: get, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: post, input: {method: POST, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: priority
+    source: {file: t/plugin/consumer-restriction.t, tests: [28, 29, 30]}
+    config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+        - username: jack2
+          plugins: {key-auth: {key: auth-two}}
+      routes:
+        - id: consumer-priority
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction:
+              whitelist: [jack1]
+              allowed_by_methods: [{user: jack1, methods: [POST]}]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: whitelisted, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: other-consumer, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {matches: consumer_name}}}
+
+  - name: disabled
+    source: {file: t/plugin/consumer-restriction.t, tests: [31, 32, 33, 34]}
+    config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+        - username: jack2
+          plugins: {key-auth: {key: auth-two}}
+      routes:
+        - id: consumer-disabled
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction: {_meta: {disable: true}, whitelist: [jack1]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: disabled-plugin, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: service-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46]}
+    config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+      services:
+        - id: service-allow
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: service_id, whitelist: [service-allow]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: service-block
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: service_id, blacklist: [service-block]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+      routes:
+        - id: service-allow-route
+          uri: /allow
+          service_id: service-allow
+        - id: service-block-route
+          uri: /block
+          service_id: service-block
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: allowed-service, input: {method: GET, path: /allow, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: blocked-service, input: {method: GET, path: /block, headers: {apikey: auth-one}}, output: {status: 403, body: {matches: service_id}}}
+
+  - name: route-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [47, 48, 49, 50, 51, 52, 53]}
+    config:
+      consumers:
+        - username: jack1
+          plugins: {key-auth: {key: auth-one}}
+      routes:
+        - id: route-allowed
+          uri: /allowed
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: route_id, whitelist: [route-allowed]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: route-blocked
+          uri: /blocked
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: route_id, blacklist: [route-blocked]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: allowed-route, input: {method: GET, path: /allowed, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: blocked-route, input: {method: GET, path: /blocked, headers: {apikey: auth-one}}, output: {status: 403, body: {matches: route_id}}}
+
+  - name: group-whitelist
+    source: {file: t/plugin/consumer-restriction2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    config:
+      consumer_groups:
+        - id: group1
+          plugins: {}
+        - id: group2
+          plugins: {}
+      consumers:
+        - username: jack1
+          group_id: group1
+          plugins: {key-auth: {key: auth-one}}
+        - username: jack2
+          group_id: group2
+          plugins: {key-auth: {key: auth-two}}
+      routes:
+        - id: group-whitelist
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: consumer_group_id, whitelist: [group1]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: group1, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: group2, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {matches: consumer_group_id}}}
+
+  - name: group-blacklist
+    source: {file: t/plugin/consumer-restriction2.t, tests: [10, 11, 12, 13, 14]}
+    config:
+      consumer_groups:
+        - id: group1
+          plugins: {}
+        - id: group2
+          plugins: {}
+      consumers:
+        - username: jack1
+          group_id: group1
+          plugins: {key-auth: {key: auth-one}}
+        - username: jack2
+          group_id: group2
+          plugins: {key-auth: {key: auth-two}}
+      routes:
+        - id: group-blacklist
+          uri: /hello
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: consumer_group_id, blacklist: [group2], rejected_msg: request is forbidden}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: group1, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: group2, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+
+  - name: group-service-route
+    source: {file: t/plugin/consumer-restriction2.t, tests: [15, 16, 17, 18]}
+    config:
+      consumer_groups:
+        - id: group1
+          plugins: {}
+      consumers:
+        - username: jack1
+          group_id: group1
+          plugins: {key-auth: {key: auth-one}}
+      services:
+        - id: group-service-route
+          plugins:
+            key-auth: {}
+            consumer-restriction: {type: service_id, blacklist: [group-service-route], rejected_msg: request is forbidden}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+      routes:
+        - id: group-service-route
+          uri: /hello
+          service_id: group-service-route
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - {name: service-id, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}

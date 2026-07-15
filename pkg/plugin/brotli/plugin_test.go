@@ -2,6 +2,7 @@ package brotli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,41 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != "hello world" {
 		t.Fatalf("decoded body = %q, want hello world", decoded)
+	}
+}
+
+func TestHandlerAppendsVaryToExistingResponseValue(t *testing.T) {
+	vary := true
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1), Vary: &vary})
+	req := httptest.NewRequest(http.MethodGet, "/text", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Vary", "upstream")
+		_, _ = w.Write([]byte("hello world"))
+	})).ServeHTTP(res, req)
+
+	if got := res.Header().Get("Vary"); got != "upstream, Accept-Encoding" {
+		t.Fatalf("Vary = %q, want upstream, Accept-Encoding", got)
+	}
+}
+
+func TestHandlerClearsEmbeddedQuoteETag(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/text", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Etag", `"12"34"`)
+		_, _ = w.Write([]byte("hello world"))
+	})).ServeHTTP(res, req)
+
+	if got := res.Header().Get("Etag"); got != "" {
+		t.Fatalf("Etag = %q, want embedded-quote ETag cleared", got)
 	}
 }
 
@@ -144,6 +180,17 @@ func TestHandlerSupportsWildcardAcceptEncodingAndType(t *testing.T) {
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != `{"ok":true}` {
 		t.Fatalf("decoded body = %q, want JSON", decoded)
+	}
+}
+
+func TestConfigDecodesWildcardTypes(t *testing.T) {
+	var config Config
+	if err := json.Unmarshal([]byte(`{"types":"*"}`), &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, want wildcard type accepted", err)
+	}
+	p := newTestPlugin(t, config)
+	if !p.config.wildcardType {
+		t.Fatal("wildcard type was not enabled")
 	}
 }
 

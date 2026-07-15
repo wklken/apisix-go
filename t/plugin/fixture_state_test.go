@@ -25,6 +25,7 @@ type redisFixture struct {
 	stateMu   sync.Mutex
 	values    map[string]string
 	integers  map[string]int64
+	hashes    map[string]map[string]string
 	wg        sync.WaitGroup
 }
 
@@ -42,6 +43,7 @@ func startRedisFixture(spec FixtureSpec) (namedFixture, error) {
 		done:     make(chan struct{}),
 		values:   make(map[string]string),
 		integers: make(map[string]int64),
+		hashes:   make(map[string]map[string]string),
 	}
 	fixture.wg.Add(1)
 	go fixture.serve()
@@ -116,9 +118,45 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 			return writeRESPError(writer, "wrong number of arguments for SET")
 		}
 		f.stateMu.Lock()
+		for _, option := range command[3:] {
+			if strings.EqualFold(option, "NX") {
+				if _, exists := f.values[command[1]]; exists {
+					f.stateMu.Unlock()
+					return writeRESPNull(writer)
+				}
+			}
+		}
 		f.values[command[1]] = command[2]
 		f.stateMu.Unlock()
 		return writeSimpleRESP(writer, "OK")
+	case "HSET":
+		if len(command) < 4 || len(command[2:])%2 != 0 {
+			return writeRESPError(writer, "wrong number of arguments for HSET")
+		}
+		f.stateMu.Lock()
+		if f.hashes[command[1]] == nil {
+			f.hashes[command[1]] = make(map[string]string)
+		}
+		added := int64(0)
+		for i := 2; i < len(command); i += 2 {
+			if _, exists := f.hashes[command[1]][command[i]]; !exists {
+				added++
+			}
+			f.hashes[command[1]][command[i]] = command[i+1]
+		}
+		f.stateMu.Unlock()
+		return writeRESPInteger(writer, added)
+	case "HGET":
+		if len(command) < 3 {
+			return writeRESPError(writer, "wrong number of arguments for HGET")
+		}
+		f.stateMu.Lock()
+		value, ok := f.hashes[command[1]][command[2]]
+		f.stateMu.Unlock()
+		if !ok {
+			return writeRESPNull(writer)
+		}
+		return writeRESPBulk(writer, value)
 	case "INCR", "INCRBY", "DECR", "DECRBY":
 		return f.writeIntegerMutation(writer, command)
 	case "DEL", "UNLINK":
@@ -185,6 +223,12 @@ func (f *redisFixture) writeIntegerMutation(writer io.Writer, command []string) 
 		delta = -delta
 	}
 	f.stateMu.Lock()
+	if current, ok := f.values[command[1]]; ok {
+		if parsed, err := strconv.ParseInt(current, 10, 64); err == nil {
+			f.integers[command[1]] = parsed
+		}
+		delete(f.values, command[1])
+	}
 	f.integers[command[1]] += delta
 	value := f.integers[command[1]]
 	f.stateMu.Unlock()
@@ -290,6 +334,65 @@ func TestRedisFixtureServesRESP(t *testing.T) {
 		t.Fatalf("Redis response = %q, want +PONG", response)
 	}
 	fixture.assert(t, spec)
+}
+
+func TestRedisFixtureSupportsStatefulCommands(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "redis-state",
+		Kind: "redis",
+		NetworkExpect: []NetworkAssertion{
+			{Payload: &Matcher{Equals: stringPointer("SET quota 1 NX EX 60")}},
+			{Payload: &Matcher{Equals: stringPointer("INCR quota")}},
+			{Payload: &Matcher{Equals: stringPointer("HSET hash field 1")}},
+			{Payload: &Matcher{Equals: stringPointer("HGET hash field")}},
+		},
+		NetworkRespond: make([]NetworkResponse, 4),
+	}
+	fixture, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	defer fixture.close()
+	connection, err := net.Dial("tcp", fixture.address())
+	if err != nil {
+		t.Fatalf("dial Redis fixture: %v", err)
+	}
+	defer connection.Close()
+	reader := bufio.NewReader(connection)
+	commands := [][]string{{"SET", "quota", "1", "NX", "EX", "60"}, {"INCR", "quota"}, {"HSET", "hash", "field", "1"}, {"HGET", "hash", "field"}}
+	wantResponses := []string{"+OK\r\n", ":2\r\n", ":1\r\n", "$1\r\n1\r\n"}
+	for i, command := range commands {
+		if err := writeRESPCommand(connection, command); err != nil {
+			t.Fatalf("write Redis command %d: %v", i+1, err)
+		}
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read Redis response %d: %v", i+1, err)
+		}
+		if strings.HasPrefix(wantResponses[i], "$") {
+			body, err := io.ReadAll(io.LimitReader(reader, 3))
+			if err != nil {
+				t.Fatalf("read Redis bulk response %d: %v", i+1, err)
+			}
+			response += string(body)
+		}
+		if response != wantResponses[i] {
+			t.Fatalf("Redis response %d = %q, want %q", i+1, response, wantResponses[i])
+		}
+	}
+	fixture.assert(t, spec)
+}
+
+func writeRESPCommand(writer io.Writer, command []string) error {
+	if err := writeRESPRaw(writer, "*"+strconv.Itoa(len(command))+"\r\n"); err != nil {
+		return err
+	}
+	for _, value := range command {
+		if err := writeRESPRaw(writer, "$"+strconv.Itoa(len(value))+"\r\n"+value+"\r\n"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readRESPCommand(reader *bufio.Reader) ([]string, error) {

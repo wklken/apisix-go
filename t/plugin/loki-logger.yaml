@@ -24,7 +24,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /loki/api/v1/push}
           respond:
             - body: ok
               headers: {}
@@ -89,7 +89,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /loki/api/v1/push}
           respond:
             - body: ok
               headers: {}

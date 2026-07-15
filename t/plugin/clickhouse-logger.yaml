@@ -27,7 +27,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /}
           respond:
             - body: ok
               headers: {}
@@ -86,7 +86,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /}
           respond:
             - body: ok
               headers: {}
@@ -141,7 +141,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /}
           respond:
             - body: ok
               headers: {}

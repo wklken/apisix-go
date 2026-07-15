@@ -8,6 +8,8 @@ cases:
                     flush_limit: 1
                     host: '{{FIXTURE.sink.HOST}}'
                     port: '{{FIXTURE.sink.PORT}}'
+                    log_format:
+                        path: '$uri'
                     sock_type: tcp
               upstream:
                 nodes:
@@ -25,7 +27,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: syslog-source-1

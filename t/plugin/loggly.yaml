@@ -25,7 +25,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /bulk/integration/tag/bulk}
           respond:
             - body: ok
               headers: {}

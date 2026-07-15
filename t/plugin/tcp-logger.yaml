@@ -7,6 +7,8 @@ cases:
                     batch_max_size: 1
                     host: '{{FIXTURE.sink.HOST}}'
                     inactive_timeout: 1
+                    log_format:
+                        path: '$uri'
                     port: '{{FIXTURE.sink.PORT}}'
               upstream:
                 nodes:
@@ -24,7 +26,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: tcp-logger-source-1

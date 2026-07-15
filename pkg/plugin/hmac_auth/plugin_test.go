@@ -248,12 +248,22 @@ func TestHandlerValidatesRequestTargetOnlySignature(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
 	req.Header.Set("Date", "Thu, 24 Sep 2020 06:39:52 GMT")
-	params := signatureParams{KeyID: "my-access-key", Algorithm: "hmac-sha256", Headers: []string{"@request-target"}, Signature: ""}
+	params := signatureParams{
+		KeyID:     "my-access-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"@request-target"},
+		Signature: "",
+	}
 	generated, err := generateSignature(req, "my-secret-key", params)
 	if err != nil {
 		t.Fatalf("generateSignature() error = %v", err)
 	}
-	req.Header.Set("Authorization", `Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target",signature="`+base64.StdEncoding.EncodeToString(generated)+`"`)
+	req.Header.Set(
+		"Authorization",
+		`Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target",signature="`+base64.StdEncoding.EncodeToString(
+			generated,
+		)+`"`,
+	)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

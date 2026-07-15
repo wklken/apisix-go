@@ -9,6 +9,8 @@ cases:
                     access_key_id: integration
                     access_key_secret: integration
                     host: '{{FIXTURE.sink.HOST}}'
+                    log_format:
+                        path: '$uri'
                     logstore: integration
                     port: '{{FIXTURE.sink.PORT}}'
                     project: integration
@@ -27,7 +29,7 @@ cases:
         - kind: tls-tcp
           name: sink
           network_expect:
-            - payload: {matches: '.*'}
+            - payload: {matches: '.*"path":"/probe".*'}
           network_respond:
             - payload: ''
       name: sls-logger-source-1

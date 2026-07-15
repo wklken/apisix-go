@@ -27,7 +27,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {matches: '^/structuredlog\?topic_id=integration$'}
           respond:
             - body: ok
               headers: {}

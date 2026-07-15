@@ -23,7 +23,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /v3/logs}
           respond:
             - body: ok
               headers: {}
@@ -80,7 +80,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /v3/logs}
           respond:
             - body: ok
               headers: {}

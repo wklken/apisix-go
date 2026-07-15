@@ -121,7 +121,13 @@ func TestConsumerKVDoesNotIndexUnresolvedKeyAuthReference(t *testing.T) {
 	if err := consumerStore.consumerKVAdd([]byte("alice"), value); err != nil {
 		t.Fatalf("consumerKVAdd() error = %v", err)
 	}
-	if _, err := consumerStore.GetConsumerNameByPluginKey("key-auth", "$env://MISSING_KEY"); !errors.Is(err, ErrNotFound) {
+	if _, err := consumerStore.GetConsumerNameByPluginKey(
+		"key-auth",
+		"$env://MISSING_KEY",
+	); !errors.Is(
+		err,
+		ErrNotFound,
+	) {
 		t.Fatalf("unresolved key lookup error = %v, want ErrNotFound", err)
 	}
 }

@@ -13,6 +13,7 @@ cases:
                 datadog:
                     batch_max_size: 1
                     host: '{{FIXTURE.sink.HOST}}'
+                    include_path: true
                     inactive_timeout: 1
                     port: '{{FIXTURE.sink.PORT}}'
               upstream:
@@ -30,12 +31,12 @@ cases:
         - kind: udp
           name: sink
           network_expect:
-            - payload: {matches: '.*'}
-            - payload: {matches: '.*'}
-            - payload: {matches: '.*'}
-            - payload: {matches: '.*'}
-            - payload: {matches: '.*'}
-            - payload: {matches: '.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
           network_respond:
             - payload: ''
             - payload: ''

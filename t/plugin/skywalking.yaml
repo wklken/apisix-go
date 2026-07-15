@@ -21,7 +21,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /v3/segments}
           respond:
             - body: ok
               headers: {}
@@ -76,7 +76,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /v3/segments}
           respond:
             - body: ok
               headers: {}
@@ -118,7 +118,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /v3/segments}
           respond:
             - body: ok
               headers: {}
@@ -174,7 +174,7 @@ cases:
           name: sink
           expect:
             - method: POST
-              path: {matches: '.*'}
+              path: {equals: /v3/segments}
           respond:
             - body: ok
               headers: {}

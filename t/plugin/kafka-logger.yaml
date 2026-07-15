@@ -10,6 +10,8 @@ cases:
                     buffer_duration: 1
                     inactive_timeout: 1
                     kafka_topic: integration
+                    log_format:
+                        path: '$uri'
                     max_retry_count: 0
                     producer_type: sync
                     timeout: 1
@@ -29,7 +31,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: kafka-logger-source-1
@@ -85,6 +87,8 @@ cases:
                     buffer_duration: 1
                     inactive_timeout: 1
                     kafka_topic: integration
+                    log_format:
+                        path: '$uri'
                     max_retry_count: 0
                     producer_type: sync
                     timeout: 1
@@ -104,7 +108,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: kafka-logger-source-2
@@ -137,6 +141,8 @@ cases:
                     buffer_duration: 1
                     inactive_timeout: 1
                     kafka_topic: integration
+                    log_format:
+                        path: '$uri'
                     max_retry_count: 0
                     producer_type: sync
                     timeout: 1
@@ -156,7 +162,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: kafka-logger-source-3
@@ -213,6 +219,8 @@ cases:
                     buffer_duration: 1
                     inactive_timeout: 1
                     kafka_topic: integration
+                    log_format:
+                        path: '$uri'
                     max_retry_count: 0
                     producer_type: sync
                     timeout: 1
@@ -232,7 +240,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: kafka-logger-source-4
@@ -287,6 +295,8 @@ cases:
                     buffer_duration: 1
                     inactive_timeout: 1
                     kafka_topic: integration
+                    log_format:
+                        path: '$uri'
                     max_retry_count: 0
                     producer_type: sync
                     timeout: 1
@@ -306,7 +316,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: kafka-logger-source-5
@@ -336,6 +346,8 @@ cases:
                     buffer_duration: 1
                     inactive_timeout: 1
                     kafka_topic: integration
+                    log_format:
+                        path: '$uri'
                     max_retry_count: 0
                     producer_type: sync
                     timeout: 1
@@ -355,7 +367,7 @@ cases:
           name: sink
           network_expect:
             - payload:
-                matches: .*
+                matches: '.*"path":"/probe".*'
           network_respond:
             - payload: ok
       name: kafka-logger-source-6

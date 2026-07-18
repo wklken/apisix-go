@@ -194,85 +194,86 @@ cases:
     steps:
       - {name: logger-delivery-does-not-change-upstream-response, input: {path: /custom-endpoint}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: per-request-label-isolation
-    source: {file: t/plugin/loki-logger.t, tests: [17]}
-    config:
-      routes:
-        - id: loki-label-isolation
-          uri: /label-isolation
-          plugins:
-            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, log_labels: {service: '$http_x_service_name'}, batch_max_size: 2, inactive_timeout: 1}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /label-isolation}}, {method: GET, path: {equals: /label-isolation}}, {method: GET, path: {equals: /label-isolation}}], respond: [{status: 200, body: hello world}]}
-      - name: sink
-        kind: http
-        expect:
-          - method: POST
-            path: {equals: /loki/api/v1/push}
-            loki_push:
-              streams:
-                - stream: {service: svc-alpha}
-                  values:
-                    - entry:
-                        request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-alpha}}
-                        route_id: loki-label-isolation
-                - stream: {service: svc-beta}
-                  values:
-                    - entry:
-                        request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-beta}}
-                        route_id: loki-label-isolation
-          - method: POST
-            path: {equals: /loki/api/v1/push}
-            loki_push:
-              streams:
-                - stream: {service: ''}
-                  values:
-                    - entry:
-                        request: {method: GET, uri: /label-isolation}
-                        route_id: loki-label-isolation
-                      absent: [request.headers.x-service-name]
-        respond: [{status: 204}, {status: 204}]
-    steps:
-      - {name: alpha-entry, input: {path: /label-isolation, headers: {X-Service-Name: svc-alpha}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: beta-entry-in-same-process, input: {path: /label-isolation, headers: {X-Service-Name: svc-beta}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: empty-header-does-not-inherit-label, input: {path: /label-isolation}, output: {status: 200, body: {equals: hello world}}, wait: 2s}
-  - name: post-upstream-label-resolution
-    source: {file: t/plugin/loki-logger.t, tests: [18]}
-    config:
-      routes:
-        - id: loki-post-upstream-labels
-          uri: /post-upstream-labels
-          plugins:
-            loki-logger:
-              endpoint_addrs: ['{{FIXTURE.sink.URL}}']
-              log_labels: {status: '$status', upstream: '$balancer_ip'}
-              batch_max_size: 1
-              inactive_timeout: 1
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        expect: [{method: GET, path: {equals: /post-upstream-labels}}]
-        respond: [{status: 201, body: created}]
-      - name: sink
-        kind: http
-        expect:
-          - method: POST
-            path: {equals: /loki/api/v1/push}
-            loki_push:
-              streams:
-                - stream: {status: '201', upstream: 127.0.0.1}
-                  values:
-                    - entry:
-                        request: {method: GET, uri: /post-upstream-labels}
-                        response: {status: 201}
-                        route_id: loki-post-upstream-labels
-        respond: [{status: 204}]
-    steps:
-      - name: final-status-and-upstream-are-labelled
-        input: {path: /post-upstream-labels}
-        output: {status: 201, body: {equals: created}}
-        wait: 1s
+    source: {file: t/plugin/loki-logger.t, tests: [17, 18]}
+    variants:
+      - name: pinned-three-request-isolation
+        config:
+          routes:
+            - id: loki-label-isolation
+              uri: /label-isolation
+              plugins:
+                loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, log_labels: {service: '$http_x_service_name'}, batch_max_size: 2, inactive_timeout: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /label-isolation}}, {method: GET, path: {equals: /label-isolation}}, {method: GET, path: {equals: /label-isolation}}], respond: [{status: 200, body: hello world}]}
+          - name: sink
+            kind: http
+            expect:
+              - method: POST
+                path: {equals: /loki/api/v1/push}
+                loki_push:
+                  streams:
+                    - stream: {service: svc-alpha}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-alpha}}
+                            route_id: loki-label-isolation
+                    - stream: {service: svc-beta}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-beta}}
+                            route_id: loki-label-isolation
+              - method: POST
+                path: {equals: /loki/api/v1/push}
+                loki_push:
+                  streams:
+                    - stream: {service: ''}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /label-isolation}
+                            route_id: loki-label-isolation
+                          absent: [request.headers.x-service-name]
+            respond: [{status: 204}, {status: 204}]
+        steps:
+          - {name: alpha-entry, input: {path: /label-isolation, headers: {X-Service-Name: svc-alpha}}, output: {status: 200, body: {equals: hello world}}}
+          - {name: beta-entry-in-same-process, input: {path: /label-isolation, headers: {X-Service-Name: svc-beta}}, output: {status: 200, body: {equals: hello world}}}
+          - {name: empty-header-does-not-inherit-label, input: {path: /label-isolation}, output: {status: 200, body: {equals: hello world}}, wait: 2s}
+      - name: post-upstream-label-resolution
+        config:
+          routes:
+            - id: loki-post-upstream-labels
+              uri: /post-upstream-labels
+              plugins:
+                loki-logger:
+                  endpoint_addrs: ['{{FIXTURE.sink.URL}}']
+                  log_labels: {status: '$status', upstream: '$balancer_ip'}
+                  batch_max_size: 1
+                  inactive_timeout: 1
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: primary
+            kind: http
+            expect: [{method: GET, path: {equals: /post-upstream-labels}}]
+            respond: [{status: 201, body: created}]
+          - name: sink
+            kind: http
+            expect:
+              - method: POST
+                path: {equals: /loki/api/v1/push}
+                loki_push:
+                  streams:
+                    - stream: {status: '201', upstream: 127.0.0.1}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /post-upstream-labels}
+                            response: {status: 201}
+                            route_id: loki-post-upstream-labels
+            respond: [{status: 204}]
+        steps:
+          - name: final-status-and-upstream-are-labelled
+            input: {path: /post-upstream-labels}
+            output: {status: 201, body: {equals: created}}
+            wait: 1s
   - name: metadata-enriches-default-log
     source: {file: t/plugin/loki-logger.t, tests: [19, 20, 21]}
     config:

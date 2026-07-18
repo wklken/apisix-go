@@ -1,67 +1,365 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/authz-casbin.t
+  tests: 21
+
 cases:
-    - config:
-        routes:
-            - id: authz-casbin-source-1
+  - name: file-schema-sanity
+    source:
+      tests: [1]
+    files:
+      - path: authz-casbin/model.conf
+        body: &model |-
+          [request_definition]
+          r = sub, obj, act
+
+          [policy_definition]
+          p = sub, obj, act
+
+          [role_definition]
+          g = _, _
+
+          [policy_effect]
+          e = some(where (p.eft == allow))
+
+          [matchers]
+          m = (g(r.sub, p.sub) || keyMatch(r.sub, p.sub)) && keyMatch(r.obj, p.obj) && keyMatch(r.act, p.act)
+      - path: authz-casbin/policy.csv
+        body: |-
+          p, alice, /sanity, GET
+    config:
+      routes:
+        - id: authz-casbin-file-schema-sanity
+          uri: /sanity
+          plugins:
+            authz-casbin:
+              model_path: '{{WORK_DIR}}/authz-casbin/model.conf'
+              policy_path: '{{WORK_DIR}}/authz-casbin/policy.csv'
+              username: user
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: &hello_fixture
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: valid-file-config-builds-and-enforces
+        input:
+          path: /sanity
+          headers:
+            user: alice
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: missing-username-schema-diagnostic
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: authz-casbin-missing-username
+          uri: /missing-username
+          plugins:
+            authz-casbin:
+              model_path: /path/to/model.conf
+              policy_path: /path/to/policy.csv
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: *hello_fixture
+    steps:
+      - name: route-build-reports-missing-username
+        input:
+          path: /missing-username
+        output:
+          status: 404
+          body: {matches: '404 page not found'}
+          logs: {matches: 'validate plugin authz-casbin config:.*username'}
+
+  - name: metadata-policy-lifecycle
+    source:
+      tests: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    config:
+      plugin_metadata:
+        - id: authz-casbin
+          model: *model
+          policy: &metadata_policy_1 |-
+            p, *, /, GET
+            p, admin, *, *
+            g, alice, admin
+      routes:
+        - id: authz-casbin-metadata
+          uri: /hello
+          plugins:
+            authz-casbin:
+              username: user
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: *hello_fixture
+    steps:
+      - name: metadata-config-accepts-username-only-route
+        input:
+          path: /hello
+        output:
+          status: 403
+          body: {matches: 'Access Denied'}
+      - name: missing-user-is-denied
+        input:
+          path: /hello
+        output:
+          status: 403
+          body: {matches: 'Access Denied'}
+      - name: unauthorized-user-is-denied
+        input:
+          path: /hello
+          headers:
+            user: bob
+        output:
+          status: 403
+          body: {matches: 'Access Denied'}
+      - name: direct-policy-user-is-authorized
+        input:
+          path: /hello
+          headers:
+            user: admin
+        output:
+          status: 200
+          body: {equals: hello world}
+      - name: rbac-user-is-authorized
+        input:
+          path: /hello
+          headers:
+            user: alice
+        output:
+          status: 200
+          body: {equals: hello world}
+      - name: user-is-denied-before-metadata-policy-update
+        input:
+          path: /hello
+          headers:
+            user: jack
+        output:
+          status: 403
+          body: {matches: 'Access Denied'}
+      - name: metadata-policy-update-authorizes-user
+        config:
+          plugin_metadata:
+            - id: authz-casbin
+              model: *model
+              policy: |-
+                p, *, /, GET
+                p, admin, *, *
+                p, jack, /hello, GET
+                g, alice, admin
+          routes:
+            - id: authz-casbin-metadata
+              uri: /hello
               plugins:
                 authz-casbin:
-                    model: |-
-                        [request_definition]
-                        r = sub, obj, act
-                        [policy_definition]
-                        p = sub, obj, act
-                        [policy_effect]
-                        e = some(where (p.eft == allow))
-                        [matchers]
-                        m = r.sub == p.sub && r.obj == p.obj && r.act == p.act
-                    policy: p, integration, /probe, GET
-                    username: integration
+                  username: user
               upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: authz-casbin-source-1
-      source:
-        file: t/plugin/authz-casbin.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: casbin-policy-denies-anonymous-request
-          output:
-            body: {matches: 'Access Denied'}
-            status: 403
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/authz-casbin.t
-      tests: 21
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+        config_wait: 500ms
+        input:
+          path: /hello
+          headers:
+            user: jack
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: model-and-policy-files
+    source:
+      tests: [13, 14, 15]
+    files:
+      - path: authz-casbin/model.conf
+        body: *model
+      - path: authz-casbin/policy.csv
+        body: |-
+          p, *, /, GET
+          p, admin, *, *
+          g, alice, admin
+    config:
+      routes:
+        - id: authz-casbin-files
+          uri: /hello
+          plugins:
+            authz-casbin:
+              model_path: '{{WORK_DIR}}/authz-casbin/model.conf'
+              policy_path: '{{WORK_DIR}}/authz-casbin/policy.csv'
+              username: user
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: *hello_fixture
+    steps:
+      - name: file-policy-authorizes-user
+        input:
+          path: /hello
+          headers:
+            user: alice
+        output:
+          status: 200
+          body: {equals: hello world}
+      - name: file-policy-denies-user
+        input:
+          path: /hello
+          headers:
+            user: bob
+        output:
+          status: 403
+          body: {matches: 'Access Denied'}
+
+  - name: inline-model-and-policy
+    source:
+      tests: [16, 17, 18]
+    config:
+      routes:
+        - id: authz-casbin-inline
+          uri: /hello
+          plugins:
+            authz-casbin:
+              model: *model
+              policy: |-
+                p, *, /, GET
+                p, admin, *, *
+                g, jack, admin
+              username: user
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: *hello_fixture
+    steps:
+      - name: inline-policy-authorizes-user
+        input:
+          path: /hello
+          headers:
+            user: jack
+        output:
+          status: 200
+          body: {equals: hello world}
+      - name: inline-policy-denies-user
+        input:
+          path: /hello
+          headers:
+            user: bob
+        output:
+          status: 403
+          body: {matches: 'Access Denied'}
+
+  - name: disabled-plugin-passes-through
+    source:
+      tests: [19]
+    config:
+      routes:
+        - id: authz-casbin-disabled
+          uri: /hello
+          plugins:
+            authz-casbin:
+              _meta:
+                disable: true
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: *hello_fixture
+    steps:
+      - name: disabled-plugin-does-not-enforce
+        input:
+          path: /hello
+          headers:
+            user: bob
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: route-local-policy-shapes-and-cache-sequence
+    source:
+      tests: [20, 21]
+    config:
+      routes:
+        - id: authz-casbin-policy-shape-1
+          uri: /server_port
+          plugins:
+            authz-casbin:
+              model: |-
+                [request_definition]
+                r = sub, obj, act
+
+                [policy_definition]
+                p = obj, act
+
+                [policy_effect]
+                e = some(where (p.eft == allow))
+
+                [matchers]
+                m = regexMatch(r.obj, p.obj) && keyMatch(r.act, p.act)
+              policy: p, ^/server_port$, GET
+              username: user
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+        - id: authz-casbin-policy-shape-2
+          uri: /server_port_route2
+          plugins:
+            authz-casbin:
+              model: |-
+                [request_definition]
+                r = sub, obj, act
+
+                [policy_definition]
+                p = sub, obj, act
+
+                [policy_effect]
+                e = some(where (p.eft == allow))
+
+                [matchers]
+                m = keyMatch(r.sub, p.sub) && regexMatch(r.obj, p.obj) && keyMatch(r.act, p.act)
+              policy: p, *, ^/server_port_route2$, GET
+              username: user
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures: *hello_fixture
+    steps:
+      - name: policy-shape-1-first-decision
+        input:
+          path: /server_port
+          headers:
+            user: bob
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {not_matches: 'casbin enforce error|invalid request size'}
+      - name: policy-shape-2-decision
+        input:
+          path: /server_port_route2
+          headers:
+            user: bob
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {not_matches: 'casbin enforce error|invalid request size'}
+      - name: policy-shape-1-reused-after-shape-2
+        input:
+          path: /server_port
+          headers:
+            user: bob
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {not_matches: 'casbin enforce error|invalid request size'}

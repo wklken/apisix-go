@@ -380,6 +380,71 @@ cases:
 	}
 }
 
+func TestManifestAcceptsScenarioFilesAndStandaloneConfigUpdate(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: reload
+    source:
+      tests: [1]
+    config:
+      routes: []
+    files:
+      - path: fixtures/model.conf
+        body: model
+    steps:
+      - name: update
+        config:
+          routes: []
+        config_wait: 250ms
+        input:
+          path: /hello
+        output:
+          status: 200
+`)
+
+	manifest, err := loadManifest("reload.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	if got := manifest.Cases[0].Files[0].Path; got != "fixtures/model.conf" {
+		t.Fatalf("file path = %q, want fixtures/model.conf", got)
+	}
+	if got := manifest.Cases[0].Steps[0].ConfigWait; got != 250*time.Millisecond {
+		t.Fatalf("config wait = %s, want 250ms", got)
+	}
+}
+
+func TestManifestRejectsScenarioFileOutsideWorkDirectory(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Files = []ScenarioFile{{Path: "../model.conf", Body: "model"}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "must stay within the scenario work directory") {
+		t.Fatalf("validate() error = %v, want work-directory boundary rejection", err)
+	}
+}
+
+func TestManifestRejectsConfigWaitWithoutConfigUpdate(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:       "request",
+		ConfigWait: time.Second,
+		Input:      HTTPInput{Path: "/hello"},
+		Output:     HTTPOutput{Status: 200},
+	}}
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "config_wait requires config") {
+		t.Fatalf("validate() error = %v, want config_wait dependency rejection", err)
+	}
+}
+
 func TestManifestAcceptsHTTP2InputWithFrontendTLS(t *testing.T) {
 	data := []byte(`source:
   repository: https://github.com/apache/apisix

@@ -11,7 +11,34 @@ import (
 
 	projectjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestSchemaAcceptsPluginMetadataConfiguration(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{"username": "user"}, p.GetSchema()); err != nil {
+		t.Fatalf("metadata-backed config should validate: %v", err)
+	}
+}
+
+func TestSchemaRejectsConfigurationWithoutUsername(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{
+		"model_path":  "/tmp/model.conf",
+		"policy_path": "/tmp/policy.csv",
+	}, p.GetSchema())
+	if err == nil || !strings.Contains(err.Error(), "username") {
+		t.Fatalf("config without username error = %v, want identifying username diagnostic", err)
+	}
+}
 
 var (
 	metadataStoreOnce   sync.Once

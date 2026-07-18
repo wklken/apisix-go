@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -37,6 +38,7 @@ type Case struct {
 	Upstream      *UpstreamSpec   `yaml:"upstream,omitempty"`
 	Output        HTTPOutput      `yaml:"output,omitempty"`
 	Fixtures      []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Files         []ScenarioFile  `yaml:"files,omitempty"`
 	Steps         []CaseStep      `yaml:"steps,omitempty"`
 	TLS           *FrontendTLS    `yaml:"frontend_tls,omitempty"`
 	AfterShutdown []FileAssertion `yaml:"after_shutdown,omitempty"`
@@ -50,6 +52,7 @@ type CaseVariant struct {
 	Upstream      *UpstreamSpec   `yaml:"upstream,omitempty"`
 	Output        HTTPOutput      `yaml:"output,omitempty"`
 	Fixtures      []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Files         []ScenarioFile  `yaml:"files,omitempty"`
 	Steps         []CaseStep      `yaml:"steps,omitempty"`
 	TLS           *FrontendTLS    `yaml:"frontend_tls,omitempty"`
 	AfterShutdown []FileAssertion `yaml:"after_shutdown,omitempty"`
@@ -60,11 +63,18 @@ type FrontendTLS struct {
 }
 
 type CaseStep struct {
-	Name   string        `yaml:"name"`
-	Repeat int           `yaml:"repeat,omitempty"`
-	Input  HTTPInput     `yaml:"input"`
-	Output HTTPOutput    `yaml:"output"`
-	Wait   time.Duration `yaml:"wait,omitempty"`
+	Name       string         `yaml:"name"`
+	Repeat     int            `yaml:"repeat,omitempty"`
+	Config     map[string]any `yaml:"config,omitempty"`
+	ConfigWait time.Duration  `yaml:"config_wait,omitempty"`
+	Input      HTTPInput      `yaml:"input"`
+	Output     HTTPOutput     `yaml:"output"`
+	Wait       time.Duration  `yaml:"wait,omitempty"`
+}
+
+type ScenarioFile struct {
+	Path string `yaml:"path"`
+	Body string `yaml:"body"`
 }
 
 type FixtureSpec struct {
@@ -385,6 +395,7 @@ func (v *CaseVariant) caseSpec() *Case {
 		Upstream:      v.Upstream,
 		Output:        v.Output,
 		Fixtures:      v.Fixtures,
+		Files:         v.Files,
 		Steps:         v.Steps,
 		TLS:           v.TLS,
 		AfterShutdown: v.AfterShutdown,
@@ -394,6 +405,9 @@ func (v *CaseVariant) caseSpec() *Case {
 func (c *Case) validateScenario() error {
 	if len(c.Config) == 0 {
 		return errors.New("config is required")
+	}
+	if err := validateScenarioFiles(c.Files); err != nil {
+		return err
 	}
 	if c.TLS != nil && strings.TrimSpace(c.TLS.SNI) == "" {
 		return errors.New("frontend TLS SNI is required")
@@ -442,6 +456,12 @@ func (c *Case) validateScenario() error {
 			if step.Repeat < 0 {
 				return fmt.Errorf("step %q repeat must not be negative", step.Name)
 			}
+			if step.ConfigWait < 0 {
+				return fmt.Errorf("step %q config_wait must not be negative", step.Name)
+			}
+			if step.ConfigWait > 0 && len(step.Config) == 0 {
+				return fmt.Errorf("step %q config_wait requires config", step.Name)
+			}
 			if err := validateHTTPScenario(step.Input, step.Output); err != nil {
 				return fmt.Errorf("step %q: %w", step.Name, err)
 			}
@@ -452,6 +472,25 @@ func (c *Case) validateScenario() error {
 		return nil
 	}
 	return c.validateSingleScenario()
+}
+
+func validateScenarioFiles(files []ScenarioFile) error {
+	seen := make(map[string]bool, len(files))
+	for i, file := range files {
+		path := strings.TrimSpace(file.Path)
+		if path == "" {
+			return fmt.Errorf("file %d path is required", i+1)
+		}
+		clean := filepath.Clean(path)
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("file %d path %q must stay within the scenario work directory", i+1, path)
+		}
+		if seen[clean] {
+			return fmt.Errorf("file path %q is duplicated", path)
+		}
+		seen[clean] = true
+	}
+	return nil
 }
 
 func (c *Case) validateSingleScenario() error {

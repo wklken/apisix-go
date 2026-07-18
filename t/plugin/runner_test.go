@@ -149,6 +149,38 @@ func TestRenderRuntimeConfigForcesStandaloneIsolation(t *testing.T) {
 	}
 }
 
+func TestWriteScenarioFilesCreatesFilesUnderWorkDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	files := []ScenarioFile{{Path: "fixtures/model.conf", Body: "model text"}}
+
+	if err := writeScenarioFiles(workDir, files); err != nil {
+		t.Fatalf("writeScenarioFiles() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "fixtures", "model.conf"))
+	if err != nil {
+		t.Fatalf("read scenario file: %v", err)
+	}
+	if got := string(data); got != "model text" {
+		t.Fatalf("scenario file body = %q, want model text", got)
+	}
+}
+
+func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	config := map[string]any{"routes": []any{}}
+
+	if err := writeStandaloneConfigUpdate(path, config, nil); err != nil {
+		t.Fatalf("writeStandaloneConfigUpdate() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read standalone config update: %v", err)
+	}
+	if !strings.HasSuffix(string(data), "#END\n") {
+		t.Fatalf("standalone config update = %q, want #END marker", data)
+	}
+}
+
 func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 	rendered, err := renderRuntimeConfig(19080, map[string]any{
 		"plugins": []any{"node-status"},
@@ -1433,6 +1465,9 @@ func runCase(t *testing.T, spec Case) {
 	}
 	workDir := t.TempDir()
 	replacements["{{WORK_DIR}}"] = workDir
+	if err := writeScenarioFiles(workDir, spec.Files); err != nil {
+		t.Fatalf("write scenario files: %v", err)
+	}
 	namedFixtures := make(map[string]namedFixture, len(spec.Fixtures))
 	for _, fixtureSpec := range spec.Fixtures {
 		namedFixture, err := startNamedFixture(fixtureSpec)
@@ -1558,6 +1593,18 @@ func runCase(t *testing.T, spec Case) {
 	if len(spec.Steps) > 0 {
 		for _, step := range spec.Steps {
 			t.Run(step.Name, func(t *testing.T) {
+				if len(step.Config) > 0 {
+					if err := writeStandaloneConfigUpdate(
+						filepath.Join(confDir, "apisix.yaml"), step.Config, replacements,
+					); err != nil {
+						t.Fatalf("write standalone config update: %v", err)
+					}
+					wait := step.ConfigWait
+					if wait == 0 {
+						wait = 250 * time.Millisecond
+					}
+					time.Sleep(wait)
+				}
 				repeat := step.Repeat
 				if repeat == 0 {
 					repeat = 1
@@ -1643,6 +1690,30 @@ func runCase(t *testing.T, spec Case) {
 			}
 		}
 	}
+}
+
+func writeScenarioFiles(workDir string, files []ScenarioFile) error {
+	for _, file := range files {
+		path := filepath.Join(workDir, filepath.Clean(file.Path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("create scenario file directory: %w", err)
+		}
+		if err := os.WriteFile(path, []byte(file.Body), 0o600); err != nil {
+			return fmt.Errorf("write scenario file %q: %w", file.Path, err)
+		}
+	}
+	return nil
+}
+
+func writeStandaloneConfigUpdate(path string, config map[string]any, replacements map[string]string) error {
+	data, err := renderStandaloneConfig(config, replacements)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write standalone config: %w", err)
+	}
+	return nil
 }
 
 func runHTTPInput(

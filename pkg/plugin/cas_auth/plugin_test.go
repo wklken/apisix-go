@@ -2,11 +2,13 @@ package cas_auth
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,17 +253,88 @@ func TestSessionsAreSharedAcrossPluginInstancesAndNamespacedByConfig(t *testing.
 	if foreign.refreshSession("ST-shared") {
 		t.Fatal("a plugin instance for another config observed the foreign session")
 	}
-	processSessions.Lock()
-	processSessions.entries[foreign.sessionKey("ST-forged")] = sessionEntry{
+	processSessions.put(foreign.sessionKey("ST-forged"), sessionEntry{
 		fingerprint: issuer.sessionOptions().fingerprint,
 		user:        "alice",
-		expiresAt:   time.Now().Add(time.Minute),
-	}
-	processSessions.Unlock()
+	})
 	if foreign.refreshSession("ST-forged") {
 		t.Fatal("a plugin instance accepted a stored entry with another config fingerprint")
 	}
 	issuer.deleteSession("ST-shared")
+}
+
+func TestSessionStoreExpiresEntries(t *testing.T) {
+	store, err := newSessionStore(2, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("newSessionStore() error = %v", err)
+	}
+	store.put("session", sessionEntry{fingerprint: "fp", user: "alice"})
+	time.Sleep(30 * time.Millisecond)
+	if store.refresh("session", "fp") {
+		t.Fatal("expired session was refreshed")
+	}
+}
+
+func TestSessionStoreRefreshesTTL(t *testing.T) {
+	store, err := newSessionStore(2, 60*time.Millisecond)
+	if err != nil {
+		t.Fatalf("newSessionStore() error = %v", err)
+	}
+	store.put("session", sessionEntry{fingerprint: "fp", user: "alice"})
+	time.Sleep(40 * time.Millisecond)
+	if !store.refresh("session", "fp") {
+		t.Fatal("live session was not refreshed")
+	}
+	time.Sleep(40 * time.Millisecond)
+	if !store.refresh("session", "fp") {
+		t.Fatal("refresh did not extend the session TTL")
+	}
+}
+
+func TestSessionStoreEvictsLeastRecentlyUsedAtCapacity(t *testing.T) {
+	store, err := newSessionStore(2, time.Hour)
+	if err != nil {
+		t.Fatalf("newSessionStore() error = %v", err)
+	}
+	store.put("old", sessionEntry{fingerprint: "fp", user: "old"})
+	store.put("recent", sessionEntry{fingerprint: "fp", user: "recent"})
+	if !store.refresh("old", "fp") {
+		t.Fatal("old session was not present before recency refresh")
+	}
+	store.put("new", sessionEntry{fingerprint: "fp", user: "new"})
+	if store.refresh("recent", "fp") {
+		t.Fatal("least recently used session survived capacity eviction")
+	}
+	if !store.refresh("old", "fp") || !store.refresh("new", "fp") {
+		t.Fatal("recent sessions were evicted instead of the least recently used entry")
+	}
+	if got := store.cache.Len(); got != 2 {
+		t.Fatalf("store length = %d, want bounded capacity 2", got)
+	}
+}
+
+func TestSessionStoreConcurrentRefreshAndMutation(t *testing.T) {
+	store, err := newSessionStore(32, time.Minute)
+	if err != nil {
+		t.Fatalf("newSessionStore() error = %v", err)
+	}
+	var wg sync.WaitGroup
+	for worker := range 8 {
+		wg.Go(func() {
+			for iteration := range 500 {
+				key := fmt.Sprintf("%d-%d", worker, iteration%16)
+				store.put(key, sessionEntry{fingerprint: "fp", user: "alice"})
+				_ = store.refresh(key, "fp")
+				if iteration%3 == 0 {
+					store.remove(key)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := store.cache.Len(); got > 32 {
+		t.Fatalf("store length = %d, exceeds capacity 32", got)
+	}
 }
 
 func TestRelativeServiceURLUsesListenerPortNotForgedHostPort(t *testing.T) {
@@ -373,9 +446,7 @@ func withLocalAddress(r *http.Request, address net.Addr) context.Context {
 }
 
 func testSessionExists(p *Plugin, sessionID string) bool {
-	processSessions.Lock()
-	defer processSessions.Unlock()
-	_, ok := processSessions.entries[p.sessionKey(sessionID)]
+	_, ok := processSessions.cache.Peek(p.sessionKey(sessionID))
 	return ok
 }
 

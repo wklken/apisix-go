@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/wklken/apisix-go/pkg/cache/memory"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -36,6 +38,7 @@ const (
 	requestURICookie = "CAS_REQUEST_URI"
 	sessionPrefix    = "CAS_SESSION_"
 	sessionLifetime  = time.Hour
+	sessionCapacity  = 10_000
 )
 
 const schema = `
@@ -107,7 +110,6 @@ type CookieConfig struct {
 type sessionEntry struct {
 	fingerprint string
 	user        string
-	expiresAt   time.Time
 }
 
 type sessionOptions struct {
@@ -115,10 +117,58 @@ type sessionOptions struct {
 	fingerprint string
 }
 
-var processSessions = struct {
-	sync.Mutex
-	entries map[string]sessionEntry
-}{entries: make(map[string]sessionEntry)}
+type sessionStore struct {
+	mu    sync.Mutex
+	cache *expirable.LRU[string, sessionEntry]
+}
+
+var processSessions = mustNewSessionStore(sessionCapacity, sessionLifetime)
+
+func newSessionStore(capacity int, ttl time.Duration) (*sessionStore, error) {
+	if capacity <= 0 {
+		return nil, fmt.Errorf("session store capacity must be positive")
+	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("session store TTL must be positive")
+	}
+	cache, err := memory.NewLRU[string, sessionEntry](capacity, ttl)
+	if err != nil {
+		return nil, fmt.Errorf("create session store: %w", err)
+	}
+	return &sessionStore{cache: cache}, nil
+}
+
+func mustNewSessionStore(capacity int, ttl time.Duration) *sessionStore {
+	store, err := newSessionStore(capacity, ttl)
+	if err != nil {
+		panic(err)
+	}
+	return store
+}
+
+func (s *sessionStore) put(key string, entry sessionEntry) {
+	s.mu.Lock()
+	s.cache.Add(key, entry)
+	s.mu.Unlock()
+}
+
+func (s *sessionStore) refresh(key string, fingerprint string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.cache.Get(key)
+	if !ok || entry.fingerprint != fingerprint {
+		s.cache.Remove(key)
+		return false
+	}
+	s.cache.Add(key, entry)
+	return true
+}
+
+func (s *sessionStore) remove(key string) {
+	s.mu.Lock()
+	s.cache.Remove(key)
+	s.mu.Unlock()
+}
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -329,35 +379,18 @@ func (p *Plugin) sessionOptions() sessionOptions {
 }
 
 func (p *Plugin) storeSession(sessionID string, user string) {
-	processSessions.Lock()
-	defer processSessions.Unlock()
-
-	processSessions.entries[p.sessionKey(sessionID)] = sessionEntry{
+	processSessions.put(p.sessionKey(sessionID), sessionEntry{
 		fingerprint: p.sessionOptions().fingerprint,
 		user:        user,
-		expiresAt:   time.Now().Add(sessionLifetime),
-	}
+	})
 }
 
 func (p *Plugin) refreshSession(sessionID string) bool {
-	processSessions.Lock()
-	defer processSessions.Unlock()
-
-	key := p.sessionKey(sessionID)
-	entry, ok := processSessions.entries[key]
-	if !ok || entry.fingerprint != p.sessionOptions().fingerprint || time.Now().After(entry.expiresAt) {
-		delete(processSessions.entries, key)
-		return false
-	}
-	entry.expiresAt = time.Now().Add(sessionLifetime)
-	processSessions.entries[key] = entry
-	return true
+	return processSessions.refresh(p.sessionKey(sessionID), p.sessionOptions().fingerprint)
 }
 
 func (p *Plugin) deleteSession(sessionID string) {
-	processSessions.Lock()
-	delete(processSessions.entries, p.sessionKey(sessionID))
-	processSessions.Unlock()
+	processSessions.remove(p.sessionKey(sessionID))
 }
 
 func (p *Plugin) sessionKey(sessionID string) string {

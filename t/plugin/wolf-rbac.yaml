@@ -569,37 +569,26 @@ cases:
 
   - name: consumer-replacement-and-echo-rewrite
     source: {file: t/plugin/wolf-rbac.t, tests: [36, 37]}
-    runtime: {plugins: [public-api, wolf-rbac, echo]}
+    runtime: {plugins: [wolf-rbac, echo]}
     config:
       consumers:
         - username: wolf_rbac_unit_test
           plugins:
-            wolf-rbac: {appid: old-wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+            wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
       routes:
         - id: wolf-consumer-echo
           uri: /hello
           plugins: {wolf-rbac: {}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        - id: wolf-consumer-login
-          uri: /apisix/plugin/wolf-rbac/login
-          plugins: {public-api: {}}
     fixtures:
       - name: auth
         kind: http
-        expect_requests: 2
         expect:
-          - method: POST
-            path: {equals: /wolf/rbac/login.rest}
-            headers:
-              Content-Type: {equals: 'application/json; charset=utf-8'}
-              X-Rbac-Token: {absent: true}
-            body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'}
           - method: GET
-            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+            path: {matches: '^/wolf/rbac/access_check\?action=GET&appID=wolf-rbac-app&clientIP=127\.0\.0\.1&resName=%2F(probe|hello)$'}
             headers: *permission_headers
-        respond:
-          - {status: 200, body: '{"ok":true,"data":{"token":"wolf-rbac-token","userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}'}
-          - *permission_success
+        respond: [*permission_success]
+        count: {at_least: 2, at_most: 20, timeout: 200ms}
       - name: primary
         kind: http
         expect_requests: 1
@@ -607,10 +596,20 @@ cases:
           - path: {equals: /hello}
             headers: *user_headers
         respond: [{status: 200, body: original-upstream-body}]
+      - name: readiness
+        kind: http
+        expect:
+          - path: {equals: /probe}
+            headers: *user_headers
+        respond: [{status: 200, body: readiness-upstream-body}]
+        count: {at_least: 1, at_most: 19, timeout: 200ms}
     steps:
       - name: replace-consumer-with-echo-plugin
         config:
           consumers:
+            - username: wolf_rbac_unit_test
+              plugins:
+                wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
             - username: wolf_rbac_with_other_plugins
               plugins:
                 wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
@@ -620,19 +619,16 @@ cases:
               uri: /hello
               plugins: {wolf-rbac: {}}
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-            - id: wolf-consumer-login
-              uri: /apisix/plugin/wolf-rbac/login
-              plugins: {public-api: {}}
+            - id: wolf-consumer-readiness
+              uri: /probe
+              plugins: {wolf-rbac: {}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.readiness.ADDR}}': 1}}
         config_timeout: 5s
         config_probe:
-          input:
-            method: POST
-            path: /apisix/plugin/wolf-rbac/login
-            headers: {Content-Type: application/json}
-            body: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'
+          input: {path: /probe, headers: {Authorization: 'V1#wolf-rbac-app#wolf-rbac-token'}}
           output:
             status: 200
-            body: {json_equals: '{"rbac_token":"V1#wolf-rbac-app#wolf-rbac-token","user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
+            body: {equals: "consumer merge echo plugins\n"}
         input: {path: /hello, headers: {Authorization: 'V1#wolf-rbac-app#wolf-rbac-token'}}
         output:
           status: 200

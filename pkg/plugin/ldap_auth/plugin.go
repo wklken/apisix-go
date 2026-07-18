@@ -118,7 +118,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		ctx.AttachConsumer(r, consumer)
-		next.ServeHTTP(w, r)
+		ctx.RunConsumerPlugins(w, r, next)
 	}
 	return http.HandlerFunc(fn)
 }

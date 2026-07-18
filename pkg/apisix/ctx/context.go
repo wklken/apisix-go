@@ -21,6 +21,7 @@ const (
 	RemoteAddrKey           ContextKey = "remote_addr"
 	RemotePortKey           ContextKey = "remote_port"
 	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
+	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
 )
 
 type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)
@@ -36,6 +37,16 @@ func RunConsumerPlugins(w http.ResponseWriter, r *http.Request, next http.Handle
 		return
 	}
 	runner(w, r, next)
+}
+
+func WithConsumerPluginOverrides(r *http.Request, names map[string]struct{}) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), consumerOverridesKey, names))
+}
+
+func ConsumerPluginOverrides(r *http.Request, name string) bool {
+	names, _ := r.Context().Value(consumerOverridesKey).(map[string]struct{})
+	_, ok := names[name]
+	return ok
 }
 
 func contextValue(c context.Context, key string) any {

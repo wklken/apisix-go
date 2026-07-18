@@ -6,10 +6,13 @@ import (
 	cgzip "compress/gzip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -68,6 +71,26 @@ func TestPluginIntegration(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestApplyHMACSignatureUsesCurrentDateAndRequestValues(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/hello?name=jack", nil)
+	request.Header.Set("X-Custom", "value")
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	applyHMACSignature(request, HMACSignature{
+		KeyID:     "access-key",
+		Secret:    "secret-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"@request-target", "date", "x-custom"},
+	}, now)
+
+	if got := request.Header.Get("Date"); got != "Sat, 18 Jul 2026 12:30:00 GMT" {
+		t.Fatalf("Date = %q, want current HTTP date", got)
+	}
+	const want = `Signature keyId="access-key",algorithm="hmac-sha256",headers="@request-target date x-custom",signature="qtdRZdczKRmNsdekplbaCwFp/0tpSwe8luHI+BmlBaY="`
+	if got := request.Header.Get("Authorization"); got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
 	}
 }
 
@@ -1684,6 +1707,9 @@ func runHTTPInput(
 			request.Header.Add(name, value)
 		}
 	}
+	if input.HMAC != nil {
+		applyHMACSignature(request, *input.HMAC, time.Now())
+	}
 	if input.Chunked {
 		request.ContentLength = -1
 		request.TransferEncoding = []string{"chunked"}
@@ -1727,6 +1753,41 @@ func runHTTPInput(
 		return err
 	}
 	return nil
+}
+
+func applyHMACSignature(request *http.Request, spec HMACSignature, now time.Time) {
+	algorithm := spec.Algorithm
+	if algorithm == "" {
+		algorithm = "hmac-sha256"
+	}
+	for _, header := range spec.Headers {
+		if strings.EqualFold(header, "date") {
+			request.Header.Set("Date", now.UTC().Format(http.TimeFormat))
+		}
+	}
+
+	var signingString strings.Builder
+	signingString.WriteString(spec.KeyID + "\n")
+	for _, header := range spec.Headers {
+		header = strings.ToLower(header)
+		if header == "@request-target" {
+			signingString.WriteString(request.Method + " " + request.URL.RequestURI() + "\n")
+			continue
+		}
+		if value := request.Header.Get(header); value != "" {
+			signingString.WriteString(header + ": " + value + "\n")
+		}
+	}
+
+	mac := hmac.New(sha256.New, []byte(spec.Secret))
+	_, _ = mac.Write([]byte(signingString.String()))
+	request.Header.Set("Authorization", fmt.Sprintf(
+		`Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"`,
+		spec.KeyID,
+		algorithm,
+		strings.Join(spec.Headers, " "),
+		base64.StdEncoding.EncodeToString(mac.Sum(nil)),
+	))
 }
 
 func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInput, error) {

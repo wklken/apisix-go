@@ -293,7 +293,9 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	localPlugins = append(localPlugins, initialized...)
+	for _, initializedPlugin := range initialized {
+		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+	}
 	initialized, err = b.initPluginsStrict(systemPlugins, routeContext)
 	if err != nil {
 		return nil, err
@@ -316,18 +318,32 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	return b.withConsumerPluginRunner(withAIExecutionTerminal(chain, handler), routeContext, resourcePlugins), nil
+	return b.withConsumerPluginRunner(withAIExecutionTerminal(chain, handler), routeContext), nil
 }
 
 func (b *Builder) withConsumerPluginRunner(
 	handler http.Handler,
 	routeContext pluginRouteContext,
-	resourcePlugins map[string]resource.PluginConfig,
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-			b.runConsumerPlugins(w, r, next, routeContext, resourcePlugins)
+			b.runConsumerPlugins(w, r, next, routeContext)
 		})
+		handler.ServeHTTP(w, r)
+	})
+}
+
+type routeConsumerOverridePlugin struct {
+	plugin.Plugin
+}
+
+func (p routeConsumerOverridePlugin) Handler(next http.Handler) http.Handler {
+	handler := p.Plugin.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ctx.ConsumerPluginOverrides(r, p.GetName()) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		handler.ServeHTTP(w, r)
 	})
 }
@@ -337,7 +353,6 @@ func (b *Builder) runConsumerPlugins(
 	r *http.Request,
 	next http.Handler,
 	routeContext pluginRouteContext,
-	resourcePlugins map[string]resource.PluginConfig,
 ) {
 	consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
 	if !ok {
@@ -345,7 +360,7 @@ func (b *Builder) runConsumerPlugins(
 		return
 	}
 
-	pluginConfigs := consumerPluginConfigs(consumer, resourcePlugins)
+	pluginConfigs := consumerPluginConfigs(consumer)
 	if len(pluginConfigs) == 0 {
 		next.ServeHTTP(w, r)
 		return
@@ -357,13 +372,15 @@ func (b *Builder) runConsumerPlugins(
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+	overrides := make(map[string]struct{}, len(pluginConfigs))
+	for name := range pluginConfigs {
+		overrides[name] = struct{}{}
+	}
+	r = ctx.WithConsumerPluginOverrides(r, overrides)
 	chain.Then(next).ServeHTTP(w, r)
 }
 
-func consumerPluginConfigs(
-	consumer resource.Consumer,
-	resourcePlugins map[string]resource.PluginConfig,
-) map[string]resource.PluginConfig {
+func consumerPluginConfigs(consumer resource.Consumer) map[string]resource.PluginConfig {
 	pluginConfigs := make(map[string]resource.PluginConfig)
 	if consumer.GroupID != "" {
 		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
@@ -372,9 +389,6 @@ func consumerPluginConfigs(
 	}
 	maps.Copy(pluginConfigs, consumer.Plugins)
 
-	for name := range resourcePlugins {
-		delete(pluginConfigs, name)
-	}
 	for name := range pluginConfigs {
 		if isConsumerAuthenticationPlugin(name) {
 			delete(pluginConfigs, name)

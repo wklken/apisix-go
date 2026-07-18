@@ -113,6 +113,11 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
+	runnerCalled := false
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalled = true
+		next.ServeHTTP(w, r)
+	})
 	req.Header.Set("apikey", "header-key")
 	rr := httptest.NewRecorder()
 
@@ -125,6 +130,9 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if !runnerCalled {
+		t.Fatal("consumer plugin runner was not called")
 	}
 }
 

@@ -105,6 +105,11 @@ func TestHandlerChecksWolfPermissionAndAttachesConsumer(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders/1?debug=true", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
+	runnerCalled := false
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalled = true
+		next.ServeHTTP(w, r)
+	})
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("Authorization", "V1#app-a#wolf-token")
 	rr := httptest.NewRecorder()
@@ -127,6 +132,9 @@ func TestHandlerChecksWolfPermissionAndAttachesConsumer(t *testing.T) {
 
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	if !runnerCalled {
+		t.Fatal("consumer plugin runner was not called")
 	}
 	if rr.Header().Get("X-UserId") != "u-1" {
 		t.Fatalf("response X-UserId = %q, want u-1", rr.Header().Get("X-UserId"))

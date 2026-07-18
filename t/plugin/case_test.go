@@ -72,6 +72,35 @@ func TestManifestRejectsInvalidElapsedRange(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsHMACSignedInput(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input.HMAC = &HMACSignature{
+		KeyID:     "access-key",
+		Secret:    "secret-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"@request-target", "date"},
+	}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsHMACInputWithAuthorizationHeader(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input.Headers = map[string]string{"Authorization": "static"}
+	manifest.Cases[0].Input.HMAC = &HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{"date"},
+	}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "must not both be configured") {
+		t.Fatalf("validate() error = %v, want HMAC/Authorization conflict", err)
+	}
+}
+
 func TestManifestAcceptsTCPFixture(t *testing.T) {
 	payload := "hello"
 	response := "ok"

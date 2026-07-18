@@ -188,16 +188,15 @@ cases:
           uri: /hello
           methods: [GET]
           service_id: '1'
-          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          plugins: {hmac-auth: {}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - name: matching-service-is-allowed
         input:
           method: GET
           path: /hello
+          hmac: &current_hmac {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
           headers:
-            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
-            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 200, body: {equals: hello world}}
@@ -218,16 +217,15 @@ cases:
           uri: /hello
           methods: [GET]
           service_id: '2'
-          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          plugins: {hmac-auth: {}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - name: unlisted-service-is-rejected
         input:
           method: GET
           path: /hello
+          hmac: *current_hmac
           headers:
-            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
-            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
@@ -248,16 +246,15 @@ cases:
           uri: /hello
           methods: [GET]
           service_id: '1'
-          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          plugins: {hmac-auth: {}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - name: blacklisted-service-is-rejected
         input:
           method: GET
           path: /hello
+          hmac: *current_hmac
           headers:
-            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
-            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
@@ -278,16 +275,15 @@ cases:
           uri: /hello
           methods: [GET]
           service_id: '2'
-          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          plugins: {hmac-auth: {}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - name: unlisted-service-is-allowed
         input:
           method: GET
           path: /hello
+          hmac: *current_hmac
           headers:
-            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
-            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 200, body: {equals: hello world}}
@@ -304,7 +300,7 @@ cases:
         - id: '1'
           uri: /hello
           methods: [GET]
-          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          plugins: {hmac-auth: {}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
@@ -312,9 +308,8 @@ cases:
         input:
           method: GET
           path: /hello
+          hmac: *current_hmac
           headers:
-            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
-            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 200, body: {equals: hello world}}
@@ -331,7 +326,7 @@ cases:
         - id: '1'
           uri: /hello
           methods: [GET]
-          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          plugins: {hmac-auth: {}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
@@ -339,9 +334,8 @@ cases:
         input:
           method: GET
           path: /hello
+          hmac: *current_hmac
           headers:
-            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
-            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 401, body: {equals: '{"message":"The route_id is forbidden."}'}}

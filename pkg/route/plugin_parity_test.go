@@ -96,6 +96,11 @@ func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *t
 		Uri: "/restricted",
 		Plugins: map[string]resource.PluginConfig{
 			"basic-auth": map[string]any{},
+			"consumer-restriction": map[string]any{
+				"type":          "route_id",
+				"whitelist":     []any{"consumer-plugin-route"},
+				"rejected_code": http.StatusForbidden,
+			},
 		},
 		Upstream: resource.Upstream{
 			Type:   "roundrobin",

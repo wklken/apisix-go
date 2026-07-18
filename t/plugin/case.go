@@ -107,8 +107,16 @@ type HTTPInput struct {
 	HeaderValues   map[string][]string `yaml:"header_values,omitempty"`
 	Body           string              `yaml:"body,omitempty"`
 	BodyRepeat     *RepeatedBody       `yaml:"body_repeat,omitempty"`
+	HMAC           *HMACSignature      `yaml:"hmac,omitempty"`
 	Chunked        bool                `yaml:"chunked,omitempty"`
 	WithoutCookies bool                `yaml:"without_cookies,omitempty"`
+}
+
+type HMACSignature struct {
+	KeyID     string   `yaml:"key_id"`
+	Secret    string   `yaml:"secret"`
+	Algorithm string   `yaml:"algorithm,omitempty"`
+	Headers   []string `yaml:"headers"`
 }
 
 type RepeatedBody struct {
@@ -503,6 +511,27 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 		}
 		if input.BodyRepeat.Count <= 0 {
 			return errors.New("input body_repeat count must be positive")
+		}
+	}
+	if input.HMAC != nil {
+		if strings.TrimSpace(input.HMAC.KeyID) == "" || input.HMAC.Secret == "" {
+			return errors.New("input hmac key_id and secret are required")
+		}
+		if input.HMAC.Algorithm != "" && input.HMAC.Algorithm != "hmac-sha256" {
+			return fmt.Errorf("input hmac algorithm %q is not supported", input.HMAC.Algorithm)
+		}
+		if len(input.HMAC.Headers) == 0 {
+			return errors.New("input hmac headers are required")
+		}
+		for _, header := range input.HMAC.Headers {
+			if strings.TrimSpace(header) == "" {
+				return errors.New("input hmac headers must not contain blanks")
+			}
+		}
+		for name := range input.Headers {
+			if strings.EqualFold(name, "Authorization") {
+				return errors.New("input hmac and Authorization header must not both be configured")
+			}
 		}
 	}
 	if output.Status < 100 || output.Status > 599 {

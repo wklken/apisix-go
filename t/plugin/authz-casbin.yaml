@@ -103,6 +103,16 @@ cases:
             type: roundrobin
             nodes:
               '{{FIXTURE.primary.ADDR}}': 1
+        - id: authz-casbin-metadata-reload-probe
+          uri: /reload-probe
+          plugins:
+            authz-casbin:
+              username: user
+            mocking:
+              _meta:
+                priority: -1000
+              response_status: 204
+              response_example: ready
     fixtures: *hello_fixture
     steps:
       - name: metadata-config-accepts-username-only-route
@@ -158,6 +168,7 @@ cases:
                 p, *, /, GET
                 p, admin, *, *
                 p, jack, /hello, GET
+                p, jack, /reload-probe, GET
                 g, alice, admin
           routes:
             - id: authz-casbin-metadata
@@ -169,7 +180,24 @@ cases:
                 type: roundrobin
                 nodes:
                   '{{FIXTURE.primary.ADDR}}': 1
-        config_wait: 500ms
+            - id: authz-casbin-metadata-reload-probe
+              uri: /reload-probe
+              plugins:
+                authz-casbin:
+                  username: user
+                mocking:
+                  _meta:
+                    priority: -1000
+                  response_status: 204
+                  response_example: ready
+        config_probe:
+          input:
+            path: /reload-probe
+            headers:
+              user: jack
+          output:
+            status: 204
+        config_timeout: 2s
         input:
           path: /hello
           headers:

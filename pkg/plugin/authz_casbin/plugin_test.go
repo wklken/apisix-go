@@ -40,6 +40,58 @@ func TestSchemaRejectsConfigurationWithoutUsername(t *testing.T) {
 	}
 }
 
+func TestSchemaAllowsCompleteFilePairWithStrayInlineModel(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"model_path":  "/tmp/model.conf",
+		"policy_path": "/tmp/policy.csv",
+		"model":       "stray incomplete inline model",
+		"username":    "user",
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("complete file pair with stray inline model should validate: %v", err)
+	}
+}
+
+func TestSchemaAllowsCompleteInlinePairWithStrayModelPath(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"model":      testModel,
+		"policy":     testPolicy,
+		"model_path": "/tmp/stray-model.conf",
+		"username":   "user",
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("complete inline pair with stray model_path should validate: %v", err)
+	}
+}
+
+func TestSchemaRejectsTwoCompleteConfigurationPairs(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	config := map[string]any{
+		"model_path":  "/tmp/model.conf",
+		"policy_path": "/tmp/policy.csv",
+		"model":       testModel,
+		"policy":      testPolicy,
+		"username":    "user",
+	}
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("two complete configuration pairs should fail oneOf validation")
+	}
+}
+
 var (
 	metadataStoreOnce   sync.Once
 	metadataStoreEvents chan *store.Event

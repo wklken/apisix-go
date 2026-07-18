@@ -12,7 +12,6 @@ import (
 
 	apisixv1 "github.com/apache/apisix-ingress-controller/pkg/types/apisix/v1"
 	"github.com/fsnotify/fsnotify"
-	"github.com/spf13/viper"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -103,14 +102,43 @@ func (w *StandaloneFileWatcher) Reload() error {
 }
 
 func (w *StandaloneFileWatcher) Watch() {
-	v := viper.New()
-	v.SetConfigFile(w.path)
-	v.OnConfigChange(func(event fsnotify.Event) {
-		if err := w.Reload(); err != nil {
-			fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+		return
+	}
+	if err := watcher.Add(filepath.Dir(w.path)); err != nil {
+		_ = watcher.Close()
+		fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+		return
+	}
+
+	configuredBase := filepath.Base(w.path)
+	go func() {
+		defer func() {
+			_ = watcher.Close()
+		}()
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if filepath.Base(event.Name) != configuredBase ||
+					!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
+					continue
+				}
+				if err := w.Reload(); err != nil {
+					fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+			}
 		}
-	})
-	v.WatchConfig()
+	}()
 }
 
 func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) {

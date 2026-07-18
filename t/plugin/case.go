@@ -63,13 +63,19 @@ type FrontendTLS struct {
 }
 
 type CaseStep struct {
-	Name       string         `yaml:"name"`
-	Repeat     int            `yaml:"repeat,omitempty"`
-	Config     map[string]any `yaml:"config,omitempty"`
-	ConfigWait time.Duration  `yaml:"config_wait,omitempty"`
-	Input      HTTPInput      `yaml:"input"`
-	Output     HTTPOutput     `yaml:"output"`
-	Wait       time.Duration  `yaml:"wait,omitempty"`
+	Name          string         `yaml:"name"`
+	Repeat        int            `yaml:"repeat,omitempty"`
+	Config        map[string]any `yaml:"config,omitempty"`
+	ConfigProbe   *ConfigProbe   `yaml:"config_probe,omitempty"`
+	ConfigTimeout time.Duration  `yaml:"config_timeout,omitempty"`
+	Input         HTTPInput      `yaml:"input"`
+	Output        HTTPOutput     `yaml:"output"`
+	Wait          time.Duration  `yaml:"wait,omitempty"`
+}
+
+type ConfigProbe struct {
+	Input  HTTPInput  `yaml:"input"`
+	Output HTTPOutput `yaml:"output"`
 }
 
 type ScenarioFile struct {
@@ -382,7 +388,7 @@ func (c *Case) hasScenario() bool {
 		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil || len(c.Fixtures) > 0 ||
 		c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 ||
 		len(c.Output.UniqueHeaders) > 0 || len(c.Output.MonotonicHeaders) > 0 ||
-		len(c.Output.DifferentHeaders) > 0 || len(c.Output.Captures) > 0 ||
+		len(c.Output.DifferentHeaders) > 0 || len(c.Output.Captures) > 0 || len(c.Files) > 0 ||
 		len(c.Steps) > 0 || c.TLS != nil || len(c.AfterShutdown) > 0
 }
 
@@ -456,11 +462,25 @@ func (c *Case) validateScenario() error {
 			if step.Repeat < 0 {
 				return fmt.Errorf("step %q repeat must not be negative", step.Name)
 			}
-			if step.ConfigWait < 0 {
-				return fmt.Errorf("step %q config_wait must not be negative", step.Name)
+			if step.ConfigTimeout < 0 {
+				return fmt.Errorf("step %q config_timeout must not be negative", step.Name)
 			}
-			if step.ConfigWait > 0 && len(step.Config) == 0 {
-				return fmt.Errorf("step %q config_wait requires config", step.Name)
+			if step.ConfigTimeout > 0 && len(step.Config) == 0 {
+				return fmt.Errorf("step %q config_timeout requires config", step.Name)
+			}
+			if len(step.Config) > 0 && step.ConfigProbe == nil {
+				return fmt.Errorf("step %q config_probe is required with config", step.Name)
+			}
+			if step.ConfigProbe != nil {
+				if len(step.Config) == 0 {
+					return fmt.Errorf("step %q config_probe requires config", step.Name)
+				}
+				if err := validateHTTPScenario(step.ConfigProbe.Input, step.ConfigProbe.Output); err != nil {
+					return fmt.Errorf("step %q config_probe: %w", step.Name, err)
+				}
+				if err := validateConfigProbeOutput(step.ConfigProbe.Output); err != nil {
+					return fmt.Errorf("step %q config_probe: %w", step.Name, err)
+				}
 			}
 			if err := validateHTTPScenario(step.Input, step.Output); err != nil {
 				return fmt.Errorf("step %q: %w", step.Name, err)
@@ -472,6 +492,16 @@ func (c *Case) validateScenario() error {
 		return nil
 	}
 	return c.validateSingleScenario()
+}
+
+func validateConfigProbeOutput(output HTTPOutput) error {
+	if output.Logs != nil || output.SaveBodyLength != "" || output.BodyLengthLessThan != "" ||
+		output.BodyLengthLessThanValue != nil || output.ElapsedAtLeast > 0 || output.ElapsedLessThan > 0 ||
+		len(output.UniqueHeaders) > 0 || len(output.MonotonicHeaders) > 0 ||
+		len(output.DifferentHeaders) > 0 || len(output.Captures) > 0 {
+		return errors.New("output supports only status, headers, body, gzip_body, and brotli_body")
+	}
+	return nil
 }
 
 func validateScenarioFiles(files []ScenarioFile) error {

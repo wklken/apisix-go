@@ -168,6 +168,9 @@ func TestWriteScenarioFilesCreatesFilesUnderWorkDirectory(t *testing.T) {
 func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	config := map[string]any{"routes": []any{}}
+	if err := os.WriteFile(path, []byte("old snapshot\n#END\n"), 0o400); err != nil {
+		t.Fatalf("write read-only prior snapshot: %v", err)
+	}
 
 	if err := writeStandaloneConfigUpdate(path, config, nil); err != nil {
 		t.Fatalf("writeStandaloneConfigUpdate() error = %v", err)
@@ -178,6 +181,33 @@ func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(data), "#END\n") {
 		t.Fatalf("standalone config update = %q, want #END marker", data)
+	}
+}
+
+func TestWaitForAppliedStateRetriesUntilProbePasses(t *testing.T) {
+	attempts := 0
+	err := waitForAppliedState(200*time.Millisecond, time.Millisecond, func() error {
+		attempts++
+		if attempts < 3 {
+			return fmt.Errorf("snapshot not applied")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("waitForAppliedState() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("probe attempts = %d, want 3", attempts)
+	}
+}
+
+func TestWaitForAppliedStateReportsLastProbeErrorAtTimeout(t *testing.T) {
+	err := waitForAppliedState(5*time.Millisecond, time.Millisecond, func() error {
+		return fmt.Errorf("status = 403, want 200")
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "status = 403, want 200") {
+		t.Fatalf("waitForAppliedState() error = %v, want last probe mismatch", err)
 	}
 }
 
@@ -1528,7 +1558,7 @@ func runCase(t *testing.T, spec Case) {
 	if err := os.WriteFile(filepath.Join(confDir, "config.yaml"), runtimeConfig, 0o600); err != nil {
 		t.Fatalf("write runtime config: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(confDir, "apisix.yaml"), standaloneConfig, 0o600); err != nil {
+	if err := writeStandaloneConfigSnapshot(filepath.Join(confDir, "apisix.yaml"), standaloneConfig); err != nil {
 		t.Fatalf("write standalone config: %v", err)
 	}
 	process, err := startAPISIX(workDir)
@@ -1599,11 +1629,21 @@ func runCase(t *testing.T, spec Case) {
 					); err != nil {
 						t.Fatalf("write standalone config update: %v", err)
 					}
-					wait := step.ConfigWait
-					if wait == 0 {
-						wait = 250 * time.Millisecond
+					timeout := step.ConfigTimeout
+					if timeout == 0 {
+						timeout = 5 * time.Second
 					}
-					time.Sleep(wait)
+					if err := waitForConfigApplied(
+						client, address, tlsAddress, *step.ConfigProbe, timeout, capturedCookies, capturedValues,
+					); err != nil {
+						logs, logErr := process.logs()
+						t.Fatalf(
+							"wait for standalone config update: %v\nread child logs: %v\nchild logs:\n%s",
+							err,
+							logErr,
+							logs,
+						)
+					}
 				}
 				repeat := step.Repeat
 				if repeat == 0 {
@@ -1708,10 +1748,207 @@ func writeScenarioFiles(workDir string, files []ScenarioFile) error {
 func writeStandaloneConfigUpdate(path string, config map[string]any, replacements map[string]string) error {
 	data, err := renderStandaloneConfig(config, replacements)
 	if err != nil {
-		return err
+		return fmt.Errorf("render standalone config update: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write standalone config: %w", err)
+	if err := writeStandaloneConfigSnapshot(path, data); err != nil {
+		return fmt.Errorf("write standalone config update: %w", err)
+	}
+	return nil
+}
+
+func writeStandaloneConfigSnapshot(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return fmt.Errorf("create standalone config snapshot: %w", err)
+	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("chmod standalone config snapshot: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write standalone config snapshot: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("sync standalone config snapshot: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close standalone config snapshot: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace standalone config: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func waitForConfigApplied(
+	client *http.Client,
+	httpAddress string,
+	tlsAddress string,
+	probe ConfigProbe,
+	timeout time.Duration,
+	capturedCookies map[string]string,
+	capturedValues map[string]string,
+) error {
+	return waitForAppliedState(timeout, 20*time.Millisecond, func() error {
+		return probeHTTPInput(
+			client, httpAddress, tlsAddress, probe.Input, probe.Output, capturedCookies, capturedValues,
+		)
+	})
+}
+
+func waitForAppliedState(timeout, interval time.Duration, probe func() error) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := probe(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("state was not applied within %s; last probe: %w", timeout, lastErr)
+		}
+		if remaining < interval {
+			time.Sleep(remaining)
+		} else {
+			time.Sleep(interval)
+		}
+	}
+}
+
+func probeHTTPInput(
+	client *http.Client,
+	httpAddress string,
+	tlsAddress string,
+	input HTTPInput,
+	output HTTPOutput,
+	capturedCookies map[string]string,
+	capturedValues map[string]string,
+) error {
+	var err error
+	input, err = resolveCapturedInput(input, capturedValues)
+	if err != nil {
+		return fmt.Errorf("resolve captured response value: %w", err)
+	}
+	method := input.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	scheme := input.Scheme
+	address := httpAddress
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme == "https" {
+		address = tlsAddress
+	}
+	body := input.Body
+	if input.BodyRepeat != nil {
+		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
+	}
+	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+	for name, value := range input.Headers {
+		value, err = replaceCookiePlaceholders(value, capturedCookies)
+		if err != nil {
+			return fmt.Errorf("resolve probe header %s: %w", name, err)
+		}
+		if strings.EqualFold(name, "Host") {
+			request.Host = value
+			continue
+		}
+		request.Header.Set(name, value)
+	}
+	for name, values := range input.HeaderValues {
+		for _, value := range values {
+			value, err = replaceCookiePlaceholders(value, capturedCookies)
+			if err != nil {
+				return fmt.Errorf("resolve probe header %s: %w", name, err)
+			}
+			request.Header.Add(name, value)
+		}
+	}
+	if input.HMAC != nil {
+		applyHMACSignature(request, *input.HMAC, time.Now())
+	}
+	if input.Chunked {
+		request.ContentLength = -1
+		request.TransferEncoding = []string{"chunked"}
+	}
+	probeClient := *client
+	probeClient.Jar = nil
+	response, err := probeClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("probe request: %w", err)
+	}
+	responseBody, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read probe response: %w", readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close probe response: %w", closeErr)
+	}
+	return matchProbeOutput(output, response, string(responseBody))
+}
+
+func matchProbeOutput(expected HTTPOutput, response *http.Response, body string) error {
+	if response.StatusCode != expected.Status {
+		return fmt.Errorf("response status = %d, want %d", response.StatusCode, expected.Status)
+	}
+	for name, matcher := range expected.Headers {
+		values, present := response.Header[http.CanonicalHeaderKey(name)]
+		if !present {
+			values = nil
+		}
+		if err := matcher.matchHeader(response.Header.Get(name), values); err != nil {
+			return fmt.Errorf("response header %s: %w", name, err)
+		}
+	}
+	if expected.Body != nil {
+		if err := expected.Body.match(body, true); err != nil {
+			return fmt.Errorf("response body: %w", err)
+		}
+	}
+	if expected.GzipBody != nil {
+		reader, err := cgzip.NewReader(strings.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("create gzip probe response reader: %w", err)
+		}
+		decoded, readErr := io.ReadAll(reader)
+		closeErr := reader.Close()
+		if readErr != nil {
+			return fmt.Errorf("read gzip probe response: %w", readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close gzip probe response: %w", closeErr)
+		}
+		if err := expected.GzipBody.match(string(decoded), true); err != nil {
+			return fmt.Errorf("gzip probe response body: %w", err)
+		}
+	}
+	if expected.BrotliBody != nil {
+		decoded, err := io.ReadAll(brotlidec.NewReader(strings.NewReader(body)))
+		if err != nil {
+			return fmt.Errorf("read brotli probe response: %w", err)
+		}
+		if err := expected.BrotliBody.match(string(decoded), true); err != nil {
+			return fmt.Errorf("brotli probe response body: %w", err)
+		}
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/store"
 )
@@ -149,6 +150,60 @@ upstreams:
 	}
 }
 
+func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	initial := `routes:
+  - id: route-1
+    uri: /one
+#END
+`
+	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write initial standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 8)
+	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	if err := watcher.Reload(); err != nil {
+		t.Fatalf("initial Reload() error = %v", err)
+	}
+	collectStandaloneEvents(events)
+	watcher.Watch()
+
+	invalid := []byte("routes:\n  - id: route-1\n    uri: /partial\n")
+	if err := atomicReplaceStandaloneTestFile(path, invalid); err != nil {
+		t.Fatalf("replace with incomplete standalone config: %v", err)
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("incomplete snapshot emitted event %#v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	updated := []byte(`routes:
+  - id: route-1
+    uri: /two
+#END
+`)
+	if err := atomicReplaceStandaloneTestFile(path, updated); err != nil {
+		t.Fatalf("replace with complete standalone config: %v", err)
+	}
+	select {
+	case event := <-events:
+		if got, want := string(event.Key), "/apisix/routes/route-1"; got != want {
+			t.Fatalf("updated event key = %q, want %q", got, want)
+		}
+		var route map[string]any
+		if err := json.Unmarshal(event.Value, &route); err != nil {
+			t.Fatalf("decode updated route: %v", err)
+		}
+		if got, want := route["uri"], "/two"; got != want {
+			t.Fatalf("updated route URI = %#v, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not recover after an atomic invalid replacement")
+	}
+}
+
 func TestStandaloneConfigFile(t *testing.T) {
 	if got, want := StandaloneConfigFile("yaml"), "conf/apisix.yaml"; got != want {
 		t.Fatalf("StandaloneConfigFile(yaml) = %q, want %q", got, want)
@@ -176,4 +231,27 @@ func collectStandaloneEvents(events chan *store.Event) map[string]standaloneEven
 			return collected
 		}
 	}
+}
+
+func atomicReplaceStandaloneTestFile(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".standalone-test-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }

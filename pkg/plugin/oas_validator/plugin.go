@@ -231,8 +231,9 @@ func (p *Plugin) PostInit() error {
 	}
 	p.metadata = base.LoadPluginMetadata[Metadata](name)
 	if p.config.Spec != "" {
-		if _, err := p.validator(); err != nil {
-			return err
+		var raw any
+		if err := json.Unmarshal([]byte(p.config.Spec), &raw); err != nil {
+			return fmt.Errorf("failed to parse inline openapi spec: %w", err)
 		}
 	}
 	return nil

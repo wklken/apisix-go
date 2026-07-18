@@ -141,8 +141,8 @@ func TestPostInitRejectsInvalidInlineSpec(t *testing.T) {
 	if err == nil {
 		t.Fatal("PostInit() accepted invalid inline OpenAPI spec")
 	}
-	if !strings.Contains(err.Error(), "failed to compile inline openapi spec") {
-		t.Fatalf("PostInit() error = %q, want inline spec compilation context", err)
+	if !strings.Contains(err.Error(), "failed to parse inline openapi spec") {
+		t.Fatalf("PostInit() error = %q, want inline spec parsing context", err)
 	}
 }
 
@@ -1228,8 +1228,10 @@ func TestHandlerResolvesRelativeExternalSchemaRefFromSpecURL(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsExternalSchemaRefCycle(t *testing.T) {
+func TestHandlerLazilyRejectsExternalSchemaRefCycle(t *testing.T) {
+	var fetches atomic.Int32
 	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/a.json":
@@ -1262,14 +1264,37 @@ func TestPostInitRejectsExternalSchemaRefCycle(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "cyclic external $ref") {
-		t.Fatalf("PostInit() error = %v, want cyclic external ref failure", err)
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want lazy external ref resolution", err)
+	}
+	if fetches.Load() != 0 {
+		t.Fatalf("external ref fetches after PostInit() = %d, want 0", fetches.Load())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"name":"doggie"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for cyclic external ref")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
+		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
+	}
+	if fetches.Load() == 0 {
+		t.Fatal("external refs were not resolved lazily during the request")
 	}
 }
 
-func TestPostInitRejectsMissingExternalSchemaRef(t *testing.T) {
-	externalServer := httptest.NewServer(http.NotFoundHandler())
+func TestHandlerLazilyRejectsMissingExternalSchemaRef(t *testing.T) {
+	var fetches atomic.Int32
+	externalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		http.NotFound(w, r)
+	}))
 	defer externalServer.Close()
 
 	spec := strings.Replace(
@@ -1282,9 +1307,28 @@ func TestPostInitRejectsMissingExternalSchemaRef(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "external $ref URL returned status 404") {
-		t.Fatalf("PostInit() error = %v, want missing external ref failure", err)
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want lazy external ref resolution", err)
+	}
+	if fetches.Load() != 0 {
+		t.Fatalf("external ref fetches after PostInit() = %d, want 0", fetches.Load())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"name":"doggie"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for missing external ref")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
+		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
+	}
+	if fetches.Load() == 0 {
+		t.Fatal("external ref was not resolved lazily during the request")
 	}
 }
 

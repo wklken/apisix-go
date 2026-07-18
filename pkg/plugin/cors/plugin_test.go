@@ -42,6 +42,119 @@ func TestHandlerAllowsRegexOrigin(t *testing.T) {
 	}
 }
 
+func TestPostInitAllowsCredentialsWithEmptyOptions(t *testing.T) {
+	p := &Plugin{config: Config{
+		AllowOrigins:    "http://test.com",
+		AllowMethods:    "",
+		AllowHeaders:    "",
+		ExposeHeaders:   "",
+		MaxAge:          600,
+		AllowCredential: true,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want explicit empty options accepted", err)
+	}
+}
+
+func TestHandlerRegexOriginsRestrictDefaultWildcard(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOrigins:        "*",
+		AllowOriginsByRegex: []string{`^https://.+\.domain\.com$`},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://blocked.example.com")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want regex-mismatched origin rejected", got)
+	}
+}
+
+func TestHandlerAddsAPISIXHeadersForAllowedOrigin(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOrigins:  "https://api.example",
+		AllowMethods:  "GET,POST",
+		AllowHeaders:  "request-h",
+		ExposeHeaders: "expose-h",
+		MaxAge:        10,
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://api.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	for name, want := range map[string]string{
+		"Access-Control-Allow-Origin":   "https://api.example",
+		"Access-Control-Allow-Methods":  "GET,POST",
+		"Access-Control-Allow-Headers":  "request-h",
+		"Access-Control-Expose-Headers": "expose-h",
+		"Access-Control-Max-Age":        "10",
+	} {
+		if got := rr.Header().Get(name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestHandlerExpandsDoubleStarMethods(t *testing.T) {
+	p := newTestPlugin(t, Config{AllowOrigins: "**", AllowMethods: "**"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://api.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	const want = "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"
+	if got := rr.Header().Get("Access-Control-Allow-Methods"); got != want {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want %q", got, want)
+	}
+}
+
+func TestHandlerInterceptsOptionsWithoutOrigin(t *testing.T) {
+	p := newTestPlugin(t, Config{AllowOrigins: "**"})
+	req := httptest.NewRequest(http.MethodOptions, "http://example.com/options", nil)
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("OPTIONS without Origin must not reach the upstream handler")
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Code; got != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", got, http.StatusOK)
+	}
+	if got := rr.Body.String(); got != "" {
+		t.Fatalf("response body = %q, want empty", got)
+	}
+}
+
+func TestHandlerAppendsOriginToUpstreamVary(t *testing.T) {
+	p := newTestPlugin(t, Config{AllowOrigins: "https://api.example"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://api.example")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Vary", "Via")
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Vary"); got != "Via, Origin" {
+		t.Fatalf("Vary = %q, want %q", got, "Via, Origin")
+	}
+}
+
 func TestHandlerAllowsDefaultWildcardMethods(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)

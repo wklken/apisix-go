@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/rs/cors"
@@ -113,6 +114,20 @@ const schema = `
 		"uniqueItems": true
 	  }
 	}
+	}`
+
+const metadataSchema = `
+{
+	"type": "object",
+	"properties": {
+	  "allow_origins": {
+		"type": "object",
+		"additionalProperties": {
+		  "type": "string",
+		  "pattern": "^(\\*|\\*\\*|null|\\w+://[^,]+(,\\w+://[^,]+)*)$"
+		}
+	  }
+	}
 }`
 
 type Config struct {
@@ -138,11 +153,21 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	return nil
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
+		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
+	}
+	if p.config.AllowCredential && p.config.AllowOrigins == "" && p.config.AllowMethods == "" &&
+		p.config.AllowHeaders == "" && p.config.ExposeHeaders == "" && p.config.MaxAge == 0 &&
+		p.config.TimingAllowOrigins == nil {
+		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
+	}
+
 	if p.config.AllowOrigins == "" {
 		p.config.AllowOrigins = "*"
 	}
@@ -157,9 +182,6 @@ func (p *Plugin) PostInit() error {
 
 	if p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
-	}
-	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
-		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
 	}
 	if len(p.config.AllowOriginsByMetadata) > 0 && len(p.metadata.AllowOrigins) == 0 {
 		p.metadata = base.LoadPluginMetadata[Metadata](name)
@@ -180,15 +202,10 @@ func (p *Plugin) PostInit() error {
 		p.timingOriginRegex = append(p.timingOriginRegex, compiled)
 	}
 
-	var exposedHeaders []string
-	if p.config.ExposeHeaders != "" {
-		exposedHeaders = strings.Split(p.config.ExposeHeaders, ",")
-	}
 	options := cors.Options{
 		AllowedOrigins:   strings.Split(p.config.AllowOrigins, ","),
 		AllowedMethods:   allowedMethods(p.config.AllowMethods),
 		AllowedHeaders:   allowedHeaders(p.config.AllowHeaders),
-		ExposedHeaders:   exposedHeaders,
 		MaxAge:           p.config.MaxAge,
 		AllowCredentials: p.config.AllowCredential,
 		// APISIX exits successful preflight OPTIONS requests with 200.
@@ -220,36 +237,147 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	handler := p.cors.Handler(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responseWriter := &varyResponseWriter{ResponseWriter: w}
+		p.setAPISIXResponseHeaders(responseWriter.Header(), r)
 		if origin, ok := p.timingAllowOrigin(r.Header.Get("Origin")); ok {
-			w.Header().Set("Timing-Allow-Origin", origin)
+			responseWriter.Header().Set("Timing-Allow-Origin", origin)
 		}
-		handler.ServeHTTP(w, r)
+		if r.Method == http.MethodOptions && r.Header.Get("Origin") == "" {
+			responseWriter.WriteHeader(http.StatusOK)
+			return
+		}
+		handler.ServeHTTP(responseWriter, r)
 	})
 }
 
-func (p *Plugin) allowOrigin(origin string) bool {
-	if len(p.config.AllowOriginsByMetadata) > 0 {
-		if p.allowOriginFromMetadata(origin) {
-			return true
-		}
-		if p.config.AllowOrigins == "" || p.config.AllowOrigins == "*" {
-			return false
+type varyResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *varyResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	normalizeVary(w.Header())
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *varyResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *varyResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func normalizeVary(header http.Header) {
+	values := header.Values("Vary")
+	if len(values) < 2 {
+		return
+	}
+
+	var entries []string
+	originPresent := false
+	for _, value := range values {
+		for entry := range strings.SplitSeq(value, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if strings.EqualFold(entry, "Origin") {
+				originPresent = true
+				continue
+			}
+			entries = append(entries, entry)
 		}
 	}
-	for allowedOrigin := range strings.SplitSeq(p.config.AllowOrigins, ",") {
-		if allowedOrigin == "*" || allowedOrigin == origin {
-			return true
+	if originPresent {
+		entries = append(entries, "Origin")
+	}
+	header.Set("Vary", strings.Join(entries, ", "))
+}
+
+func (p *Plugin) allowOrigin(origin string) bool {
+	_, ok := p.responseOrigin(origin)
+	return ok
+}
+
+func (p *Plugin) responseOrigin(origin string) (string, bool) {
+	if len(p.config.AllowOriginsByMetadata) > 0 {
+		if p.allowOriginFromMetadata(origin) {
+			if origin != "" {
+				return origin, true
+			}
+			return "*", true
 		}
-		if allowedOrigin == "**" && origin != "" {
-			return true
+		if p.config.AllowOrigins == "" || p.config.AllowOrigins == "*" {
+			return "", false
+		}
+	}
+	if p.config.AllowOrigins == "**" {
+		if origin == "" {
+			return "*", true
+		}
+		return origin, true
+	}
+	if p.config.AllowOrigins == "*" && len(p.originRegex) == 0 {
+		return "*", true
+	}
+	for allowedOrigin := range strings.SplitSeq(p.config.AllowOrigins, ",") {
+		if allowedOrigin == "*" && len(p.originRegex) > 0 {
+			continue
+		}
+		if allowedOrigin == origin && origin != "" {
+			return origin, true
 		}
 	}
 	for _, rule := range p.originRegex {
-		if rule.MatchString(origin) {
-			return true
+		if origin != "" && rule.MatchString(origin) {
+			return origin, true
 		}
 	}
-	return false
+	return "", false
+}
+
+func (p *Plugin) setAPISIXResponseHeaders(header http.Header, request *http.Request) {
+	origin, ok := p.responseOrigin(request.Header.Get("Origin"))
+	if !ok {
+		return
+	}
+	header.Set("Access-Control-Allow-Origin", origin)
+	header.Set("Access-Control-Allow-Methods", responseMethods(p.config.AllowMethods))
+	if p.config.AllowHeaders == "**" {
+		if requestedHeaders := request.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
+			header.Set("Access-Control-Allow-Headers", requestedHeaders)
+		} else {
+			header.Del("Access-Control-Allow-Headers")
+		}
+	} else {
+		header.Set("Access-Control-Allow-Headers", p.config.AllowHeaders)
+	}
+	if p.config.ExposeHeaders == "" {
+		header.Del("Access-Control-Expose-Headers")
+	} else {
+		header.Set("Access-Control-Expose-Headers", p.config.ExposeHeaders)
+	}
+	header.Set("Access-Control-Max-Age", strconv.Itoa(p.config.MaxAge))
+	if p.config.AllowCredential {
+		header.Set("Access-Control-Allow-Credentials", "true")
+	} else {
+		header.Del("Access-Control-Allow-Credentials")
+	}
+}
+
+func responseMethods(methods string) string {
+	if methods == "**" {
+		return strings.Join(allMethods, ",")
+	}
+	return methods
 }
 
 func (p *Plugin) allowOriginFromMetadata(origin string) bool {

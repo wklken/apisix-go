@@ -131,6 +131,21 @@ func TestMetadataSchemaRejectsNonpositiveSpecURLTTL(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsInvalidInlineSpec(t *testing.T) {
+	p := &Plugin{config: Config{Spec: "invalid json string"}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() accepted invalid inline OpenAPI spec")
+	}
+	if !strings.Contains(err.Error(), "failed to compile inline openapi spec") {
+		t.Fatalf("PostInit() error = %q, want inline spec compilation context", err)
+	}
+}
+
 func TestHandlerValidatesRequestBodyWithLocalSchemaRef(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Spec:          testSpecWithComponentsRef(),
@@ -1213,7 +1228,7 @@ func TestHandlerResolvesRelativeExternalSchemaRefFromSpecURL(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsExternalSchemaRefCycle(t *testing.T) {
+func TestPostInitRejectsExternalSchemaRefCycle(t *testing.T) {
 	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -1243,23 +1258,17 @@ func TestHandlerRejectsExternalSchemaRefCycle(t *testing.T) {
     }
   }
 }`
-	p := newTestPlugin(t, Config{Spec: spec})
-	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"name":"doggie"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler was called for cyclic external ref")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("response code = %d, want 500", rr.Code)
+	p := &Plugin{config: Config{Spec: spec}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
 	}
-	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
-		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "cyclic external $ref") {
+		t.Fatalf("PostInit() error = %v, want cyclic external ref failure", err)
 	}
 }
 
-func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
+func TestPostInitRejectsMissingExternalSchemaRef(t *testing.T) {
 	externalServer := httptest.NewServer(http.NotFoundHandler())
 	defer externalServer.Close()
 
@@ -1269,19 +1278,13 @@ func TestHandlerRejectsMissingExternalSchemaRef(t *testing.T) {
 		externalServer.URL+"/missing.json#/components/schemas/Pet",
 		1,
 	)
-	p := newTestPlugin(t, Config{Spec: spec})
-	req := httptest.NewRequest(http.MethodPost, "/pets", strings.NewReader(`{"name":"doggie"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler was called for missing external ref")
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("response code = %d, want 500", rr.Code)
+	p := &Plugin{config: Config{Spec: spec}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
 	}
-	if !strings.Contains(rr.Body.String(), "failed to parse openapi spec") {
-		t.Fatalf("response body = %q, want spec parse failure", rr.Body.String())
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "external $ref URL returned status 404") {
+		t.Fatalf("PostInit() error = %v, want missing external ref failure", err)
 	}
 }
 

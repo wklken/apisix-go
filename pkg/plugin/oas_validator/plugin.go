@@ -17,6 +17,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"go.yaml.in/yaml/v3"
 )
@@ -229,6 +230,11 @@ func (p *Plugin) PostInit() error {
 		p.config.RejectionStatusCode = http.StatusBadRequest
 	}
 	p.metadata = base.LoadPluginMetadata[Metadata](name)
+	if p.config.Spec != "" {
+		if _, err := p.validator(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -236,11 +242,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		validator, err := p.validator()
 		if err != nil {
+			logger.Error(err.Error())
 			base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
 			return
 		}
 
 		if err := p.validateRequest(validator, r); err != nil {
+			logger.Errorf("error occurred while validating request: %s", err)
 			if p.rejectIfNotMatch() {
 				msg := "failed to validate request. "
 				if p.config.VerboseErrors {
@@ -292,7 +300,10 @@ func (p *Plugin) validator() (*compiledSpec, error) {
 	}
 	compiled, err := compileSpecWithResolver(spec, resolver, baseURL)
 	if err != nil {
-		return nil, err
+		if p.config.SpecURL != "" {
+			return nil, fmt.Errorf("failed to compile openapi spec fetched from URL: %w", err)
+		}
+		return nil, fmt.Errorf("failed to compile inline openapi spec: %w", err)
 	}
 	p.config.compiled = compiled
 	p.compiledAt = p.currentTime()

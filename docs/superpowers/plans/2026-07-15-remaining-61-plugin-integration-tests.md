@@ -406,7 +406,7 @@ Provide named modes selected by fixture response sequences, not plugin-specific 
 |---|---:|---|
 | `ldap-auth` | 35 | bind/search, consumer DN mapping, Basic realm, TLS/schema and auth failures |
 | `openid-connect` | 141 | bearer/introspection/JWT, discovery/JWKS, client auth modes, scopes/claims, session+PKCE, Redis session, renewal/logout/revocation, proxy/TLS/header behavior |
-| `forward-auth` | 28 | request forwarding, auth response status/body/header propagation, upstream headers, URI/body modes, timeout/TLS |
+| `forward-auth` | 28 | schema validation, request/generated-header forwarding and spoof resistance, allow/deny response propagation, GET/POST auth body framing, transport degradation/status, extra headers and CRLF rejection, bounded-body 413 behavior, `$post_arg` variables, and clearing absent auth headers |
 | `multi-auth` | 38 | ordered auth alternatives, consumer propagation, anonymous behavior, schema and failure precedence |
 | `wolf-rbac` | 42 | token extraction, permission checks, consumer headers, cache/error/schema behavior |
 | `authz-keycloak` | 45 | discovery/token/UMA decisions, lazy paths, permissions, client credentials, timeout/TLS/error handling |
@@ -483,7 +483,7 @@ git commit -m "test(plugin): convert limit and cache integration suites"
 
 | Manifest | Blocks | Required behavior groups |
 |---|---:|---|
-| `proxy-mirror` | 36 | mirrored method/path/headers/body, percentage, timeout, host/scheme, primary response independence, mirror failure |
+| `proxy-mirror` | 36 | host/scheme/path/ratio schema validation, exact Host/header/query/body delivery, HTTP/1.1, live deletion, concurrent sampling bounds, replacement/prefix paths, DNS failure independence, proxy-rewrite ordering, and h2c gRPC/grpc-web mirroring |
 | `traffic-split` | 94 | ordered match vars, weighted inline/resource upstreams, fallback, zero weights, chash keys, pass-host and timeout propagation |
 | `workflow` | 42 | no-case behavior, ordered rules, nested vars, plugin config execution, skip/break semantics and invalid expressions |
 | `batch-requests` | 46 | HTTP batch parsing, per-entry method/path/headers/body, response aggregation, limits/failures, gRPC entries |
@@ -784,7 +784,7 @@ The original checked state was not supported by the manifests. This audit compar
 
 - [ ] `ldap-auth` — each source file is represented by one successful bind; realm, bind/search mapping, TLS, schema, and authentication failure behavior remain.
 - [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
-- [ ] `forward-auth` — one generic forwarded authorization request per source omits response status/body/header propagation, request-body modes, timeout, and TLS behavior.
+- [ ] `forward-auth` — three generic happy paths claim 28 blocks while omitting schema rejection, allow/deny propagation, generated-header spoof resistance, degradation statuses, extra-header/CRLF handling, bounded-body 413 behavior, `$post_arg`, GET/POST framing, chunked re-framing, and absent-header clearing.
 - [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
 - [ ] `wolf-rbac` — one authorization round trip replaces token-location, permission, cache, consumer-header, schema, and error cases.
 - [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
@@ -804,7 +804,7 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 8 — Routing, Workflow, Batch, and Dubbo
 
-- [ ] `proxy-mirror` — one generic mirror delivery per source omits exact method/path/header/body capture, percentage, timeout, host/scheme, primary-response independence, and mirror failure.
+- [ ] `proxy-mirror` — three identical `/probe` deliveries claim 36 blocks while omitting schema and lifecycle cases, exact primary/mirror Host/header/query/body observations, HTTP version, concurrent sampling bounds, DNS failure independence, proxy-rewrite ordering, and real h2c gRPC/grpc-web mirroring.
 - [ ] `traffic-split` — five header-selected routes replace weighted inline/resource upstreams, fallback/zero weights, chash, pass-host, HTTPS, health/retry, timeout, and reload behavior.
 - [ ] `workflow` — four happy-path actions omit no-case behavior, ordered fallthrough, isolated action state, invalid/no rules, limit-conn/global-rule interactions, and rewrite/log phase interaction.
 - [ ] `batch-requests` — three probes omit most pipeline validation, timeout/partial aggregation, body-file and size limits, header copying, metadata limits, custom URI, and mixed HTTP/gRPC subresponses.
@@ -900,6 +900,17 @@ default realm, body-size transitions, and real Vault/environment resolution.
 After the shared consumer/secret owner lands, HMAC owns only the bounded
 SHA-1/SHA-256/SHA-512 and fixed/relative-Date signing helper plus its package
 and manifest; it must not run concurrently with another consumer/secret owner.
+
+Two Medium foundation audits also corrected their execution order.
+`forward-auth` has 28 blocks across three sources, but its current three cases
+are only repeated happy paths. It can run alongside `basic-auth`, while owning
+bounded-body 413 handling, secure chunked re-framing, `$post_arg` resolution,
+and any zero-upstream fixture assertion. `proxy-mirror` has 36 blocks across
+three sources and remains upper-Medium, but must precede the other routing wave:
+it owns concurrent sampling/count assertions, protocol capture, structured h2c
+gRPC fixtures, and the finalized pre-proxy hook needed to observe
+proxy-rewrite/grpc-web transformations. `traffic-split` and `batch-requests`
+must wait for that reviewed foundation instead of starting beside it.
 
 - **Structural source-file stand-ins (34):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
@@ -1014,12 +1025,18 @@ Execution waves:
    only after that owner is integrated; run `multi-auth` after the shared
    consumer-runner baseline is stable. Only one lane may change consumer
    attachment, secret providers, or `pkg/route`.
-2. Establish one scripted HTTP auth-fixture contract with `forward-auth`, then
-   parallelize package/manifest work for `wolf-rbac`, `cas-auth`, and
-   `feishu-auth`. Changes to `fixture_auth_test.go` remain single-owner.
-3. Run `proxy-mirror`, `traffic-split`, and `batch-requests` in parallel only
-   while their changes stay in distinct mirror, route/proxy, and batch/protocol
-   owners.
+2. Run `forward-auth` first as the Medium HTTP-auth foundation. Its existing
+   HTTP/TCP fixtures are sufficient, but this lane exclusively owns a fixture
+   zero-request assertion, bounded request-body handling, chunk-safe framing,
+   and any shared `$post_arg` request-variable change. After it is reviewed and
+   integrated, parallelize package/manifest work for `wolf-rbac`, `cas-auth`,
+   and `feishu-auth`; `fixture_auth_test.go` remains single-owner.
+3. Run `proxy-mirror` first as the routing/protocol foundation. It exclusively
+   owns protocol assertions, bounded parallel repeat/count ranges, structured
+   h2c gRPC fixtures, and the finalized pre-proxy mirror hook needed for
+   proxy-rewrite/grpc-web ordering. Only after that reviewed range is integrated
+   may `traffic-split` and `batch-requests` run in parallel through their
+   distinct remaining owners.
 4. Process HTTP/cloud loggers in groups of three isolated manifests, with one
    serialized `logger_batch` owner. Process `tcp-logger`/`syslog` through one
    network-fixture owner, and `file-logger` before `log-rotate` through one

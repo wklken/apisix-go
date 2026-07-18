@@ -254,6 +254,70 @@ func TestHandlerAllowsBasicAuthWhenLaterPluginWouldFail(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotLetFailedAuthMutateLaterAlternative(t *testing.T) {
+	addAuthConsumer(t, "basic-after-jwt-user", map[string]any{
+		"basic-auth": map[string]any{"username": "basic-after-jwt-user", "password": "secret"},
+	})
+	waitForConsumerKey(t, "basic-auth", "basic-after-jwt-user")
+
+	hideCredentials := true
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"jwt-auth": {"hide_credentials": hideCredentials}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("basic-after-jwt-user:secret")))
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "basic-after-jwt-user" {
+			t.Fatalf("consumer_name = %v, want basic-after-jwt-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestPostInitRejectsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
+	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
+		{"basic-auth": {}, "key-auth": {}},
+		{"jwt-auth": {}},
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "exactly one auth plugin") {
+		t.Fatalf("PostInit() error = %v, want exactly-one-plugin diagnostic", err)
+	}
+}
+
+func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
+	req := newMultiAuthRequest()
+	authenticated, ok := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(req)
+	if ok || authenticated != nil {
+		t.Fatalf("status-only auth result = (%v, %t), want (nil, false)", authenticated, ok)
+	}
+}
+
+type statusOnlyAuth struct{}
+
+func (statusOnlyAuth) Init() error       { return nil }
+func (statusOnlyAuth) PostInit() error   { return nil }
+func (statusOnlyAuth) Config() any       { return &struct{}{} }
+func (statusOnlyAuth) GetSchema() string { return `{}` }
+func (statusOnlyAuth) Handler(http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+}
+
 func TestHandlerAllowsKeyAuthAfterLDAPAuthMissingCredentials(t *testing.T) {
 	addAuthConsumer(t, "ldap-fallback-key-user", map[string]any{
 		"key-auth": map[string]any{"key": "ldap-fallback-key"},

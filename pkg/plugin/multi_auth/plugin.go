@@ -1,10 +1,13 @@
 package multi_auth
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
@@ -63,6 +66,7 @@ type configuredAuth struct {
 type probeResponseWriter struct {
 	header http.Header
 	status int
+	body   bytes.Buffer
 }
 
 func (p *Plugin) Init() error {
@@ -79,6 +83,9 @@ func (p *Plugin) PostInit() error {
 
 	p.auths = make([]configuredAuth, 0, len(p.config.AuthPlugins))
 	for _, authPlugin := range p.config.AuthPlugins {
+		if len(authPlugin) != 1 {
+			return fmt.Errorf("each auth_plugins entry must contain exactly one auth plugin")
+		}
 		for authName, authConfig := range authPlugin {
 			auth, err := newAuthPlugin(authName)
 			if err != nil {
@@ -130,10 +137,25 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, bool) {
 	})
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
 	originalContext := r.Context()
-	probeRequest := ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-		next.ServeHTTP(w, r.WithContext(originalContext))
-	})
+	probeRequest := r.Clone(originalContext)
+	probeRequest = ctx.WithConsumerPluginRunner(
+		probeRequest,
+		func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			next.ServeHTTP(w, r.WithContext(originalContext))
+		},
+	)
 	a.plugin.Handler(probeNext).ServeHTTP(writer, probeRequest)
+	if authenticatedRequest == nil {
+		r.Body = probeRequest.Body
+		message := strings.TrimSpace(writer.body.String())
+		if message == "" {
+			logger.Warn(fmt.Sprintf("%s failed to authenticate the request, code: %d", a.name, writer.status))
+		} else {
+			logger.Warn(fmt.Sprintf(
+				"%s failed to authenticate the request, code: %d. error: %s", a.name, writer.status, message,
+			))
+		}
+	}
 	return authenticatedRequest, authenticatedRequest != nil
 }
 
@@ -170,7 +192,7 @@ func (w *probeResponseWriter) Write(body []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return len(body), nil
+	return w.body.Write(body)
 }
 
 var _ http.ResponseWriter = (*probeResponseWriter)(nil)

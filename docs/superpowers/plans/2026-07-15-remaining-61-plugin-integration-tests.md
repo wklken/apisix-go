@@ -788,7 +788,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
 - [ ] `wolf-rbac` — one authorization round trip claims 42 direct blocks and omits two Wolf-specific security-warning blocks; schema/defaults, public APIs, token locations, provider denial/retry mapping, consumer replacement/chaining, exact headers/bodies, Vault/environment appid, TLS verification, trusted client IP, and HTTP warning behavior remain.
 - [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
-- [ ] `cas-auth` — one redirect request claims 22 direct blocks and omits two CAS-specific security-warning blocks; real ticket validation, captured original-URI/session cookies, multi-SP isolation, redirect/signature/callback safety, forged Host, initiation gates, local/single logout, schema failures, and HTTP warning behavior remain.
+- [x] `cas-auth` — all 24 CAS-owned blocks across `cas-auth.t` and `security-warning.t` map exactly once to real standalone login/validation/session/logout, multi-SP/SLO, schema, redirect/signature/callback, initiation, isolation, and warning behavior using captured cookies and exact provider requests. A real changed-resource reload preserves the old session; rejected and forged tickets cannot create/cross scopes; the process-local session store is a mutex-protected 10,000-entry one-hour expirable LRU with refresh, expiry, and eviction coverage. Package/race/corpus, full real-process, sensitive repeats, store stress, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
 - [ ] `feishu-auth` — one login flow replaces state/cookie validation, token/user lookup details, propagated headers, and failure branches.
 - [x] `authz-casbin` — all 21 pinned blocks map exactly once to standalone schema, metadata, inline, file, disabled, route-policy-shape, and request behavior. Deny-to-allow and policy1-to-policy2-to-policy1 transitions use atomic standalone snapshot replacement, a side-effect-free applied-state probe, and one consuming request. The shared watcher survives invalid/Remove/Rename/Create/Write sequences and later valid snapshots; workdir file paths are confined. Package/corpus, watcher recovery, race, real-process `-count=10`, scoped lint/build, post-integration, and task-review gates pass.
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 18 task-review-approved and 43 remaining.
-- **Behavioral placeholders:** Thirty-one manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 19 task-review-approved and 42 remaining.
+- **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 43 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 42 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,8 +875,8 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **18
-complete and 43 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **19
+complete and 42 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
 The local-credential source audit corrected two complexity assumptions before
@@ -932,10 +932,10 @@ relative-service port handling, process-local fingerprint isolation, and HTTP
 security warnings. It must capture real flow cookies rather than precompute a
 successful callback.
 
-- **Structural source-file stand-ins (31):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (30):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
-  `authz-keycloak`, `cas-auth`, `datadog`,
+  `authz-keycloak`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
   `google-cloud-logging`, `graphql-limit-count`,
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
@@ -953,9 +953,9 @@ successful callback.
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (18):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (19):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `basic-auth`, `forward-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
+  `basic-auth`, `cas-auth`, `forward-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -966,7 +966,7 @@ active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
 `clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, `loki-logger`,
 `skywalking-logger`, `udp-logger`, `forward-auth`, `proxy-mirror`, and
-`basic-auth` have now passed review, so **43 remain**.
+`basic-auth` and `cas-auth` have now passed review, so **42 remain**.
 `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
@@ -1009,7 +1009,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 26 manifests
+### Medium — 25 manifests
 
 - [ ] `datadog`
 - [x] `basic-auth`
@@ -1017,7 +1017,7 @@ Execution waves:
 - [x] `forward-auth`
 - [ ] `multi-auth`
 - [ ] `wolf-rbac`
-- [ ] `cas-auth`
+- [x] `cas-auth`
 - [ ] `feishu-auth`
 - [ ] `graphql-limit-count`
 - [ ] `graphql-proxy-cache`

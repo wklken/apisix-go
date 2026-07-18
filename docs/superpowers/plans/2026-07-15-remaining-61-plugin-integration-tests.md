@@ -784,7 +784,7 @@ The original checked state was not supported by the manifests. This audit compar
 
 - [ ] `ldap-auth` — each source file is represented by one successful bind; realm, bind/search mapping, TLS, schema, and authentication failure behavior remain.
 - [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
-- [ ] `forward-auth` — three generic happy paths claim 28 blocks while omitting schema rejection, allow/deny propagation, generated-header spoof resistance, degradation statuses, extra-header/CRLF handling, bounded-body 413 behavior, `$post_arg`, GET/POST framing, chunked re-framing, and absent-header clearing.
+- [x] `forward-auth` — all 28 pinned blocks across three sources map exactly once to standalone schema, header propagation/spoof resistance, allow/deny, degradation/error, `$post_arg`, CRLF/no-auth, bounded-body 413, chunked re-framing, GET/POST framing, and absent-header clearing behavior. Raw framing assertions combine required bytes with explicit forbidden-header patterns, so they cannot pass from fixture-generated claims. Package/race/corpus, full real-process, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
 - [ ] `wolf-rbac` — one authorization round trip replaces token-location, permission, cache, consumer-header, schema, and error cases.
 - [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 15 task-review-approved and 46 remaining.
-- **Behavioral placeholders:** Thirty-three manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 16 task-review-approved and 45 remaining.
+- **Behavioral placeholders:** Thirty-two manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 46 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 45 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,8 +875,8 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **15
-complete and 46 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **16
+complete and 45 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
 The local-credential source audit corrected two complexity assumptions before
@@ -912,12 +912,12 @@ gRPC fixtures, and the finalized pre-proxy hook needed to observe
 proxy-rewrite/grpc-web transformations. `traffic-split` and `batch-requests`
 must wait for that reviewed foundation instead of starting beside it.
 
-- **Structural source-file stand-ins (33):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (32):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `cas-auth`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
-  `forward-auth`, `google-cloud-logging`, `graphql-limit-count`,
+  `google-cloud-logging`, `graphql-limit-count`,
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
   `loggly`, `multi-auth`, `openid-connect`, `opentelemetry`,
   `proxy-mirror`, `rocketmq-logger`, `skywalking`,
@@ -933,9 +933,9 @@ must wait for that reviewed foundation instead of starting beside it.
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (15):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (16):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `jwe-decrypt`, `loki-logger`, `oas-validator`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
+  `forward-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -945,7 +945,8 @@ The classification audit started with 56 unchecked manifests at commit
 active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
 `clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, `loki-logger`,
-`skywalking-logger`, and `udp-logger` have now passed review, so **46 remain**.
+`skywalking-logger`, `udp-logger`, and `forward-auth` have now passed review, so
+**45 remain**.
 `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
@@ -988,12 +989,12 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 29 manifests
+### Medium — 28 manifests
 
 - [ ] `datadog`
 - [ ] `basic-auth`
 - [ ] `hmac-auth`
-- [ ] `forward-auth`
+- [x] `forward-auth`
 - [ ] `multi-auth`
 - [ ] `wolf-rbac`
 - [ ] `cas-auth`

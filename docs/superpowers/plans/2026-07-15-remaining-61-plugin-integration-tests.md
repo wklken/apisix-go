@@ -821,7 +821,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `elasticsearch-logger` — generic delivery omits index/type/auth configuration, bulk framing, log formats, batching/retry, and response failures.
 - [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
 - [ ] `sls-logger` — generic delivery omits Aliyun signing, project/logstore endpoint, structured log groups, credentials, batching, and failures.
-- [ ] `splunk-hec-logging` — generic delivery omits HEC token/headers, event versus raw payloads, metadata fields, batching, TLS, and error handling.
+- [x] `splunk-hec-logging` — all 17 pinned blocks map exactly once to real standalone cases. The corpus validates schema diagnostics, non-blocking HEC auth failures, exact token/channel/content headers, rich and custom event envelopes, post-upstream variable resolution, three-event concatenated batching, keepalive configuration, standalone ciphertext decryption, additive non-clobber metadata extras, and deterministic pending-entry overflow. Package, race, strict corpus, repeated sensitive real-process, scoped lint, build, post-integration, and task-review gates pass.
 - [ ] `tencent-cloud-cls` — generic delivery omits CLS signing, topic/endpoint, protobuf/log payload semantics, credentials, batching, and failures.
 
 #### Task 10 — Network, Kafka, File, and Error Loggers
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 10 task-review-approved and 51 remaining.
-- **Behavioral placeholders:** Thirty-seven manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 11 task-review-approved and 50 remaining.
+- **Behavioral placeholders:** Thirty-six manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 51 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 50 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,11 +875,11 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **10
-complete and 51 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **11
+complete and 50 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
-- **Structural source-file stand-ins (37):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (36):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `cas-auth`, `datadog`,
@@ -888,7 +888,7 @@ complete and 51 remaining**; `oas-validator` also passed its task review with
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
   `loggly`, `loki-logger`, `multi-auth`, `openid-connect`, `opentelemetry`,
   `proxy-mirror`, `rocketmq-logger`, `skywalking`, `skywalking-logger`,
-  `sls-logger`, `splunk-hec-logging`, `syslog`, `tcp-logger`,
+  `sls-logger`, `syslog`, `tcp-logger`,
   `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
   request; it cannot prove the distinct source blocks it claims.
@@ -900,9 +900,9 @@ complete and 51 remaining**; `oas-validator` also passed its task review with
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (10):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (11):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `oas-validator`, `request-validation`, and `traffic-label`. No other
+  `oas-validator`, `request-validation`, `splunk-hec-logging`, and `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -911,7 +911,7 @@ The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
 active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
-`clickhouse-logger` have now passed review, so **51 remain**. `datadog` moved from Easy to Medium after its
+`clickhouse-logger` and `splunk-hec-logging` have now passed review, so **50 remain**. `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
@@ -929,13 +929,13 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 5 remaining (6 at replan)
+### Easy — 4 remaining (6 at replan)
 
 - [ ] `jwe-decrypt`
 - [ ] `udp-logger`
 - [x] `clickhouse-logger`
 - [ ] `loki-logger`
-- [ ] `splunk-hec-logging`
+- [x] `splunk-hec-logging`
 - [ ] `skywalking-logger`
 
 Execution waves:

@@ -44,6 +44,16 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
+	jweDecryptPlugin, hasJWEDecrypt := consumer.Plugins["jwe-decrypt"]
+	var jweDecryptConfig jweDecrypt
+	if hasJWEDecrypt {
+		if err := util.Parse(jweDecryptPlugin, &jweDecryptConfig); err != nil {
+			return err
+		}
+		if err := validateJWEDecryptConsumerConfig(jweDecryptConfig); err != nil {
+			return err
+		}
+	}
 	s.consumerMu.Lock()
 	defer s.consumerMu.Unlock()
 	key := util.BytesToString(id)
@@ -136,17 +146,8 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
 	}
 
-	jweDecryptPlugin, ok := consumer.Plugins["jwe-decrypt"]
-	if ok {
-		var jd jweDecrypt
-		err = util.Parse(jweDecryptPlugin, &jd)
-		if err != nil {
-			return err
-		}
-		if err := validateJWEDecryptConsumerConfig(jd); err != nil {
-			return err
-		}
-		k := fmt.Sprintf("jwe-decrypt:%s", jd.Key.(string))
+	if hasJWEDecrypt {
+		k := fmt.Sprintf("jwe-decrypt:%s", jweDecryptConfig.Key.(string))
 		s.consumerKV[k] = id
 
 		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)

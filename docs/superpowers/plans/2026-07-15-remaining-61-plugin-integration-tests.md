@@ -352,13 +352,13 @@ git commit -m "test(plugin): convert core security integration suites"
 
 **Interfaces:**
 - Consumes: standalone consumers/groups, repeated headers, cookie reuse, response capture, and crypto helpers already present in package tests.
-- Produces: 5 real manifests covering 18 sources and 301 blocks.
+- Produces: 5 real manifests covering 21 sources and 325 blocks.
 
 - [ ] **Step 1: Translate the exact behavior sets**
 
 | Manifest | Blocks | Required behavior groups |
 |---|---:|---|
-| `key-auth` | 34 | header/query/cookie keys, hide credentials, anonymous consumer, realm, duplicate/missing/invalid keys, consumer/group attachment |
+| `key-auth` | 58 | header/query keys, hide credentials, environment/Vault secret references, anonymous consumer with limiter chaining, realm, service inheritance, and domain-node/upstream-resource behavior across four pinned sources |
 | `basic-auth` | 44 | Basic parsing, malformed base64, username/password lookup, anonymous consumer, realm, duplicate headers, consumer/group attachment |
 | `jwt-auth` | 130 | token issue endpoint, header/query/cookie extraction, HS/RS/ES algorithms, exp/nbf/leeway, base64 secret, public keys, key claims, anonymous/realm, hide credentials |
 | `hmac-auth` | 70 | canonical string/signature algorithms, clock skew, signed headers/body digest, query order, escape rules, anonymous/realm, failure messages |
@@ -879,6 +879,18 @@ reviews and post-integration gates. The currently approved scope is **14
 complete and 47 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
+The local-credential source audit corrected two complexity assumptions before
+implementation. `key-auth` has 58 blocks across four pinned `t/plugin` files,
+not only the 34 blocks in `key-auth.t`; the omitted sources require anonymous
+consumer limiter chaining, realm headers, service inheritance, and a DNS/domain
+upstream fixture in addition to environment/Vault resolution. `basic-auth`
+remains Medium at 44 blocks across three sources and should establish the shared
+strict consumer-snapshot and secret-resolution contracts. `jwt-auth` has 130
+blocks across seven sources and moves to Hard because it additionally requires
+relative-time token signing, the HS/RS/ES/EdDSA/JWK matrix, and bounded
+serverless-context behavior. These three plugins are serialized through one
+consumer/secret owner rather than implemented concurrently.
+
 - **Structural source-file stand-ins (34):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
@@ -953,12 +965,10 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 31 manifests
+### Medium — 29 manifests
 
 - [ ] `datadog`
-- [ ] `key-auth`
 - [ ] `basic-auth`
-- [ ] `jwt-auth`
 - [ ] `hmac-auth`
 - [ ] `forward-auth`
 - [ ] `multi-auth`
@@ -989,9 +999,11 @@ Execution waves:
 
 Execution waves:
 
-1. Run `key-auth`, `basic-auth`, and `jwt-auth` in isolated worktrees; then run
-   `hmac-auth` and `multi-auth` after their shared consumer-runner baseline is
-   integrated. Only one lane may change consumer attachment or `pkg/route`.
+1. Run `basic-auth` first to establish strict consumer snapshot validation and
+   the shared environment/Vault secret-resolution contract. Run `hmac-auth`
+   only after that owner is integrated; run `multi-auth` after the shared
+   consumer-runner baseline is stable. Only one lane may change consumer
+   attachment, secret providers, or `pkg/route`.
 2. Establish one scripted HTTP auth-fixture contract with `forward-auth`, then
    parallelize package/manifest work for `wolf-rbac`, `cas-auth`, and
    `feishu-auth`. Changes to `fixture_auth_test.go` remain single-owner.
@@ -1012,8 +1024,10 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 15 manifests
+### Hard — 17 manifests
 
+- [ ] `key-auth`
+- [ ] `jwt-auth`
 - [ ] `ldap-auth`
 - [ ] `openid-connect`
 - [ ] `authz-keycloak`
@@ -1032,22 +1046,29 @@ Execution waves:
 
 Execution waves:
 
-1. Build independent foundation owners in parallel: LDAP bind/search/TLS,
-   Redis state/concurrency beginning with `limit-conn`, and one broker/protocol
-   fixture beginning with `rocketmq-logger`.
-2. Continue owners sequentially within their conflict group while other groups
+1. After Medium `basic-auth` establishes strict consumer snapshots and shared
+   secret resolution, run `key-auth` through the single consumer/secret owner;
+   it additionally owns realm, limiter-chain, service inheritance, and the DNS
+   domain-node fixture. Run `jwt-auth` only after those shared prerequisites
+   are integrated; it owns relative-time signing plus the HS/RS/ES/EdDSA/JWK
+   algorithm matrix and bounded serverless-context visibility.
+2. In parallel with that serialized credential lane, build independent
+   foundation owners: LDAP bind/search/TLS, Redis state/concurrency beginning
+   with `limit-conn`, and one broker/protocol fixture beginning with
+   `rocketmq-logger`.
+3. Continue owners sequentially within their conflict group while other groups
    run in parallel: `limit-req` then `limit-count`; `http-dubbo` and Kafka only
    after the protocol-fixture owner is free; `proxy-cache` owns cache-zone and
    persistence semantics.
-3. Run `authz-keycloak`, then `saml-auth`, then `openid-connect` through the
+4. Run `authz-keycloak`, then `saml-auth`, then `openid-connect` through the
    serialized auth/session fixture owner. `openid-connect` is last in that
    group because it combines discovery/JWKS, cookies/PKCE, TLS, and Redis
    sessions.
-4. Run `error-log-logger` only after Kafka and the HTTP/SkyWalking sink
+5. Run `error-log-logger` only after Kafka and the HTTP/SkyWalking sink
    contracts are stable. Run `opentelemetry` with exclusive ownership of OTLP
    protobuf, HTTP/gRPC collector, batching, shutdown, and HTTP/2 isolation
    fixtures.
-5. Run `ai-rate-limiting` after bounded AI state conventions are stable.
+6. Run `ai-rate-limiting` after bounded AI state conventions are stable.
    `ai-proxy` is last because it owns the 303-block provider matrix and the new
    disconnect, flushed-chunk, and AWS EventStream harness contracts.
 

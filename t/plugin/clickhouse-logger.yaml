@@ -235,20 +235,35 @@ cases:
         repeat: 3
         input: {path: /overflow}
         output: {status: 200, body: {equals: overflow-ok}, logs: {matches: 'max pending entries limit exceeded'}}
-  - name: response-body-enabled
+  - name: response-body-collection
     source: {file: t/plugin/clickhouse-logger2.t, tests: [1, 2]}
-    config:
-      routes:
-        - id: clickhouse-response-enabled
-          uri: /response-enabled
-          plugins:
-            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, log_format: {case: response-enabled}}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /response-enabled}}], respond: [{status: 200, body: hello-response}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-enabled","response":\{"body":"hello-response"\}\}$'}}], respond: [{status: 200}]}
-    steps:
-      - {name: response-body-is-delivered, input: {path: /response-enabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
+    variants:
+      - name: enabled
+        config:
+          routes:
+            - id: clickhouse-response-enabled
+              uri: /response-enabled
+              plugins:
+                clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, log_format: {case: response-enabled}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /response-enabled}}], respond: [{status: 200, body: hello-response}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-enabled","response":\{"body":"hello-response"\}\}$'}}], respond: [{status: 200}]}
+        steps:
+          - {name: response-body-is-delivered, input: {path: /response-enabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
+      - name: default-disabled
+        config:
+          routes:
+            - id: clickhouse-response-disabled
+              uri: /response-disabled
+              plugins:
+                clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, log_format: {case: response-disabled}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /response-disabled}}], respond: [{status: 200, body: hello-response}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-disabled"\}$'}}], respond: [{status: 200}]}
+        steps:
+          - {name: response-body-is-absent-by-default, input: {path: /response-disabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
   - name: response-body-expression-matches
     source: {file: t/plugin/clickhouse-logger2.t, tests: [3]}
     config:

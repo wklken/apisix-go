@@ -394,7 +394,7 @@ git commit -m "test(plugin): convert credential authentication suites"
 
 **Interfaces:**
 - Consumes: LDAP fixture, HTTP/HTTPS fixtures, frontend TLS, cookies/captures, RSA/JWKS helpers, and standalone consumers/metadata.
-- Produces: 10 real manifests covering 30 sources and 407 blocks.
+- Produces: 10 real manifests covering 31 sources and 409 blocks.
 
 - [ ] **Step 1: Extend `fixture_auth_test.go` with deterministic endpoint scripts**
 
@@ -408,7 +408,7 @@ Provide named modes selected by fixture response sequences, not plugin-specific 
 | `openid-connect` | 141 | bearer/introspection/JWT, discovery/JWKS, client auth modes, scopes/claims, session+PKCE, Redis session, renewal/logout/revocation, proxy/TLS/header behavior |
 | `forward-auth` | 28 | schema validation, request/generated-header forwarding and spoof resistance, allow/deny response propagation, GET/POST auth body framing, transport degradation/status, extra headers and CRLF rejection, bounded-body 413 behavior, `$post_arg` variables, and clearing absent auth headers |
 | `multi-auth` | 38 | ordered auth alternatives, consumer propagation, anonymous behavior, schema and failure precedence |
-| `wolf-rbac` | 42 | token extraction, permission checks, consumer headers, cache/error/schema behavior |
+| `wolf-rbac` | 44 | schema/defaults, public login/user/password APIs, token locations, permission and retry/error mapping, consumer replacement/chaining, user headers, Vault/environment appid, TLS verification, trusted client IP, and HTTP security warnings across `wolf-rbac.t` plus `security-warning2.t` tests 19–20 |
 | `authz-keycloak` | 45 | discovery/token/UMA decisions, lazy paths, permissions, client credentials, timeout/TLS/error handling |
 | `cas-auth` | 22 | redirect, ticket validation, cookies, callback/original URI, logout and invalid XML/tickets |
 | `saml-auth` | 21 | metadata, AuthnRequest redirect/form, signed response ACS, relay state, session cookie, logout and invalid assertions |
@@ -786,7 +786,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
 - [x] `forward-auth` — all 28 pinned blocks across three sources map exactly once to standalone schema, header propagation/spoof resistance, allow/deny, degradation/error, `$post_arg`, CRLF/no-auth, bounded-body 413, chunked re-framing, GET/POST framing, and absent-header clearing behavior. Raw framing assertions combine required bytes with explicit forbidden-header patterns, so they cannot pass from fixture-generated claims. Package/race/corpus, full real-process, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
-- [ ] `wolf-rbac` — one authorization round trip replaces token-location, permission, cache, consumer-header, schema, and error cases.
+- [ ] `wolf-rbac` — one authorization round trip claims 42 direct blocks and omits two Wolf-specific security-warning blocks; schema/defaults, public APIs, token locations, provider denial/retry mapping, consumer replacement/chaining, exact headers/bodies, Vault/environment appid, TLS verification, trusted client IP, and HTTP warning behavior remain.
 - [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
 - [ ] `cas-auth` — one redirect/callback shape replaces ticket validation, session cookies, original URI, logout, and invalid XML/ticket cases.
 - [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
@@ -911,6 +911,16 @@ it owns concurrent sampling/count assertions, protocol capture, structured h2c
 gRPC fixtures, and the finalized pre-proxy hook needed to observe
 proxy-rewrite/grpc-web transformations. `traffic-split` and `batch-requests`
 must wait for that reviewed foundation instead of starting beside it.
+
+The `wolf-rbac` audit corrected its source surface from 42 blocks in one file
+to 44 blocks across two files: all of `wolf-rbac.t` plus Wolf-specific
+`security-warning2.t` tests 19–20. The eight Wolf public-endpoint dispatch cases
+in `public-api.t` remain owned by `public-api.yaml` and must not be duplicated.
+Wolf stays Medium but waits for the Basic-owned lazy consumer-secret foundation;
+after that lands it owns only its package and manifest. Its current single allow
+request does not cover provider business-denial status/logging, Vault/env appid,
+trusted `real-ip`, or HTTP-versus-HTTPS security warnings, all of which require
+real standalone assertions before review.
 
 - **Structural source-file stand-ins (32):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,

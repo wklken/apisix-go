@@ -218,7 +218,8 @@ func TestManifestAcceptsTCPFixture(t *testing.T) {
 		Name: "sink",
 		Kind: "tcp",
 		NetworkExpect: []NetworkAssertion{{
-			Payload: &Matcher{Equals: &payload},
+			Payload:          &Matcher{Equals: &payload},
+			ForbiddenMatches: []string{"forbidden"},
 		}},
 		NetworkRespond: []NetworkResponse{{Payload: response}},
 	}}
@@ -230,6 +231,19 @@ func TestManifestAcceptsTCPFixture(t *testing.T) {
 
 	if err := manifest.validate(); err != nil {
 		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsInvalidNetworkForbiddenMatch(t *testing.T) {
+	payload := "hello"
+	assertion := NetworkAssertion{
+		Payload:          &Matcher{Equals: &payload},
+		ForbiddenMatches: []string{"["},
+	}
+
+	err := assertion.validate()
+	if err == nil || !strings.Contains(err.Error(), "forbidden match 1") {
+		t.Fatalf("validate() error = %v, want invalid forbidden regex rejection", err)
 	}
 }
 

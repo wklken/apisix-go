@@ -121,9 +121,10 @@ type FixtureSpec struct {
 }
 
 type NetworkAssertion struct {
-	Payload       *Matcher                    `yaml:"payload,omitempty"`
-	PayloadBase64 *Matcher                    `yaml:"payload_base64,omitempty"`
-	JSONFields    []NetworkJSONFieldAssertion `yaml:"json_fields,omitempty"`
+	Payload          *Matcher                    `yaml:"payload,omitempty"`
+	PayloadBase64    *Matcher                    `yaml:"payload_base64,omitempty"`
+	JSONFields       []NetworkJSONFieldAssertion `yaml:"json_fields,omitempty"`
+	ForbiddenMatches []string                    `yaml:"forbidden_matches,omitempty"`
 }
 
 type NetworkJSONFieldAssertion struct {
@@ -898,6 +899,14 @@ func (a NetworkAssertion) validate() error {
 	}
 	if configured != 1 {
 		return errors.New("exactly one of payload, payload_base64, or json_fields is required")
+	}
+	for i, pattern := range a.ForbiddenMatches {
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("forbidden match %d must not be empty", i+1)
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("forbidden match %d: %w", i+1, err)
+		}
 	}
 	if len(a.JSONFields) > 0 {
 		for i, field := range a.JSONFields {

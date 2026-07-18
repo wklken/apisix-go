@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -328,13 +329,27 @@ func (f *networkFixture) assert(t *testing.T, spec FixtureSpec) {
 }
 
 func matchNetworkAssertion(assertion NetworkAssertion, payload []byte) error {
+	var err error
 	if len(assertion.JSONFields) > 0 {
-		return matchNetworkJSONFields(assertion.JSONFields, payload)
+		err = matchNetworkJSONFields(assertion.JSONFields, payload)
+	} else if assertion.PayloadBase64 != nil {
+		err = assertion.PayloadBase64.match(base64.StdEncoding.EncodeToString(payload), true)
+	} else {
+		err = assertion.Payload.match(string(payload), true)
 	}
-	if assertion.PayloadBase64 != nil {
-		return assertion.PayloadBase64.match(base64.StdEncoding.EncodeToString(payload), true)
+	if err != nil {
+		return err
 	}
-	return assertion.Payload.match(string(payload), true)
+	for _, pattern := range assertion.ForbiddenMatches {
+		matched, matchErr := regexp.MatchString(pattern, string(payload))
+		if matchErr != nil {
+			return fmt.Errorf("compile forbidden network pattern %q: %w", pattern, matchErr)
+		}
+		if matched {
+			return fmt.Errorf("network payload matches forbidden pattern %q", pattern)
+		}
+	}
+	return nil
 }
 
 func matchNetworkJSONFields(fields []NetworkJSONFieldAssertion, payload []byte) error {
@@ -549,6 +564,23 @@ func TestMatchNetworkAssertionJSONFields(t *testing.T) {
 
 	if err := matchNetworkAssertion(assertion, payload); err != nil {
 		t.Fatalf("matchNetworkAssertion() error = %v", err)
+	}
+}
+
+func TestMatchNetworkAssertionRejectsForbiddenHeaderPatterns(t *testing.T) {
+	positive := `(?s)^GET /auth HTTP/1\.1\r\n.*\r\n\r\n$`
+	for _, header := range []string{"Content-Length", "Transfer-Encoding", "Content-Encoding"} {
+		t.Run(header, func(t *testing.T) {
+			assertion := NetworkAssertion{
+				Payload:          &Matcher{Matches: &positive},
+				ForbiddenMatches: []string{`(?im)^` + regexp.QuoteMeta(header) + `:`},
+			}
+			payload := []byte("GET /auth HTTP/1.1\r\nHost: example.com\r\n" + header + ": forbidden\r\n\r\n")
+			err := matchNetworkAssertion(assertion, payload)
+			if err == nil || !strings.Contains(err.Error(), "matches forbidden pattern") {
+				t.Fatalf("matchNetworkAssertion() error = %v, want forbidden %s rejection", err, header)
+			}
+		})
 	}
 }
 

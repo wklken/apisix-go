@@ -463,18 +463,21 @@ cases:
         kind: tcp
         network_expect:
           - payload: {matches: '(?s)^POST /auth-frame HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 5\r\n(?:[^\r\n]*\r\n)*\r\nhello$'}
+            forbidden_matches:
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Expect:'
         network_respond:
-          - payload: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Auth-Saw-Te: none\r\nConnection: close\r\n\r\n"
+          - payload: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             close: true
       - name: primary
         kind: http
         expect:
-          - {method: POST, path: {equals: /pingframe}, headers: {X-Auth-Saw-Te: {equals: none}}, body: {equals: hello}}
-        respond: [{status: 200, body: '{"x-auth-saw-te":"none"}'}]
+          - {method: POST, path: {equals: /pingframe}, headers: {X-Auth-Saw-Te: {absent: true}}, body: {equals: hello}}
+        respond: [{status: 200, body: hello world}]
     steps:
       - name: chunked-client-body-becomes-content-length-auth-body
         input: {method: POST, path: /pingframe, body: hello, chunked: true}
-        output: {status: 200, body: {json_equals: '{"x-auth-saw-te":"none"}'}}
+        output: {status: 200, body: {equals: hello world}}
 
   - name: request-method-framing-matrix
     source:
@@ -497,9 +500,20 @@ cases:
         kind: tcp
         network_expect:
           - payload: {matches: '(?s)^GET /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n$'}
+            forbidden_matches: &get_auth_forbidden_framing
+              - '(?im)^Content-Length:'
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Content-Encoding:'
           - payload: {matches: '(?s)^POST /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 0\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n$'}
+            forbidden_matches:
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Expect:'
           - payload: {matches: '(?s)^POST /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Content-Length: 39\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n\{"authorization": "token-headers-test"\}$'}
+            forbidden_matches:
+              - '(?im)^Transfer-Encoding:'
+              - '(?im)^Expect:'
           - payload: {matches: '(?s)^GET /auth HTTP/1\.1\r\n(?:[^\r\n]*\r\n)*Authorization: token-headers-test\r\n(?:[^\r\n]*\r\n)*\r\n$'}
+            forbidden_matches: *get_auth_forbidden_framing
         network_respond:
           - &auth_ok {payload: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", close: true}
           - *auth_ok

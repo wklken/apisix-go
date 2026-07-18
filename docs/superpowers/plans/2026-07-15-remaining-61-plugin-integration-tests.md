@@ -785,7 +785,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `ldap-auth` — each source file is represented by one successful bind; realm, bind/search mapping, TLS, schema, and authentication failure behavior remain.
 - [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
 - [x] `forward-auth` — all 28 pinned blocks across three sources map exactly once to standalone schema, header propagation/spoof resistance, allow/deny, degradation/error, `$post_arg`, CRLF/no-auth, bounded-body 413, chunked re-framing, GET/POST framing, and absent-header clearing behavior. Raw framing assertions combine required bytes with explicit forbidden-header patterns, so they cannot pass from fixture-generated claims. Package/race/corpus, full real-process, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
-- [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
+- [x] `multi-auth` — all 38 pinned blocks across two sources map exactly once to 13 real standalone groups and 38 requests covering ordered Basic/Key/JWT/HMAC alternatives, exact all-failed diagnostics, silent later success, configured token locations and hiding, invalid nested/cardinality reloads with last-good retention, JWT failures, anonymous failures, and exactly-once consumer chaining. Failed body-validating probes replay a bounded captured prefix plus unread source so later alternatives and upstream receive the full body; probe diagnostics are request-scoped and emitted only if every alternative fails. Affected auth/context package and race tests, full real-process and focused race, sensitive repeats, corpus, scoped lint, build, post-integration gates, and task review pass.
 - [x] `wolf-rbac` — all 44 owned pinned blocks (`wolf-rbac.t` 1–42 plus `security-warning2.t` 19–20) map exactly once to real standalone schema, public API, token/header, permission/retry, JSON/raw/102-field password, Vault/env, duplicate-appid consumer replacement, TLS, trusted-IP, and HTTP-warning behavior. The duplicate lifecycle retains the original same-appid consumer, appends the Echo consumer, waits boundedly for the newer credential index, then proves exactly one final permission and upstream request before Echo rewriting. Package/race, full real-process, sensitive and lifecycle repeats, confidentiality assertions, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
 - [x] `cas-auth` — all 24 CAS-owned blocks across `cas-auth.t` and `security-warning.t` map exactly once to real standalone login/validation/session/logout, multi-SP/SLO, schema, redirect/signature/callback, initiation, isolation, and warning behavior using captured cookies and exact provider requests. A real changed-resource reload preserves the old session; rejected and forged tickets cannot create/cross scopes; the process-local session store is a mutex-protected 10,000-entry one-hour expirable LRU with refresh, expiry, and eviction coverage. Package/race/corpus, full real-process, sensitive repeats, store stress, scoped lint, build, post-integration gates, and task review pass.
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 21 task-review-approved and 40 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 22 task-review-approved and 39 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 40 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 39 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,8 +875,8 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **21
-complete and 40 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **22
+complete and 39 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
 The local-credential source audit corrected two complexity assumptions before
@@ -932,14 +932,14 @@ relative-service port handling, process-local fingerprint isolation, and HTTP
 security warnings. It must capture real flow cookies rather than precompute a
 successful callback.
 
-- **Structural source-file stand-ins (29):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (28):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
   `google-cloud-logging`, `graphql-limit-count`,
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
-  `loggly`, `multi-auth`, `openid-connect`, `opentelemetry`,
+  `loggly`, `openid-connect`, `opentelemetry`,
   `rocketmq-logger`, `skywalking`,
   `sls-logger`, `syslog`, `tcp-logger`,
   and `tencent-cloud-cls`. Each maps a whole
@@ -953,9 +953,9 @@ successful callback.
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (21):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (22):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `basic-auth`, `cas-auth`, `forward-auth`, `hmac-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, `udp-logger`, and `wolf-rbac`. No other
+  `basic-auth`, `cas-auth`, `forward-auth`, `hmac-auth`, `jwe-decrypt`, `loki-logger`, `multi-auth`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, `udp-logger`, and `wolf-rbac`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -966,7 +966,7 @@ active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
 `clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, `loki-logger`,
 `skywalking-logger`, `udp-logger`, `forward-auth`, `proxy-mirror`, and
-`basic-auth`, `cas-auth`, `hmac-auth`, and `wolf-rbac` have now passed review, so **40 remain**.
+`basic-auth`, `cas-auth`, `hmac-auth`, `multi-auth`, and `wolf-rbac` have now passed review, so **39 remain**.
 `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
@@ -1009,13 +1009,13 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 23 manifests
+### Medium — 22 manifests
 
 - [ ] `datadog`
 - [x] `basic-auth`
 - [x] `hmac-auth`
 - [x] `forward-auth`
-- [ ] `multi-auth`
+- [x] `multi-auth`
 - [x] `wolf-rbac`
 - [x] `cas-auth`
 - [ ] `feishu-auth`

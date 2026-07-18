@@ -277,6 +277,12 @@ cases:
           - *userinfo_response
       - name: primary
         kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
         respond:
           - status: 200
             body: hello world
@@ -410,13 +416,30 @@ cases:
           - *userinfo_response
       - name: primary
         kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
         respond:
           - status: 200
             body: hello world
           - status: 200
             body: hello world
+      - name: readiness
+        kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /ready-v2-fallback
+          - path:
+              equals: /ready-v2-only
+        respond:
           - status: 200
-            body: hello world
+            body: v2 fallback ready
+          - status: 200
+            body: v2 only ready
     steps:
       - name: create-v1-session
         input:
@@ -440,15 +463,19 @@ cases:
                   secret_fallbacks: [secret-v1]
                   cookie_expires_in: 60
               upstream: *primary_upstream
+            - id: feishu-auth-secret-v2-fallback-ready
+              uri: /ready-v2-fallback
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.readiness.ADDR}}": 1
         config_probe:
           input:
-            path: /hello
-            headers:
-              Cookie: "{{CAPTURE.old_session}}"
+            path: /ready-v2-fallback
           output:
             status: 200
             body:
-              equals: hello world
+              equals: v2 fallback ready
         input:
           path: /hello
           headers:
@@ -469,16 +496,19 @@ cases:
                   secret: secret-v2
                   cookie_expires_in: 60
               upstream: *primary_upstream
+            - id: feishu-auth-secret-v2-only-ready
+              uri: /ready-v2-only
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.readiness.ADDR}}": 1
         config_probe:
           input:
-            path: /hello
-            headers:
-              Cookie: "{{CAPTURE.old_session}}"
+            path: /ready-v2-only
           output:
-            status: 302
-            headers:
-              Location:
-                equals: /echo
+            status: 200
+            body:
+              equals: v2 only ready
         input:
           path: /hello
           headers:
@@ -523,17 +553,18 @@ cases:
           - *userinfo_response
       - name: primary
         kind: http
+        expect_requests: 3
         expect:
           - path:
               equals: /hello?code=passed
             headers:
               X-Userinfo:
-                matches: '.+'
+                equals: eyJhdmF0YXJfYmlnIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvYmlnIiwiYXZhdGFyX21pZGRsZSI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L21pZGRsZSIsImF2YXRhcl90aHVtYiI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L3RodW1iIiwiYXZhdGFyX3VybCI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L2F2YXRhciIsImVuX25hbWUiOiJqYWNrIiwibmFtZSI6ImphY2siLCJvcGVuX2lkIjoib3VfOGZjNzBkOWVhMjcxMTE3NDlhNzFlYiIsInRlbmFudF9rZXkiOiIxMjI0ZDE4ZThkIiwidW5pb25faWQiOiJvbl9jMjQ5ZWMyOWM5ZDYifQ==
           - path:
               equals: /hello
             headers:
               X-Userinfo:
-                matches: '.+'
+                equals: eyJhdmF0YXJfYmlnIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvYmlnIiwiYXZhdGFyX21pZGRsZSI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L21pZGRsZSIsImF2YXRhcl90aHVtYiI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L3RodW1iIiwiYXZhdGFyX3VybCI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L2F2YXRhciIsImVuX25hbWUiOiJqYWNrIiwibmFtZSI6ImphY2siLCJvcGVuX2lkIjoib3VfOGZjNzBkOWVhMjcxMTE3NDlhNzFlYiIsInRlbmFudF9rZXkiOiIxMjI0ZDE4ZThkIiwidW5pb25faWQiOiJvbl9jMjQ5ZWMyOWM5ZDYifQ==
           - path:
               equals: /hello-echo
             headers:
@@ -622,13 +653,26 @@ cases:
           - *userinfo_response
       - name: primary
         kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
         respond:
           - status: 200
             body: hello world
           - status: 200
             body: hello world
+      - name: readiness
+        kind: http
+        expect_requests: 1
+        expect:
+          - path:
+              equals: /ready-encrypted-v2-fallback
+        respond:
           - status: 200
-            body: hello world
+            body: encrypted v2 fallback ready
     steps:
       - name: create-session-with-encrypted-v1-secret
         input:
@@ -658,15 +702,19 @@ cases:
                   cookie_expires_in: 60
                   redirect_uri: /echo
               upstream: *primary_upstream
+            - id: feishu-auth-encrypted-v2-fallback-ready
+              uri: /ready-encrypted-v2-fallback
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.readiness.ADDR}}": 1
         config_probe:
           input:
-            path: /hello
-            headers:
-              Cookie: "{{CAPTURE.encrypted_old_session}}"
+            path: /ready-encrypted-v2-fallback
           output:
             status: 200
             body:
-              equals: hello world
+              equals: encrypted v2 fallback ready
         input:
           path: /hello
           headers:

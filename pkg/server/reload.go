@@ -9,9 +9,12 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 )
 
-// reloadQuietInterval coalesces the contiguous DELETE/PUT route events emitted
-// for one standalone snapshot before rebuilding from the complete store state.
-const reloadQuietInterval = 50 * time.Millisecond
+const (
+	// reloadQuietInterval coalesces a short burst of etcd route events.
+	reloadQuietInterval = 50 * time.Millisecond
+	// reloadMaximumWait prevents a continuous etcd event stream from starving publication.
+	reloadMaximumWait = 500 * time.Millisecond
+)
 
 func (s *Server) SendReloadEvent() {
 	select {
@@ -24,7 +27,7 @@ func (s *Server) SendReloadEvent() {
 
 func (s *Server) listenReloadEvent(ctx context.Context) {
 	logger.Info("listen to the reload event")
-	runReloadScheduler(ctx, s.reloadEventChan, reloadQuietInterval, func() {
+	runReloadScheduler(ctx, s.reloadEventChan, reloadQuietInterval, reloadMaximumWait, func() {
 		s.reload(ctx)
 	})
 }
@@ -47,15 +50,35 @@ func runReloadScheduler(
 	ctx context.Context,
 	events <-chan struct{},
 	quietInterval time.Duration,
+	maximumWait time.Duration,
 	reload func(),
 ) {
-	var timer *time.Timer
-	var timerC <-chan time.Time
+	var quietTimer *time.Timer
+	var quietTimerC <-chan time.Time
+	var maximumTimer *time.Timer
+	var maximumTimerC <-chan time.Time
+	var maximumDeadline time.Time
 	defer func() {
-		if timer != nil {
-			stopAndDrainReloadTimer(timer)
+		if quietTimer != nil {
+			stopAndDrainReloadTimer(quietTimer)
+		}
+		if maximumTimer != nil {
+			stopAndDrainReloadTimer(maximumTimer)
 		}
 	}()
+	finishBatch := func() {
+		if quietTimer != nil {
+			stopAndDrainReloadTimer(quietTimer)
+			quietTimer = nil
+			quietTimerC = nil
+		}
+		if maximumTimer != nil {
+			stopAndDrainReloadTimer(maximumTimer)
+			maximumTimer = nil
+			maximumTimerC = nil
+		}
+		maximumDeadline = time.Time{}
+	}
 
 	for {
 		select {
@@ -65,15 +88,28 @@ func runReloadScheduler(
 			if !ok {
 				return
 			}
-			if timer == nil {
-				timer = time.NewTimer(quietInterval)
-			} else {
-				stopAndDrainReloadTimer(timer)
-				timer.Reset(quietInterval)
+			if !maximumDeadline.IsZero() && !time.Now().Before(maximumDeadline) {
+				finishBatch()
+				logger.Info("receive reload event")
+				reload()
+				continue
 			}
-			timerC = timer.C
-		case <-timerC:
-			timerC = nil
+			if quietTimer == nil {
+				quietTimer = time.NewTimer(quietInterval)
+				quietTimerC = quietTimer.C
+				maximumTimer = time.NewTimer(maximumWait)
+				maximumTimerC = maximumTimer.C
+				maximumDeadline = time.Now().Add(maximumWait)
+			} else {
+				stopAndDrainReloadTimer(quietTimer)
+				quietTimer.Reset(quietInterval)
+			}
+		case <-quietTimerC:
+			finishBatch()
+			logger.Info("receive reload event")
+			reload()
+		case <-maximumTimerC:
+			finishBatch()
 			logger.Info("receive reload event")
 			reload()
 		}

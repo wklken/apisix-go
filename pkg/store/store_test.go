@@ -33,3 +33,27 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 		t.Fatal("Sync() returned before the route event was stored")
 	}
 }
+
+func TestRouteReloadBucketSemantics(t *testing.T) {
+	tests := []struct {
+		bucket string
+		http   bool
+		stream bool
+	}{
+		{bucket: "routes", http: true},
+		{bucket: "services", http: true},
+		{bucket: "upstreams", http: true, stream: true},
+		{bucket: "stream_routes", stream: true},
+		{bucket: "plugin_metadata"},
+		{bucket: "consumers"},
+	}
+
+	for _, test := range tests {
+		if got := IsHTTPRouteReloadBucket(test.bucket); got != test.http {
+			t.Errorf("IsHTTPRouteReloadBucket(%q) = %v, want %v", test.bucket, got, test.http)
+		}
+		if got := IsStreamReloadBucket(test.bucket); got != test.stream {
+			t.Errorf("IsStreamReloadBucket(%q) = %v, want %v", test.bucket, got, test.stream)
+		}
+	}
+}

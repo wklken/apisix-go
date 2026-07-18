@@ -63,6 +63,21 @@ func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 	s.eventUpdateHooks = append(s.eventUpdateHooks, hook)
 }
 
+// IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
+func IsHTTPRouteReloadBucket(bucket string) bool {
+	switch bucket {
+	case "routes", "services", "upstreams":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsStreamReloadBucket reports whether a resource change affects stream routing.
+func IsStreamReloadBucket(bucket string) bool {
+	return bucket == "upstreams" || bucket == "stream_routes"
+}
+
 var builtInBuckets = [][]byte{
 	[]byte("routes"),
 	[]byte("services"),
@@ -212,8 +227,8 @@ func (s *Store) processEvents() {
 		}
 
 		// FIXME: what type of event should trigger the hooks?
-		if bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("services")) ||
-			bytes.Equal(bucketName, []byte("upstreams")) || bytes.Equal(bucketName, []byte("stream_routes")) {
+		bucket := string(bucketName)
+		if IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket) {
 			s.triggerEventUpdateHooks(event)
 		}
 		PutBack(event)

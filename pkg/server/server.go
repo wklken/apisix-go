@@ -199,17 +199,21 @@ func pluginConfigured(name string) bool {
 
 func (s *Server) Start() {
 	var reloadGeneration atomic.Uint64
-	s.storage.AddEventUpdateHook(
-		func(event *store.Event) {
-			reloadGeneration.Add(1)
-			s.SendReloadEvent()
-			if s.streamRuntime != nil && isStreamRouteEvent(event) {
-				if err := s.reloadStreamRoutes(); err != nil {
-					logger.Errorf("reload stream routes fail: %s", err)
+	if standaloneConfigProvider(config.GlobalConfig) == "" {
+		s.storage.AddEventUpdateHook(
+			func(event *store.Event) {
+				if isHTTPRouteEvent(event) {
+					reloadGeneration.Add(1)
+					s.SendReloadEvent()
 				}
-			}
-		},
-	)
+				if s.streamRuntime != nil && isStreamRouteEvent(event) {
+					if err := s.reloadStreamRoutes(); err != nil {
+						logger.Errorf("reload stream routes fail: %s", err)
+					}
+				}
+			},
+		)
+	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	s.registerSignalHandler(ctx, cancelFunc)
@@ -224,6 +228,11 @@ func (s *Server) Start() {
 	s.routes.Replace(initialRouteHandler(builder.Build()), builder.Stop)
 	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	s.startStreamProxy(ctx)
+	if s.standaloneWatcher != nil {
+		s.standaloneWatcher.Watch()
+		provider := standaloneConfigProvider(config.GlobalConfig)
+		logger.Infof("watch standalone config %s", config.StandaloneConfigFile(provider))
+	}
 
 	// start the reloader
 	go s.listenReloadEvent(ctx)
@@ -379,15 +388,24 @@ func streamProxyModeEnabled(cfg *config.Config) bool {
 }
 
 func isStreamRouteEvent(event *store.Event) bool {
+	bucket, ok := routeEventBucket(event)
+	return ok && store.IsStreamReloadBucket(bucket)
+}
+
+func isHTTPRouteEvent(event *store.Event) bool {
+	bucket, ok := routeEventBucket(event)
+	return ok && store.IsHTTPRouteReloadBucket(bucket)
+}
+
+func routeEventBucket(event *store.Event) (string, bool) {
 	if event == nil {
-		return false
+		return "", false
 	}
 	parts := bytes.Split(event.Key, []byte("/"))
 	if len(parts) < 2 {
-		return false
+		return "", false
 	}
-	bucket := parts[len(parts)-2]
-	return bytes.Equal(bucket, []byte("stream_routes")) || bytes.Equal(bucket, []byte("upstreams"))
+	return string(parts[len(parts)-2]), true
 }
 
 func logStreamResult(result streamruntime.Result) {
@@ -419,12 +437,45 @@ func (s *Server) startConfigProvider(ctx context.Context) {
 			panic(fmt.Errorf("load standalone config: %w", err))
 		}
 		s.storage.Sync()
-		watcher.Watch()
+		watcher.SetReloadCallback(func(result config.StandaloneReloadResult, err error) {
+			applyStandaloneSnapshot(
+				result,
+				err,
+				s.storage.Sync,
+				func() { s.reload(ctx) },
+				func() {
+					if s.streamRuntime == nil {
+						return
+					}
+					if err := s.reloadStreamRoutes(); err != nil {
+						logger.Errorf("reload stream routes fail: %s", err)
+					}
+				},
+			)
+		})
 		s.standaloneWatcher = watcher
-		logger.Infof("watch standalone config %s", path)
 		return
 	}
 	s.startEtcdWatcher(ctx)
+}
+
+func applyStandaloneSnapshot(
+	result config.StandaloneReloadResult,
+	err error,
+	syncStore func(),
+	reloadRoutes func(),
+	reloadStreams func(),
+) {
+	if err != nil {
+		return
+	}
+	syncStore()
+	if result.AffectsHTTPRoutes() {
+		reloadRoutes()
+	}
+	if result.AffectsStreams() {
+		reloadStreams()
+	}
 }
 
 func standaloneConfigProvider(cfg *config.Config) string {
@@ -483,7 +534,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 	}
 	s.etcdClient = etcdClient
 	logger.Info("fetch full data from etcd")
-	err = etcdClient.FetchAll()
+	err = fetchAndSyncInitialEtcdConfig(etcdClient.FetchAll, s.storage.Sync)
 	if err != nil {
 		panic(err)
 	}
@@ -503,6 +554,14 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 	}
 	logger.Info("watch etcd")
 	go etcdClient.Watch(ctx)
+}
+
+func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func()) error {
+	if err := fetch(); err != nil {
+		return err
+	}
+	syncStore()
+	return nil
 }
 
 func etcdTLSRequired(endpoints []string, tlsConfig config.EtcdTLS) bool {

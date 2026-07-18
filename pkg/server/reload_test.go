@@ -39,13 +39,14 @@ func TestReconcileInitialReloadEventPreservesUpdateDuringBuild(t *testing.T) {
 
 func TestReloadSchedulerCoalescesBurstAfterQuietPeriod(t *testing.T) {
 	const quiet = 20 * time.Millisecond
+	const maxWait = 200 * time.Millisecond
 	events := make(chan struct{}, 3)
 	reloads := make(chan struct{}, 2)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runReloadScheduler(ctx, events, quiet, func() { reloads <- struct{}{} })
+		runReloadScheduler(ctx, events, quiet, maxWait, func() { reloads <- struct{}{} })
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -62,6 +63,7 @@ func TestReloadSchedulerCoalescesBurstAfterQuietPeriod(t *testing.T) {
 
 func TestReloadSchedulerSchedulesEventArrivingDuringReload(t *testing.T) {
 	const quiet = 20 * time.Millisecond
+	const maxWait = 200 * time.Millisecond
 	events := make(chan struct{}, 1)
 	firstReloadStarted := make(chan struct{})
 	releaseFirstReload := make(chan struct{})
@@ -71,7 +73,7 @@ func TestReloadSchedulerSchedulesEventArrivingDuringReload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runReloadScheduler(ctx, events, quiet, func() {
+		runReloadScheduler(ctx, events, quiet, maxWait, func() {
 			if reloadCount.Add(1) == 1 {
 				close(firstReloadStarted)
 				<-releaseFirstReload
@@ -103,12 +105,13 @@ func TestReloadSchedulerSchedulesEventArrivingDuringReload(t *testing.T) {
 
 func TestReloadSchedulerCancellationStopsPendingTimer(t *testing.T) {
 	const quiet = time.Second
+	const maxWait = 2 * time.Second
 	events := make(chan struct{}, 1)
 	reloaded := make(chan struct{}, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runReloadScheduler(ctx, events, quiet, func() { reloaded <- struct{}{} })
+		runReloadScheduler(ctx, events, quiet, maxWait, func() { reloaded <- struct{}{} })
 		close(done)
 	}()
 
@@ -125,6 +128,101 @@ func TestReloadSchedulerCancellationStopsPendingTimer(t *testing.T) {
 		t.Fatal("pending reload ran after context cancellation")
 	default:
 	}
+}
+
+func TestReloadSchedulerContinuousEventsReloadAtMaximumWait(t *testing.T) {
+	const quiet = 40 * time.Millisecond
+	const maxWait = 100 * time.Millisecond
+	events := make(chan struct{}, 1)
+	reloads := make(chan time.Time, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runReloadScheduler(ctx, events, quiet, maxWait, func() { reloads <- time.Now() })
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	started := time.Now()
+	stopEvents := make(chan struct{})
+	defer close(stopEvents)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				select {
+				case events <- struct{}{}:
+				default:
+				}
+			case <-stopEvents:
+				return
+			}
+		}
+	}()
+
+	select {
+	case reloadedAt := <-reloads:
+		if elapsed := reloadedAt.Sub(started); elapsed > maxWait+75*time.Millisecond {
+			t.Fatalf("continuous events delayed reload for %s, want at most %s", elapsed, maxWait+75*time.Millisecond)
+		}
+	case <-time.After(maxWait + 150*time.Millisecond):
+		t.Fatal("continuous events starved reload past maximum wait")
+	}
+}
+
+func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
+	var calls []string
+	err := fetchAndSyncInitialEtcdConfig(
+		func() error {
+			calls = append(calls, "fetch")
+			return nil
+		},
+		func() {
+			calls = append(calls, "sync")
+		},
+	)
+	if err != nil {
+		t.Fatalf("fetchAndSyncInitialEtcdConfig() error = %v", err)
+	}
+	if got, want := calls, []string{"fetch", "sync"}; !equalStrings(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+
+	calls = nil
+	wantErr := context.Canceled
+	err = fetchAndSyncInitialEtcdConfig(
+		func() error {
+			calls = append(calls, "fetch")
+			return wantErr
+		},
+		func() {
+			calls = append(calls, "sync")
+		},
+	)
+	if err != wantErr {
+		t.Fatalf("fetchAndSyncInitialEtcdConfig() error = %v, want %v", err, wantErr)
+	}
+	if got, want := calls, []string{"fetch"}; !equalStrings(got, want) {
+		t.Fatalf("failed fetch calls = %v, want %v", got, want)
+	}
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func waitForReloadQueueDrain(t *testing.T, events <-chan struct{}) {

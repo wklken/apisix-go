@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -193,6 +194,58 @@ func TestStandaloneConfigProviderSelection(t *testing.T) {
 			}}
 			if got := standaloneConfigProvider(cfg) != ""; got != tt.want {
 				t.Fatalf("standaloneConfigProvider() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		result config.StandaloneReloadResult
+		err    error
+		want   []string
+	}{
+		{
+			name:   "route snapshot syncs before route publication",
+			result: config.StandaloneReloadResult{ChangedHTTPRouteBuckets: []string{"routes"}},
+			want:   []string{"sync", "routes"},
+		},
+		{
+			name: "stream snapshot syncs before both publications",
+			result: config.StandaloneReloadResult{
+				ChangedHTTPRouteBuckets: []string{"upstreams"},
+				ChangedStreamBuckets:    []string{"upstreams"},
+			},
+			want: []string{"sync", "routes", "streams"},
+		},
+		{
+			name:   "stream-route-only snapshot preserves HTTP handler",
+			result: config.StandaloneReloadResult{ChangedStreamBuckets: []string{"stream_routes"}},
+			want:   []string{"sync", "streams"},
+		},
+		{
+			name: "metadata-only snapshot preserves handlers",
+			want: []string{"sync"},
+		},
+		{
+			name: "failed snapshot does not publish",
+			err:  context.Canceled,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			applyStandaloneSnapshot(
+				test.result,
+				test.err,
+				func() { calls = append(calls, "sync") },
+				func() { calls = append(calls, "routes") },
+				func() { calls = append(calls, "streams") },
+			)
+			if !slices.Equal(calls, test.want) {
+				t.Fatalf("calls = %v, want %v", calls, test.want)
 			}
 		})
 	}

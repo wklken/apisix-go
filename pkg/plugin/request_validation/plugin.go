@@ -302,7 +302,7 @@ func normalizeAPISIXSchema(schema map[string]any) map[string]any {
 			normalized[keyword] = items
 		}
 	}
-	for _, keyword := range []string{"$defs", "definitions", "dependentSchemas", "patternProperties", "properties"} {
+	for _, keyword := range []string{"$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties", "properties"} {
 		if values, ok := normalized[keyword].(map[string]any); ok {
 			items := make(map[string]any, len(values))
 			for name, value := range values {
@@ -317,6 +317,13 @@ func normalizeAPISIXSchema(schema map[string]any) map[string]any {
 func normalizeAPISIXSubschema(value any) any {
 	if schema, ok := value.(map[string]any); ok {
 		return normalizeAPISIXSchema(schema)
+	}
+	if schemas, ok := value.([]any); ok {
+		normalized := make([]any, len(schemas))
+		for index, schema := range schemas {
+			normalized[index] = normalizeAPISIXSubschema(schema)
+		}
+		return normalized
 	}
 	return value
 }

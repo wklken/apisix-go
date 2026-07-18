@@ -128,6 +128,35 @@ func TestNormalizeAPISIXSchemaDoesNotRewriteLiteralValues(t *testing.T) {
 	}
 }
 
+func TestNormalizeAPISIXSchemaHandlesLegacyNestedSchemaLocations(t *testing.T) {
+	schema := map[string]any{
+		"items": []any{
+			map[string]any{"type": "table"},
+			map[string]any{"type": "function"},
+		},
+		"dependencies": map[string]any{
+			"schema": map[string]any{"type": "table"},
+			"names":  []any{"first", "second"},
+		},
+	}
+
+	normalized := normalizeAPISIXSchema(schema)
+	items := normalized["items"].([]any)
+	if got := items[0].(map[string]any)["type"]; !reflect.DeepEqual(got, []any{"object", "array"}) {
+		t.Fatalf("tuple table type = %#v, want object-or-array union", got)
+	}
+	if got := items[1].(map[string]any)["not"]; !reflect.DeepEqual(got, map[string]any{}) {
+		t.Fatalf("tuple function rejection = %#v, want empty not schema", got)
+	}
+	dependencies := normalized["dependencies"].(map[string]any)
+	if got := dependencies["schema"].(map[string]any)["type"]; !reflect.DeepEqual(got, []any{"object", "array"}) {
+		t.Fatalf("dependency table type = %#v, want object-or-array union", got)
+	}
+	if got := dependencies["names"]; !reflect.DeepEqual(got, []any{"first", "second"}) {
+		t.Fatalf("property dependency = %#v, want literal property names", got)
+	}
+}
+
 func TestHandlerAcceptsValidHeaders(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		HeaderSchema: map[string]any{

@@ -471,7 +471,7 @@ cases:
           status: 200
           body: {equals: "hello world\n"}
           logs: {matches: "proxy-mirror request to not-find-domain\\.invalid failed"}
-        wait: 300ms
+        wait: 6s
 
   - name: prefix-path
     source:

@@ -639,3 +639,49 @@ func TestBuilderRejectsSnapshotContainingUndecodableRoute(t *testing.T) {
 		t.Fatal("Build() returned a partial handler, want nil for an undecodable route snapshot")
 	}
 }
+
+func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
+	ensureRouteStore(t)
+
+	put := func(bucket string, id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		event.Value = value
+		routeStoreEvents <- event
+	}
+	remove := func(bucket string, id string) {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		routeStoreEvents <- event
+	}
+
+	put("routes", "strict-global-route", []byte(`{"id":"strict-global-route","uri":"/strict-global"}`))
+	put("global_rules", "strict-valid-global", []byte(`{"id":"strict-valid-global","plugins":{}}`))
+	put("global_rules", "strict-invalid-global", []byte(`{"id":"strict-invalid-global","plugins":[]}`))
+	routeStore.Sync()
+	t.Cleanup(func() {
+		remove("routes", "strict-global-route")
+		remove("global_rules", "strict-valid-global")
+		remove("global_rules", "strict-invalid-global")
+		routeStore.Sync()
+	})
+
+	rules, err := store.ListGlobalRules()
+	if err == nil {
+		t.Fatal("ListGlobalRules() error = nil, want malformed global-rule error")
+	}
+	if rules != nil {
+		t.Fatalf("ListGlobalRules() rules = %#v, want no partial snapshot", rules)
+	}
+	if !strings.Contains(err.Error(), "strict-invalid-global") {
+		t.Fatalf("ListGlobalRules() error = %q, want global-rule ID", err)
+	}
+
+	builder := NewBuilder(nil)
+	defer builder.Stop()
+	if handler := builder.Build(); handler != nil {
+		t.Fatal("Build() returned a partial handler, want nil for an undecodable global-rule snapshot")
+	}
+}

@@ -246,26 +246,33 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 	}
 }
 
-func TestReloadRetainsExistingHandlerForUndecodableRouteSnapshot(t *testing.T) {
+func TestReloadRetainsExistingHandlerForUndecodableSnapshot(t *testing.T) {
 	events := make(chan *store.Event)
 	storage := store.NewStore(t.TempDir()+"/reload.db", events)
 	storage.Start()
 	t.Cleanup(storage.Stop)
 
-	put := func(id string, value []byte) {
+	put := func(bucket string, id string, value []byte) {
 		event := store.NewEvent()
 		event.Type = store.EventTypePut
-		event.Key = []byte("/apisix/routes/" + id)
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
 		event.Value = value
 		events <- event
 	}
-	put("valid-route", []byte(`{"id":"valid-route","uri":"/valid"}`))
-	put("invalid-route", []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`))
+	remove := func(bucket string, id string) {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		events <- event
+	}
+	put("routes", "valid-route", []byte(`{"id":"valid-route","uri":"/valid"}`))
+	put("routes", "invalid-route", []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`))
 	storage.Sync()
 
 	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Handler", "last-good")
-		w.WriteHeader(299)
+		w.Header().Set("X-Global-Security", "enforced")
+		w.WriteHeader(http.StatusUnauthorized)
 	})
 	server := &Server{
 		addr:    "127.0.0.1:9080",
@@ -276,11 +283,26 @@ func TestReloadRetainsExistingHandlerForUndecodableRouteSnapshot(t *testing.T) {
 	server.reload(context.Background())
 	response := httptest.NewRecorder()
 	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
-	if got, want := response.Code, 299; got != want {
+	if got, want := response.Code, http.StatusUnauthorized; got != want {
 		t.Fatalf("status after invalid reload = %d, want retained handler status %d", got, want)
 	}
 	if got, want := response.Header().Get("X-Handler"), "last-good"; got != want {
 		t.Fatalf("handler marker after invalid reload = %q, want %q", got, want)
+	}
+
+	remove("routes", "invalid-route")
+	put("global_rules", "valid-global", []byte(`{"id":"valid-global","plugins":{}}`))
+	put("global_rules", "invalid-global", []byte(`{"id":"invalid-global","plugins":[]}`))
+	storage.Sync()
+
+	server.reload(context.Background())
+	response = httptest.NewRecorder()
+	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
+	if got, want := response.Code, http.StatusUnauthorized; got != want {
+		t.Fatalf("status after invalid global-rule reload = %d, want retained handler status %d", got, want)
+	}
+	if got, want := response.Header().Get("X-Global-Security"), "enforced"; got != want {
+		t.Fatalf("global security marker after invalid reload = %q, want %q", got, want)
 	}
 }
 

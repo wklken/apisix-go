@@ -167,11 +167,21 @@ func ListGlobalRules() ([]resource.GlobalRule, error) {
 	for _, d := range data {
 		r, err := ParseGlobalRule(d)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse global rule %q: %w", globalRuleIDForDecodeError(d), err)
 		}
 		rules = append(rules, r)
 	}
 	return rules, nil
+}
+
+func globalRuleIDForDecodeError(config []byte) string {
+	var identity struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
+		return identity.ID
+	}
+	return "unknown"
 }
 
 func ParseRoute(config []byte) (resource.Route, error) {

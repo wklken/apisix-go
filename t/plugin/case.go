@@ -113,6 +113,7 @@ type ScenarioFile struct {
 type FixtureSpec struct {
 	Name           string             `yaml:"name"`
 	Kind           string             `yaml:"kind"`
+	ExpectRequests *int               `yaml:"expect_requests,omitempty"`
 	Expect         []HTTPAssertion    `yaml:"expect,omitempty"`
 	Respond        []HTTPResponse     `yaml:"respond,omitempty"`
 	NetworkExpect  []NetworkAssertion `yaml:"network_expect,omitempty"`
@@ -834,6 +835,9 @@ func (f *FixtureSpec) validate() error {
 		if len(f.Respond) == 0 {
 			return errors.New("at least one response is required")
 		}
+		if f.ExpectRequests != nil && *f.ExpectRequests != len(f.Expect) {
+			return fmt.Errorf("expect_requests must equal the %d configured expectations", len(f.Expect))
+		}
 		for i := range f.Respond {
 			if err := f.Respond[i].validate(); err != nil {
 				return fmt.Errorf("response %d: %w", i+1, err)
@@ -845,6 +849,9 @@ func (f *FixtureSpec) validate() error {
 			}
 		}
 		return nil
+	}
+	if f.ExpectRequests != nil {
+		return fmt.Errorf("%s fixture must not configure expect_requests", f.Kind)
 	}
 	if len(f.Expect) > 0 || len(f.Respond) > 0 {
 		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)

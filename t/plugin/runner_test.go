@@ -1366,6 +1366,18 @@ func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
 		default:
 		}
 	}
+	if spec.ExpectRequests != nil && len(spec.Expect) == 0 {
+		select {
+		case extra := <-f.requests:
+			t.Errorf(
+				"fixture %s received unexpected request %s %s, want zero requests",
+				spec.Name,
+				extra.method,
+				extra.path,
+			)
+		default:
+		}
+	}
 }
 
 func (f *fixtureServer) host() string {

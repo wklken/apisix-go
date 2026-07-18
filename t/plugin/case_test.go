@@ -1,6 +1,7 @@
 package pluginintegration
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,45 @@ func TestManifestAcceptsTCPFixture(t *testing.T) {
 
 	if err := manifest.validate(); err != nil {
 		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestAcceptsExplicitZeroHTTPFixtureRequests(t *testing.T) {
+	zero := 0
+	manifest := validManifest()
+	manifest.Cases[0].Config = map[string]any{"routes": []any{}}
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name:           "auth",
+		Kind:           "http",
+		ExpectRequests: &zero,
+		Respond:        []HTTPResponse{{Status: http.StatusOK}},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "reject-before-auth",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: http.StatusRequestEntityTooLarge},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsHTTPFixtureRequestCountMismatch(t *testing.T) {
+	zero := 0
+	fixture := FixtureSpec{
+		Name:           "auth",
+		Kind:           "http",
+		ExpectRequests: &zero,
+		Expect:         []HTTPAssertion{{Method: http.MethodGet}},
+		Respond:        []HTTPResponse{{Status: http.StatusOK}},
+	}
+
+	err := fixture.validate()
+	if err == nil || !strings.Contains(err.Error(), "expect_requests must equal") {
+		t.Fatalf("validate() error = %v, want request-count mismatch rejection", err)
 	}
 }
 

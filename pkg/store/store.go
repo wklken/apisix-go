@@ -28,9 +28,13 @@ type Store struct {
 	consumerKV map[string][]byte
 	// store consumer_id -> keys, like foo->[key-auth:123456], for update and delete
 	consumerToKeys map[string][]string
-	// store validated consumers with environment and managed secret references resolved
+	// store validated consumers with environment and managed secret references unresolved
 	consumerValues map[string]resource.Consumer
-	consumerMu     sync.RWMutex
+	// store plugin name -> consumer IDs whose lookup key is a secret reference
+	consumerReferenceKV map[string]map[string][]byte
+	// store consumer ID -> plugin names registered in consumerReferenceKV
+	consumerToReferences map[string][]string
+	consumerMu           sync.RWMutex
 }
 
 // should it be global store?
@@ -52,9 +56,11 @@ func NewStore(dbPath string, events chan *Event) *Store {
 			// Initialize other fields for kv storage in memory
 			db: db,
 
-			consumerKV:     map[string][]byte{},
-			consumerToKeys: map[string][]string{},
-			consumerValues: map[string]resource.Consumer{},
+			consumerKV:           map[string][]byte{},
+			consumerToKeys:       map[string][]string{},
+			consumerValues:       map[string]resource.Consumer{},
+			consumerReferenceKV:  map[string]map[string][]byte{},
+			consumerToReferences: map[string][]string{},
 		}
 
 		s.InitBuckets()
@@ -194,26 +200,34 @@ func (s *Store) processEvents() {
 		bucketName, id := getTypeAndIDFromKey(event.Key)
 		switch event.Type {
 		case EventTypePut:
-			_ = s.db.Update(func(tx *bolt.Tx) error {
+			var snapshot consumerSnapshot
+			isConsumer := bytes.Equal(bucketName, []byte("consumers"))
+			if isConsumer {
+				var err error
+				snapshot, err = s.prepareConsumerSnapshot(id, event.Value)
+				if err != nil {
+					logger.Errorf("store process the consumer fail, err=%s", err)
+					PutBack(event)
+					continue
+				}
+			}
+
+			err := s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
 					return errBucketNotFound
 				}
-
-				if bytes.Equal(bucketName, []byte("consumers")) {
-					if err := s.consumerKVAdd(id, event.Value); err != nil {
-						logger.Errorf("store process the consumer fail, err=%s", err)
-						return nil
-					}
-				}
-
 				if err := b.Put(id, event.Value); err != nil {
 					return fmt.Errorf("put key-value fail: %s", err)
 				}
 				return nil
 			})
+			if err == nil && isConsumer {
+				s.applyConsumerSnapshot(snapshot)
+			}
 		case EventTypeDelete:
-			_ = s.db.Update(func(tx *bolt.Tx) error {
+			isConsumer := bytes.Equal(bucketName, []byte("consumers"))
+			err := s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
 					return errBucketNotFound
@@ -224,14 +238,13 @@ func (s *Store) processEvents() {
 					return fmt.Errorf("delete key-value fail: %s", err)
 				}
 
-				if bytes.Equal(bucketName, []byte("consumers")) {
-					if err := s.consumerKVDelete(id); err != nil {
-						logger.Errorf("store process the consumer fail, err=%s", err)
-					}
-				}
-
 				return nil
 			})
+			if err == nil && isConsumer {
+				if err := s.consumerKVDelete(id); err != nil {
+					logger.Errorf("store process the consumer fail, err=%s", err)
+				}
+			}
 		}
 
 		// FIXME: what type of event should trigger the hooks?

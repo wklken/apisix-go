@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 var (
 	testStoreOnce sync.Once
+	testStore     *store.Store
 	testEvents    chan *store.Event
 )
 
@@ -24,8 +26,8 @@ func setupStore(t *testing.T) {
 
 	testStoreOnce.Do(func() {
 		testEvents = make(chan *store.Event, 16)
-		s := store.NewStore(t.TempDir()+"/basic-auth.db", testEvents)
-		s.Start()
+		testStore = store.NewStore(t.TempDir()+"/basic-auth.db", testEvents)
+		testStore.Start()
 	})
 }
 
@@ -95,6 +97,79 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerFailsClosedThenRetriesLateEnvironmentPassword(t *testing.T) {
+	const environmentName = "BASIC_AUTH_PLUGIN_LATE_PASSWORD"
+	previous, existed := os.LookupEnv(environmentName)
+	if err := os.Unsetenv(environmentName); err != nil {
+		t.Fatalf("Unsetenv() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(environmentName, previous)
+		} else {
+			_ = os.Unsetenv(environmentName)
+		}
+	})
+
+	setupStore(t)
+	consumer := map[string]any{
+		"username": "basic-late-env-user",
+		"plugins": map[string]any{
+			"basic-auth": map[string]any{
+				"username": "basic-late-env-user",
+				"password": "$ENV://" + environmentName,
+			},
+		},
+	}
+	body, err := json.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/basic-late-env-user")
+	event.Value = body
+	testEvents <- event
+	testStore.Sync()
+	if _, err := testStore.GetConsumerNameByPluginKey(name, "basic-late-env-user"); err != nil {
+		t.Fatalf("raw consumer index was not installed: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request = ctx.WithApisixVars(request, map[string]string{})
+	request.Header.Set("Authorization", basicHeader("basic-late-env-user", "bar"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response before provisioning = %d, want 401", response.Code)
+	}
+
+	if err := os.Setenv(environmentName, "bar"); err != nil {
+		t.Fatalf("Setenv() error = %v", err)
+	}
+	resolved, err := store.GetConsumerByPluginKey(name, "basic-late-env-user")
+	if err != nil {
+		t.Fatalf("lookup after provisioning error = %v", err)
+	}
+	config := resolved.Plugins[name].(map[string]any)
+	if got := config["password"]; got != "bar" {
+		t.Fatalf("resolved password = %#v, want bar", got)
+	}
+	request = httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request = ctx.WithApisixVars(request, map[string]string{})
+	request.Header.Set("Authorization", basicHeader("basic-late-env-user", "bar"))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response after provisioning = %d, want 204; body=%s", response.Code, response.Body.String())
 	}
 }
 

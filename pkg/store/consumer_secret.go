@@ -28,41 +28,72 @@ type vaultSecretConfig struct {
 	Timeout   int    `json:"timeout,omitempty"`
 }
 
-func (s *Store) resolveConsumerSecrets(consumer *resource.Consumer) error {
-	for pluginName, config := range consumer.Plugins {
-		resolved, err := s.resolveConsumerSecretValue(config)
-		if err != nil {
-			return fmt.Errorf("resolve %s consumer secrets: %w", pluginName, err)
-		}
-		consumer.Plugins[pluginName] = resolved
-	}
-	return nil
-}
-
 func (s *Store) resolveConsumerSecretValue(value any) (any, error) {
 	switch typed := value.(type) {
 	case string:
 		return s.resolveConsumerSecretString(typed)
 	case map[string]any:
+		resolvedMap := make(map[string]any, len(typed))
 		for key, item := range typed {
 			resolved, err := s.resolveConsumerSecretValue(item)
 			if err != nil {
 				return nil, err
 			}
-			typed[key] = resolved
+			resolvedMap[key] = resolved
 		}
-		return typed, nil
+		return resolvedMap, nil
 	case []any:
+		resolvedItems := make([]any, len(typed))
 		for index, item := range typed {
 			resolved, err := s.resolveConsumerSecretValue(item)
 			if err != nil {
 				return nil, err
 			}
-			typed[index] = resolved
+			resolvedItems[index] = resolved
 		}
-		return typed, nil
+		return resolvedItems, nil
 	default:
 		return value, nil
+	}
+}
+
+func (s *Store) resolveConsumerPlugin(consumer resource.Consumer, pluginName string) (resource.Consumer, error) {
+	config, ok := consumer.Plugins[pluginName]
+	if !ok {
+		return resource.Consumer{}, fmt.Errorf("consumer plugin %q not found", pluginName)
+	}
+	resolved, err := s.resolveConsumerSecretValue(config)
+	if err != nil {
+		return resource.Consumer{}, err
+	}
+	plugins := make(map[string]resource.PluginConfig, len(consumer.Plugins))
+	for name, pluginConfig := range consumer.Plugins {
+		plugins[name] = cloneConsumerValue(pluginConfig)
+	}
+	plugins[pluginName] = resolved
+	consumer.Plugins = plugins
+	if consumer.Labels != nil {
+		consumer.Labels = cloneConsumerValue(consumer.Labels).(map[string]any)
+	}
+	return consumer, nil
+}
+
+func cloneConsumerValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cloned := make(map[string]any, len(typed))
+		for key, item := range typed {
+			cloned[key] = cloneConsumerValue(item)
+		}
+		return cloned
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, item := range typed {
+			cloned[index] = cloneConsumerValue(item)
+		}
+		return cloned
+	default:
+		return value
 	}
 }
 
@@ -85,7 +116,7 @@ func resolveEnvironmentSecret(reference string) (string, error) {
 	}
 	value, ok := os.LookupEnv(name)
 	if !ok {
-		return reference, nil
+		return "", fmt.Errorf("environment secret %q is not set", name)
 	}
 	if len(pathParts) == 1 {
 		return value, nil
@@ -98,16 +129,16 @@ func resolveEnvironmentSecret(reference string) (string, error) {
 	for _, key := range pathParts[1:] {
 		object, ok := current.(map[string]any)
 		if !ok {
-			return reference, nil
+			return "", fmt.Errorf("environment secret %q path is not an object", name)
 		}
 		current, ok = object[key]
 		if !ok {
-			return reference, nil
+			return "", fmt.Errorf("environment secret %q path %q is not set", name, key)
 		}
 	}
 	resolved, ok := current.(string)
 	if !ok {
-		return reference, nil
+		return "", fmt.Errorf("environment secret %q resolved value is not a string", name)
 	}
 	return resolved, nil
 }
@@ -199,9 +230,6 @@ func resolveEnvironmentSecretReference(value string) (string, error) {
 	resolved, err := resolveEnvironmentSecret(value)
 	if err != nil {
 		return "", err
-	}
-	if resolved == value {
-		return "", fmt.Errorf("environment secret %q is not set", value)
 	}
 	return resolved, nil
 }

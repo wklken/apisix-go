@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -298,10 +299,64 @@ func ParseProto(config []byte) (resource.Proto, error) {
 }
 
 func GetConsumerByPluginKey(pluginName string, key string) (resource.Consumer, error) {
-	id, err := s.GetConsumerNameByPluginKey(pluginName, key)
+	return s.getConsumerByPluginKey(pluginName, key)
+}
+
+func (s *Store) getConsumerByPluginKey(pluginName, key string) (resource.Consumer, error) {
+	directKey := fmt.Sprintf("%s:%s", pluginName, key)
+	s.consumerMu.RLock()
+	directID := append([]byte(nil), s.consumerKV[directKey]...)
+	candidateIDs := make([]string, 0, len(s.consumerReferenceKV[pluginName]))
+	for id := range s.consumerReferenceKV[pluginName] {
+		candidateIDs = append(candidateIDs, id)
+	}
+	s.consumerMu.RUnlock()
+
+	if len(directID) > 0 {
+		consumer, err := s.resolveConsumerForPluginKey(string(directID), pluginName, key)
+		if err != nil {
+			return resource.Consumer{}, consumerCredentialLookupError(pluginName, err)
+		}
+		return consumer, nil
+	}
+
+	sort.Strings(candidateIDs)
+	var resolveErr error
+	for _, id := range candidateIDs {
+		consumer, err := s.resolveConsumerForPluginKey(id, pluginName, key)
+		if err != nil {
+			resolveErr = err
+			continue
+		}
+		return consumer, nil
+	}
+	if resolveErr != nil {
+		return resource.Consumer{}, consumerCredentialLookupError(pluginName, resolveErr)
+	}
+	return resource.Consumer{}, ErrNotFound
+}
+
+func (s *Store) resolveConsumerForPluginKey(id, pluginName, key string) (resource.Consumer, error) {
+	s.consumerMu.RLock()
+	raw, ok := s.consumerValues[id]
+	s.consumerMu.RUnlock()
+	if !ok {
+		return resource.Consumer{}, ErrNotFound
+	}
+	resolved, err := s.resolveConsumerPlugin(raw, pluginName)
 	if err != nil {
 		return resource.Consumer{}, err
 	}
+	resolvedKey, err := consumerPluginLookupKey(pluginName, resolved.Plugins[pluginName])
+	if err != nil {
+		return resource.Consumer{}, err
+	}
+	if resolvedKey != key {
+		return resource.Consumer{}, ErrNotFound
+	}
+	return resolved, nil
+}
 
-	return GetConsumer(util.BytesToString(id))
+func consumerCredentialLookupError(pluginName string, err error) error {
+	return fmt.Errorf("%w: resolve %s consumer credentials: %v", ErrNotFound, pluginName, err)
 }

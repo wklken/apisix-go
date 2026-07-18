@@ -29,11 +29,10 @@ type Plugin struct {
 }
 
 const (
-	priority         = 414
-	name             = "loki-logger"
-	lokiLogTimeField = "loki_log_time"
-	lokiLabelsField  = "loki_labels"
-	serverVersion    = "apisix-go"
+	priority               = 414
+	name                   = "loki-logger"
+	lokiEntryEnvelopeField = "loki_entry_envelope"
+	serverVersion          = "apisix-go"
 )
 
 var randomEndpointIndex = rand.Intn
@@ -223,6 +222,12 @@ type lokiStream struct {
 	Values [][2]string       `json:"values"`
 }
 
+type lokiEntryEnvelope struct {
+	Fields    map[string]any
+	Timestamp string
+	Labels    map[string]string
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -321,7 +326,6 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		requestStart := time.Now()
-		labels := p.resolveRequestLabels(r)
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
@@ -347,10 +351,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
-		logFields[lokiLogTimeField] = strconv.FormatInt(requestStart.UnixNano(), 10)
-		logFields[lokiLabelsField] = labels
+		labels := p.resolveRequestLabels(r, status)
 
-		_ = p.Fire(logFields)
+		_ = p.Fire(wrapLokiEntry(logFields, requestStart, labels))
 	}
 	return http.HandlerFunc(fn)
 }
@@ -484,11 +487,11 @@ func (p *Plugin) resolveLogFormatValue(r *http.Request, value string) any {
 	return apisixlog.GetField(r, value)
 }
 
-func (p *Plugin) resolveRequestLabels(r *http.Request) map[string]string {
+func (p *Plugin) resolveRequestLabels(r *http.Request, status int) map[string]string {
 	labels := make(map[string]string, len(p.config.LogLabels))
 	for key, value := range p.config.LogLabels {
 		if strings.HasPrefix(value, "$") {
-			labels[key] = base.RequestVar(r, value, 0)
+			labels[key] = base.RequestVar(r, value, status)
 			continue
 		}
 		labels[key] = value
@@ -537,24 +540,20 @@ func (p *Plugin) buildPayload(log map[string]any) lokiPayload {
 func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
 	streams := make([]lokiStream, 0, len(entries))
 	streamIndex := make(map[string]int, len(entries))
-	for _, logEntry := range entries {
+	for _, queuedEntry := range entries {
+		logEntry := queuedEntry
 		logTime := fmt.Sprintf("%d", time.Now().UnixNano())
-		if value, ok := logEntry[lokiLogTimeField]; ok {
-			logTime = fmt.Sprint(value)
+		var labels map[string]string
+		if envelope, ok := unwrapLokiEntry(queuedEntry); ok {
+			logEntry = envelope.Fields
+			logTime = envelope.Timestamp
+			labels = envelope.Labels
 		}
 
-		entry := make(map[string]any, len(logEntry)-2)
-		for key, value := range logEntry {
-			if key != lokiLogTimeField && key != lokiLabelsField {
-				entry[key] = value
-			}
-		}
-
-		body, err := json.Marshal(entry)
+		body, err := json.Marshal(logEntry)
 		if err != nil {
 			body = []byte(`{}`)
 		}
-		labels := privateLabels(logEntry)
 		if labels == nil {
 			labels = p.resolveLabels(logEntry)
 		}
@@ -573,12 +572,19 @@ func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
 	return lokiPayload{Streams: streams}
 }
 
-func privateLabels(entry map[string]any) map[string]string {
-	labels, ok := entry[lokiLabelsField].(map[string]string)
-	if !ok {
-		return nil
+func wrapLokiEntry(fields map[string]any, requestStart time.Time, labels map[string]string) map[string]any {
+	return map[string]any{
+		lokiEntryEnvelopeField: lokiEntryEnvelope{
+			Fields:    fields,
+			Timestamp: strconv.FormatInt(requestStart.UnixNano(), 10),
+			Labels:    labels,
+		},
 	}
-	return labels
+}
+
+func unwrapLokiEntry(entry map[string]any) (lokiEntryEnvelope, bool) {
+	envelope, ok := entry[lokiEntryEnvelopeField].(lokiEntryEnvelope)
+	return envelope, ok
 }
 
 func (p *Plugin) resolveLabels(log map[string]any) map[string]string {

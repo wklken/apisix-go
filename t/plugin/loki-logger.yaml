@@ -194,7 +194,7 @@ cases:
     steps:
       - {name: logger-delivery-does-not-change-upstream-response, input: {path: /custom-endpoint}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
   - name: per-request-label-isolation
-    source: {file: t/plugin/loki-logger.t, tests: [17, 18]}
+    source: {file: t/plugin/loki-logger.t, tests: [17]}
     config:
       routes:
         - id: loki-label-isolation
@@ -236,6 +236,43 @@ cases:
       - {name: alpha-entry, input: {path: /label-isolation, headers: {X-Service-Name: svc-alpha}}, output: {status: 200, body: {equals: hello world}}}
       - {name: beta-entry-in-same-process, input: {path: /label-isolation, headers: {X-Service-Name: svc-beta}}, output: {status: 200, body: {equals: hello world}}}
       - {name: empty-header-does-not-inherit-label, input: {path: /label-isolation}, output: {status: 200, body: {equals: hello world}}, wait: 2s}
+  - name: post-upstream-label-resolution
+    source: {file: t/plugin/loki-logger.t, tests: [18]}
+    config:
+      routes:
+        - id: loki-post-upstream-labels
+          uri: /post-upstream-labels
+          plugins:
+            loki-logger:
+              endpoint_addrs: ['{{FIXTURE.sink.URL}}']
+              log_labels: {status: '$status', upstream: '$balancer_ip'}
+              batch_max_size: 1
+              inactive_timeout: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /post-upstream-labels}}]
+        respond: [{status: 201, body: created}]
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            loki_push:
+              streams:
+                - stream: {status: '201', upstream: 127.0.0.1}
+                  values:
+                    - entry:
+                        request: {method: GET, uri: /post-upstream-labels}
+                        response: {status: 201}
+                        route_id: loki-post-upstream-labels
+        respond: [{status: 204}]
+    steps:
+      - name: final-status-and-upstream-are-labelled
+        input: {path: /post-upstream-labels}
+        output: {status: 201, body: {equals: created}}
+        wait: 1s
   - name: metadata-enriches-default-log
     source: {file: t/plugin/loki-logger.t, tests: [19, 20, 21]}
     config:

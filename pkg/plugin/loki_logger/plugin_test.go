@@ -267,6 +267,47 @@ func TestHandlerResolvesLabelsOutsideCustomLogFormat(t *testing.T) {
 	}
 }
 
+func TestHandlerResolvesLabelsAfterDownstream(t *testing.T) {
+	body := captureHandlerPayload(t, Config{
+		LogFormat: map[string]string{"message": "fixed"},
+		LogLabels: map[string]string{
+			"status":   "$status",
+			"upstream": "$balancer_ip",
+		},
+	}, func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$balancer_ip", "192.0.2.40")
+		w.WriteHeader(http.StatusCreated)
+	}, nil)
+
+	stream := extractLokiStream(t, body, 0)
+	labels := streamLabels(t, stream)
+	if got := labels["status"]; got != "201" {
+		t.Fatalf("stream status = %q, want 201 from completed downstream response", got)
+	}
+	if got := labels["upstream"]; got != "192.0.2.40" {
+		t.Fatalf("stream upstream = %q, want downstream-selected upstream", got)
+	}
+}
+
+func TestHandlerPreservesReservedLookingCustomLogFields(t *testing.T) {
+	body := captureHandlerPayload(t, Config{
+		LogFormat: map[string]string{
+			"loki_log_time": "visible-time",
+			"loki_labels":   "visible-labels",
+		},
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}, nil)
+
+	entry := extractLokiEntry(t, body)
+	if got := entry["loki_log_time"]; got != "visible-time" {
+		t.Fatalf("loki_log_time = %#v, want user-visible log_format value", got)
+	}
+	if got := entry["loki_labels"]; got != "visible-labels" {
+		t.Fatalf("loki_labels = %#v, want user-visible log_format value", got)
+	}
+}
+
 func TestLogFormatExtraDoesNotClobberRichDefaults(t *testing.T) {
 	body := captureHandlerPayloadWithPlugin(t, Config{}, func(p *Plugin) {
 		p.logFormatExtra = map[string]string{
@@ -316,15 +357,17 @@ func TestHandlerCapturesRequestStartTimestampBeforeDownstream(t *testing.T) {
 	}
 }
 
-func TestBuildBatchPayloadPreservesPrivateFieldsAcrossBuilds(t *testing.T) {
+func TestBuildBatchPayloadPreservesEnvelopeAcrossBuilds(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EndpointAddrs: []string{"http://127.0.0.1:3100"},
 		LogLabels:     map[string]string{"service": "$http_x_service_name"},
 	})
 	entry := map[string]any{
-		"message":       "fixed",
-		"loki_log_time": "123456789",
-		"loki_labels":   map[string]string{"service": "svc-alpha"},
+		lokiEntryEnvelopeField: lokiEntryEnvelope{
+			Fields:    map[string]any{"message": "fixed"},
+			Timestamp: "123456789",
+			Labels:    map[string]string{"service": "svc-alpha"},
+		},
 	}
 
 	first := p.buildPayload(entry)
@@ -344,8 +387,9 @@ func TestBuildBatchPayloadPreservesPrivateFieldsAcrossBuilds(t *testing.T) {
 			t.Fatalf("payload %d line = %#v, want no private fields", index+1, line)
 		}
 	}
-	if entry["loki_log_time"] != "123456789" || entry["loki_labels"] == nil {
-		t.Fatalf("private fields were mutated across builds: %#v", entry)
+	envelope, ok := unwrapLokiEntry(entry)
+	if !ok || envelope.Timestamp != "123456789" || envelope.Labels["service"] != "svc-alpha" {
+		t.Fatalf("internal envelope was mutated across builds: %#v", entry)
 	}
 }
 

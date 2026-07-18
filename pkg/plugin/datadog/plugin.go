@@ -29,8 +29,9 @@ type Plugin struct {
 }
 
 const (
-	priority = 495
-	name     = "datadog"
+	priority        = 495
+	name            = "datadog"
+	maxDatagramSize = 8192
 )
 
 const schema = `
@@ -54,7 +55,8 @@ const schema = `
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 200
+        "maxLength": 200,
+        "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
       },
       "default": []
     },
@@ -94,6 +96,33 @@ const schema = `
       "type": "integer",
       "minimum": 1,
       "default": 5
+    }
+  }
+}
+`
+
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "host": {
+      "type": "string"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "constant_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
+      }
     }
   }
 }
@@ -187,6 +216,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	return nil
 }
 
@@ -280,7 +310,16 @@ func (p *Plugin) send(entry metricEntry) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	for _, line := range p.metricLines(entry) {
+	lines := p.metricLines(entry)
+	payload := strings.Join(lines, "\n")
+	if len(payload) <= maxDatagramSize {
+		if _, err := conn.Write([]byte(payload)); err != nil {
+			return fmt.Errorf("send DogStatsD metrics: %w", err)
+		}
+		return nil
+	}
+
+	for _, line := range lines {
 		if _, err := conn.Write([]byte(line)); err != nil {
 			return fmt.Errorf("send DogStatsD metric %q: %w", line, err)
 		}
@@ -332,14 +371,14 @@ func (p *Plugin) generateTags(entry metricEntry) []string {
 	tags := make([]string, 0, len(p.metadata.ConstantTags)+len(p.config.ConstantTags)+6)
 	tags = append(tags, p.metadata.ConstantTags...)
 	tags = append(tags, p.config.ConstantTags...)
+	if route := resourceTag(entry.RouteID, entry.RouteName, p.config.PreferName); route != "" {
+		tags = append(tags, "route_name:"+route)
+	}
 	if p.config.IncludePath && entry.Path != "" {
 		tags = append(tags, "path:"+entry.Path)
 	}
 	if p.config.IncludeMethod && entry.Method != "" {
 		tags = append(tags, "method:"+entry.Method)
-	}
-	if route := resourceTag(entry.RouteID, entry.RouteName, p.config.PreferName); route != "" {
-		tags = append(tags, "route_name:"+route)
 	}
 	if service := resourceTag(entry.ServiceID, entry.ServiceName, p.config.PreferName); service != "" {
 		tags = append(tags, "service_name:"+service)

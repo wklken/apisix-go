@@ -113,6 +113,40 @@ func TestGenerateTagsIncludesConfiguredAndRequestTags(t *testing.T) {
 	}
 }
 
+func TestGenerateTagsMatchesDatadogStableTagOrder(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IncludePath:   true,
+		IncludeMethod: true,
+		ConstantTags:  []string{"route:local"},
+	})
+	p.metadata.ConstantTags = []string{"source:apisix"}
+
+	got := p.generateTags(metricEntry{
+		RouteID:     "route-1",
+		RouteName:   "orders-route",
+		ServiceID:   "service-1",
+		ServiceName: "orders-service",
+		Status:      201,
+		Path:        "/orders",
+		Method:      http.MethodPost,
+		Scheme:      "http",
+	})
+	want := []string{
+		"source:apisix",
+		"route:local",
+		"route_name:orders-route",
+		"path:/orders",
+		"method:POST",
+		"service_name:orders-service",
+		"response_status:201",
+		"response_status_class:2xx",
+		"scheme:http",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("tags = %v, want %v", got, want)
+	}
+}
+
 func TestGenerateTagsIncludesAPISIXResourceTags(t *testing.T) {
 	p := newTestPlugin(t, Config{})
 	p.metadata.ConstantTags = []string{"source:apisix"}
@@ -190,6 +224,105 @@ func TestMetricLinesUseDogStatsDFormat(t *testing.T) {
 	}
 }
 
+func TestSchemasRejectInvalidConstantTag(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if p.GetMetadataSchema() == "" {
+		t.Fatal("metadata schema is empty")
+	}
+
+	invalid := map[string]any{"constant_tags": []any{"1 invalid tag"}}
+	if err := util.Validate(invalid, p.GetSchema()); err == nil {
+		t.Fatal("route config accepted an invalid constant tag")
+	}
+	if err := util.Validate(invalid, p.GetMetadataSchema()); err == nil {
+		t.Fatal("metadata accepted an invalid constant tag")
+	}
+
+	validMetadata := map[string]any{
+		"host":          "127.0.0.1",
+		"port":          8125,
+		"namespace":     "apisix",
+		"constant_tags": []any{"source:apisix"},
+	}
+	if err := util.Validate(validMetadata, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata rejected valid DogStatsD endpoint: %v", err)
+	}
+}
+
+func TestSendCoalescesMetricsWithinDogStatsDDatagramLimit(t *testing.T) {
+	addr, received := startUDPServer(t, 1)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{})
+	p.metadata = Metadata{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		Namespace:    "apisix",
+		ConstantTags: []string{"source:apisix"},
+	}
+	entry := metricEntry{
+		LatencyMS:     1,
+		ApisixLatency: 1,
+		IngressSize:   2,
+		EgressSize:    3,
+		Status:        200,
+	}
+
+	p.Send(entry)
+
+	messages := collectMessages(t, received, 1)
+	want := strings.Join(p.metricLines(entry), "\n")
+	if messages[0] != want {
+		t.Fatalf("UDP datagram = %q, want coalesced metrics %q", messages[0], want)
+	}
+}
+
+func TestSendFallsBackToPerMetricDatagramsAboveDogStatsDLimit(t *testing.T) {
+	addr, received := startUDPServer(t, 5)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{})
+	p.metadata = Metadata{
+		Host:      host,
+		Port:      mustAtoi(t, port),
+		Namespace: "apisix",
+		ConstantTags: []string{
+			strings.Repeat("a", 200),
+			strings.Repeat("b", 200),
+			strings.Repeat("c", 200),
+			strings.Repeat("d", 200),
+			strings.Repeat("e", 200),
+			strings.Repeat("f", 200),
+			strings.Repeat("g", 200),
+			strings.Repeat("h", 200),
+			strings.Repeat("i", 200),
+			strings.Repeat("j", 200),
+		},
+	}
+	entry := metricEntry{
+		LatencyMS:     1,
+		ApisixLatency: 1,
+		IngressSize:   2,
+		EgressSize:    3,
+		Status:        200,
+	}
+
+	p.Send(entry)
+
+	if got := collectMessages(t, received, 5); !slices.Equal(got, p.metricLines(entry)) {
+		t.Fatalf("UDP datagrams = %v, want one datagram per metric %v", got, p.metricLines(entry))
+	}
+}
+
 func TestApisixLatencySubtractsUpstreamLatency(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -228,7 +361,7 @@ func TestApisixLatencySubtractsUpstreamLatency(t *testing.T) {
 }
 
 func TestSendWritesUDPMetrics(t *testing.T) {
-	addr, received := startUDPServer(t, 5)
+	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -250,7 +383,7 @@ func TestSendWritesUDPMetrics(t *testing.T) {
 		Status:        200,
 	})
 
-	messages := collectMessages(t, received, 5)
+	messages := collectMetricLines(t, received, 1, 5)
 	if !containsPrefix(messages, "apisix.request.counter:1|c|#") {
 		t.Fatalf("messages = %v, want request counter", messages)
 	}
@@ -260,7 +393,7 @@ func TestSendWritesUDPMetrics(t *testing.T) {
 }
 
 func TestHandlerCapturesStatusAndSizes(t *testing.T) {
-	addr, received := startUDPServer(t, 5)
+	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -284,7 +417,7 @@ func TestHandlerCapturesStatusAndSizes(t *testing.T) {
 		_, _ = w.Write([]byte("reply"))
 	})).ServeHTTP(rr, req)
 
-	messages := collectMessages(t, received, 5)
+	messages := collectMetricLines(t, received, 1, 5)
 	if !containsLinePart(messages, "response_status:201") {
 		t.Fatalf("messages = %v, want response_status tag", messages)
 	}
@@ -300,7 +433,7 @@ func TestHandlerCapturesStatusAndSizes(t *testing.T) {
 }
 
 func TestHandlerCapturesUpstreamLatency(t *testing.T) {
-	addr, received := startUDPServer(t, 6)
+	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -322,14 +455,14 @@ func TestHandlerCapturesUpstreamLatency(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
-	messages := collectMessages(t, received, 6)
+	messages := collectMetricLines(t, received, 1, 6)
 	if !containsPrefix(messages, "apisix.upstream.latency:42|h|#") {
 		t.Fatalf("messages = %v, want upstream latency", messages)
 	}
 }
 
 func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
-	addr, received := startUDPServer(t, 5)
+	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -352,7 +485,7 @@ func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
-	messages := collectMessages(t, received, 5)
+	messages := collectMetricLines(t, received, 1, 5)
 	if !containsLinePart(messages, "path:/orders/:id") {
 		t.Fatalf("messages = %v, want matched URI path tag", messages)
 	}
@@ -362,7 +495,7 @@ func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
 }
 
 func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
-	addr, received := startUDPServer(t, 5)
+	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -390,7 +523,7 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
-	messages := collectMessages(t, received, 5)
+	messages := collectMetricLines(t, received, 1, 5)
 	for _, tag := range []string{
 		"route_name:orders-route",
 		"service_name:orders-service",
@@ -404,7 +537,7 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 }
 
 func TestHandlerBatchesMetricsUntilBatchMaxSize(t *testing.T) {
-	addr, received := startUDPServer(t, 10)
+	addr, received := startUDPServer(t, 2)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -424,7 +557,7 @@ func TestHandlerBatchesMetricsUntilBatchMaxSize(t *testing.T) {
 	}
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
-	messages := collectMessages(t, received, 10)
+	messages := collectMetricLines(t, received, 2, 10)
 	if len(messages) != 10 {
 		t.Fatalf("messages = %d, want 10 for two five-metric entries", len(messages))
 	}
@@ -473,6 +606,19 @@ func collectMessages(t *testing.T, received <-chan string, count int) []string {
 		}
 	}
 	return messages
+}
+
+func collectMetricLines(t *testing.T, received <-chan string, datagrams int, count int) []string {
+	t.Helper()
+
+	lines := make([]string, 0, count)
+	for _, datagram := range collectMessages(t, received, datagrams) {
+		lines = append(lines, strings.Split(datagram, "\n")...)
+	}
+	if len(lines) != count {
+		t.Fatalf("metric lines = %d, want %d: %v", len(lines), count, lines)
+	}
+	return lines
 }
 
 func contains(values []string, want string) bool {

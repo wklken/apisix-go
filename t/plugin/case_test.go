@@ -985,6 +985,52 @@ func TestSemanticJSONMatcherRejectsNonBodyFields(t *testing.T) {
 	}
 }
 
+func TestLokiPushAssertionMatchesExactStreamsAndNestedEntries(t *testing.T) {
+	assertion := LokiPushAssertion{Streams: []LokiStreamAssertion{
+		{
+			Stream: map[string]string{"service": "svc-alpha"},
+			Values: []LokiValueAssertion{{
+				Entry: map[string]any{
+					"request":  map[string]any{"headers": map[string]any{"x-service-name": "svc-alpha"}},
+					"route_id": "route-1",
+				},
+			}},
+		},
+		{
+			Stream: map[string]string{"service": ""},
+			Values: []LokiValueAssertion{{
+				Entry:  map[string]any{"route_id": "route-1"},
+				Absent: []string{"request.headers.x-service-name"},
+			}},
+		},
+	}}
+	body := `{"streams":[` +
+		`{"stream":{"service":"svc-alpha"},"values":[["123","{\"request\":{\"headers\":{\"x-service-name\":\"svc-alpha\"}},\"route_id\":\"route-1\",\"latency\":1}"]]},` +
+		`{"stream":{"service":""},"values":[["124","{\"request\":{\"headers\":{}},\"route_id\":\"route-1\"}"]]}` +
+		`]}`
+
+	if err := assertion.match(body); err != nil {
+		t.Fatalf("match() error = %v", err)
+	}
+	extraBody := strings.TrimSuffix(body, `]}`) + `,{"stream":{},"values":[["125","{}"]]}]}`
+	if err := assertion.match(extraBody); err == nil {
+		t.Fatal("match() accepted an extra stream")
+	}
+	wrongEmptyLabel := strings.Replace(body, `"service":""`, `"other":""`, 1)
+	if err := assertion.match(wrongEmptyLabel); err == nil {
+		t.Fatal("match() accepted a different empty-valued label")
+	}
+	withLeakedHeader := strings.Replace(
+		body,
+		`\"headers\":{}`,
+		`\"headers\":{\"x-service-name\":\"svc-alpha\"}`,
+		1,
+	)
+	if err := assertion.match(withLeakedHeader); err == nil {
+		t.Fatal("match() accepted a forbidden header path")
+	}
+}
+
 func TestMatcherSupportsNegativeRegex(t *testing.T) {
 	pattern := `"consumer"|"service"`
 	matcher := Matcher{NotMatches: &pattern}

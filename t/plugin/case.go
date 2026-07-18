@@ -175,11 +175,26 @@ type UpstreamSpec struct {
 }
 
 type HTTPAssertion struct {
-	Method  string             `yaml:"method,omitempty"`
-	Path    *Matcher           `yaml:"path,omitempty"`
-	Host    *Matcher           `yaml:"host,omitempty"`
-	Headers map[string]Matcher `yaml:"headers,omitempty"`
-	Body    *Matcher           `yaml:"body,omitempty"`
+	Method   string             `yaml:"method,omitempty"`
+	Path     *Matcher           `yaml:"path,omitempty"`
+	Host     *Matcher           `yaml:"host,omitempty"`
+	Headers  map[string]Matcher `yaml:"headers,omitempty"`
+	Body     *Matcher           `yaml:"body,omitempty"`
+	LokiPush *LokiPushAssertion `yaml:"loki_push,omitempty"`
+}
+
+type LokiPushAssertion struct {
+	Streams []LokiStreamAssertion `yaml:"streams"`
+}
+
+type LokiStreamAssertion struct {
+	Stream map[string]string    `yaml:"stream"`
+	Values []LokiValueAssertion `yaml:"values"`
+}
+
+type LokiValueAssertion struct {
+	Entry  map[string]any `yaml:"entry"`
+	Absent []string       `yaml:"absent,omitempty"`
 }
 
 type HTTPResponse struct {
@@ -929,7 +944,177 @@ func (a HTTPAssertion) validate() error {
 			return fmt.Errorf("upstream request body: %w", err)
 		}
 	}
+	if a.Body != nil && a.LokiPush != nil {
+		return errors.New("upstream request body and loki_push are mutually exclusive")
+	}
+	if a.LokiPush != nil {
+		if err := a.LokiPush.validate(); err != nil {
+			return fmt.Errorf("upstream Loki push: %w", err)
+		}
+	}
 	return nil
+}
+
+func (a LokiPushAssertion) validate() error {
+	if len(a.Streams) == 0 {
+		return errors.New("at least one stream is required")
+	}
+	for streamIndex, stream := range a.Streams {
+		if len(stream.Values) == 0 {
+			return fmt.Errorf("stream %d must contain at least one value", streamIndex+1)
+		}
+		for valueIndex, value := range stream.Values {
+			if len(value.Entry) == 0 {
+				return fmt.Errorf("stream %d value %d entry is required", streamIndex+1, valueIndex+1)
+			}
+			for _, path := range value.Absent {
+				if strings.TrimSpace(path) == "" {
+					return fmt.Errorf("stream %d value %d absent path must not be blank", streamIndex+1, valueIndex+1)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (a LokiPushAssertion) match(body string) error {
+	var payload struct {
+		Streams []struct {
+			Stream map[string]string `json:"stream"`
+			Values [][]string        `json:"values"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	if len(payload.Streams) != len(a.Streams) {
+		return fmt.Errorf("streams = %d, want exactly %d", len(payload.Streams), len(a.Streams))
+	}
+	for streamIndex, expectedStream := range a.Streams {
+		actualStream := payload.Streams[streamIndex]
+		if !stringMapEqual(actualStream.Stream, expectedStream.Stream) {
+			return fmt.Errorf(
+				"stream %d labels = %#v, want %#v",
+				streamIndex+1,
+				actualStream.Stream,
+				expectedStream.Stream,
+			)
+		}
+		if len(actualStream.Values) != len(expectedStream.Values) {
+			return fmt.Errorf(
+				"stream %d values = %d, want exactly %d",
+				streamIndex+1,
+				len(actualStream.Values),
+				len(expectedStream.Values),
+			)
+		}
+		for valueIndex, expectedValue := range expectedStream.Values {
+			actualValue := actualStream.Values[valueIndex]
+			if len(actualValue) != 2 {
+				return fmt.Errorf(
+					"stream %d value %d has %d fields, want 2",
+					streamIndex+1,
+					valueIndex+1,
+					len(actualValue),
+				)
+			}
+			timestamp, ok := new(big.Int).SetString(actualValue[0], 10)
+			if !ok || timestamp.Sign() <= 0 {
+				return fmt.Errorf(
+					"stream %d value %d timestamp %q is not a positive decimal",
+					streamIndex+1,
+					valueIndex+1,
+					actualValue[0],
+				)
+			}
+			actualEntry, err := decodeSemanticJSON(actualValue[1])
+			if err != nil {
+				return fmt.Errorf("decode stream %d value %d entry: %w", streamIndex+1, valueIndex+1, err)
+			}
+			expectedJSON, err := json.Marshal(expectedValue.Entry)
+			if err != nil {
+				return fmt.Errorf("encode stream %d value %d expectation: %w", streamIndex+1, valueIndex+1, err)
+			}
+			expectedEntry, err := decodeSemanticJSON(string(expectedJSON))
+			if err != nil {
+				return fmt.Errorf("decode stream %d value %d expectation: %w", streamIndex+1, valueIndex+1, err)
+			}
+			contains, err := semanticJSONContains(actualEntry, expectedEntry)
+			if err != nil {
+				return fmt.Errorf("compare stream %d value %d entry: %w", streamIndex+1, valueIndex+1, err)
+			}
+			if !contains {
+				return fmt.Errorf(
+					"stream %d value %d entry %s does not contain %s",
+					streamIndex+1,
+					valueIndex+1,
+					actualValue[1],
+					expectedJSON,
+				)
+			}
+			for _, path := range expectedValue.Absent {
+				if semanticJSONPathPresent(actualEntry, path) {
+					return fmt.Errorf(
+						"stream %d value %d entry path %q is present, want absent",
+						streamIndex+1,
+						valueIndex+1,
+						path,
+					)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func stringMapEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		rightValue, ok := right[key]
+		if !ok || rightValue != value {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticJSONContains(actual, expected any) (bool, error) {
+	expectedObject, expectedIsObject := expected.(map[string]any)
+	if !expectedIsObject {
+		return semanticJSONEqual(actual, expected)
+	}
+	actualObject, actualIsObject := actual.(map[string]any)
+	if !actualIsObject {
+		return false, nil
+	}
+	for key, expectedValue := range expectedObject {
+		actualValue, ok := actualObject[key]
+		if !ok {
+			return false, nil
+		}
+		contains, err := semanticJSONContains(actualValue, expectedValue)
+		if err != nil || !contains {
+			return contains, err
+		}
+	}
+	return true, nil
+}
+
+func semanticJSONPathPresent(value any, path string) bool {
+	current := value
+	for segment := range strings.SplitSeq(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+		current, ok = object[segment]
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (m Matcher) validate(scope matcherScope) error {

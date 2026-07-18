@@ -82,7 +82,13 @@ cases:
           - method: POST
             path: {equals: /loki/api/v1/push}
             headers: {X-Scope-OrgID: {equals: tenant_1}, Content-Type: {equals: application/json}}
-            body: {matches: '"streams":\[\{"stream":\{"job":"apisix"\},"values":\[\["[0-9]+",".*\\"request_headers_test_header\\":\\"only-for-test#1\\"'}
+            loki_push:
+              streams:
+                - stream: {job: apisix}
+                  values:
+                    - entry:
+                        request: {method: GET, headers: {test-header: only-for-test#1}}
+                        route_id: loki-default
         respond: [{status: 204}]
     steps:
       - {name: real-upstream-and-loki-delivery, input: {path: /default, headers: {Test-Header: only-for-test#1}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -100,7 +106,16 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {method: POST, path: {equals: /loki/api/v1/push}, headers: {X-Scope-OrgID: {equals: tenant_1}}, body: {matches: '"stream":\{"custom_label":"custom_label_value"\}.*\\"request_headers_test_header\\":\\"only-for-test#2\\"'}}
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_1}}
+            loki_push:
+              streams:
+                - stream: {custom_label: custom_label_value}
+                  values:
+                    - entry:
+                        request: {headers: {test-header: only-for-test#2}}
+                        route_id: loki-static-label
         respond: [{status: 204}]
     steps:
       - {name: labelled-request-reaches-real-upstream, input: {path: /static-label, headers: {Test-Header: only-for-test#2}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -123,8 +138,26 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {method: POST, path: {equals: /loki/api/v1/push}, headers: {X-Scope-OrgID: {equals: tenant_1}}, body: {matches: '\\"request_headers_test_header\\":\\"only-for-test#1\\"'}}
-          - {method: POST, path: {equals: /loki/api/v1/push}, headers: {X-Scope-OrgID: {equals: tenant_2}}, body: {matches: '\\"request_headers_test_header\\":\\"only-for-test#3\\"'}}
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_1}}
+            loki_push:
+              streams:
+                - stream: {job: apisix}
+                  values:
+                    - entry:
+                        request: {headers: {test-header: only-for-test#1}}
+                        route_id: loki-tenant-one
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_2}}
+            loki_push:
+              streams:
+                - stream: {job: apisix}
+                  values:
+                    - entry:
+                        request: {headers: {test-header: only-for-test#3}}
+                        route_id: loki-tenant-two
         respond: [{status: 204}]
     steps:
       - {name: tenant-one-never-reaches-tenant-two-sink, input: {path: /tenant-one, headers: {Test-Header: only-for-test#1}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -174,8 +207,30 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {method: POST, path: {equals: /loki/api/v1/push}, body: {matches: '"stream":\{"service":"svc-alpha"\}.*\\"request_headers_x_service_name\\":\\"svc-alpha\\".*"stream":\{"service":"svc-beta"\}.*\\"request_headers_x_service_name\\":\\"svc-beta\\"'}}
-          - {method: POST, path: {equals: /loki/api/v1/push}, body: {matches: '^\{"streams":\[\{"stream":\{"service":""\}'}}
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            loki_push:
+              streams:
+                - stream: {service: svc-alpha}
+                  values:
+                    - entry:
+                        request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-alpha}}
+                        route_id: loki-label-isolation
+                - stream: {service: svc-beta}
+                  values:
+                    - entry:
+                        request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-beta}}
+                        route_id: loki-label-isolation
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            loki_push:
+              streams:
+                - stream: {service: ''}
+                  values:
+                    - entry:
+                        request: {method: GET, uri: /label-isolation}
+                        route_id: loki-label-isolation
+                      absent: [request.headers.x-service-name]
         respond: [{status: 204}, {status: 204}]
     steps:
       - {name: alpha-entry, input: {path: /label-isolation, headers: {X-Service-Name: svc-alpha}}, output: {status: 200, body: {equals: hello world}}}
@@ -198,7 +253,16 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {method: POST, path: {equals: /loki/api/v1/push}, body: {matches: '"stream":\{"enrich_label":"enrich_value"\}.*\\"request_method\\":\\"GET\\".*\\"route_id\\":\\"loki-enrich\\".*\\"upstream_host\\":\\"127\.0\.0\.1\\"'}}
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            loki_push:
+              streams:
+                - stream: {enrich_label: enrich_value}
+                  values:
+                    - entry:
+                        request: {method: GET}
+                        route_id: loki-enrich
+                        upstream_host: 127.0.0.1
         respond: [{status: 204}]
     steps:
       - {name: extra-metadata-keeps-default-log-fields, input: {path: /enrich}, output: {status: 200, body: {equals: hello world}}, wait: 1s}

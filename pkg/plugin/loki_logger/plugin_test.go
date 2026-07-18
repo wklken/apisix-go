@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -143,7 +144,7 @@ func TestResolveLabelsLeavesMissingDynamicValuesEmpty(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultLogIncludesRequestFields(t *testing.T) {
+func TestHandlerDefaultLogUsesPinnedRichShape(t *testing.T) {
 	bodies := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -160,27 +161,191 @@ func TestHandlerDefaultLogIncludesRequestFields(t *testing.T) {
 		Timeout:       1000,
 		BatchMaxSize:  1,
 	})
-	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders?status=open", nil)
+	r.RemoteAddr = "192.0.2.10:4321"
 	r.Header.Set("Test-Header", "only-for-test#1")
-	r = apisixctx.WithApisixVars(r, map[string]string{"$route_id": "loki-default"})
+	r = apisixctx.WithApisixVars(r, map[string]string{
+		"$route_id":      "loki-default",
+		"$service_id":    "orders-service",
+		"$consumer_name": "alice",
+		"$balancer_ip":   "192.0.2.20",
+		"$balancer_port": "8080",
+	})
+	r = apisixctx.WithRequestVars(r)
+	apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(2))
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("X-Upstream", "accepted")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("accepted"))
 	})).ServeHTTP(httptest.NewRecorder(), r)
 
 	select {
 	case body := <-bodies:
 		entry := extractLokiEntry(t, body)
+		request := requiredObject(t, entry, "request")
+		if got := request["url"]; got != "http://example.com/orders?status=open" {
+			t.Fatalf("request.url = %#v, want full request URL", got)
+		}
+		if got := request["uri"]; got != "/orders?status=open" {
+			t.Fatalf("request.uri = %#v, want request URI", got)
+		}
+		if got := request["method"]; got != http.MethodGet {
+			t.Fatalf("request.method = %#v, want GET", got)
+		}
+		requestHeaders := requiredObject(t, request, "headers")
+		if got := requestHeaders["test-header"]; got != "only-for-test#1" {
+			t.Fatalf("request.headers.test-header = %#v, want only-for-test#1", got)
+		}
+		query := requiredObject(t, request, "querystring")
+		if got := query["status"]; got != "open" {
+			t.Fatalf("request.querystring.status = %#v, want open", got)
+		}
+		response := requiredObject(t, entry, "response")
+		if got := response["status"]; got != float64(http.StatusAccepted) {
+			t.Fatalf("response.status = %#v, want 202", got)
+		}
+		responseHeaders := requiredObject(t, response, "headers")
+		if got := responseHeaders["x-upstream"]; got != "accepted" {
+			t.Fatalf("response.headers.x-upstream = %#v, want accepted", got)
+		}
+		if got := response["size"]; got != float64(len("accepted")) {
+			t.Fatalf("response.size = %#v, want %d", got, len("accepted"))
+		}
+		serverFields := requiredObject(t, entry, "server")
+		if serverFields["hostname"] == "" || serverFields["version"] == "" {
+			t.Fatalf("server = %#v, want hostname and version", serverFields)
+		}
 		if got := entry["route_id"]; got != "loki-default" {
 			t.Fatalf("route_id = %#v, want loki-default", got)
 		}
-		if got := entry["request_method"]; got != http.MethodGet {
-			t.Fatalf("request_method = %#v, want GET", got)
+		if got := entry["service_id"]; got != "orders-service" {
+			t.Fatalf("service_id = %#v, want orders-service", got)
 		}
-		if got := entry["request_headers_test_header"]; got != "only-for-test#1" {
-			t.Fatalf("request_headers_test_header = %#v, want only-for-test#1", got)
+		consumer := requiredObject(t, entry, "consumer")
+		if got := consumer["username"]; got != "alice" {
+			t.Fatalf("consumer.username = %#v, want alice", got)
+		}
+		if got := entry["upstream"]; got != "192.0.2.20:8080" {
+			t.Fatalf("upstream = %#v, want selected upstream", got)
+		}
+		if got := entry["client_ip"]; got != "192.0.2.10" {
+			t.Fatalf("client_ip = %#v, want 192.0.2.10", got)
+		}
+		for _, key := range []string{"start_time", "latency", "upstream_latency", "apisix_latency"} {
+			if _, ok := entry[key].(float64); !ok {
+				t.Fatalf("%s = %#v, want numeric timing field", key, entry[key])
+			}
+		}
+		if _, ok := entry["loki_log_time"]; ok {
+			t.Fatal("private Loki timestamp leaked into log line")
+		}
+		if _, ok := entry["loki_labels"]; ok {
+			t.Fatal("private Loki labels leaked into log line")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Loki body")
+	}
+}
+
+func TestHandlerResolvesLabelsOutsideCustomLogFormat(t *testing.T) {
+	body := captureHandlerPayload(t, Config{
+		LogFormat: map[string]string{"message": "fixed"},
+		LogLabels: map[string]string{"service": "$http_x_service_name"},
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}, func(r *http.Request) {
+		r.Header.Set("X-Service-Name", "svc-alpha")
+	})
+
+	stream := extractLokiStream(t, body, 0)
+	if got := streamLabels(t, stream)["service"]; got != "svc-alpha" {
+		t.Fatalf("stream service = %q, want svc-alpha", got)
+	}
+	entry := extractLokiStreamEntry(t, stream, 0)
+	if len(entry) != 1 || entry["message"] != "fixed" {
+		t.Fatalf("custom log entry = %#v, want only fixed message", entry)
+	}
+}
+
+func TestLogFormatExtraDoesNotClobberRichDefaults(t *testing.T) {
+	body := captureHandlerPayloadWithPlugin(t, Config{}, func(p *Plugin) {
+		p.logFormatExtra = map[string]string{
+			"request":     "clobbered-request",
+			"route_id":    "clobbered-route",
+			"extra_field": "extra-value",
+		}
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}, func(r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$route_id", "real-route")
+	})
+
+	entry := extractLokiEntry(t, body)
+	request := requiredObject(t, entry, "request")
+	if got := request["method"]; got != http.MethodGet {
+		t.Fatalf("request.method = %#v, want GET", got)
+	}
+	if got := entry["route_id"]; got != "real-route" {
+		t.Fatalf("route_id = %#v, want real-route", got)
+	}
+	if got := entry["extra_field"]; got != "extra-value" {
+		t.Fatalf("extra_field = %#v, want extra-value", got)
+	}
+}
+
+func TestHandlerCapturesRequestStartTimestampBeforeDownstream(t *testing.T) {
+	var downstreamStarted int64
+	body := captureHandlerPayload(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+		downstreamStarted = time.Now().UnixNano()
+		time.Sleep(20 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}, nil)
+
+	stream := extractLokiStream(t, body, 0)
+	values := streamValues(t, stream)
+	timestamp, err := strconv.ParseInt(values[0][0].(string), 10, 64)
+	if err != nil {
+		t.Fatalf("parse Loki timestamp: %v", err)
+	}
+	if timestamp > downstreamStarted {
+		t.Fatalf(
+			"Loki timestamp = %d, want request start no later than downstream start %d",
+			timestamp,
+			downstreamStarted,
+		)
+	}
+}
+
+func TestBuildBatchPayloadPreservesPrivateFieldsAcrossBuilds(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:3100"},
+		LogLabels:     map[string]string{"service": "$http_x_service_name"},
+	})
+	entry := map[string]any{
+		"message":       "fixed",
+		"loki_log_time": "123456789",
+		"loki_labels":   map[string]string{"service": "svc-alpha"},
+	}
+
+	first := p.buildPayload(entry)
+	second := p.buildPayload(entry)
+	for index, payload := range []lokiPayload{first, second} {
+		if len(payload.Streams) != 1 || payload.Streams[0].Stream["service"] != "svc-alpha" {
+			t.Fatalf("payload %d streams = %#v, want private svc-alpha labels", index+1, payload.Streams)
+		}
+		if got := payload.Streams[0].Values[0][0]; got != "123456789" {
+			t.Fatalf("payload %d timestamp = %q, want stable private timestamp", index+1, got)
+		}
+		var line map[string]any
+		if err := json.Unmarshal([]byte(payload.Streams[0].Values[0][1]), &line); err != nil {
+			t.Fatalf("decode payload %d entry: %v", index+1, err)
+		}
+		if len(line) != 1 || line["message"] != "fixed" {
+			t.Fatalf("payload %d line = %#v, want no private fields", index+1, line)
+		}
+	}
+	if entry["loki_log_time"] != "123456789" || entry["loki_labels"] == nil {
+		t.Fatalf("private fields were mutated across builds: %#v", entry)
 	}
 }
 
@@ -492,11 +657,13 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	select {
 	case body := <-bodies:
 		entry := extractLokiEntry(t, body)
-		if _, ok := entry["request"]; ok {
-			t.Fatalf("entry request = %#v, want no request body", entry["request"])
+		request := requiredObject(t, entry, "request")
+		if _, ok := request["body"]; ok {
+			t.Fatalf("entry request body = %#v, want absent", request["body"])
 		}
-		if _, ok := entry["response"]; ok {
-			t.Fatalf("entry response = %#v, want no response body", entry["response"])
+		response := requiredObject(t, entry, "response")
+		if _, ok := response["body"]; ok {
+			t.Fatalf("entry response body = %#v, want absent", response["body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Loki body")
@@ -566,6 +733,123 @@ func extractLokiEntry(t *testing.T, body map[string]any) map[string]any {
 	var entry map[string]any
 	if err := json.Unmarshal([]byte(entryText), &entry); err != nil {
 		t.Fatalf("decode Loki entry: %v", err)
+	}
+	return entry
+}
+
+func captureHandlerPayload(
+	t *testing.T,
+	cfg Config,
+	next http.HandlerFunc,
+	prepare func(*http.Request),
+) map[string]any {
+	t.Helper()
+	return captureHandlerPayloadWithPlugin(t, cfg, nil, next, prepare)
+}
+
+func captureHandlerPayloadWithPlugin(
+	t *testing.T,
+	cfg Config,
+	configure func(*Plugin),
+	next http.HandlerFunc,
+	prepare func(*http.Request),
+) map[string]any {
+	t.Helper()
+
+	bodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg.EndpointAddrs = []string{server.URL}
+	cfg.Timeout = 1000
+	cfg.BatchMaxSize = 1
+	p := newTestPlugin(t, cfg)
+	if configure != nil {
+		configure(p)
+	}
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	r = apisixctx.WithApisixVars(r, map[string]string{})
+	r = apisixctx.WithRequestVars(r)
+	if prepare != nil {
+		prepare(r)
+	}
+	p.Handler(next).ServeHTTP(httptest.NewRecorder(), r)
+
+	select {
+	case body := <-bodies:
+		return body
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Loki body")
+		return nil
+	}
+}
+
+func requiredObject(t *testing.T, object map[string]any, key string) map[string]any {
+	t.Helper()
+	value, ok := object[key].(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want object", key, object[key])
+	}
+	return value
+}
+
+func extractLokiStream(t *testing.T, body map[string]any, index int) map[string]any {
+	t.Helper()
+	streams, ok := body["streams"].([]any)
+	if !ok || len(streams) <= index {
+		t.Fatalf("streams = %#v, want index %d", body["streams"], index)
+	}
+	stream, ok := streams[index].(map[string]any)
+	if !ok {
+		t.Fatalf("stream %d = %#v, want object", index, streams[index])
+	}
+	return stream
+}
+
+func streamLabels(t *testing.T, stream map[string]any) map[string]any {
+	t.Helper()
+	return requiredObject(t, stream, "stream")
+}
+
+func streamValues(t *testing.T, stream map[string]any) [][]any {
+	t.Helper()
+	values, ok := stream["values"].([]any)
+	if !ok {
+		t.Fatalf("stream values = %#v, want array", stream["values"])
+	}
+	result := make([][]any, len(values))
+	for index, value := range values {
+		pair, ok := value.([]any)
+		if !ok || len(pair) != 2 {
+			t.Fatalf("stream value %d = %#v, want timestamp and line", index, value)
+		}
+		result[index] = pair
+	}
+	return result
+}
+
+func extractLokiStreamEntry(t *testing.T, stream map[string]any, index int) map[string]any {
+	t.Helper()
+	values := streamValues(t, stream)
+	if len(values) <= index {
+		t.Fatalf("stream values = %d, want index %d", len(values), index)
+	}
+	line, ok := values[index][1].(string)
+	if !ok {
+		t.Fatalf("stream line = %#v, want string", values[index][1])
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("decode stream entry: %v", err)
 	}
 	return entry
 }

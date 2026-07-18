@@ -1,9 +1,11 @@
 package datadog
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -252,6 +254,66 @@ func TestSchemasRejectInvalidConstantTag(t *testing.T) {
 	}
 }
 
+func TestMetadataSchemaPublishesPinnedDefaults(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	var document struct {
+		Properties map[string]struct {
+			Default any `json:"default"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetMetadataSchema()), &document); err != nil {
+		t.Fatalf("decode metadata schema: %v", err)
+	}
+
+	want := map[string]any{
+		"host":          "127.0.0.1",
+		"port":          float64(8125),
+		"namespace":     "apisix",
+		"constant_tags": []any{"source:apisix"},
+	}
+	if len(document.Properties) != len(want) {
+		t.Fatalf("metadata properties = %v, want exactly %v", document.Properties, want)
+	}
+	for property, wantDefault := range want {
+		definition, ok := document.Properties[property]
+		if !ok {
+			t.Fatalf("metadata schema has no %q property", property)
+		}
+		if !reflect.DeepEqual(definition.Default, wantDefault) {
+			t.Fatalf("metadata %s default = %#v, want %#v", property, definition.Default, wantDefault)
+		}
+	}
+
+	for _, tt := range []struct {
+		name     string
+		metadata map[string]any
+		valid    bool
+	}{
+		{name: "empty uses defaults", metadata: map[string]any{}, valid: true},
+		{name: "explicit values", metadata: map[string]any{
+			"host": "dogstatsd", "port": 18125, "namespace": "custom", "constant_tags": []any{"env:test"},
+		}, valid: true},
+		{name: "negative port", metadata: map[string]any{"port": -1}, valid: false},
+		{name: "non-string host", metadata: map[string]any{"host": 127}, valid: false},
+		{name: "non-string namespace", metadata: map[string]any{"namespace": false}, valid: false},
+		{name: "invalid constant tag", metadata: map[string]any{"constant_tags": []any{"1 invalid tag"}}, valid: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := util.Validate(tt.metadata, p.GetMetadataSchema())
+			if tt.valid && err != nil {
+				t.Fatalf("metadata validation error = %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Fatal("metadata validation unexpectedly succeeded")
+			}
+		})
+	}
+}
+
 func TestSendCoalescesMetricsWithinDogStatsDDatagramLimit(t *testing.T) {
 	addr, received := startUDPServer(t, 1)
 	host, port, err := net.SplitHostPort(addr)
@@ -320,6 +382,54 @@ func TestSendFallsBackToPerMetricDatagramsAboveDogStatsDLimit(t *testing.T) {
 
 	if got := collectMessages(t, received, 5); !slices.Equal(got, p.metricLines(entry)) {
 		t.Fatalf("UDP datagrams = %v, want one datagram per metric %v", got, p.metricLines(entry))
+	}
+}
+
+func TestSendUsesExactDogStatsDDatagramBoundary(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		payload   int
+		datagrams int
+	}{
+		{name: "8192 bytes coalesces", payload: maxDatagramSize, datagrams: 1},
+		{name: "8193 bytes falls back", payload: maxDatagramSize + 1, datagrams: 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, received := startUDPServer(t, tt.datagrams)
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatalf("split udp addr: %v", err)
+			}
+
+			p, entry := pluginWithMetricPayloadSize(t, tt.payload)
+			p.metadata.Host = host
+			p.metadata.Port = mustAtoi(t, port)
+			lines := p.metricLines(entry)
+			payload := strings.Join(lines, "\n")
+			metricBytes := 0
+			for _, line := range lines {
+				metricBytes += len(line)
+			}
+			if got := metricBytes + len(lines) - 1; got != tt.payload {
+				t.Fatalf("metric bytes plus %d newline bytes = %d, want %d", len(lines)-1, got, tt.payload)
+			}
+			if len(payload) != tt.payload {
+				t.Fatalf("joined payload bytes = %d, want %d", len(payload), tt.payload)
+			}
+
+			p.Send(entry)
+
+			got := collectMessages(t, received, tt.datagrams)
+			if tt.datagrams == 1 {
+				if got[0] != payload {
+					t.Fatalf("UDP datagram bytes = %d, want exact %d-byte payload", len(got[0]), tt.payload)
+				}
+				return
+			}
+			if !slices.Equal(got, lines) {
+				t.Fatalf("UDP datagrams lost or reordered metrics: got %v, want %v", got, lines)
+			}
+		})
 	}
 }
 
@@ -581,7 +691,7 @@ func startUDPServer(t *testing.T, count int) (string, <-chan string) {
 	received := make(chan string, count)
 	go func() {
 		for range count {
-			buf := make([]byte, 4096)
+			buf := make([]byte, maxDatagramSize)
 			n, _, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				return
@@ -591,6 +701,45 @@ func startUDPServer(t *testing.T, count int) (string, <-chan string) {
 	}()
 
 	return conn.LocalAddr().String(), received
+}
+
+func pluginWithMetricPayloadSize(t *testing.T, target int) (*Plugin, metricEntry) {
+	t.Helper()
+
+	entry := metricEntry{
+		LatencyMS:     1,
+		ApisixLatency: 1,
+		IngressSize:   1,
+		EgressSize:    1,
+	}
+	for fullTags := range 20 {
+		for finalTagIndex := range 200 {
+			finalTagLength := finalTagIndex + 1
+			for valueDigitsIndex := range 18 {
+				valueDigits := valueDigitsIndex + 1
+				p := &Plugin{metadata: Metadata{Namespace: "apisix"}}
+				p.metadata.ConstantTags = make([]string, fullTags, fullTags+1)
+				for i := range p.metadata.ConstantTags {
+					p.metadata.ConstantTags[i] = strings.Repeat(string(rune('a'+i%26)), 200)
+				}
+				p.metadata.ConstantTags = append(p.metadata.ConstantTags, strings.Repeat("z", finalTagLength))
+				entry.EgressSize = decimalWithDigits(valueDigits)
+				if len(strings.Join(p.metricLines(entry), "\n")) == target {
+					return p, entry
+				}
+			}
+		}
+	}
+	t.Fatalf("could not construct %d-byte metric payload", target)
+	return nil, metricEntry{}
+}
+
+func decimalWithDigits(digits int) int64 {
+	value := int64(1)
+	for range digits - 1 {
+		value *= 10
+	}
+	return value
 }
 
 func collectMessages(t *testing.T, received <-chan string, count int) []string {

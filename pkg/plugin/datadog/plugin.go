@@ -106,14 +106,17 @@ const metadataSchema = `
   "type": "object",
   "properties": {
     "host": {
-      "type": "string"
+      "type": "string",
+      "default": "127.0.0.1"
     },
     "port": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "default": 8125
     },
     "namespace": {
-      "type": "string"
+      "type": "string",
+      "default": "apisix"
     },
     "constant_tags": {
       "type": "array",
@@ -122,7 +125,8 @@ const metadataSchema = `
         "minLength": 1,
         "maxLength": 200,
         "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
-      }
+      },
+      "default": ["source:apisix"]
     }
   }
 }

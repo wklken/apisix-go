@@ -52,3 +52,33 @@ func TestRunConsumerPluginsFallsBackToNextHandler(t *testing.T) {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
+
+func TestRunConsumerPluginsRunsRunnerOnceAcrossStackedAuthCalls(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	runnerCalls := 0
+	req = WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalls++
+		next.ServeHTTP(w, r)
+	})
+	downstreamCalls := 0
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	secondAuth := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		RunConsumerPlugins(w, r, downstream)
+	})
+	response := httptest.NewRecorder()
+
+	RunConsumerPlugins(response, req, secondAuth)
+
+	if runnerCalls != 1 {
+		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
+	}
+	if downstreamCalls != 1 {
+		t.Fatalf("downstream calls = %d, want 1", downstreamCalls)
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}

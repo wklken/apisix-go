@@ -21,6 +21,7 @@ const (
 	RemoteAddrKey           ContextKey = "remote_addr"
 	RemotePortKey           ContextKey = "remote_port"
 	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
+	consumerPluginsRunKey   ContextKey = "consumer_plugins_run"
 	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
 )
 
@@ -31,11 +32,16 @@ func WithConsumerPluginRunner(r *http.Request, runner ConsumerPluginRunner) *htt
 }
 
 func RunConsumerPlugins(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if alreadyRun, _ := r.Context().Value(consumerPluginsRunKey).(bool); alreadyRun {
+		next.ServeHTTP(w, r)
+		return
+	}
 	runner, _ := r.Context().Value(consumerPluginRunnerKey).(ConsumerPluginRunner)
 	if runner == nil {
 		next.ServeHTTP(w, r)
 		return
 	}
+	r = r.WithContext(context.WithValue(r.Context(), consumerPluginsRunKey, true))
 	runner(w, r, next)
 }
 

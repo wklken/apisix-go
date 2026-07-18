@@ -1,6 +1,7 @@
 package multi_auth
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -105,6 +106,123 @@ func TestHandlerAllowsRequestWhenAnyAuthPluginSucceeds(t *testing.T) {
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerPreservesRejectingConsumerPluginResponse(t *testing.T) {
+	addAuthConsumer(t, "rejecting-consumer-user", map[string]any{
+		"key-auth": map[string]any{"key": "rejecting-consumer-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "rejecting-consumer-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey"}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "rejecting-consumer-key")
+	runnerCalls := 0
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, _ http.Handler) {
+		runnerCalls++
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "rejecting-consumer-user" {
+			t.Fatalf("consumer_name = %v, want rejecting-consumer-user", got)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("consumer rejected"))
+	})
+	res := httptest.NewRecorder()
+	downstreamCalls := 0
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		downstreamCalls++
+	})).ServeHTTP(res, req)
+
+	if runnerCalls != 1 {
+		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
+	}
+	if downstreamCalls != 0 {
+		t.Fatalf("downstream calls = %d, want 0", downstreamCalls)
+	}
+	if res.Code != http.StatusForbidden || res.Body.String() != "consumer rejected" {
+		t.Fatalf("response = %d %q, want 403 consumer rejected", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRunsAcceptingConsumerPluginsAndDownstreamOnce(t *testing.T) {
+	addAuthConsumer(t, "accepting-consumer-user", map[string]any{
+		"key-auth": map[string]any{"key": "accepting-consumer-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "accepting-consumer-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey"}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "accepting-consumer-key")
+	runnerCalls := 0
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalls++
+		next.ServeHTTP(w, r)
+	})
+	res := httptest.NewRecorder()
+	downstreamCalls := 0
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if runnerCalls != 1 {
+		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
+	}
+	if downstreamCalls != 1 {
+		t.Fatalf("downstream calls = %d, want 1", downstreamCalls)
+	}
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", res.Code)
+	}
+}
+
+func TestHandlerPassesConsumerRunnerRequestContextToDownstream(t *testing.T) {
+	type runnerContextKey struct{}
+
+	addAuthConsumer(t, "context-consumer-user", map[string]any{
+		"key-auth": map[string]any{"key": "context-consumer-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "context-consumer-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey"}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "context-consumer-key")
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		r = ctx.WithConsumerPluginOverrides(r, map[string]struct{}{"consumer-restriction": {}})
+		r = r.WithContext(context.WithValue(r.Context(), runnerContextKey{}, "from-runner"))
+		next.ServeHTTP(w, r)
+	})
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ctx.ConsumerPluginOverrides(r, "consumer-restriction") {
+			t.Fatal("consumer plugin override did not reach downstream")
+		}
+		if got := r.Context().Value(runnerContextKey{}); got != "from-runner" {
+			t.Fatalf("runner context = %v, want from-runner", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", res.Code)
 	}
 }
 

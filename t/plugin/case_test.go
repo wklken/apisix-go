@@ -101,6 +101,21 @@ func TestManifestRejectsHMACInputWithAuthorizationHeader(t *testing.T) {
 	}
 }
 
+func TestManifestRejectsHMACInputWithAuthorizationHeaderValues(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input.HeaderValues = map[string][]string{"authorization": {"static"}}
+	manifest.Cases[0].Input.HMAC = &HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{"date"},
+	}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "must not both be configured") {
+		t.Fatalf("validate() error = %v, want HMAC/Authorization conflict", err)
+	}
+}
+
 func TestManifestAcceptsTCPFixture(t *testing.T) {
 	payload := "hello"
 	response := "ok"

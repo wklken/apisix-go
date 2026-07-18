@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/basic_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/hmac_auth"
@@ -111,8 +112,8 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, auth := range p.auths {
-			if auth.succeeds(r) {
-				next.ServeHTTP(w, r)
+			if authenticatedRequest, ok := auth.succeeds(r); ok {
+				ctx.RunConsumerPlugins(w, authenticatedRequest, next)
 				return
 			}
 		}
@@ -122,14 +123,18 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func (a configuredAuth) succeeds(r *http.Request) bool {
-	called := false
+func (a configuredAuth) succeeds(r *http.Request) (*http.Request, bool) {
+	var authenticatedRequest *http.Request
 	probeNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
+		authenticatedRequest = r
 	})
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
-	a.plugin.Handler(probeNext).ServeHTTP(writer, r)
-	return called
+	originalContext := r.Context()
+	probeRequest := ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		next.ServeHTTP(w, r.WithContext(originalContext))
+	})
+	a.plugin.Handler(probeNext).ServeHTTP(writer, probeRequest)
+	return authenticatedRequest, authenticatedRequest != nil
 }
 
 func newAuthPlugin(name string) (authPlugin, error) {

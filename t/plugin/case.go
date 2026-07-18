@@ -533,6 +533,11 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 				return errors.New("input hmac and Authorization header must not both be configured")
 			}
 		}
+		for name := range input.HeaderValues {
+			if strings.EqualFold(name, "Authorization") {
+				return errors.New("input hmac and Authorization header must not both be configured")
+			}
+		}
 	}
 	if output.Status < 100 || output.Status > 599 {
 		return errors.New("output status must be between 100 and 599")

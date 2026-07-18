@@ -102,9 +102,15 @@ type Builder struct {
 	serverAddr            string
 	stoppers              []pluginStopper
 	stopperMu             sync.Mutex
-	consumerPluginChains  map[string]alice.Chain
+	consumerPluginChains  map[consumerPluginChainKey]alice.Chain
 	consumerPluginChainMu sync.Mutex
 	stopOnce              sync.Once
+}
+
+type consumerPluginChainKey struct {
+	plugins   string
+	routeID   string
+	serviceID string
 }
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -114,7 +120,7 @@ func NewBuilder(storage *store.Store) *Builder {
 func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
 	return &Builder{
 		serverAddr:           normalizeServerAddr(serverAddr),
-		consumerPluginChains: make(map[string]alice.Chain),
+		consumerPluginChains: make(map[consumerPluginChainKey]alice.Chain),
 	}
 }
 
@@ -414,7 +420,11 @@ func (b *Builder) consumerPluginChain(
 	if err != nil {
 		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
 	}
-	key := string(encoded)
+	key := consumerPluginChainKey{
+		plugins:   string(encoded),
+		routeID:   routeContext.routeID,
+		serviceID: routeContext.service.ID,
+	}
 
 	b.consumerPluginChainMu.Lock()
 	defer b.consumerPluginChainMu.Unlock()

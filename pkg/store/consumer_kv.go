@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -29,7 +30,9 @@ type ldapAuth struct {
 }
 
 type jweDecrypt struct {
-	Key string `json:"key"`
+	Key             any  `json:"key"`
+	Secret          any  `json:"secret"`
+	IsBase64Encoded bool `json:"is_base64_encoded"`
 }
 
 type wolfRBAC struct {
@@ -140,7 +143,10 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 		if err != nil {
 			return err
 		}
-		k := fmt.Sprintf("jwe-decrypt:%s", jd.Key)
+		if err := validateJWEDecryptConsumerConfig(jd); err != nil {
+			return err
+		}
+		k := fmt.Sprintf("jwe-decrypt:%s", jd.Key.(string))
 		s.consumerKV[k] = id
 
 		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
@@ -159,6 +165,34 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
 	}
 
+	return nil
+}
+
+func validateJWEDecryptConsumerConfig(config jweDecrypt) error {
+	_, ok := config.Key.(string)
+	if !ok {
+		return fmt.Errorf("jwe-decrypt consumer key must be a string")
+	}
+	secret, ok := config.Secret.(string)
+	if !ok {
+		return fmt.Errorf("jwe-decrypt consumer secret must be a string")
+	}
+	if config.IsBase64Encoded {
+		decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(secret, "="))
+		if err != nil {
+			decoded, err = base64.StdEncoding.DecodeString(secret)
+			if err != nil {
+				return fmt.Errorf("jwe-decrypt consumer secret base64 decode: %w", err)
+			}
+		}
+		if len(decoded) != 32 {
+			return fmt.Errorf("the secret length after base64 decode should be 32 chars")
+		}
+		return nil
+	}
+	if len(secret) != 32 {
+		return fmt.Errorf("the secret length should be 32 chars")
+	}
 	return nil
 }
 

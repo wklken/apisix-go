@@ -18,32 +18,72 @@ cases:
         kind: http
         respond: [{status: 200, headers: {Content-Type: text/html}, echo_request_body: true}]
     steps:
-      - {name: sanity, input: {method: POST, path: /echo, headers: {Content-Type: text/html}, body: &default_body "0123456789\n012345678"}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}}}}
-      - {name: br, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}}}}
-      - {name: wildcard, input: {method: POST, path: /echo, headers: {Accept-Encoding: "*", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}}}}
-      - {name: gzip-only, input: {method: POST, path: /echo, headers: {Accept-Encoding: gzip, Content-Type: text/html}, body: *default_body}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}}}}
-      - {name: multi-br, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip, br", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}}}}
-      - {name: multi-wildcard, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip, *", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}}}}
-      - {name: no-br, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip, deflate", Content-Type: text/html}, body: *default_body}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}}}}
-      - {name: positive-quality, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip;q=0.5, br;q=0.6", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}}}}
-      - {name: zero-quality, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip;q=0.5, br;q=0", Content-Type: text/html}, body: *default_body}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}}}}
-      - {name: wildcard-quality, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip;q=0.8, deflate, sdch;q=0.6, *;q=0.1", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}}}}
+      - {name: sanity, input: {method: POST, path: /echo, headers: {Content-Type: text/html}, body: &default_body "0123456789\n012345678"}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}, Vary: {absent: true}}}}
+      - {name: br, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
+      - {name: wildcard, input: {method: POST, path: /echo, headers: {Accept-Encoding: "*", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
+      - {name: gzip-only, input: {method: POST, path: /echo, headers: {Accept-Encoding: gzip, Content-Type: text/html}, body: *default_body}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}, Vary: {absent: true}}}}
+      - {name: multi-br, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip, br", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
+      - {name: multi-wildcard, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip, *", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
+      - {name: no-br, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip, deflate", Content-Type: text/html}, body: *default_body}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}, Vary: {absent: true}}}}
+      - {name: positive-quality, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip;q=0.5, br;q=0.6", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
+      - {name: zero-quality, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip;q=0.5, br;q=0", Content-Type: text/html}, body: *default_body}, output: {status: 200, body: {equals: *default_body}, headers: {Content-Encoding: {absent: true}, Vary: {absent: true}}}}
+      - {name: wildcard-quality, input: {method: POST, path: /echo, headers: {Accept-Encoding: "gzip;q=0.8, deflate, sdch;q=0.6, *;q=0.1", Content-Type: text/html}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
 
   - name: defaults
     source: {file: t/plugin/brotli.t, tests: [11]}
     config:
       routes:
         - id: brotli-defaults
-          uri: /echo
+          uri: /defaults
           plugins:
             brotli: {}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: brotli-default-type
+          uri: /default-plain
+          plugins: {brotli: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.plain.ADDR}}": 1}}
+        - id: brotli-mode-one
+          uri: /mode-one
+          plugins: {brotli: {mode: 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: brotli-level-five
+          uri: /level-five
+          plugins: {brotli: {comp_level: 5}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: brotli-window-twelve
+          uri: /window-twelve
+          plugins: {brotli: {comp_level: 5, lgwin: 12}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: brotli-vary-defaults
+          uri: /vary-defaults
+          plugins: {brotli: {comp_level: 5, lgwin: 12, vary: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: brotli-block-sixteen
+          uri: /block-sixteen
+          plugins: {brotli: {comp_level: 5, lgwin: 12, lgblock: 16, vary: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: brotli-mode-two
+          uri: /mode-two
+          plugins: {brotli: {mode: 2, comp_level: 5, lgwin: 12, lgblock: 16, vary: true}}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond: [{status: 200, headers: {Content-Type: text/html}, body: "01234567890123456789"}]
+        respond: [{status: 200, headers: {Content-Type: text/html}, echo_request_body: true}]
+      - name: plain
+        kind: http
+        respond: [{status: 200, headers: {Content-Type: text/plain}, echo_request_body: true}]
     steps:
-      - {name: default-minimum-length-and-type, input: {method: GET, path: /echo, headers: {Accept-Encoding: br}}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}}}}
+      - {name: default-minimum-length-below-boundary, input: {method: POST, path: /defaults, headers: {Accept-Encoding: br}, body: "0123456789012345678"}, output: {status: 200, body: {equals: "0123456789012345678"}, headers: {Content-Encoding: {absent: true}, Vary: {absent: true}}}}
+      - {name: default-minimum-length-at-boundary, input: {method: POST, path: /defaults, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}}}}
+      - {name: default-http-version, input: {method: POST, path: /defaults, version: "1.0", headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {absent: true}}}}
+      - {name: default-content-type, input: {method: POST, path: /default-plain, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {absent: true}}}}
+      - {name: explicit-mode-one, input: {method: POST, path: /mode-one, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}}}}
+      - {name: explicit-level-five, input: {method: POST, path: /level-five, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}}}}
+      - {name: explicit-window-twelve, input: {method: POST, path: /window-twelve, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}}}}
+      - {name: explicit-vary, input: {method: POST, path: /vary-defaults, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}, Vary: {equals: Accept-Encoding}}}}
+      - {name: explicit-block-sixteen, input: {method: POST, path: /block-sixteen, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}, Vary: {equals: Accept-Encoding}}}}
+      - {name: explicit-mode-two, input: {method: POST, path: /mode-two, headers: {Accept-Encoding: br}, body: "01234567890123456789"}, output: {status: 200, brotli_body: {equals: "01234567890123456789"}, headers: {Content-Encoding: {equals: br}, Vary: {equals: Accept-Encoding}}}}
 
   - name: compression-level
     source: {file: t/plugin/brotli.t, tests: [12, 13]}
@@ -221,9 +261,12 @@ cases:
       - name: primary
         kind: http
         respond:
-          - {status: 200, headers: {Content-Type: text/html, Content-Encoding: gzip}, body: "hello world"}
+          - status: 200
+            headers: {Content-Type: text/html, Content-Encoding: gzip}
+            body: !!binary |
+              H4sIAAAAAAAAA8tIzcnJVyjPL8pJAQCFEUoNCwAAAA==
     steps:
-      - {name: gzip-upstream-is-not-recompressed, input: {method: POST, path: /mock_compressed_upstream_response, headers: {Accept-Encoding: "gzip, br", Content-Type: text/html}, body_repeat: {value: abcdf01234, count: 1024}}, output: {status: 200, body: {equals: "hello world"}, headers: {Content-Encoding: {equals: gzip}}}}
+      - {name: gzip-upstream-is-not-recompressed, input: {method: POST, path: /mock_compressed_upstream_response, headers: {Accept-Encoding: "gzip, br", Content-Type: text/html}, body_repeat: {value: abcdf01234, count: 1024}}, output: {status: 200, gzip_body: {equals: "hello world"}, headers: {Content-Encoding: {equals: gzip}}}}
 
   - name: etag
     source: {file: t/plugin/brotli.t, tests: [32, 33, 34, 35, 36, 37]}
@@ -244,8 +287,8 @@ cases:
           - {status: 200, headers: {Content-Type: text/html, Etag: '"123456789"', Last-Modified: "Thu, 27 Nov 2025 00:32:33 GMT"}, echo_request_body: true}
           - {status: 200, headers: {Content-Type: text/html, Etag: '"12"34"'}, echo_request_body: true}
     steps:
-      - {name: invalid-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: "123456789"}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Etag: {absent: true}}}}
-      - {name: weak-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: 'W/"123456789"'}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Etag: {equals: 'W/"123456789"'}}}}
-      - {name: strong-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: '"123456789"'}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Etag: {equals: 'W/"123456789"'}}}}
-      - {name: last-modified, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: '"123456789"', Last-Modified: "Thu, 27 Nov 2025 00:32:33 GMT"}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Last-Modified: {equals: "Thu, 27 Nov 2025 00:32:33 GMT"}}}}
-      - {name: embedded-quote-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: '"12"34"'}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Etag: {absent: true}}}}
+      - {name: invalid-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: "123456789"}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}, Etag: {absent: true}, Content-Length: {absent: true}}, logs: {not_matches: '\[error\]'}}}
+      - {name: weak-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: 'W/"123456789"'}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}, Etag: {equals: 'W/"123456789"'}, Content-Length: {absent: true}}}}
+      - {name: strong-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: '"123456789"'}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}, Etag: {equals: 'W/"123456789"'}, Content-Length: {absent: true}}}}
+      - {name: last-modified, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: '"123456789"', Last-Modified: "Thu, 27 Nov 2025 00:32:33 GMT"}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}, Etag: {equals: 'W/"123456789"'}, Last-Modified: {equals: "Thu, 27 Nov 2025 00:32:33 GMT"}, Content-Length: {absent: true}}}}
+      - {name: embedded-quote-etag, input: {method: POST, path: /echo, headers: {Accept-Encoding: br, Content-Type: text/html, Etag: '"12"34"'}, body: *default_body}, output: {status: 200, brotli_body: {equals: *default_body}, headers: {Content-Encoding: {equals: br}, Vary: {absent: true}, Etag: {absent: true}, Content-Length: {absent: true}}, logs: {not_matches: '\[error\]'}}}

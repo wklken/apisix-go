@@ -25,6 +25,26 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestPostInitMatchesAPISIXDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+
+	if len(p.config.Types) != 1 || p.config.Types[0] != "text/html" {
+		t.Fatalf("Types = %#v, want [text/html]", p.config.Types)
+	}
+	if *p.config.MinLength != 20 || *p.config.Mode != 0 || *p.config.CompLevel != 6 {
+		t.Fatalf("minimum/mode/level = %d/%d/%d, want 20/0/6", *p.config.MinLength, *p.config.Mode, *p.config.CompLevel)
+	}
+	if *p.config.LGWin != 19 || *p.config.LGBlock != 0 {
+		t.Fatalf("window/block = %d/%d, want 19/0", *p.config.LGWin, *p.config.LGBlock)
+	}
+	if *p.config.HTTPVersion != 1.1 {
+		t.Fatalf("HTTPVersion = %g, want 1.1", *p.config.HTTPVersion)
+	}
+	if p.config.Vary != nil {
+		t.Fatalf("Vary = %v, want unset", *p.config.Vary)
+	}
+}
+
 func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	vary := true
 	p := newTestPlugin(t, Config{
@@ -57,6 +77,31 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != "hello world" {
 		t.Fatalf("decoded body = %q, want hello world", decoded)
+	}
+}
+
+func TestHandlerDoesNotSynthesizeContentLengthAfterCompression(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "11")
+		_, _ = w.Write([]byte("hello world"))
+	})))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", "br")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request server: %v", err)
+	}
+	defer res.Body.Close()
+
+	if got := res.Header.Get("Content-Length"); got != "" || res.ContentLength != -1 {
+		t.Fatalf("Content-Length = %q (%d), want absent", got, res.ContentLength)
 	}
 }
 

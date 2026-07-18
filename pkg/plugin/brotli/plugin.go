@@ -351,5 +351,10 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 		}
 	}
 	w.WriteHeader(r.statusCode)
+	if r.header.Get("Content-Encoding") == "br" {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
 	_, _ = io.Copy(w, bytes.NewReader(r.body.Bytes()))
 }

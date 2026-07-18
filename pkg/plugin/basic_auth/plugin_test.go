@@ -234,6 +234,39 @@ func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 	}
 }
 
+func TestParseBasicAuthorizationDiagnostics(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   string
+		wantUser string
+		wantPass string
+		wantErr  string
+	}{
+		{name: "invalid scheme", header: "Bad_header YmFyOmJhcgo=", wantErr: "Invalid authorization header format"},
+		{name: "invalid base64", header: "Basic aca_a", wantErr: "Failed to decode authentication header: aca_a"},
+		{name: "missing password", header: "Basic YmFy", wantErr: "Split authorization err: invalid decoded data: bar"},
+		{name: "case insensitive", header: "bASiC Zm9vOmJhcg==", wantUser: "foo", wantPass: "bar"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			user, pass, err := parseBasicAuthorization(test.header)
+			if test.wantErr != "" {
+				if err == nil || err.Error() != test.wantErr {
+					t.Fatalf("parseBasicAuthorization() error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBasicAuthorization() error = %v", err)
+			}
+			if user != test.wantUser || pass != test.wantPass {
+				t.Fatalf("credentials = %q/%q, want %q/%q", user, pass, test.wantUser, test.wantPass)
+			}
+		})
+	}
+}
+
 func basicHeader(username, password string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
 }

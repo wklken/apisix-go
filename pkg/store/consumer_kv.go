@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -16,6 +17,17 @@ type basicAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
+
+const basicAuthConsumerSchema = `
+{
+  "type": "object",
+  "title": "work with consumer object",
+  "required": ["username", "password"],
+  "properties": {
+    "username": {"type": "string"},
+    "password": {"type": "string"}
+  }
+}`
 
 type jwtAuth struct {
 	Key string `json:"key"`
@@ -44,6 +56,14 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := s.resolveConsumerSecrets(&consumer); err != nil {
+		return err
+	}
+	if basicAuthPlugin, ok := consumer.Plugins["basic-auth"]; ok {
+		if err := util.Validate(basicAuthPlugin, basicAuthConsumerSchema); err != nil {
+			return fmt.Errorf("basic-auth consumer configuration: %w", err)
+		}
+	}
 	jweDecryptPlugin, hasJWEDecrypt := consumer.Plugins["jwe-decrypt"]
 	var jweDecryptConfig jweDecrypt
 	if hasJWEDecrypt {
@@ -54,117 +74,79 @@ func (s *Store) consumerKVAdd(id []byte, value []byte) error {
 			return err
 		}
 	}
-	s.consumerMu.Lock()
-	defer s.consumerMu.Unlock()
-	key := util.BytesToString(id)
-
-	// clear old keys
-	if keys, ok := s.consumerToKeys[key]; ok {
-		for _, k := range keys {
-			delete(s.consumerKV, k)
-		}
-	}
-	s.consumerToKeys[key] = []string{}
-
-	// add self
-	s.consumerKV[key] = id
-
-	// add plugin unique keys
-
-	// if "key-auth" in consumer.Plugins
+	pluginKeys := make([]string, 0, len(consumer.Plugins))
 	keyAuthPlugin, ok := consumer.Plugins["key-auth"]
 	if ok {
 		var ka keyAuth
-		err = util.Parse(keyAuthPlugin, &ka)
-		if err != nil {
+		if err := util.Parse(keyAuthPlugin, &ka); err != nil {
 			return err
 		}
 		if !strings.HasPrefix(ka.Key, "$") {
-			k := fmt.Sprintf("key-auth:%s", ka.Key)
-			s.consumerKV[k] = id
-
-			// add to consumerToKeys
-			s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+			pluginKeys = append(pluginKeys, fmt.Sprintf("key-auth:%s", ka.Key))
 		}
 	}
-
-	// if "basic-auth" in consumer.Plugins
 	basicAuthPlugin, ok := consumer.Plugins["basic-auth"]
 	if ok {
 		var ba basicAuth
-		err = util.Parse(basicAuthPlugin, &ba)
-		if err != nil {
+		if err := util.Parse(basicAuthPlugin, &ba); err != nil {
 			return err
 		}
-		k := fmt.Sprintf("basic-auth:%s", ba.Username)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys = append(pluginKeys, fmt.Sprintf("basic-auth:%s", ba.Username))
 	}
-
-	// if "jwt-auth" in consumer.Plugins
 	jwtAuthPlugin, ok := consumer.Plugins["jwt-auth"]
 	if ok {
 		var ja jwtAuth
-		err = util.Parse(jwtAuthPlugin, &ja)
-		if err != nil {
+		if err := util.Parse(jwtAuthPlugin, &ja); err != nil {
 			return err
 		}
-		k := fmt.Sprintf("jwt-auth:%s", ja.Key)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys = append(pluginKeys, fmt.Sprintf("jwt-auth:%s", ja.Key))
 	}
-
-	// if "hmac-auth" in consumer.Plugins
 	hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]
 	if ok {
 		var ha hmacAuth
-		err = util.Parse(hmacAuthPlugin, &ha)
-		if err != nil {
+		if err := util.Parse(hmacAuthPlugin, &ha); err != nil {
 			return err
 		}
-		k := fmt.Sprintf("hmac-auth:%s", ha.KeyID)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys = append(pluginKeys, fmt.Sprintf("hmac-auth:%s", ha.KeyID))
 	}
-
 	ldapAuthPlugin, ok := consumer.Plugins["ldap-auth"]
 	if ok {
 		var la ldapAuth
-		err = util.Parse(ldapAuthPlugin, &la)
-		if err != nil {
+		if err := util.Parse(ldapAuthPlugin, &la); err != nil {
 			return err
 		}
-		k := fmt.Sprintf("ldap-auth:%s", la.UserDN)
-		s.consumerKV[k] = id
-
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys = append(pluginKeys, fmt.Sprintf("ldap-auth:%s", la.UserDN))
 	}
-
 	if hasJWEDecrypt {
-		k := fmt.Sprintf("jwe-decrypt:%s", jweDecryptConfig.Key.(string))
-		s.consumerKV[k] = id
-
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys = append(pluginKeys, fmt.Sprintf("jwe-decrypt:%s", jweDecryptConfig.Key.(string)))
 	}
-
 	wolfRBACPlugin, ok := consumer.Plugins["wolf-rbac"]
 	if ok {
 		var wr wolfRBAC
-		err = util.Parse(wolfRBACPlugin, &wr)
-		if err != nil {
+		if err := util.Parse(wolfRBACPlugin, &wr); err != nil {
 			return err
 		}
-		k := fmt.Sprintf("wolf-rbac:%s", wr.AppID)
-		s.consumerKV[k] = id
-
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys = append(pluginKeys, fmt.Sprintf("wolf-rbac:%s", wr.AppID))
 	}
+
+	s.consumerMu.Lock()
+	defer s.consumerMu.Unlock()
+	key := util.BytesToString(id)
+	if keys, ok := s.consumerToKeys[key]; ok {
+		for _, oldKey := range keys {
+			delete(s.consumerKV, oldKey)
+		}
+	}
+	consumerID := append([]byte(nil), id...)
+	s.consumerKV[key] = consumerID
+	s.consumerToKeys[key] = pluginKeys
+	for _, pluginKey := range pluginKeys {
+		s.consumerKV[pluginKey] = consumerID
+	}
+	if s.consumerValues == nil {
+		s.consumerValues = make(map[string]resource.Consumer)
+	}
+	s.consumerValues[key] = consumer
 
 	return nil
 }
@@ -212,6 +194,7 @@ func (s *Store) consumerKVDelete(id []byte) error {
 
 	// delete self
 	delete(s.consumerKV, key)
+	delete(s.consumerValues, key)
 
 	return nil
 }

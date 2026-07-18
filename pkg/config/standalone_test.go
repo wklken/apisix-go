@@ -106,6 +106,29 @@ func TestStandaloneYAMLRequiresEndMarker(t *testing.T) {
 	}
 }
 
+func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := `secrets:
+  - id: vault/test1
+    uri: http://127.0.0.1:8200
+    prefix: kv/apisix
+    token: root
+#END
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 2)
+	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	got := collectStandaloneEvents(events)
+	if _, ok := got["/apisix/secrets/vault/test1"]; !ok {
+		t.Fatalf("loaded events = %#v, want Vault secret resource", got)
+	}
+}
+
 func TestStandaloneFileWatcherDeletesRemovedResources(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := `routes:

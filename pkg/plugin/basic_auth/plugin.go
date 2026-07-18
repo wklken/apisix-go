@@ -1,12 +1,13 @@
 package basic_auth
 
 import (
-	"errors"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -89,8 +90,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		user, pass, ok := r.BasicAuth()
-		if !ok {
+		user, pass, err := parseBasicAuthorization(authHeader)
+		if err != nil {
+			logger.Warn(err.Error())
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
@@ -101,13 +103,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		pass = normalizeCredential(pass)
 
 		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
-		if errors.Is(err, store.ErrNotFound) {
+		if err != nil {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
 			p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 			return
 		}
+		logger.Info("find consumer " + consumer.Username)
 
 		consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
 		if !exists {
@@ -154,6 +157,7 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
+		logger.Errorf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
 		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 		return true
 	}
@@ -172,4 +176,26 @@ func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {
 
 func normalizeCredential(value string) string {
 	return strings.Join(strings.Fields(value), "")
+}
+
+type authorizationError string
+
+func (e authorizationError) Error() string {
+	return string(e)
+}
+
+func parseBasicAuthorization(header string) (string, string, error) {
+	scheme, encoded, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "basic") || encoded == "" {
+		return "", "", authorizationError("Invalid authorization header format")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", "", authorizationError(fmt.Sprintf("Failed to decode authentication header: %s", encoded))
+	}
+	user, pass, found := strings.Cut(string(decoded), ":")
+	if !found {
+		return "", "", authorizationError(fmt.Sprintf("Split authorization err: invalid decoded data: %s", decoded))
+	}
+	return user, pass, nil
 }

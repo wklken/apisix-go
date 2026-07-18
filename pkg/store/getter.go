@@ -77,6 +77,12 @@ func GetService(id string) (resource.Service, error) {
 }
 
 func GetConsumer(id string) (resource.Consumer, error) {
+	s.consumerMu.RLock()
+	consumer, ok := s.consumerValues[id]
+	s.consumerMu.RUnlock()
+	if ok {
+		return consumer, nil
+	}
 	config := s.GetFromBucket("consumers", util.StringToBytes(id))
 	if config == nil {
 		return resource.Consumer{}, ErrNotFound

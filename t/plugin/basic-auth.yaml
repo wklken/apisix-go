@@ -1,116 +1,258 @@
 sources:
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/basic-auth.t
+    tests: 30
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/basic-auth-anonymous-consumer.t
     tests: 8
   - repository: https://github.com/apache/apisix
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/basic-auth-realm.t
     tests: 6
-  - repository: https://github.com/apache/apisix
-    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-    file: t/plugin/basic-auth.t
-    tests: 30
 
 cases:
-  - name: credential-validation
-    source:
-      file: t/plugin/basic-auth.t
-      tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  - name: valid-consumer-schema
+    source: {file: t/plugin/basic-auth.t, tests: [1]}
     config:
       consumers:
         - username: foo
-          plugins:
-            basic-auth: {username: foo, password: bar}
+          plugins: {basic-auth: {username: foo, password: bar}}
       routes:
-        - id: basic-auth-validation
+        - id: basic-auth-valid-consumer-schema
           uri: /hello
           plugins: {basic-auth: {}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
         respond: [{status: 200, body: hello world}]
+    steps:
+      - name: valid-consumer-authenticates
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: consumer-username-type-diagnostic
+    source: {file: t/plugin/basic-auth.t, tests: [2]}
+    config:
+      consumers:
+        - username: foo
+          plugins: {basic-auth: {username: 123, password: bar}}
+    output:
+      logs: {matches: 'basic-auth consumer configuration:.*username.*expected string'}
+
+  - name: consumer-and-route-created
+    source: {file: t/plugin/basic-auth.t, tests: [3, 4]}
+    config:
+      consumers:
+        - username: foo
+          plugins: {basic-auth: {username: foo, password: bar}}
+      routes:
+        - id: basic-auth-created
+          uri: /hello
+          plugins: {basic-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: created-resources-protect-the-route
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: credential-validation
+    source: {file: t/plugin/basic-auth.t, tests: [5, 6, 7, 8, 9, 10, 11]}
+    config:
+      consumers:
+        - username: foo
+          plugins: {basic-auth: {username: foo, password: bar}}
+      routes:
+        - id: basic-auth-credential-validation
+          uri: /hello
+          plugins: {basic-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
     steps:
       - name: missing-authorization
         input: {path: /hello}
+        output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}
+      - name: invalid-scheme
+        input: {path: /hello, headers: {Authorization: "Bad_header YmFyOmJhcgo="}}
         output:
           status: 401
-          body: {matches: 'Missing authorization in request'}
-      - name: malformed-scheme
-        input:
-          path: /hello
-          headers: {Authorization: "Bad_header YmFyOmJhcgo="}
+          body: {equals: '{"message":"Invalid authorization in request"}'}
+          logs: {matches: 'Invalid authorization header format'}
+      - name: invalid-base64
+        input: {path: /hello, headers: {Authorization: "Basic aca_a"}}
         output:
           status: 401
-          body: {matches: 'Invalid authorization in request'}
-      - name: malformed-base64
-        input:
-          path: /hello
-          headers: {Authorization: "Basic aca_a"}
-        output:
-          status: 401
-          body: {matches: 'Invalid authorization in request'}
+          body: {equals: '{"message":"Invalid authorization in request"}'}
+          logs: {matches: 'Failed to decode authentication header: aca_a'}
       - name: missing-password
-        input:
-          path: /hello
-          headers: {Authorization: "Basic YmFy"}
+        input: {path: /hello, headers: {Authorization: "Basic YmFy"}}
         output:
           status: 401
-          body: {matches: 'Invalid authorization in request'}
-      - name: invalid-user
-        input:
-          path: /hello
-          headers: {Authorization: "Basic YmFyOmJhcgo="}
-        output:
-          status: 401
-          body: {matches: 'Invalid user authorization'}
+          body: {equals: '{"message":"Invalid authorization in request"}'}
+          logs: {matches: 'Split authorization err: invalid decoded data: bar'}
+      - name: invalid-username
+        input: {path: /hello, headers: {Authorization: "Basic YmFyOmJhcgo="}}
+        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
       - name: invalid-password
-        input:
-          path: /hello
-          headers: {Authorization: "Basic Zm9vOmZvbwo="}
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmZvbwo="}}
+        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+      - name: valid-authorization
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output:
-          status: 401
-          body: {matches: 'Invalid user authorization'}
-      - name: case-insensitive-basic-scheme
+          status: 200
+          body: {equals: hello world}
+          logs: {matches: 'find consumer foo'}
+      - name: duplicate-authorization-uses-first-value
         input:
           path: /hello
-          headers: {Authorization: "Basic Zm9vOmJhcg=="}
+          header_values:
+            Authorization: ["Basic Zm9vOmJhcg==", "Basic YmFyOmJhcgo="]
         output: {status: 200, body: {equals: hello world}}
+      - name: duplicate-authorization-does-not-skip-invalid-first-value
+        input:
+          path: /hello
+          header_values:
+            Authorization: ["Basic YmFyOmJhcgo=", "Basic Zm9vOmJhcg=="]
+        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
 
-  - name: invalid-consumer-schema
-    source:
-      file: t/plugin/basic-auth.t
-      tests: [12, 13, 14, 15, 16, 17]
+  - name: invalid-consumer-snapshots-retain-last-good
+    source: {file: t/plugin/basic-auth.t, tests: [12, 13, 14]}
+    config: &last_good_config
+      consumers:
+        - username: foo
+          plugins: {basic-auth: {username: foo, password: bar}}
+      routes:
+        - id: basic-auth-last-good
+          uri: /ready
+          plugins:
+            basic-auth: {}
+            mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+    steps:
+      - name: last-good-consumer-is-active
+        input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 204}
+      - name: reject-missing-password
+        config:
+          consumers:
+            - username: foo
+              plugins: {basic-auth: {username: foo}}
+          routes:
+            - id: basic-auth-last-good
+              uri: /ready
+              plugins:
+                basic-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+          output: {status: 204}
+        input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 204, logs: {matches: "missing properties: 'password'"}}
+      - name: reject-empty-consumer-plugin
+        config:
+          consumers:
+            - username: foo
+              plugins: {basic-auth: {}}
+          routes:
+            - id: basic-auth-last-good
+              uri: /ready
+              plugins:
+                basic-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+          output: {status: 204}
+        input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 204, logs: {matches: "missing properties: '(username|password)'"}}
+      - name: reject-non-object-consumer-plugin
+        config:
+          consumers:
+            - username: foo
+              plugins: {basic-auth: blah}
+          routes:
+            - id: basic-auth-last-good
+              uri: /ready
+              plugins:
+                basic-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+          output: {status: 204}
+        input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 204, logs: {matches: 'basic-auth consumer configuration:.*expected object'}}
+      - name: later-valid-consumer-replaces-last-good
+        config:
+          consumers:
+            - username: foo
+              plugins: {basic-auth: {username: foo, password: baz}}
+          routes:
+            - id: basic-auth-last-good
+              uri: /ready
+              plugins:
+                basic-auth: {}
+                mocking: {_meta: {priority: -1000}, response_status: 204, response_example: ready}
+        config_probe:
+          input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJheg=="}}
+          output: {status: 204}
+        input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+
+  - name: default-route-schema
+    source: {file: t/plugin/basic-auth.t, tests: [15]}
+    config:
+      routes:
+        - id: basic-auth-default-schema
+          uri: /hello
+          plugins: {basic-auth: {}}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
+
+  - name: consumer-schema-selection
+    source: {file: t/plugin/basic-auth.t, tests: [16]}
     config:
       consumers:
         - username: foo
-          plugins:
-            basic-auth: {username: foo, password: bar}
+          plugins: {basic-auth: {username: foo, password: bar}}
       routes:
-        - id: basic-auth-schema
+        - id: basic-auth-consumer-schema
           uri: /hello
           plugins: {basic-auth: {}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
         respond: [{status: 200, body: hello world}]
     steps:
-      - name: schema-resources-are-live
-        input:
-          path: /hello
-          headers: {Authorization: "Basic Zm9vOmJhcg=="}
+      - name: consumer-schema-fields-are-accepted
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
 
+  - name: unknown-schema-type-uses-route-schema
+    source: {file: t/plugin/basic-auth.t, tests: [17]}
+    config:
+      routes:
+        - id: basic-auth-unknown-schema-type
+          uri: /hello
+          plugins: {basic-auth: {realm: basic}}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
+
   - name: hide-credentials
-    source:
-      file: t/plugin/basic-auth.t
-      tests: [18, 19]
+    source: {file: t/plugin/basic-auth.t, tests: [18, 19]}
     config:
       consumers:
         - username: foo
@@ -119,28 +261,21 @@ cases:
         - id: basic-auth-hide
           uri: /echo
           plugins: {basic-auth: {hide_credentials: true}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
         expect:
           - path: {equals: /echo}
-            headers:
-              Authorization: {absent: true}
+            headers: {Authorization: {absent: true}}
         respond: [{status: 200, body: hello world}]
     steps:
       - name: authorization-header-is-hidden
-        input:
-          path: /echo
-          headers: {Authorization: "Basic Zm9vOmJhcg=="}
+        input: {path: /echo, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
 
   - name: preserve-credentials
-    source:
-      file: t/plugin/basic-auth.t
-      tests: [20, 21]
+    source: {file: t/plugin/basic-auth.t, tests: [20, 21]}
     config:
       consumers:
         - username: foo
@@ -149,68 +284,100 @@ cases:
         - id: basic-auth-preserve
           uri: /echo
           plugins: {basic-auth: {hide_credentials: false}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
         expect:
           - path: {equals: /echo}
-            headers:
-              Authorization: {equals: "Basic Zm9vOmJhcg=="}
+            headers: {Authorization: {equals: "Basic Zm9vOmJhcg=="}}
         respond: [{status: 200, body: hello world}]
     steps:
       - name: authorization-header-is-preserved
-        input:
-          path: /echo
-          headers: {Authorization: "Basic Zm9vOmJhcg=="}
+        input: {path: /echo, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
 
-  - name: secret-reference-credential
-    source:
-      file: t/plugin/basic-auth.t
-      tests: [22, 23, 24, 25, 26]
+  - name: vault-password-reference
+    source: {file: t/plugin/basic-auth.t, tests: [22, 23, 24]}
     config:
+      secrets:
+        - id: vault/test1
+          uri: "{{FIXTURE.vault.URL}}"
+          prefix: kv/apisix
+          token: root
       consumers:
         - username: foo
-          plugins: {basic-auth: {username: foo, password: bar}}
+          plugins:
+            basic-auth: {username: foo, password: '$secret://vault/test1/foo/passwd'}
       routes:
-        - id: basic-auth-secret-reference
+        - id: basic-auth-vault
           uri: /echo
           plugins: {basic-auth: {hide_credentials: false}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
+      - name: vault
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /v1/kv/apisix/foo}
+            headers:
+              X-Vault-Token: {equals: root}
+              X-Vault-Namespace: {absent: true}
+        respond:
+          - {status: 200, body: '{"data":{"passwd":"bar"}}'}
       - name: primary
         kind: http
         expect:
           - path: {equals: /echo}
-            headers:
-              Authorization: {equals: "Basic Zm9vOmJhcg=="}
-          - path: {equals: /echo}
-            headers:
-              Authorization: {equals: "Basic Zm9vOmJhcg=="}
-        respond:
-          - {status: 200, body: hello world}
-          - {status: 200, body: hello world}
+            headers: {Authorization: {equals: "Basic Zm9vOmJhcg=="}}
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: vault-password-credential
-        input:
-          path: /echo
-          headers: {Authorization: "Basic Zm9vOmJhcg=="}
+      - name: vault-password-authenticates
+        input: {path: /echo, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
-      - name: environment-password-credential
-        input:
-          path: /echo
-          headers: {Authorization: "Basic Zm9vOmJhcg=="}
+
+  - name: vault-token-environment-reference
+    source: {file: t/plugin/basic-auth.t, tests: [25, 26]}
+    environment: {VAULT_TOKEN: root}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: "{{FIXTURE.vault.URL}}"
+          prefix: kv/apisix
+          token: '$ENV://VAULT_TOKEN'
+      consumers:
+        - username: foo
+          plugins:
+            basic-auth: {username: foo, password: '$secret://vault/test1/foo/passwd'}
+      routes:
+        - id: basic-auth-vault-env-token
+          uri: /echo
+          plugins: {basic-auth: {hide_credentials: false}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: vault
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /v1/kv/apisix/foo}
+            headers:
+              X-Vault-Token: {equals: root}
+              X-Vault-Namespace: {absent: true}
+        respond:
+          - {status: 200, body: '{"data":{"passwd":"bar"}}'}
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /echo}
+            headers: {Authorization: {equals: "Basic Zm9vOmJhcg=="}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: environment-token-fetches-vault-password
+        input: {path: /echo, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
 
   - name: basic-scheme-case-folding
-    source:
-      file: t/plugin/basic-auth.t
-      tests: [27, 28, 29, 30]
+    source: {file: t/plugin/basic-auth.t, tests: [27, 28, 29, 30]}
     config:
       consumers:
         - username: foo
@@ -219,9 +386,7 @@ cases:
         - id: basic-auth-scheme-case
           uri: /hello
           plugins: {basic-auth: {}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
@@ -231,148 +396,169 @@ cases:
           - {status: 200, body: hello world}
     steps:
       - name: lowercase-scheme
-        input:
-          path: /hello
-          headers: {Authorization: "basic Zm9vOmJhcg=="}
-        output: {status: 200, body: {equals: hello world}}
+        input: {path: /hello, headers: {Authorization: "basic Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer foo'}}
       - name: uppercase-scheme
-        input:
-          path: /hello
-          headers: {Authorization: "BASIC Zm9vOmJhcg=="}
-        output: {status: 200, body: {equals: hello world}}
+        input: {path: /hello, headers: {Authorization: "BASIC Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer foo'}}
       - name: mixed-case-scheme
-        input:
-          path: /hello
-          headers: {Authorization: "bASiC Zm9vOmJhcg=="}
-        output: {status: 200, body: {equals: hello world}}
+        input: {path: /hello, headers: {Authorization: "bASiC Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer foo'}}
 
-  - name: anonymous-consumer
-    source:
-      file: t/plugin/basic-auth-anonymous-consumer.t
-      tests: [1, 2, 3, 4, 5]
+  - name: normal-consumer-limit-chain
+    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [1, 2, 3]}
     config:
       consumers:
-        - username: normal
-          plugins: {basic-auth: {username: normal, password: secret}}
+        - username: jack
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            limit-count: {count: 4, time_window: 60}
         - username: anonymous
-          plugins: {}
+          plugins:
+            limit-count: {count: 1, time_window: 60}
       routes:
-        - id: basic-auth-anonymous
+        - id: basic-auth-normal-limit
           uri: /hello
           plugins: {basic-auth: {anonymous_consumer: anonymous}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
         respond:
           - {status: 200, body: hello world}
           - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
     steps:
-      - name: anonymous-request
-        input: {path: /hello}
+      - name: normal-request-1
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
-      - name: normal-consumer-request
-        input:
-          path: /hello
-          headers: {Authorization: "Basic bm9ybWFsOnNlY3JldA=="}
+      - name: normal-request-2
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
+      - name: normal-request-3
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: normal-request-4
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: normal-request-5-is-limited
+        input: {path: /hello, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
+        output: {status: 503}
 
-  - name: missing-anonymous-consumer
-    source:
-      file: t/plugin/basic-auth-anonymous-consumer.t
-      tests: [6, 7, 8]
+  - name: anonymous-consumer-limit-chain
+    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [4, 5]}
     config:
+      consumers:
+        - username: jack
+          plugins:
+            basic-auth: {username: foo, password: bar}
+            limit-count: {count: 4, time_window: 60}
+        - username: anonymous
+          plugins:
+            limit-count: {count: 1, time_window: 60}
       routes:
-        - id: basic-auth-missing-anonymous
+        - id: basic-auth-anonymous-limit
           uri: /hello
-          plugins: {basic-auth: {anonymous_consumer: missing-anonymous}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+          plugins: {basic-auth: {anonymous_consumer: anonymous}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
         respond: [{status: 200, body: hello world}]
     steps:
-      - name: anonymous-lookup-fails
+      - name: first-anonymous-request-is-allowed
         input: {path: /hello}
-        output:
-          status: 401
-          body: {matches: 'Invalid user authorization'}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-anonymous-request-is-limited
+        input: {path: /hello}
+        output: {status: 503}
+      - name: third-anonymous-request-is-limited
+        input: {path: /hello}
+        output: {status: 503}
+      - name: fourth-anonymous-request-is-limited
+        input: {path: /hello}
+        output: {status: 503}
+
+  - name: missing-anonymous-consumer
+    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [6, 7]}
+    config:
+      routes:
+        - id: basic-auth-missing-anonymous
+          uri: /hello
+          plugins: {basic-auth: {anonymous_consumer: not-found-anonymous}}
+    input: {path: /hello}
+    output:
+      status: 401
+      body: {equals: '{"message":"Invalid user authorization"}'}
+      logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
+
+  - name: anonymous-consumer-schema
+    source: {file: t/plugin/basic-auth-anonymous-consumer.t, tests: [8]}
+    variants:
+      - name: number
+        config:
+          routes:
+            - id: basic-auth-anonymous-number
+              uri: /hello
+              plugins: {basic-auth: {anonymous_consumer: 123}}
+        output: {logs: {matches: 'anonymous_consumer.*expected string'}}
+      - name: boolean
+        config:
+          routes:
+            - id: basic-auth-anonymous-boolean
+              uri: /hello
+              plugins: {basic-auth: {anonymous_consumer: true}}
+        output: {logs: {matches: 'anonymous_consumer.*expected string'}}
+      - name: object
+        config:
+          routes:
+            - id: basic-auth-anonymous-object
+              uri: /hello
+              plugins: {basic-auth: {anonymous_consumer: {}}}
+        output: {logs: {matches: 'anonymous_consumer.*expected string'}}
+      - name: empty
+        config:
+          routes:
+            - id: basic-auth-anonymous-empty
+              uri: /hello
+              plugins: {basic-auth: {anonymous_consumer: ''}}
+        output: {logs: {matches: 'anonymous_consumer.*length.*1'}}
 
   - name: default-realm
-    source:
-      file: t/plugin/basic-auth-realm.t
-      tests: [1, 2]
+    source: {file: t/plugin/basic-auth-realm.t, tests: [1, 2]}
     config:
       routes:
         - id: basic-auth-default-realm
           uri: /hello
           plugins: {basic-auth: {}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
-    steps:
-      - name: default-realm
-        input: {path: /hello}
-        output:
-          status: 401
-          headers:
-            WWW-Authenticate: {equals: 'Basic realm="basic"'}
-          body: {matches: 'Missing authorization in request'}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
 
   - name: custom-realm
-    source:
-      file: t/plugin/basic-auth-realm.t
-      tests: [3, 4]
+    source: {file: t/plugin/basic-auth-realm.t, tests: [3, 4]}
     config:
       routes:
         - id: basic-auth-custom-realm
           uri: /hello
           plugins: {basic-auth: {realm: secure-zone}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
-    steps:
-      - name: custom-realm
-        input: {path: /hello}
-        output:
-          status: 401
-          headers:
-            WWW-Authenticate: {equals: 'Basic realm="secure-zone"'}
-          body: {matches: 'Missing authorization in request'}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'Basic realm="secure-zone"'}}
 
-  - name: realm-with-missing-anonymous
-    source:
-      file: t/plugin/basic-auth-realm.t
-      tests: [5, 6]
+  - name: missing-anonymous-consumer-returns-default-realm
+    source: {file: t/plugin/basic-auth-realm.t, tests: [5, 6]}
     config:
       routes:
         - id: basic-auth-realm-missing-anonymous
           uri: /hello
           plugins: {basic-auth: {anonymous_consumer: missing-consumer}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
-    steps:
-      - name: missing-anonymous-returns-realm
-        input: {path: /hello}
-        output:
-          status: 401
-          headers:
-            WWW-Authenticate: {equals: 'Basic realm="basic"'}
-          body: {matches: 'Invalid user authorization'}
+    input: {path: /hello}
+    output:
+      status: 401
+      headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
+      body: {equals: '{"message":"Invalid user authorization"}'}
+      logs: {matches: 'failed to get anonymous consumer missing-consumer'}

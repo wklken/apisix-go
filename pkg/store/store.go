@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -27,6 +28,8 @@ type Store struct {
 	consumerKV map[string][]byte
 	// store consumer_id -> keys, like foo->[key-auth:123456], for update and delete
 	consumerToKeys map[string][]string
+	// store validated consumers with environment and managed secret references resolved
+	consumerValues map[string]resource.Consumer
 	consumerMu     sync.RWMutex
 }
 
@@ -51,6 +54,7 @@ func NewStore(dbPath string, events chan *Event) *Store {
 
 			consumerKV:     map[string][]byte{},
 			consumerToKeys: map[string][]string{},
+			consumerValues: map[string]resource.Consumer{},
 		}
 
 		s.InitBuckets()
@@ -92,6 +96,7 @@ var builtInBuckets = [][]byte{
 	[]byte("protos"),
 	[]byte("ssls"),
 	[]byte("stream_routes"),
+	[]byte("secrets"),
 }
 
 func (s *Store) InitBuckets() {
@@ -172,6 +177,9 @@ func (s *Store) Stop() {
 // /apisix/routes/505192286146003655
 func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 	parts := bytes.Split(key, []byte("/"))
+	if len(parts) >= 5 && bytes.Equal(parts[len(parts)-3], []byte("secrets")) {
+		return parts[len(parts)-3], bytes.Join(parts[len(parts)-2:], []byte("/"))
+	}
 
 	return parts[len(parts)-2], parts[len(parts)-1]
 }
@@ -192,16 +200,16 @@ func (s *Store) processEvents() {
 					return errBucketNotFound
 				}
 
-				err := b.Put(id, event.Value)
-				if err != nil {
+				if bytes.Equal(bucketName, []byte("consumers")) {
+					if err := s.consumerKVAdd(id, event.Value); err != nil {
+						logger.Errorf("store process the consumer fail, err=%s", err)
+						return nil
+					}
+				}
+
+				if err := b.Put(id, event.Value); err != nil {
 					return fmt.Errorf("put key-value fail: %s", err)
 				}
-
-				err = s.consumerKVAdd(id, event.Value)
-				if err != nil {
-					logger.Errorf("store process the consumer fail, err=%w", err)
-				}
-
 				return nil
 			})
 		case EventTypeDelete:
@@ -216,9 +224,10 @@ func (s *Store) processEvents() {
 					return fmt.Errorf("delete key-value fail: %s", err)
 				}
 
-				err = s.consumerKVDelete(id)
-				if err != nil {
-					logger.Errorf("store process the consumer fail, err=%w", err)
+				if bytes.Equal(bucketName, []byte("consumers")) {
+					if err := s.consumerKVDelete(id); err != nil {
+						logger.Errorf("store process the consumer fail, err=%s", err)
+					}
 				}
 
 				return nil

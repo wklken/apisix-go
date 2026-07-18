@@ -68,6 +68,16 @@ func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
 	}
 }
 
+func TestGetTypeAndIDFromKeyPreservesSecretManagerID(t *testing.T) {
+	bucket, id := getTypeAndIDFromKey([]byte("/apisix/secrets/vault/test1"))
+	if got, want := string(bucket), "secrets"; got != want {
+		t.Fatalf("bucket = %q, want %q", got, want)
+	}
+	if got, want := string(id), "vault/test1"; got != want {
+		t.Fatalf("id = %q, want %q", got, want)
+	}
+}
+
 func TestRouteReloadBucketSemantics(t *testing.T) {
 	tests := []struct {
 		bucket string

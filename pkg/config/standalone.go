@@ -33,6 +33,7 @@ var standaloneBuckets = []string{
 	"plugin_metadata",
 	"ssls",
 	"stream_routes",
+	"secrets",
 	"consumers",
 	"consumer_groups",
 	"global_rules",

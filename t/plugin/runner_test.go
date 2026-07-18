@@ -2476,6 +2476,10 @@ func expandIterationMatcher(matcher *Matcher, replacement string) *Matcher {
 		value := replaceIteration(*matcher.Equals, replacement)
 		expanded.Equals = &value
 	}
+	if matcher.JSONEquals != nil {
+		value := replaceIteration(*matcher.JSONEquals, replacement)
+		expanded.JSONEquals = &value
+	}
 	if matcher.Matches != nil {
 		value := replaceIteration(*matcher.Matches, replacement)
 		expanded.Matches = &value

@@ -639,6 +639,41 @@ func TestMatcherSupportsEqualsAndRegex(t *testing.T) {
 	}
 }
 
+func TestMatcherSupportsSemanticJSON(t *testing.T) {
+	manifest, err := loadManifest("json.yaml", []byte(`
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/example.t
+    tests: 1
+cases:
+  - name: json-body
+    source: {file: t/plugin/example.t, tests: [1]}
+    config: {routes: []}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - body:
+              json_equals: '{"messages":[{"role":"user","content":"hello"}],"model":"gpt-4"}'
+        respond: [{status: 200}]
+    steps:
+      - name: request
+        input: {path: /}
+        output: {status: 200}
+`))
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+
+	if err := manifest.Cases[0].Fixtures[0].Expect[0].Body.match(
+		`{"model":"gpt-4","messages":[{"content":"hello","role":"user"}]}`,
+		true,
+	); err != nil {
+		t.Fatalf("semantic JSON matcher error = %v", err)
+	}
+}
+
 func TestMatcherSupportsNegativeRegex(t *testing.T) {
 	pattern := `"consumer"|"service"`
 	matcher := Matcher{NotMatches: &pattern}

@@ -2,10 +2,12 @@ package pluginintegration
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -188,6 +190,7 @@ type HeaderCapture struct {
 
 type Matcher struct {
 	Equals     *string  `yaml:"equals,omitempty"`
+	JSONEquals *string  `yaml:"json_equals,omitempty"`
 	Matches    *string  `yaml:"matches,omitempty"`
 	NotMatches *string  `yaml:"not_matches,omitempty"`
 	Absent     *bool    `yaml:"absent,omitempty"`
@@ -855,6 +858,16 @@ func (m Matcher) validate(kind matcherKind) error {
 	if m.Equals != nil {
 		operations++
 	}
+	if m.JSONEquals != nil {
+		operations++
+		if kind != matcherBody {
+			return errors.New("json_equals is only valid for bodies")
+		}
+		var expected any
+		if err := json.Unmarshal([]byte(*m.JSONEquals), &expected); err != nil {
+			return fmt.Errorf("invalid json_equals: %w", err)
+		}
+	}
 	if m.Matches != nil {
 		operations++
 		if _, err := regexp.Compile(*m.Matches); err != nil {
@@ -886,7 +899,9 @@ func (m Matcher) validate(kind matcherKind) error {
 		}
 	}
 	if operations != 1 {
-		return errors.New("matcher must configure exactly one of equals, matches, not_matches, absent, or values")
+		return errors.New(
+			"matcher must configure exactly one of equals, json_equals, matches, not_matches, absent, or values",
+		)
 	}
 	return nil
 }
@@ -906,6 +921,18 @@ func (m Matcher) match(value string, present bool) error {
 	case m.Equals != nil:
 		if value != *m.Equals {
 			return fmt.Errorf("got %q, want %q", value, *m.Equals)
+		}
+	case m.JSONEquals != nil:
+		var got any
+		if err := json.Unmarshal([]byte(value), &got); err != nil {
+			return fmt.Errorf("decode actual JSON: %w", err)
+		}
+		var want any
+		if err := json.Unmarshal([]byte(*m.JSONEquals), &want); err != nil {
+			return fmt.Errorf("decode expected JSON: %w", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			return fmt.Errorf("got JSON %s, want %s", value, *m.JSONEquals)
 		}
 	case m.Matches != nil:
 		if !regexp.MustCompile(*m.Matches).MatchString(value) {

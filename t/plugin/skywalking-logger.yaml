@@ -1,111 +1,379 @@
-cases:
-    - config:
-        routes:
-            - id: skywalking-logger-source-1
-              plugins:
-                skywalking-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    endpoint_addr: '{{FIXTURE.sink.URL}}'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /v3/logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: skywalking-logger-source-1
-      source:
-        file: t/plugin/skywalking-logger.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: skywalking-logger-source-2
-              plugins:
-                skywalking-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    endpoint_addr: '{{FIXTURE.sink.URL}}'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /v3/logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: skywalking-logger-source-2
-      source:
-        file: t/plugin/skywalking-logger2.t
-        tests:
-            - 1
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/skywalking-logger.t
-      tests: 14
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/skywalking-logger2.t
-      tests: 1
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/skywalking-logger.t
+    tests: 14
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/skywalking-logger2.t
+    tests: 1
+cases:
+  - name: minimal-schema-and-defaults
+    source: {file: t/plugin/skywalking-logger.t, tests: [1]}
+    config:
+      routes:
+        - id: skywalking-minimal
+          uri: /minimal
+          plugins:
+            skywalking-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}'}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /minimal}}], respond: [{status: 200, body: minimal-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            headers: {Content-Type: {equals: application/json}}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /minimal}
+                  payload: {route_id: {equals: skywalking-minimal}}
+        respond: [{status: 200}]
+    steps:
+      - {name: minimal-config-delivers-after-default-timeout, input: {path: /minimal}, output: {status: 200, body: {equals: minimal-ok}}, wait: 6s}
+
+  - name: full-schema-configuration
+    source: {file: t/plugin/skywalking-logger.t, tests: [2]}
+    config:
+      routes:
+        - id: skywalking-full
+          uri: /full
+          plugins:
+            skywalking-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              timeout: 3
+              name: skywalking-logger
+              max_retry_count: 2
+              retry_delay: 2
+              buffer_duration: 2
+              inactive_timeout: 2
+              batch_max_size: 500
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /full}}], respond: [{status: 200, body: full-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /full}
+                  payload: {route_id: {equals: skywalking-full}}
+        respond: [{status: 200}]
+    steps:
+      - {name: full-config-delivers-after-inactive-timeout, input: {path: /full}, output: {status: 200, body: {equals: full-ok}}, wait: 3s}
+
+  - name: missing-endpoint-is-rejected
+    source: {file: t/plugin/skywalking-logger.t, tests: [3]}
+    config:
+      routes:
+        - id: skywalking-missing-endpoint
+          uri: /missing-endpoint
+          plugins:
+            skywalking-logger:
+              timeout: 3
+              max_retry_count: 2
+              retry_delay: 2
+              buffer_duration: 2
+              inactive_timeout: 2
+              batch_max_size: 500
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    input: {path: /missing-endpoint}
+    output:
+      status: 404
+      logs: {matches: 'endpoint_addr.*required|required.*endpoint_addr'}
+
+  - name: real-delivery-and-hostname-instance
+    source: {file: t/plugin/skywalking-logger.t, tests: [4, 5, 12]}
+    config:
+      routes:
+        - id: skywalking-opentracing
+          uri: /opentracing
+          plugins:
+            skywalking-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              batch_max_size: 1
+              max_retry_count: 1
+              retry_delay: 2
+              buffer_duration: 2
+              inactive_timeout: 2
+              service_instance_name: $hostname
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /opentracing}}], respond: [{status: 200, body: opentracing}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            headers: {Content-Type: {equals: application/json}}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {matches: '^[^$].+$'}
+                  endpoint: {equals: /opentracing}
+                  payload: {route_id: {equals: skywalking-opentracing}}
+        respond: [{status: 200}]
+    steps:
+      - {name: request-succeeds-and-envelope-is-delivered, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+
+  - name: valid-sw8-trace-context
+    source: {file: t/plugin/skywalking-logger.t, tests: [6]}
+    config:
+      routes:
+        - id: skywalking-valid-trace
+          uri: /valid-trace
+          plugins:
+            skywalking-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /valid-trace}}], respond: [{status: 200, body: trace-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /valid-trace}
+                  trace_context: {trace_id: ae709769-6e20-4c68-9733-10f455216cc5, trace_segment_id: ae709769-6e20-4c68-9733-10f455216cc5, span_id: 1}
+                  payload: {route_id: {equals: skywalking-valid-trace}}
+        respond: [{status: 200}]
+    steps:
+      - name: decoded-trace-context-is-delivered
+        input:
+          path: /valid-trace
+          headers:
+            sw8: 1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-1-QVBJU0lY-QVBJU0lYIEluc3RhbmNlIE5hbWU=-L2dldA==-dXBzdHJlYW0gc2VydmljZQ==
+        output: {status: 200, body: {equals: trace-ok}}
+        wait: 1s
+
+  - name: malformed-sw8-is-omitted-and-diagnosed
+    source: {file: t/plugin/skywalking-logger.t, tests: [7]}
+    config:
+      routes:
+        - id: skywalking-invalid-trace
+          uri: /invalid-trace
+          plugins:
+            skywalking-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /invalid-trace}}], respond: [{status: 200, body: invalid-trace-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /invalid-trace}
+                  trace_context_absent: true
+                  payload: {route_id: {equals: skywalking-invalid-trace}}
+        respond: [{status: 200}]
+    steps:
+      - name: malformed-header-does-not-break-upstream
+        input:
+          path: /invalid-trace
+          headers:
+            sw8: 1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-1-QVBJU0lY-QVBJU0lYIEluc3RhbmNlIE5hbWU=-L2dldA==
+        output:
+          status: 200
+          body: {equals: invalid-trace-ok}
+          logs: {matches: 'failed to parse trace_context header:.*got 7 parts, want 8'}
+        wait: 1s
+
+  - name: metadata-log-format
+    source: {file: t/plugin/skywalking-logger.t, tests: [8, 9]}
+    config:
+      plugin_metadata:
+        - id: skywalking-logger
+          log_format: {host: $host, '@timestamp': $time_iso8601, client_ip: $remote_addr}
+      routes:
+        - id: skywalking-metadata-format
+          uri: /metadata-format
+          plugins:
+            skywalking-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /metadata-format}}], respond: [{status: 200, body: metadata-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /metadata-format}
+                  payload:
+                    host: {equals: localhost}
+                    '@timestamp': {matches: '^\d{4}-\d{2}-\d{2}T'}
+                    client_ip: {equals: 127.0.0.1}
+                    route_id: {equals: skywalking-metadata-format}
+        respond: [{status: 200}]
+    steps:
+      - {name: metadata-fields-resolve-in-nested-json, input: {path: /metadata-format, headers: {Host: localhost}}, output: {status: 200, body: {equals: metadata-ok}}, wait: 1s}
+
+  - name: route-log-format-precedes-metadata
+    source: {file: t/plugin/skywalking-logger.t, tests: [10, 11]}
+    config:
+      plugin_metadata:
+        - id: skywalking-logger
+          log_format: {host: $host, '@timestamp': $time_iso8601, client_ip: $remote_addr}
+      routes:
+        - id: skywalking-route-format
+          uri: /route-format
+          plugins:
+            skywalking-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              log_format: {my_ip: $remote_addr}
+              batch_max_size: 1
+              inactive_timeout: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /route-format}}], respond: [{status: 200, body: route-format-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /route-format}
+                  payload:
+                    my_ip: {equals: 127.0.0.1}
+                    route_id: {equals: skywalking-route-format}
+                  payload_absent: [host, '@timestamp', client_ip]
+        respond: [{status: 200}]
+    steps:
+      - {name: route-format-wins-exactly, input: {path: /route-format, headers: {Host: localhost}}, output: {status: 200, body: {equals: route-format-ok}}, wait: 1s}
+
+  - name: request-body-is-preserved-and-logged
+    source: {file: t/plugin/skywalking-logger.t, tests: [13]}
+    config:
+      routes:
+        - id: skywalking-request-body
+          uri: /request-body
+          plugins:
+            skywalking-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', batch_max_size: 1, inactive_timeout: 1, include_req_body: true}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: POST, path: {equals: /request-body}, body: {equals: '{"sample_payload":"hello"}'}}]
+        respond: [{status: 200, body: "opentracing\n"}]
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /request-body}
+                  payload:
+                    route_id: {equals: skywalking-request-body}
+                    request.body: {equals: '{"sample_payload":"hello"}'}
+                  payload_absent: [response.body]
+        respond: [{status: 200}]
+    steps:
+      - {name: original-request-reaches-upstream-and-log, input: {method: POST, path: /request-body, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
+
+  - name: response-body-is-preserved-and-logged
+    source: {file: t/plugin/skywalking-logger.t, tests: [14]}
+    config:
+      routes:
+        - id: skywalking-response-body
+          uri: /response-body
+          plugins:
+            skywalking-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_resp_body: true}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: POST, path: {equals: /response-body}, body: {equals: '{"sample_payload":"hello"}'}}]
+        respond: [{status: 200, body: "opentracing\n"}]
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /response-body}
+                  payload:
+                    route_id: {equals: skywalking-response-body}
+                    request.body: {equals: '{"sample_payload":"hello"}'}
+                    response.body: {equals: "opentracing\n"}
+        respond: [{status: 200}]
+    steps:
+      - {name: exact-response-is-returned-and-logged, input: {method: POST, path: /response-body, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
+
+  - name: pending-entry-overflow-is-bounded
+    source: {file: t/plugin/skywalking-logger2.t, tests: [1]}
+    config:
+      plugin_metadata:
+        - id: skywalking-logger
+          log_format: {host: $host, '@timestamp': $time_iso8601, client_ip: $remote_addr}
+          max_pending_entries: 1
+      routes:
+        - id: skywalking-overflow
+          uri: /overflow
+          plugins:
+            skywalking-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              batch_max_size: 1
+              timeout: 3
+              max_retry_count: 0
+              inactive_timeout: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /overflow}}
+          - {method: GET, path: {equals: /overflow}}
+          - {method: GET, path: {equals: /overflow}}
+        respond: [{status: 200, body: overflow-ok}]
+      - name: sink
+        kind: http
+        expect:
+          - &overflow-entry
+            method: POST
+            path: {equals: /v3/logs}
+            skywalking_logs:
+              entries:
+                - service: {equals: APISIX}
+                  service_instance: {equals: APISIX Instance Name}
+                  endpoint: {equals: /overflow}
+                  payload:
+                    host: {equals: localhost}
+                    '@timestamp': {matches: '^\d{4}-\d{2}-\d{2}T'}
+                    client_ip: {equals: 127.0.0.1}
+                    route_id: {equals: skywalking-overflow}
+          - *overflow-entry
+        respond: [{delay: 2s, status: 200}, {delay: 2s, status: 200}]
+    steps:
+      - name: third-entry-is-discarded-while-two-deliveries-are-bounded
+        repeat: 3
+        input: {path: /overflow, headers: {Host: localhost}}
+        output:
+          status: 200
+          body: {equals: overflow-ok}
+          logs: {matches: 'max pending entries limit exceeded for logger batch processor \[skywalking logger\], pending \[2\], max_pending_entries \[1\]'}

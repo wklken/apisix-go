@@ -175,12 +175,13 @@ type UpstreamSpec struct {
 }
 
 type HTTPAssertion struct {
-	Method   string             `yaml:"method,omitempty"`
-	Path     *Matcher           `yaml:"path,omitempty"`
-	Host     *Matcher           `yaml:"host,omitempty"`
-	Headers  map[string]Matcher `yaml:"headers,omitempty"`
-	Body     *Matcher           `yaml:"body,omitempty"`
-	LokiPush *LokiPushAssertion `yaml:"loki_push,omitempty"`
+	Method         string                   `yaml:"method,omitempty"`
+	Path           *Matcher                 `yaml:"path,omitempty"`
+	Host           *Matcher                 `yaml:"host,omitempty"`
+	Headers        map[string]Matcher       `yaml:"headers,omitempty"`
+	Body           *Matcher                 `yaml:"body,omitempty"`
+	LokiPush       *LokiPushAssertion       `yaml:"loki_push,omitempty"`
+	SkyWalkingLogs *SkyWalkingLogsAssertion `yaml:"skywalking_logs,omitempty"`
 }
 
 type LokiPushAssertion struct {
@@ -195,6 +196,26 @@ type LokiStreamAssertion struct {
 type LokiValueAssertion struct {
 	Entry  map[string]any `yaml:"entry"`
 	Absent []string       `yaml:"absent,omitempty"`
+}
+
+type SkyWalkingLogsAssertion struct {
+	Entries []SkyWalkingLogAssertion `yaml:"entries"`
+}
+
+type SkyWalkingLogAssertion struct {
+	Service            Matcher                          `yaml:"service"`
+	ServiceInstance    Matcher                          `yaml:"service_instance"`
+	Endpoint           Matcher                          `yaml:"endpoint"`
+	TraceContext       *SkyWalkingTraceContextAssertion `yaml:"trace_context,omitempty"`
+	TraceContextAbsent bool                             `yaml:"trace_context_absent,omitempty"`
+	Payload            map[string]Matcher               `yaml:"payload"`
+	PayloadAbsent      []string                         `yaml:"payload_absent,omitempty"`
+}
+
+type SkyWalkingTraceContextAssertion struct {
+	TraceID        string `yaml:"trace_id"`
+	TraceSegmentID string `yaml:"trace_segment_id"`
+	SpanID         int    `yaml:"span_id"`
 }
 
 type HTTPResponse struct {
@@ -944,12 +965,27 @@ func (a HTTPAssertion) validate() error {
 			return fmt.Errorf("upstream request body: %w", err)
 		}
 	}
-	if a.Body != nil && a.LokiPush != nil {
-		return errors.New("upstream request body and loki_push are mutually exclusive")
+	bodyAssertions := 0
+	if a.Body != nil {
+		bodyAssertions++
+	}
+	if a.LokiPush != nil {
+		bodyAssertions++
+	}
+	if a.SkyWalkingLogs != nil {
+		bodyAssertions++
+	}
+	if bodyAssertions > 1 {
+		return errors.New("upstream request body, loki_push, and skywalking_logs are mutually exclusive")
 	}
 	if a.LokiPush != nil {
 		if err := a.LokiPush.validate(); err != nil {
 			return fmt.Errorf("upstream Loki push: %w", err)
+		}
+	}
+	if a.SkyWalkingLogs != nil {
+		if err := a.SkyWalkingLogs.validate(); err != nil {
+			return fmt.Errorf("upstream SkyWalking logs: %w", err)
 		}
 	}
 	return nil
@@ -971,6 +1007,46 @@ func (a LokiPushAssertion) validate() error {
 				if strings.TrimSpace(path) == "" {
 					return fmt.Errorf("stream %d value %d absent path must not be blank", streamIndex+1, valueIndex+1)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+func (a SkyWalkingLogsAssertion) validate() error {
+	if len(a.Entries) == 0 {
+		return errors.New("entries must not be empty")
+	}
+	for i, entry := range a.Entries {
+		for _, field := range []struct {
+			name    string
+			matcher Matcher
+		}{
+			{"service", entry.Service},
+			{"service_instance", entry.ServiceInstance},
+			{"endpoint", entry.Endpoint},
+		} {
+			if err := field.matcher.validate(matcherBody); err != nil {
+				return fmt.Errorf("entry %d %s: %w", i+1, field.name, err)
+			}
+		}
+		if entry.TraceContext != nil && entry.TraceContextAbsent {
+			return fmt.Errorf("entry %d trace_context and trace_context_absent are mutually exclusive", i+1)
+		}
+		if len(entry.Payload) == 0 {
+			return fmt.Errorf("entry %d payload must not be empty", i+1)
+		}
+		for path, matcher := range entry.Payload {
+			if strings.TrimSpace(path) == "" {
+				return fmt.Errorf("entry %d payload path must not be empty", i+1)
+			}
+			if err := matcher.validate(matcherBody); err != nil {
+				return fmt.Errorf("entry %d payload %q: %w", i+1, path, err)
+			}
+		}
+		for _, path := range entry.PayloadAbsent {
+			if strings.TrimSpace(path) == "" {
+				return fmt.Errorf("entry %d absent payload path must not be empty", i+1)
 			}
 		}
 	}
@@ -1067,6 +1143,101 @@ func (a LokiPushAssertion) match(body string) error {
 	return nil
 }
 
+func (a SkyWalkingLogsAssertion) match(body string) error {
+	type traceContext struct {
+		TraceID        string `json:"traceId"`
+		TraceSegmentID string `json:"traceSegmentId"`
+		SpanID         int    `json:"spanId"`
+	}
+	type envelope struct {
+		TraceContext *traceContext `json:"traceContext"`
+		Body         struct {
+			JSON struct {
+				JSON string `json:"json"`
+			} `json:"json"`
+		} `json:"body"`
+		Service         string `json:"service"`
+		ServiceInstance string `json:"serviceInstance"`
+		Endpoint        string `json:"endpoint"`
+	}
+
+	var actual []envelope
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&actual); err != nil {
+		return fmt.Errorf("decode envelope array: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("decode envelope array: trailing JSON value")
+		}
+		return fmt.Errorf("decode envelope array trailing data: %w", err)
+	}
+	if len(actual) != len(a.Entries) {
+		return fmt.Errorf("got %d entries, want %d", len(actual), len(a.Entries))
+	}
+	for i, expected := range a.Entries {
+		entry := actual[i]
+		for name, valueMatcher := range map[string]struct {
+			value   string
+			matcher Matcher
+		}{
+			"service":         {entry.Service, expected.Service},
+			"serviceInstance": {entry.ServiceInstance, expected.ServiceInstance},
+			"endpoint":        {entry.Endpoint, expected.Endpoint},
+		} {
+			if err := valueMatcher.matcher.match(valueMatcher.value, true); err != nil {
+				return fmt.Errorf("entry %d %s: %w", i+1, name, err)
+			}
+		}
+		if expected.TraceContextAbsent && entry.TraceContext != nil {
+			return fmt.Errorf("entry %d traceContext = %#v, want absent", i+1, entry.TraceContext)
+		}
+		if expected.TraceContext != nil {
+			if entry.TraceContext == nil {
+				return fmt.Errorf("entry %d traceContext is absent", i+1)
+			}
+			if got, want := *entry.TraceContext, *expected.TraceContext; got.TraceID != want.TraceID ||
+				got.TraceSegmentID != want.TraceSegmentID || got.SpanID != want.SpanID {
+				return fmt.Errorf("entry %d traceContext = %#v, want %#v", i+1, got, want)
+			}
+		}
+
+		var payload map[string]any
+		payloadDecoder := json.NewDecoder(strings.NewReader(entry.Body.JSON.JSON))
+		payloadDecoder.UseNumber()
+		if err := payloadDecoder.Decode(&payload); err != nil {
+			return fmt.Errorf("entry %d decode body.json.json: %w", i+1, err)
+		}
+		if err := payloadDecoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			if err == nil {
+				return fmt.Errorf("entry %d decode body.json.json: trailing JSON value", i+1)
+			}
+			return fmt.Errorf("entry %d decode body.json.json trailing data: %w", i+1, err)
+		}
+		for path, matcher := range expected.Payload {
+			value, present := nestedJSONValue(payload, path)
+			if !present {
+				return fmt.Errorf("entry %d payload %q is absent", i+1, path)
+			}
+			valueString, err := semanticValueString(value)
+			if err != nil {
+				return fmt.Errorf("entry %d payload %q: %w", i+1, path, err)
+			}
+			if err := matcher.match(valueString, true); err != nil {
+				return fmt.Errorf("entry %d payload %q: %w", i+1, path, err)
+			}
+		}
+		for _, path := range expected.PayloadAbsent {
+			if value, present := nestedJSONValue(payload, path); present {
+				return fmt.Errorf("entry %d payload %q = %#v, want absent", i+1, path, value)
+			}
+		}
+	}
+	return nil
+}
+
 func stringMapEqual(left, right map[string]string) bool {
 	if len(left) != len(right) {
 		return false
@@ -1115,6 +1286,32 @@ func semanticJSONPathPresent(value any, path string) bool {
 		}
 	}
 	return true
+}
+
+func nestedJSONValue(value map[string]any, path string) (any, bool) {
+	var current any = value
+	for part := range strings.SplitSeq(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func semanticValueString(value any) (string, error) {
+	if text, ok := value.(string); ok {
+		return text, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func (m Matcher) validate(scope matcherScope) error {

@@ -2609,7 +2609,8 @@ func assertElapsed(t *testing.T, output HTTPOutput, elapsed time.Duration) {
 
 func fixtureAssertionsConfigured(assertion HTTPAssertion) bool {
 	return assertion.Method != "" || assertion.Path != nil || assertion.Host != nil ||
-		len(assertion.Headers) > 0 || assertion.Body != nil || assertion.LokiPush != nil
+		len(assertion.Headers) > 0 || assertion.Body != nil || assertion.LokiPush != nil ||
+		assertion.SkyWalkingLogs != nil
 }
 
 func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, body string) {
@@ -2767,6 +2768,11 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 	if expected.LokiPush != nil {
 		if err := expected.LokiPush.match(received.body); err != nil {
 			t.Errorf("upstream Loki push: %v", err)
+		}
+	}
+	if expected.SkyWalkingLogs != nil {
+		if err := expected.SkyWalkingLogs.match(received.body); err != nil {
+			t.Errorf("upstream SkyWalking logs: %v", err)
 		}
 	}
 }

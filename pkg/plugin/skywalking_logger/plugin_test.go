@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -351,11 +353,11 @@ func TestParseTraceContextFromSW8(t *testing.T) {
 	parentService := base64.RawURLEncoding.EncodeToString([]byte("parent-service"))
 	parentInstance := base64.RawURLEncoding.EncodeToString([]byte("parent-instance"))
 	parentEndpoint := base64.RawURLEncoding.EncodeToString([]byte("parent-endpoint"))
-	trace, ok := parseTraceContext(
+	trace, err := parseTraceContext(
 		"1-" + traceID + "-" + segmentID + "-7-" + parentService + "-" + parentInstance + "-" + parentEndpoint + "-ipport",
 	)
-	if !ok {
-		t.Fatal("parseTraceContext() ok = false, want true")
+	if err != nil {
+		t.Fatalf("parseTraceContext() error = %v", err)
 	}
 	if trace.TraceID != "trace-id" {
 		t.Fatalf("traceId = %q, want trace-id", trace.TraceID)
@@ -365,6 +367,19 @@ func TestParseTraceContextFromSW8(t *testing.T) {
 	}
 	if trace.SpanID != 7 {
 		t.Fatalf("spanId = %d, want 7", trace.SpanID)
+	}
+}
+
+func TestParseTraceContextIdentifiesMalformedSevenPartHeader(t *testing.T) {
+	header := "1-YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-" +
+		"YWU3MDk3NjktNmUyMC00YzY4LTk3MzMtMTBmNDU1MjE2Y2M1-1-QVBJU0lY-" +
+		"QVBJU0lYIEluc3RhbmNlIE5hbWU=-L2dldA=="
+	trace, err := parseTraceContext(header)
+	if trace != nil {
+		t.Fatalf("trace = %#v, want nil", trace)
+	}
+	if err == nil || !strings.Contains(err.Error(), "got 7 parts, want 8") {
+		t.Fatalf("parseTraceContext() error = %v, want identifying part-count diagnostic", err)
 	}
 }
 
@@ -455,5 +470,71 @@ func TestHandlerBatchesSkyWalkingEntries(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for batched SkyWalking body")
+	}
+}
+
+func TestHandlerCustomFormatResolvesAPISIXValuesAndRouteIdentity(t *testing.T) {
+	entries := make(chan []skyWalkingEntry, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []skyWalkingEntry
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		entries <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddr:        server.URL,
+		ServiceName:         "APISIX",
+		ServiceInstanceName: "instance-a",
+		Timeout:             1,
+		BatchMaxSize:        1,
+		LogFormat: map[string]string{
+			"host":       "$host",
+			"@timestamp": "$time_iso8601",
+			"client_ip":  "$remote_addr",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/opentracing", nil)
+	req.Host = "gateway.example"
+	req.RemoteAddr = "192.0.2.10:43123"
+	req = apisixctx.WithApisixVars(req, map[string]string{
+		"$route_id":   "route-1",
+		"$service_id": "service-1",
+	})
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	select {
+	case body := <-entries:
+		if len(body) != 1 {
+			t.Fatalf("entries = %d, want 1", len(body))
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(body[0].Body.JSON.JSON), &payload); err != nil {
+			t.Fatalf("decode SkyWalking payload: %v", err)
+		}
+		if payload["host"] != "gateway.example" {
+			t.Fatalf("host = %#v, want gateway.example", payload["host"])
+		}
+		if payload["client_ip"] != "192.0.2.10" {
+			t.Fatalf("client_ip = %#v, want 192.0.2.10", payload["client_ip"])
+		}
+		if timestamp, ok := payload["@timestamp"].(string); !ok || timestamp == "" {
+			t.Fatalf("@timestamp = %#v, want non-empty string", payload["@timestamp"])
+		}
+		if payload["route_id"] != "route-1" || payload["service_id"] != "service-1" {
+			t.Fatalf(
+				"route/service identity = %#v/%#v, want route-1/service-1",
+				payload["route_id"],
+				payload["service_id"],
+			)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SkyWalking custom-format delivery")
 	}
 }

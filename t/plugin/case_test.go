@@ -806,6 +806,89 @@ func TestMatcherSupportsEqualsAndRegex(t *testing.T) {
 	}
 }
 
+func TestSkyWalkingLogsAssertionMatchesDecodedEnvelopeAndPayload(t *testing.T) {
+	assertion := SkyWalkingLogsAssertion{Entries: []SkyWalkingLogAssertion{{
+		Service:         Matcher{Equals: new("APISIX")},
+		ServiceInstance: Matcher{Matches: new(`^[^$].+$`)},
+		Endpoint:        Matcher{Equals: new("/opentracing")},
+		TraceContext: &SkyWalkingTraceContextAssertion{
+			TraceID:        "trace-id",
+			TraceSegmentID: "segment-id",
+			SpanID:         1,
+		},
+		Payload: map[string]Matcher{
+			"route_id":     {Equals: new("route-1")},
+			"request.body": {Equals: new(`{"sample":"hello"}`)},
+		},
+		PayloadAbsent: []string{"response.body"},
+	}}}
+	body := `[{
+		"traceContext":{"traceId":"trace-id","traceSegmentId":"segment-id","spanId":1},
+		"body":{"json":{"json":"{\"route_id\":\"route-1\",\"request\":{\"body\":\"{\\\"sample\\\":\\\"hello\\\"}\"}}"}},
+		"service":"APISIX","serviceInstance":"host-a","endpoint":"/opentracing"
+	}]`
+
+	if err := assertion.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if err := assertion.match(body); err != nil {
+		t.Fatalf("match() error = %v", err)
+	}
+}
+
+func TestSkyWalkingLogsAssertionRejectsTraceAndPayloadMismatch(t *testing.T) {
+	assertion := SkyWalkingLogsAssertion{Entries: []SkyWalkingLogAssertion{{
+		Service:            Matcher{Equals: new("APISIX")},
+		ServiceInstance:    Matcher{Equals: new("host-a")},
+		Endpoint:           Matcher{Equals: new("/opentracing")},
+		TraceContextAbsent: true,
+		Payload:            map[string]Matcher{"route_id": {Equals: new("route-1")}},
+	}}}
+	body := `[{
+		"traceContext":{"traceId":"unexpected","traceSegmentId":"segment-id","spanId":1},
+		"body":{"json":{"json":"{\"route_id\":\"route-2\"}"}},
+		"service":"APISIX","serviceInstance":"host-a","endpoint":"/opentracing"
+	}]`
+
+	if err := assertion.match(body); err == nil || !strings.Contains(err.Error(), "want absent") {
+		t.Fatalf("match() error = %v, want trace-context mismatch", err)
+	}
+	assertion.Entries[0].TraceContextAbsent = false
+	if err := assertion.match(body); err == nil || !strings.Contains(err.Error(), `payload "route_id"`) {
+		t.Fatalf("match() error = %v, want nested payload mismatch", err)
+	}
+}
+
+func TestSkyWalkingLogsAssertionRequiresSemanticExpectations(t *testing.T) {
+	assertion := SkyWalkingLogsAssertion{Entries: []SkyWalkingLogAssertion{{}}}
+	if err := assertion.validate(); err == nil || !strings.Contains(err.Error(), "service") {
+		t.Fatalf("validate() error = %v, want required semantic matcher", err)
+	}
+}
+
+func TestHTTPAssertionAllowsOnlyOneTypedBodyAssertion(t *testing.T) {
+	body := &Matcher{Equals: new("payload")}
+	loki := &LokiPushAssertion{}
+	skyWalking := &SkyWalkingLogsAssertion{}
+	tests := []struct {
+		name      string
+		assertion HTTPAssertion
+	}{
+		{name: "body and Loki", assertion: HTTPAssertion{Body: body, LokiPush: loki}},
+		{name: "body and SkyWalking", assertion: HTTPAssertion{Body: body, SkyWalkingLogs: skyWalking}},
+		{name: "Loki and SkyWalking", assertion: HTTPAssertion{LokiPush: loki, SkyWalkingLogs: skyWalking}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.assertion.validate()
+			if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+				t.Fatalf("validate() error = %v, want typed body assertion conflict", err)
+			}
+		})
+	}
+}
+
 func TestMatcherSupportsSemanticJSON(t *testing.T) {
 	manifest, err := loadManifest("json.yaml", []byte(`
 sources:

@@ -394,7 +394,7 @@ git commit -m "test(plugin): convert credential authentication suites"
 
 **Interfaces:**
 - Consumes: LDAP fixture, HTTP/HTTPS fixtures, frontend TLS, cookies/captures, RSA/JWKS helpers, and standalone consumers/metadata.
-- Produces: 10 real manifests covering 31 sources and 409 blocks.
+- Produces: 10 real manifests covering 32 sources and 411 blocks.
 
 - [ ] **Step 1: Extend `fixture_auth_test.go` with deterministic endpoint scripts**
 
@@ -410,7 +410,7 @@ Provide named modes selected by fixture response sequences, not plugin-specific 
 | `multi-auth` | 38 | ordered auth alternatives, consumer propagation, anonymous behavior, schema and failure precedence |
 | `wolf-rbac` | 44 | schema/defaults, public login/user/password APIs, token locations, permission and retry/error mapping, consumer replacement/chaining, user headers, Vault/environment appid, TLS verification, trusted client IP, and HTTP security warnings across `wolf-rbac.t` plus `security-warning2.t` tests 19–20 |
 | `authz-keycloak` | 45 | discovery/token/UMA decisions, lazy paths, permissions, client credentials, timeout/TLS/error handling |
-| `cas-auth` | 22 | redirect, ticket validation, cookies, callback/original URI, logout and invalid XML/tickets |
+| `cas-auth` | 24 | login/callback/service validation, original-URI and session cookies, multi-SP/session isolation, redirect/signature safety, callback derivation and forged Host, local and single logout, schema failures, and HTTP security warnings across `cas-auth.t` plus `security-warning.t` tests 5–6 |
 | `saml-auth` | 21 | metadata, AuthnRequest redirect/form, signed response ACS, relay state, session cookie, logout and invalid assertions |
 | `feishu-auth` | 14 | authorize redirect, callback token/user lookup, state/cookie, headers and failure branches |
 | `authz-casbin` | 21 | model/policy inline and metadata resources, request variable mapping, allow/deny and invalid model/policy |
@@ -788,7 +788,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
 - [ ] `wolf-rbac` — one authorization round trip claims 42 direct blocks and omits two Wolf-specific security-warning blocks; schema/defaults, public APIs, token locations, provider denial/retry mapping, consumer replacement/chaining, exact headers/bodies, Vault/environment appid, TLS verification, trusted client IP, and HTTP warning behavior remain.
 - [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
-- [ ] `cas-auth` — one redirect/callback shape replaces ticket validation, session cookies, original URI, logout, and invalid XML/ticket cases.
+- [ ] `cas-auth` — one redirect request claims 22 direct blocks and omits two CAS-specific security-warning blocks; real ticket validation, captured original-URI/session cookies, multi-SP isolation, redirect/signature/callback safety, forged Host, initiation gates, local/single logout, schema failures, and HTTP warning behavior remain.
 - [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
 - [ ] `feishu-auth` — one login flow replaces state/cookie validation, token/user lookup details, propagated headers, and failure branches.
 - [x] `authz-casbin` — all 21 pinned blocks map exactly once to standalone schema, metadata, inline, file, disabled, route-policy-shape, and request behavior. Deny-to-allow and policy1-to-policy2-to-policy1 transitions use atomic standalone snapshot replacement, a side-effect-free applied-state probe, and one consuming request. The shared watcher survives invalid/Remove/Rename/Create/Write sequences and later valid snapshots; workdir file paths are confined. Package/corpus, watcher recovery, race, real-process `-count=10`, scoped lint/build, post-integration, and task-review gates pass.
@@ -921,6 +921,16 @@ after that lands it owns only its package and manifest. Its current single allow
 request does not cover provider business-denial status/logging, Vault/env appid,
 trusted `real-ip`, or HTTP-versus-HTTPS security warnings, all of which require
 real standalone assertions before review.
+
+The `cas-auth` audit likewise corrected 22 direct blocks to 24 CAS-owned blocks:
+all of `cas-auth.t` plus `security-warning.t` tests 5–6. CAS remains Medium and
+can run after the integrated Forward foundation without a plugin-specific
+fixture; ordinary scripted HTTP fixtures can assert `/serviceValidate` and
+ordered cookie flows. The lane must own only bounded CAS fixes: 302 redirects,
+SameSite validation, terminating valid SLO requests, session-only cookies,
+relative-service port handling, process-local fingerprint isolation, and HTTP
+security warnings. It must capture real flow cookies rather than precompute a
+successful callback.
 
 - **Structural source-file stand-ins (32):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,

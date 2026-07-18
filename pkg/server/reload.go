@@ -9,6 +9,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 )
 
+// reloadQuietInterval coalesces the contiguous DELETE/PUT route events emitted
+// for one standalone snapshot before rebuilding from the complete store state.
+const reloadQuietInterval = 50 * time.Millisecond
+
 func (s *Server) SendReloadEvent() {
 	select {
 	case s.reloadEventChan <- struct{}{}:
@@ -18,26 +22,69 @@ func (s *Server) SendReloadEvent() {
 	}
 }
 
-func (s *Server) listenReloadEvent(ctx context.Context, checkInterval time.Duration) {
+func (s *Server) listenReloadEvent(ctx context.Context) {
 	logger.Info("listen to the reload event")
+	runReloadScheduler(ctx, s.reloadEventChan, reloadQuietInterval, func() {
+		s.reload(ctx)
+	})
+}
 
-	t := time.NewTicker(checkInterval)
+func reconcileInitialReloadEvent(events chan struct{}, builtGeneration uint64, currentGeneration func() uint64) {
+	select {
+	case <-events:
+	default:
+	}
+	if currentGeneration() == builtGeneration {
+		return
+	}
+	select {
+	case events <- struct{}{}:
+	default:
+	}
+}
+
+func runReloadScheduler(
+	ctx context.Context,
+	events <-chan struct{},
+	quietInterval time.Duration,
+	reload func(),
+) {
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	defer func() {
+		if timer != nil {
+			stopAndDrainReloadTimer(timer)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			logger.Debug("reload event check after 30s")
-
-			// check the chan without block here
-			select {
-			case reloadEvent := <-s.reloadEventChan:
-				logger.Infof("receive reload event: %+v", reloadEvent)
-				// do reload
-				s.reload(ctx)
-			default:
-				logger.Debug("get nothing, will not do reload")
+		case _, ok := <-events:
+			if !ok {
+				return
 			}
+			if timer == nil {
+				timer = time.NewTimer(quietInterval)
+			} else {
+				stopAndDrainReloadTimer(timer)
+				timer.Reset(quietInterval)
+			}
+			timerC = timer.C
+		case <-timerC:
+			timerC = nil
+			logger.Info("receive reload event")
+			reload()
+		}
+	}
+}
+
+func stopAndDrainReloadTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
 		}
 	}
 }

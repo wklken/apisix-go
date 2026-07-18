@@ -5,23 +5,303 @@ source:
   tests: 23
 
 cases:
-  - name: compact-jwe-validation
+  - name: valid-consumer-schema-sanity
     source:
-      tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+      tests: [1]
     config:
-      consumers:
+      consumers: &raw_consumers
         - username: jack
           plugins:
             jwe-decrypt:
               key: user-key
               secret: "12345678901234567890123456789012"
       routes:
-        - id: jwe-decrypt-validation
-          uri: /hello
+        - id: jwe-decrypt-schema-sanity
+          uri: /schema-sanity
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: &hello_fixture
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: valid-consumer-is-indexed
+        input:
+          path: /schema-sanity
+          headers:
+            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: consumer-key-type-diagnostic
+    source:
+      tests: [2]
+    config:
+      consumers:
+        - username: jack
           plugins:
             jwe-decrypt:
-              header: Authorization
-              forward_header: Authorization
+              key: 123
+              secret: "12345678901234567890123456789012"
+    output:
+      logs: {matches: 'jwe-decrypt consumer key must be a string'}
+
+  - name: consumer-secret-type-diagnostic
+    source:
+      tests: [3]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            jwe-decrypt:
+              key: user-key
+              secret: 123
+    output:
+      logs: {matches: 'jwe-decrypt consumer secret must be a string'}
+
+  - name: raw-secret-length-diagnostic
+    source:
+      tests: [4]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            jwe-decrypt:
+              key: user-key
+              secret: "123456789012345678901234567890123"
+    output:
+      logs: {matches: 'the secret length should be 32 chars'}
+
+  - name: base64-secret-length-diagnostic
+    source:
+      tests: [5]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            jwe-decrypt:
+              key: user-key
+              secret: MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIz
+              is_base64_encoded: true
+    output:
+      logs: {matches: 'the secret length after base64 decode should be 32 chars'}
+
+  - name: standalone-consumer-created
+    source:
+      tests: [6]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-consumer-created
+          uri: /consumer-created
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: created-consumer-decrypts-token
+        input:
+          path: /consumer-created
+          headers:
+            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: encrypted-consumer-fields
+    source:
+      tests: [7]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [qeddd145sfvddff3]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            jwe-decrypt:
+              key: XU29sA3FEVF68hGcdPo7sg==
+              secret: f9pGB0Dt4gYNCLKiINPfVSviKjQs2zfkBCT4+XZ3mDABZkJTr0orzYRD5CptDKMc
+      routes:
+        - id: jwe-decrypt-encrypted-consumer
+          uri: /encrypted-consumer
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: encrypted-key-and-secret-are-resolved
+        input:
+          path: /encrypted-consumer
+          headers:
+            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: protected-route-enabled
+    source:
+      tests: [8]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-route-enabled
+          uri: /route-enabled
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: enabled-route-requires-token
+        input: {path: /route-enabled}
+        output:
+          status: 403
+          body: {matches: 'missing JWE token in request'}
+
+  - name: missing-token
+    source:
+      tests: [9]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-missing-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input: {path: /hello}
+    output:
+      status: 403
+      body: {matches: 'missing JWE token in request'}
+
+  - name: malformed-token
+    source:
+      tests: [10]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-malformed-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input:
+      path: /hello
+      headers:
+        Authorization: "invalid-eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+    output:
+      status: 400
+      body: {matches: 'JWE token invalid'}
+
+  - name: bearer-token
+    source:
+      tests: [11]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-bearer-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: bearer-token-decrypts
+        input:
+          path: /hello
+          headers:
+            Authorization: "Bearer eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: raw-token
+    source:
+      tests: [12]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-raw-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: raw-token-decrypts
+        input:
+          path: /hello
+          headers:
+            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: lowercase-bearer-token
+    source:
+      tests: [13]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-lowercase-bearer-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: lowercase-bearer-token-decrypts
+        input:
+          path: /hello
+          headers:
+            Authorization: "bearer eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: invalid-lowercase-bearer-token
+    source:
+      tests: [14]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-invalid-lowercase-bearer
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input:
+      path: /hello
+      headers:
+        Authorization: "bearer invalid-eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+    output:
+      status: 400
+      body: {matches: 'JWE token invalid'}
+
+  - name: consumer-replacement-lifecycle
+    source:
+      tests: [15]
+    config:
+      consumers: *raw_consumers
+      routes:
+        - id: jwe-decrypt-consumer-lifecycle
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
           upstream:
             type: roundrobin
             nodes: {"{{FIXTURE.primary.ADDR}}": 1}
@@ -29,50 +309,70 @@ cases:
       - name: primary
         kind: http
         respond:
-          - {status: 200, body: hello world}
-          - {status: 200, body: hello world}
-          - {status: 200, body: hello world}
-          - {status: 200, body: hello world}
+          - {status: 200, body: jack before deletion}
+          - {status: 200, body: chen after reload}
     steps:
-      - name: missing-token
-        input: {path: /hello}
-        output: {status: 403, body: {matches: 'missing JWE token in request'}}
-      - name: invalid-token
-        input:
-          path: /hello
-          headers:
-            Authorization: "invalid-eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
-        output: {status: 400, body: {matches: 'JWE token invalid'}}
-      - name: bearer-token
-        input:
-          path: /hello
-          headers:
-            Authorization: "Bearer eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
-        output: {status: 200, body: {equals: hello world}}
-      - name: raw-token
+      - name: jack-succeeds-before-deletion
         input:
           path: /hello
           headers:
             Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
-        output: {status: 200, body: {equals: hello world}}
-      - name: lower-bearer-token
+        output:
+          status: 200
+          body: {equals: jack before deletion}
+      - name: replace-jack-with-chen
+        config:
+          consumers:
+            - username: chen
+              plugins:
+                jwe-decrypt:
+                  key: chen-key
+                  secret: "12345678901234567890123456789021"
+          routes:
+            - id: jwe-decrypt-consumer-lifecycle
+              uri: /hello
+              plugins:
+                jwe-decrypt: {header: Authorization, forward_header: Authorization}
+              upstream:
+                type: roundrobin
+                nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+            - id: jwe-decrypt-consumer-reload-probe
+              uri: /jwe-reload-ready
+              plugins:
+                jwe-decrypt: {header: Authorization, forward_header: Authorization}
+                mocking:
+                  _meta: {priority: -1000}
+                  response_status: 204
+                  response_example: ready
+        config_probe:
+          input:
+            path: /jwe-reload-ready
+            headers:
+              Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJjaGVuLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.ar0vE2I.AOndbhR7J1e2oM3N2c-KYQ"
+          output:
+            status: 204
+        config_timeout: 2s
         input:
           path: /hello
           headers:
-            Authorization: "bearer eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
-        output: {status: 200, body: {equals: hello world}}
-      - name: invalid-bearer-token
+            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 400
+          body: {matches: 'invalid kid in JWE token'}
+      - name: chen-succeeds-after-reload
         input:
           path: /hello
           headers:
-            Authorization: "bearer invalid-eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
-        output: {status: 400, body: {matches: 'JWE token invalid'}}
+            Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJjaGVuLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.ar0vE2I.AOndbhR7J1e2oM3N2c-KYQ"
+        output:
+          status: 200
+          body: {equals: chen after reload}
 
-  - name: base64-secret
+  - name: base64-consumer-created
     source:
-      tests: [15, 16, 17, 18, 19]
+      tests: [16]
     config:
-      consumers:
+      consumers: &base64_consumers
         - username: jack
           plugins:
             jwe-decrypt:
@@ -80,45 +380,112 @@ cases:
               secret: fo4XKdZ1xSrIZyms4q2BwPrW5lMpls9qqy5tiAk2esc=
               is_base64_encoded: true
       routes:
-        - id: jwe-decrypt-base64
-          uri: /hello
-          plugins: {jwe-decrypt: {header: Authorization, forward_header: Authorization}}
+        - id: jwe-decrypt-base64-consumer
+          uri: /base64-consumer
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
           upstream:
             type: roundrobin
             nodes: {"{{FIXTURE.primary.ADDR}}": 1}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}, {status: 200, body: hello world}]
+    fixtures: *hello_fixture
     steps:
-      - name: base64-bearer-token
+      - name: base64-consumer-decrypts-token
+        input:
+          path: /base64-consumer
+          headers:
+            Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJ1c2VyLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy._0DrWD0.vl-ydutnNuMpkYskwNqu-Q"
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: base64-protected-route-enabled
+    source:
+      tests: [17]
+    config:
+      consumers: *base64_consumers
+      routes:
+        - id: jwe-decrypt-base64-route-enabled
+          uri: /base64-route
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input: {path: /base64-route}
+    output:
+      status: 403
+      body: {matches: 'missing JWE token in request'}
+
+  - name: base64-bearer-token
+    source:
+      tests: [18]
+    config:
+      consumers: *base64_consumers
+      routes:
+        - id: jwe-decrypt-base64-bearer-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: base64-bearer-token-decrypts
         input:
           path: /hello
           headers:
             Authorization: "Bearer eyJhbGciOiJkaXIiLCJraWQiOiJ1c2VyLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy._0DrWD0.vl-ydutnNuMpkYskwNqu-Q"
-        output: {status: 200, body: {equals: hello world}}
-      - name: base64-raw-token
+        output:
+          status: 200
+          body: {equals: hello world}
+
+  - name: base64-raw-token
+    source:
+      tests: [19]
+    config:
+      consumers: *base64_consumers
+      routes:
+        - id: jwe-decrypt-base64-raw-token
+          uri: /hello
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures: *hello_fixture
+    steps:
+      - name: base64-raw-token-decrypts
         input:
           path: /hello
           headers:
             Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJ1c2VyLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy._0DrWD0.vl-ydutnNuMpkYskwNqu-Q"
-        output: {status: 200, body: {equals: hello world}}
+        output:
+          status: 200
+          body: {equals: hello world}
 
-  - name: forward-decrypted-header
+  - name: decrypted-header-route-enabled
     source:
-      tests: [20, 21]
+      tests: [20]
     config:
-      consumers:
-        - username: jack
-          plugins:
-            jwe-decrypt:
-              key: user-key
-              secret: fo4XKdZ1xSrIZyms4q2BwPrW5lMpls9qqy5tiAk2esc=
-              is_base64_encoded: true
+      consumers: *base64_consumers
       routes:
-        - id: jwe-decrypt-forward
+        - id: jwe-decrypt-forward-header-route
           uri: /headers
-          plugins: {jwe-decrypt: {header: Authorization, forward_header: Authorization}}
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input: {path: /headers}
+    output:
+      status: 403
+      body: {matches: 'missing JWE token in request'}
+
+  - name: decrypted-header-forwarded
+    source:
+      tests: [21]
+    config:
+      consumers: *base64_consumers
+      routes:
+        - id: jwe-decrypt-forward-header
+          uri: /headers
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
           upstream:
             type: roundrobin
             nodes: {"{{FIXTURE.primary.ADDR}}": 1}
@@ -131,35 +498,49 @@ cases:
               Authorization: {equals: hello}
         respond: [{status: 200, body: hello world}]
     steps:
-      - name: decrypted-header-forwarded
+      - name: upstream-receives-decrypted-authorization
         input:
           path: /headers
           headers:
             Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJ1c2VyLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy._0DrWD0.vl-ydutnNuMpkYskwNqu-Q"
-        output: {status: 200, body: {equals: hello world}}
+        output:
+          status: 200
+          body: {equals: hello world}
 
-  - name: decryption-failure
+  - name: decryption-failure-route-enabled
     source:
-      tests: [22, 23]
+      tests: [22]
     config:
-      consumers:
+      consumers: &failure_consumers
         - username: jwe-fail-user
-          plugins: {jwe-decrypt: {key: jwe-fail-key, secret: "12345678901234567890123456789012"}}
+          plugins:
+            jwe-decrypt:
+              key: jwe-fail-key
+              secret: "12345678901234567890123456789012"
+      routes:
+        - id: jwe-decrypt-failure-route
+          uri: /jwe-decrypt-fail
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input: {path: /jwe-decrypt-fail}
+    output:
+      status: 403
+      body: {matches: 'missing JWE token in request'}
+
+  - name: undecryptable-ciphertext
+    source:
+      tests: [23]
+    config:
+      consumers: *failure_consumers
       routes:
         - id: jwe-decrypt-failure
           uri: /jwe-decrypt-fail
-          plugins: {jwe-decrypt: {header: Authorization, forward_header: Authorization}}
-          upstream:
-            type: roundrobin
-            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
-    steps:
-      - name: undecryptable-ciphertext
-        input:
-          path: /jwe-decrypt-fail
-          headers:
-            Authorization: "Bearer eyJhbGciOiJkaXIiLCJraWQiOiJqd2UtZmFpbC1rZXkiLCJlbmMiOiJBMjU2R0NNIn0..MTIzNDU2Nzg5MDEy.dW5kZWNyeXB0YWJsZQ.MDEyMzQ1Njc4OWFiY2RlZg"
-        output: {status: 400, body: {matches: 'failed to decrypt JWE token'}}
+          plugins:
+            jwe-decrypt: {header: Authorization, forward_header: Authorization}
+    input:
+      path: /jwe-decrypt-fail
+      headers:
+        Authorization: "Bearer eyJhbGciOiJkaXIiLCJraWQiOiJqd2UtZmFpbC1rZXkiLCJlbmMiOiJBMjU2R0NNIn0..MTIzNDU2Nzg5MDEy.dW5kZWNyeXB0YWJsZQ.MDEyMzQ1Njc4OWFiY2RlZg"
+    output:
+      status: 400
+      body: {matches: 'failed to decrypt JWE token'}

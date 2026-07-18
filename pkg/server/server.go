@@ -14,6 +14,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -197,8 +198,10 @@ func pluginConfigured(name string) bool {
 }
 
 func (s *Server) Start() {
+	var reloadGeneration atomic.Uint64
 	s.storage.AddEventUpdateHook(
 		func(event *store.Event) {
+			reloadGeneration.Add(1)
 			s.SendReloadEvent()
 			if s.streamRuntime != nil && isStreamRouteEvent(event) {
 				if err := s.reloadStreamRoutes(); err != nil {
@@ -216,13 +219,14 @@ func (s *Server) Start() {
 	s.startConfigProvider(ctx)
 
 	logger.Info("build the routes")
+	initialReloadGeneration := reloadGeneration.Load()
 	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
 	s.routes.Replace(initialRouteHandler(builder.Build()), builder.Stop)
+	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	s.startStreamProxy(ctx)
 
 	// start the reloader
-	reloadCheckInterval := 60 * time.Second
-	go s.listenReloadEvent(ctx, reloadCheckInterval)
+	go s.listenReloadEvent(ctx)
 
 	// start prometheus at another port
 	for _, plugin := range config.GlobalConfig.Plugins {

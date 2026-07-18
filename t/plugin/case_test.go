@@ -470,6 +470,64 @@ func TestManifestRequiresReadinessProbeForConfigUpdate(t *testing.T) {
 	}
 }
 
+func TestManifestRejectsUnsupportedConfigProbeTransportOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  HTTPInput
+		setTLS bool
+		want   string
+	}{
+		{
+			name:  "explicit HTTP version",
+			input: HTTPInput{Path: "/ready", Version: "1.1"},
+			want:  "input version",
+		},
+		{
+			name:   "HTTPS even with frontend TLS",
+			input:  HTTPInput{Path: "/ready", Scheme: "https"},
+			setTLS: true,
+			want:   "input scheme",
+		},
+		{
+			name:  "absolute HTTPS URL",
+			input: HTTPInput{Path: "https://example.test/ready"},
+			want:  "input path",
+		},
+		{
+			name:  "cookie transport option",
+			input: HTTPInput{Path: "/ready", WithoutCookies: true},
+			want:  "without_cookies",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := validManifest()
+			manifest.Cases[0].Steps = []CaseStep{{
+				Name:   "update",
+				Config: map[string]any{"routes": []any{}},
+				ConfigProbe: &ConfigProbe{
+					Input:  tt.input,
+					Output: HTTPOutput{Status: 204},
+				},
+				Input:  HTTPInput{Path: "/hello"},
+				Output: HTTPOutput{Status: 200},
+			}}
+			manifest.Cases[0].Input = HTTPInput{}
+			manifest.Cases[0].Output = HTTPOutput{}
+			if tt.setTLS {
+				manifest.Cases[0].TLS = &FrontendTLS{SNI: "example.test"}
+			}
+
+			err := manifest.validate()
+			if err == nil || !strings.Contains(err.Error(), `step "update" config_probe`) ||
+				!strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validate() error = %v, want source-identifying %q rejection", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestManifestRejectsVariantsMixedWithTopLevelFiles(t *testing.T) {
 	manifest := validManifest()
 	original := manifest.Cases[0]

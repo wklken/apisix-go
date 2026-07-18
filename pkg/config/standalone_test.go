@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,6 +164,10 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 
 	events := make(chan *store.Event, 8)
 	watcher := NewStandaloneFileWatcher(path, "yaml", events)
+	reloadAttempts := make(chan error, 8)
+	watcher.onReload = func(err error) {
+		reloadAttempts <- err
+	}
 	if err := watcher.Reload(); err != nil {
 		t.Fatalf("initial Reload() error = %v", err)
 	}
@@ -173,10 +178,22 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 	if err := atomicReplaceStandaloneTestFile(path, invalid); err != nil {
 		t.Fatalf("replace with incomplete standalone config: %v", err)
 	}
+	for {
+		select {
+		case err := <-reloadAttempts:
+			if err != nil && strings.Contains(err.Error(), "must end with #END") {
+				goto invalidObserved
+			}
+		case <-time.After(time.Second):
+			t.Fatal("watcher did not report the invalid standalone snapshot")
+		}
+	}
+
+invalidObserved:
 	select {
 	case event := <-events:
 		t.Fatalf("incomplete snapshot emitted event %#v", event)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	updated := []byte(`routes:
@@ -187,6 +204,18 @@ func TestStandaloneFileWatcherRecoversAfterAtomicInvalidReplacement(t *testing.T
 	if err := atomicReplaceStandaloneTestFile(path, updated); err != nil {
 		t.Fatalf("replace with complete standalone config: %v", err)
 	}
+	for {
+		select {
+		case err := <-reloadAttempts:
+			if err == nil {
+				goto validObserved
+			}
+		case <-time.After(time.Second):
+			t.Fatal("watcher did not acknowledge the complete standalone snapshot")
+		}
+	}
+
+validObserved:
 	select {
 	case event := <-events:
 		if got, want := string(event.Key), "/apisix/routes/route-1"; got != want {

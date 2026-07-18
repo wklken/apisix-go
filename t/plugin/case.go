@@ -478,6 +478,9 @@ func (c *Case) validateScenario() error {
 				if err := validateHTTPScenario(step.ConfigProbe.Input, step.ConfigProbe.Output); err != nil {
 					return fmt.Errorf("step %q config_probe: %w", step.Name, err)
 				}
+				if err := validateConfigProbeInput(step.ConfigProbe.Input); err != nil {
+					return fmt.Errorf("step %q config_probe: %w", step.Name, err)
+				}
 				if err := validateConfigProbeOutput(step.ConfigProbe.Output); err != nil {
 					return fmt.Errorf("step %q config_probe: %w", step.Name, err)
 				}
@@ -492,6 +495,19 @@ func (c *Case) validateScenario() error {
 		return nil
 	}
 	return c.validateSingleScenario()
+}
+
+func validateConfigProbeInput(input HTTPInput) error {
+	if input.Version != "" {
+		return errors.New("input version is not supported; config probes use HTTP/1.1")
+	}
+	if input.Scheme == "https" {
+		return errors.New("input scheme https is not supported; config probes use plain HTTP")
+	}
+	if input.WithoutCookies {
+		return errors.New("input without_cookies is not supported; config probes never use the client cookie jar")
+	}
+	return nil
 }
 
 func validateConfigProbeOutput(output HTTPOutput) error {

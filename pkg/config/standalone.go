@@ -49,8 +49,9 @@ type StandaloneFileWatcher struct {
 	provider string
 	events   chan *store.Event
 
-	mu      sync.Mutex
-	current standaloneSnapshot
+	mu       sync.Mutex
+	current  standaloneSnapshot
+	onReload func(error)
 }
 
 func StandaloneConfigFile(provider string) string {
@@ -128,8 +129,12 @@ func (w *StandaloneFileWatcher) Watch() {
 					!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
 					continue
 				}
-				if err := w.Reload(); err != nil {
+				err := w.Reload()
+				if err != nil {
 					fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+				}
+				if w.onReload != nil {
+					w.onReload(err)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {

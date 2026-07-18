@@ -749,7 +749,7 @@ Expected: remote head equals local `HEAD`, `isDraft` is `false`, and the PR body
 
 The original checked state was not supported by the manifests. This audit compared each of the 61 manifests with the pinned Apache source titles and the behavior requirements above. A source number being listed once and a route containing the target plugin are necessary, but they do not prove source-complete behavior. A manifest is checked below only when its standalone resources, requests, fixture observations, and APISIX-Go boundary assertions can fail when each mapped plugin behavior is broken.
 
-**Verified result:** 6 of 61 manifests have passed source-completeness review; 55 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
+**Verified result:** 7 of 61 manifests have passed source-completeness review; 54 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
 
 ### Remaining Harness and Coverage Work
 
@@ -769,7 +769,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `consumer-restriction` — all 71 pinned source blocks run as standalone cases. Direct and `multi-auth` paths isolate authentication probes, execute consumer plugins exactly once around the real downstream request, preserve consumer-over-route precedence, and keep route/service identity in cached consumer chains. Stacked auth execution is idempotent and the HMAC helper rejects static `Authorization` in both header maps. Exact RED-then-GREEN regressions, affected packages, race tests, real-process `consumer-restriction` and `multi-auth`, manifest validation, and `make build` pass; task review approved the result.
 - [x] `request-validation` — all 55 pinned blocks are mapped exactly once to real standalone requests covering body/header schema types and rejection matrices, scalar JSON forwarding, nested/array/enum/required constraints, custom status/messages, repeated URL-encoded values, and duplicate-key normalization. APISIX legacy `table`/`function` schema types are normalized only in schema-bearing locations, with focused package regressions; the semantic and real-process gates pass.
 - [x] `oas-validator` — all 112 pinned blocks across the three sources are mapped exactly once to standalone validation behavior. The manifest covers request and response modes, inline and URL specifications, OAS 3.1 composition/format and parameter/body matrices, initialization-time inline-JSON rejection, lazy external-reference failures, URL headers/cache/TTL behavior, and all 36 pinned runtime diagnostics. Focused package, semantic, real-process, lint, and build gates pass; task review approved the result.
-- [ ] `traffic-label` — the 38 source numbers are structurally mapped and the focused suite passes, but source test 18 (`rules: []`) is claimed by the same case as test 17 (missing `rules`), source test 9's two pipelined requests are reduced to one request, deterministic 0/100 weighted-action boundaries are absent, and invalid-config assertions do not identify the intended schema/compiler failures. Split and assert those behaviors, then re-run the task review.
+- [x] `traffic-label` — all 38 pinned blocks map exactly once to standalone behavior. Missing and empty `rules` reject independently with identifying diagnostics; the source's two-request case now executes and observes two real requests; invalid action/operator/weight diagnostics are source-specific; explicit zero-weight actions are never selected while 100-weight actions are deterministic and omitted weights keep the default. Package, semantic, real-process, race, scoped lint, post-integration gates, and task review pass.
 
 #### Task 5 — Local-Credential Authentication
 
@@ -862,10 +862,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 6 task-review-approved and 55 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 7 task-review-approved and 54 remaining.
 - **Behavioral placeholders:** Forty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 55 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 54 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -873,11 +873,10 @@ The pinned source titles and standalone resources/assertions are being rechecked
 manifest by manifest. Passing focused package and real-process tests is necessary
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
-after their reviews found concrete gaps. `consumer-restriction` has since
-passed its follow-up runtime review; `traffic-label` remains unchecked. The
-currently approved scope is **6 complete and 55 remaining**; `oas-validator`
-also passed its task review with 112 source blocks and 36 runtime diagnostics
-verified.
+after their reviews found concrete gaps. Both have since passed their follow-up
+reviews and post-integration gates. The currently approved scope is **7
+complete and 54 remaining**; `oas-validator` also passed its task review with
+112 source blocks and 36 runtime diagnostics verified.
 
 - **Structural source-file stand-ins (40):** `ai-aws-content-moderation`,
   `ai-prompt-decorator`, `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
@@ -892,23 +891,25 @@ verified.
   `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
   request; it cannot prove the distinct source blocks it claims.
-- **Named but partial scenarios (15):** `key-auth`, `basic-auth`,
+- **Named but partial scenarios (14):** `key-auth`, `basic-auth`,
   `jwt-auth`, `hmac-auth`, `jwe-decrypt`, `saml-auth`, `limit-conn`,
   `limit-count`, `limit-req`, `proxy-cache`, `graphql-proxy-cache`,
-  `traffic-label`, `traffic-split`, `workflow`, and `batch-requests`. These have real
+  `traffic-split`, `workflow`, and `batch-requests`. These have real
   standalone scenarios, but the pinned test titles show that multiple
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (6):** `brotli`, `consumer-restriction`, `cors`,
-  `fault-injection`, `oas-validator`, and `request-validation`. No other
+- **Task-review-approved (7):** `brotli`, `consumer-restriction`, `cors`,
+  `fault-injection`, `oas-validator`, `request-validation`, and
+  `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
 
 The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
-active execution tiers below contain the current **55 remaining** manifests.
+active execution tiers below contained 55 remaining manifests before Easy
+Wave 1. `traffic-label` has now passed review, so **54 remain**.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
 the harness/protocol work needed to make its source titles executable. The
@@ -925,9 +926,8 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 10 manifests
+### Easy — 9 manifests
 
-- [ ] `traffic-label`
 - [ ] `jwe-decrypt`
 - [ ] `authz-casbin`
 - [ ] `datadog`

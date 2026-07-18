@@ -778,7 +778,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `basic-auth` — authentication/realm/anonymous cases are real, but invalid consumer-schema blocks use a valid consumer and secret-provider blocks use literal passwords.
 - [ ] `jwt-auth` — a small token matrix replaces the pinned signing endpoint, HS/RS/ES/EdDSA algorithms, `nbf`/grace claims, base64 and Vault keys, schema failures, and context behavior.
 - [ ] `hmac-auth` — basic signature/body checks omit the clock-skew, GMT/date, signed-header cardinality, replay, allowed-algorithm, default-header, and secret-provider matrix.
-- [ ] `jwe-decrypt` — token extraction/decryption paths are real, but schema/secret-length tests 1-5 are claimed by a valid configuration and therefore cannot detect those failures.
+- [x] `jwe-decrypt` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates schema and secret lengths, supported key-management/content-encryption algorithms, protected headers, header/cookie/query extraction, forwarded headers, malformed and decryption failures, consumer key selection, and live Jack-to-Chen consumer replacement. The standalone lifecycle now publishes only completed snapshots, synchronizes store events with a same-channel FIFO barrier, fails closed on malformed routes/global rules, and retains the last-good security handler. Package, race, scheduler stress, strict corpus, repeated real-process, scoped lint, build, post-integration, and task-review gates pass.
 
 #### Task 6 — External Authentication and Authorization
 
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 11 task-review-approved and 50 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 12 task-review-approved and 49 remaining.
 - **Behavioral placeholders:** Thirty-six manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 50 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 49 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,8 +875,8 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **11
-complete and 50 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **12
+complete and 49 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
 - **Structural source-file stand-ins (36):** `ai-aws-content-moderation`,
@@ -892,17 +892,17 @@ complete and 50 remaining**; `oas-validator` also passed its task review with
   `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
   request; it cannot prove the distinct source blocks it claims.
-- **Named but partial scenarios (14):** `key-auth`, `basic-auth`,
-  `jwt-auth`, `hmac-auth`, `jwe-decrypt`, `saml-auth`, `limit-conn`,
+- **Named but partial scenarios (13):** `key-auth`, `basic-auth`,
+  `jwt-auth`, `hmac-auth`, `saml-auth`, `limit-conn`,
   `limit-count`, `limit-req`, `proxy-cache`, `graphql-proxy-cache`,
   `traffic-split`, `workflow`, and `batch-requests`. These have real
   standalone scenarios, but the pinned test titles show that multiple
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (11):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (12):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `oas-validator`, `request-validation`, `splunk-hec-logging`, and `traffic-label`. No other
+  `jwe-decrypt`, `oas-validator`, `request-validation`, `splunk-hec-logging`, and `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -911,7 +911,7 @@ The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
 active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
-`clickhouse-logger` and `splunk-hec-logging` have now passed review, so **50 remain**. `datadog` moved from Easy to Medium after its
+`clickhouse-logger`, `splunk-hec-logging`, and `jwe-decrypt` have now passed review, so **49 remain**. `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
@@ -929,9 +929,9 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 4 remaining (6 at replan)
+### Easy — 3 remaining (6 at replan)
 
-- [ ] `jwe-decrypt`
+- [x] `jwe-decrypt`
 - [ ] `udp-logger`
 - [x] `clickhouse-logger`
 - [ ] `loki-logger`

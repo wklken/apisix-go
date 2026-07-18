@@ -120,8 +120,14 @@ type FixtureSpec struct {
 }
 
 type NetworkAssertion struct {
-	Payload       *Matcher `yaml:"payload,omitempty"`
-	PayloadBase64 *Matcher `yaml:"payload_base64,omitempty"`
+	Payload       *Matcher                    `yaml:"payload,omitempty"`
+	PayloadBase64 *Matcher                    `yaml:"payload_base64,omitempty"`
+	JSONFields    []NetworkJSONFieldAssertion `yaml:"json_fields,omitempty"`
+}
+
+type NetworkJSONFieldAssertion struct {
+	Path  string  `yaml:"path"`
+	Value Matcher `yaml:"value"`
 }
 
 type NetworkResponse struct {
@@ -872,8 +878,29 @@ func (f *FixtureSpec) validate() error {
 }
 
 func (a NetworkAssertion) validate() error {
-	if (a.Payload == nil) == (a.PayloadBase64 == nil) {
-		return errors.New("exactly one of payload or payload_base64 is required")
+	configured := 0
+	if a.Payload != nil {
+		configured++
+	}
+	if a.PayloadBase64 != nil {
+		configured++
+	}
+	if len(a.JSONFields) > 0 {
+		configured++
+	}
+	if configured != 1 {
+		return errors.New("exactly one of payload, payload_base64, or json_fields is required")
+	}
+	if len(a.JSONFields) > 0 {
+		for i, field := range a.JSONFields {
+			if !strings.HasPrefix(field.Path, "/") {
+				return fmt.Errorf("json field %d path must be a JSON pointer", i+1)
+			}
+			if err := field.Value.validate(matcherNetworkPayload); err != nil {
+				return fmt.Errorf("json field %d value: %w", i+1, err)
+			}
+		}
+		return nil
 	}
 	matcher := a.Payload
 	kind := "payload"

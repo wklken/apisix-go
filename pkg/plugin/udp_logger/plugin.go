@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -221,11 +224,14 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		request := captureAccessRequest(r, started)
+		var logFields map[string]any
+		if len(p.LogFormat) > 0 {
+			logFields = resolveUDPLogFormat(r, request, p.LogFormat)
+		}
+
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
@@ -241,26 +247,134 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
+		if logFields == nil {
+			logFields = p.defaultAccessLog(r, request, metrics)
 		}
 
-		logFields := make(map[string]any)
-		if len(p.LogFormat) > 0 {
-			logFields = apisixlog.GetFields(r, p.LogFormat)
-		}
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
+		if recorder != nil && recorder.HasBody() &&
+			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code) {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
 
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type accessRequest struct {
+	method        string
+	uri           string
+	host          string
+	clientIP      string
+	contentLength int64
+	started       time.Time
+}
+
+func captureAccessRequest(r *http.Request, started time.Time) accessRequest {
+	return accessRequest{
+		method:        r.Method,
+		uri:           r.URL.RequestURI(),
+		host:          hostWithoutPort(r.Host),
+		clientIP:      hostWithoutPort(r.RemoteAddr),
+		contentLength: max(r.ContentLength, 0),
+		started:       started,
+	}
+}
+
+func resolveUDPLogFormat(r *http.Request, request accessRequest, format map[string]string) map[string]any {
+	fields := make(map[string]any, len(format))
+	for key, value := range format {
+		switch value {
+		case "$host":
+			fields[key] = request.host
+		case "$remote_addr":
+			fields[key] = request.clientIP
+		case "$time_iso8601":
+			fields[key] = request.started.Format(time.RFC3339)
+		default:
+			fields[key] = apisixlog.GetField(r, value)
+		}
+	}
+	return fields
+}
+
+func (p *Plugin) defaultAccessLog(
+	r *http.Request,
+	request accessRequest,
+	metrics httpsnoop.Metrics,
+) map[string]any {
+	upstreamStatus := requestInt(r, "$status")
+	if upstreamStatus == 0 {
+		upstreamStatus = metrics.Code
+	}
+	return map[string]any{
+		"request": map[string]any{
+			"method": request.method,
+			"uri":    request.uri,
+			"host":   request.host,
+			"size":   request.contentLength,
+		},
+		"response": map[string]any{
+			"status": metrics.Code,
+			"size":   metrics.Written,
+		},
+		"server": map[string]any{
+			"address":  p.ServerAddr,
+			"hostname": request.host,
+		},
+		"route": map[string]any{
+			"id": p.RouteID,
+		},
+		"client": map[string]any{
+			"ip": request.clientIP,
+		},
+		"timing": map[string]any{
+			"start_time": request.started.Format(time.RFC3339Nano),
+			"latency":    metrics.Duration.Milliseconds(),
+		},
+		"upstream": map[string]any{
+			"address": upstreamAddress(r),
+			"status":  upstreamStatus,
+			"latency": requestInt64(r, "$upstream_latency"),
+		},
+	}
+}
+
+func hostWithoutPort(address string) string {
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		return host
+	}
+	return strings.Trim(address, "[]")
+}
+
+func upstreamAddress(r *http.Request) string {
+	host, _ := apisixctx.GetApisixVar(r, "$balancer_ip").(string)
+	port, _ := apisixctx.GetApisixVar(r, "$balancer_port").(string)
+	if host == "" || port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func requestInt(r *http.Request, key string) int {
+	switch value := apisixctx.GetRequestVar(r, key).(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
+
+func requestInt64(r *http.Request, key string) int64 {
+	return int64(requestInt(r, key))
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -302,7 +416,12 @@ func encodeBatch(entries []map[string]any, batchMaxSize int) ([]byte, error) {
 func (p *Plugin) sendBody(body []byte) error {
 	conn, err := p.dial()
 	if err != nil {
-		return fmt.Errorf("failed to connect to udp server: %s", err)
+		return fmt.Errorf(
+			"failed to connect to udp server: host[%s] port[%d]: %w",
+			p.config.Host,
+			p.config.Port,
+			err,
+		)
 	}
 	defer func() { _ = conn.Close() }()
 

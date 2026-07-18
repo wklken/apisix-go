@@ -25,13 +25,28 @@ cases:
         - kind: udp
           name: sink
           network_expect:
-            - payload:
-                equals: '{}'
+            - json_fields:
+                - {path: /request/method, value: {equals: GET}}
+                - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/host, value: {equals: localhost}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/size, value: {equals: '11'}}
+                - {path: /server/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+                - {path: /server/hostname, value: {equals: localhost}}
+                - {path: /route/id, value: {equals: udp-logger-valid-route}}
+                - {path: /client/ip, value: {equals: 127.0.0.1}}
+                - {path: /timing/start_time, value: {matches: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*(Z|[+-][0-9]{2}:[0-9]{2})$'}}
+                - {path: /timing/latency, value: {matches: '^[0-9]+$'}}
+                - {path: /upstream/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+                - {path: /upstream/status, value: {equals: '200'}}
+                - {path: /upstream/latency, value: {matches: '^[0-9]+$'}}
           network_respond:
             - payload: ''
       steps:
         - name: request-reaches-upstream-and-logs
           input:
+            headers:
+              Host: localhost
             method: GET
             path: /opentracing
           output:
@@ -112,7 +127,7 @@ cases:
             body:
                 equals: opentracing
             logs:
-                matches: 'failed to connect to udp server:.*312\.0\.0\.1'
+                matches: 'failed to connect to udp server: host\[312\.0\.0\.1\] port\[2000\]'
             status: 200
           wait: 1s
 
@@ -144,20 +159,48 @@ cases:
         - kind: udp
           name: first
           network_expect:
-            - payload:
-                equals: '{}'
+            - json_fields:
+                - {path: /request/method, value: {equals: GET}}
+                - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/host, value: {equals: localhost}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/size, value: {equals: '11'}}
+                - {path: /server/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+                - {path: /server/hostname, value: {equals: localhost}}
+                - {path: /route/id, value: {equals: udp-logger-live-update}}
+                - {path: /client/ip, value: {equals: 127.0.0.1}}
+                - {path: /timing/start_time, value: {matches: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*(Z|[+-][0-9]{2}:[0-9]{2})$'}}
+                - {path: /timing/latency, value: {matches: '^[0-9]+$'}}
+                - {path: /upstream/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+                - {path: /upstream/status, value: {equals: '200'}}
+                - {path: /upstream/latency, value: {matches: '^[0-9]+$'}}
           network_respond:
             - payload: ''
         - kind: udp
           name: second
           network_expect:
-            - payload:
-                equals: '{}'
+            - json_fields:
+                - {path: /request/method, value: {equals: GET}}
+                - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/host, value: {equals: localhost}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/size, value: {equals: '11'}}
+                - {path: /server/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+                - {path: /server/hostname, value: {equals: localhost}}
+                - {path: /route/id, value: {equals: udp-logger-live-update}}
+                - {path: /client/ip, value: {equals: 127.0.0.1}}
+                - {path: /timing/start_time, value: {matches: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*(Z|[+-][0-9]{2}:[0-9]{2})$'}}
+                - {path: /timing/latency, value: {matches: '^[0-9]+$'}}
+                - {path: /upstream/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+                - {path: /upstream/status, value: {equals: '200'}}
+                - {path: /upstream/latency, value: {matches: '^[0-9]+$'}}
           network_respond:
             - payload: ''
       steps:
         - name: request-reaches-first-udp-sink
           input:
+            headers:
+              Host: localhost
             method: GET
             path: /opentracing
           output:
@@ -194,6 +237,8 @@ cases:
                 status: 204
           config_timeout: 2s
           input:
+            headers:
+              Host: localhost
             method: GET
             path: /opentracing
           output:
@@ -259,13 +304,18 @@ cases:
         - kind: udp
           name: sink
           network_expect:
-            - payload:
-                matches: '"case name":"plugin_metadata".*"client_ip":"127\.0\.0\.1:[0-9]+".*"host":""'
+            - json_fields:
+                - {path: /case name, value: {equals: plugin_metadata}}
+                - {path: /host, value: {equals: localhost}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /@timestamp, value: {matches: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*(Z|[+-][0-9]{2}:[0-9]{2})$'}}
           network_respond:
             - payload: ''
       steps:
         - name: custom-metadata-format-reaches-sink
           input:
+            headers:
+              Host: localhost
             method: GET
             path: /hello
           output:
@@ -308,13 +358,18 @@ cases:
         - kind: udp
           name: sink
           network_expect:
-            - payload:
-                matches: '"case name":"logger format in plugin".*"client_ip":"127\.0\.0\.1:[0-9]+".*"host":""'
+            - json_fields:
+                - {path: /case name, value: {equals: logger format in plugin}}
+                - {path: /host, value: {equals: localhost}}
+                - {path: /client_ip, value: {equals: 127.0.0.1}}
+                - {path: /@timestamp, value: {matches: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*(Z|[+-][0-9]{2}:[0-9]{2})$'}}
           network_respond:
             - payload: ''
       steps:
         - name: changed-metadata-format-reaches-sink
           input:
+            headers:
+              Host: localhost
             method: GET
             path: /hello
           output:
@@ -352,13 +407,23 @@ cases:
               path:
                 equals: /hello
           respond:
-            - body: upstream received request body
+            - body: "hello world\n"
               status: 200
         - kind: udp
           name: sink
           network_expect:
-            - payload:
-                matches: 'request.*sample_payload.*hello'
+            - json_fields:
+                - {path: /request/method, value: {equals: POST}}
+                - {path: /request/uri, value: {equals: /hello}}
+                - {path: /request/host, value: {equals: localhost}}
+                - {path: /request/body, value: {equals: '{"sample_payload":"hello"}'}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/size, value: {equals: '12'}}
+                - {path: /server/hostname, value: {equals: localhost}}
+                - {path: /route/id, value: {equals: udp-logger-request-body}}
+                - {path: /client/ip, value: {equals: 127.0.0.1}}
+                - {path: /timing/latency, value: {matches: '^[0-9]+$'}}
+                - {path: /upstream/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
           network_respond:
             - payload: ''
       steps:
@@ -367,9 +432,11 @@ cases:
             method: POST
             path: /hello
             body: '{"sample_payload":"hello"}'
+            headers:
+              Host: localhost
           output:
             body:
-                equals: upstream received request body
+                equals: "hello world\n"
             status: 200
           wait: 1s
 
@@ -402,13 +469,23 @@ cases:
               path:
                 equals: /hello
           respond:
-            - body: '{"upstream":"response"}'
+            - body: "hello world\n"
               status: 200
         - kind: udp
           name: sink
           network_expect:
-            - payload:
-                matches: 'response.*upstream.*response'
+            - json_fields:
+                - {path: /request/method, value: {equals: POST}}
+                - {path: /request/uri, value: {equals: /hello}}
+                - {path: /request/host, value: {equals: localhost}}
+                - {path: /response/status, value: {equals: '200'}}
+                - {path: /response/size, value: {equals: '12'}}
+                - {path: /response/body, value: {equals: "hello world\n"}}
+                - {path: /server/hostname, value: {equals: localhost}}
+                - {path: /route/id, value: {equals: udp-logger-response-body}}
+                - {path: /client/ip, value: {equals: 127.0.0.1}}
+                - {path: /timing/latency, value: {matches: '^[0-9]+$'}}
+                - {path: /upstream/address, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
           network_respond:
             - payload: ''
       steps:
@@ -417,9 +494,11 @@ cases:
             method: POST
             path: /hello
             body: '{"sample_payload":"hello"}'
+            headers:
+              Host: localhost
           output:
             body:
-                equals: '{"upstream":"response"}'
+                equals: "hello world\n"
             status: 200
           wait: 1s
 sources:

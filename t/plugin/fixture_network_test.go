@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -325,10 +328,83 @@ func (f *networkFixture) assert(t *testing.T, spec FixtureSpec) {
 }
 
 func matchNetworkAssertion(assertion NetworkAssertion, payload []byte) error {
+	if len(assertion.JSONFields) > 0 {
+		return matchNetworkJSONFields(assertion.JSONFields, payload)
+	}
 	if assertion.PayloadBase64 != nil {
 		return assertion.PayloadBase64.match(base64.StdEncoding.EncodeToString(payload), true)
 	}
 	return assertion.Payload.match(string(payload), true)
+}
+
+func matchNetworkJSONFields(fields []NetworkJSONFieldAssertion, payload []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("decode JSON payload: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing JSON payload")
+		}
+		return fmt.Errorf("trailing JSON payload: %w", err)
+	}
+	for _, field := range fields {
+		value, err := resolveJSONPointer(document, field.Path)
+		if err != nil {
+			return err
+		}
+		encoded, err := networkJSONValue(value)
+		if err != nil {
+			return fmt.Errorf("JSON field %s: %w", field.Path, err)
+		}
+		if err := field.Value.match(encoded, true); err != nil {
+			return fmt.Errorf("JSON field %s: %w", field.Path, err)
+		}
+	}
+	return nil
+}
+
+func resolveJSONPointer(document any, pointer string) (any, error) {
+	current := document
+	for raw := range strings.SplitSeq(strings.TrimPrefix(pointer, "/"), "/") {
+		part := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
+		switch value := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = value[part]
+			if !ok {
+				return nil, fmt.Errorf("JSON field %s is missing", pointer)
+			}
+		case []any:
+			index, err := strconv.Atoi(part)
+			if err != nil || index < 0 || index >= len(value) {
+				return nil, fmt.Errorf("JSON field %s has invalid array index %q", pointer, part)
+			}
+			current = value[index]
+		default:
+			return nil, fmt.Errorf("JSON field %s traverses a non-container value", pointer)
+		}
+	}
+	return current, nil
+}
+
+func networkJSONValue(value any) (string, error) {
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case json.Number:
+		return typed.String(), nil
+	case bool:
+		return strconv.FormatBool(typed), nil
+	case nil:
+		return "null", nil
+	default:
+		encoded, err := json.Marshal(value)
+		return string(encoded), err
+	}
 }
 
 func assertAfterShutdown(t *testing.T, assertions []FileAssertion, replacements map[string]string) {
@@ -429,6 +505,38 @@ func TestHarnessRunsUDPFixture(t *testing.T) {
 		t.Fatalf("UDP response = %q, want %q", got, response)
 	}
 	fixture.assert(t, spec)
+}
+
+func TestMatchNetworkAssertionJSONFields(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("matchNetworkAssertion() panicked for JSON fields: %v", recovered)
+		}
+	}()
+	assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{
+		{Path: "/request/body", Value: Matcher{Equals: new(`{"sample_payload":"hello"}`)}},
+		{Path: "/response/body", Value: Matcher{Equals: new("hello world\n")}},
+		{Path: "/response/status", Value: Matcher{Equals: new("200")}},
+	}}
+	payload := []byte(`{
+        "request":{"body":"{\"sample_payload\":\"hello\"}"},
+        "response":{"body":"hello world\n","status":200}
+    }`)
+
+	if err := matchNetworkAssertion(assertion, payload); err != nil {
+		t.Fatalf("matchNetworkAssertion() error = %v", err)
+	}
+}
+
+func TestMatchNetworkAssertionJSONFieldsRejectsTrailingData(t *testing.T) {
+	assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{
+		{Path: "/status", Value: Matcher{Equals: new("200")}},
+	}}
+
+	err := matchNetworkAssertion(assertion, []byte(`{"status":200} trailing`))
+	if err == nil || !strings.Contains(err.Error(), "trailing JSON payload") {
+		t.Fatalf("matchNetworkAssertion() error = %v, want trailing JSON payload rejection", err)
+	}
 }
 
 func TestHarnessRunsGRPCFixture(t *testing.T) {

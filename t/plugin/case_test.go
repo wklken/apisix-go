@@ -40,6 +40,40 @@ func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsNetworkJSONFields(t *testing.T) {
+	const manifestYAML = `source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: udp-json-fields
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: sink
+        kind: udp
+        network_expect:
+          - json_fields:
+              - path: /request/body
+                value:
+                  equals: '{"sample_payload":"hello"}'
+        network_respond:
+          - payload: ''
+    steps:
+      - name: request
+        input:
+          path: /hello
+        output:
+          status: 200
+`
+	if _, err := loadManifest("udp-json-fields.yaml", []byte(manifestYAML)); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
 func TestManifestRejectsMixedEncodedBodyMatchers(t *testing.T) {
 	body := "ok"
 	manifest := validManifest()

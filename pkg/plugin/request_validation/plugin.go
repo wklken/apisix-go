@@ -272,31 +272,51 @@ func parseJSON(data []byte) (any, error) {
 func normalizeAPISIXSchema(schema map[string]any) map[string]any {
 	normalized := make(map[string]any, len(schema))
 	for key, value := range schema {
-		normalized[key] = normalizeAPISIXSchemaValue(value)
+		normalized[key] = value
 	}
 	if schemaType, ok := normalized["type"].(string); ok {
 		switch schemaType {
 		case "table":
-			normalized["type"] = "object"
+			normalized["type"] = []any{"object", "array"}
 		case "function":
 			delete(normalized, "type")
 			normalized["not"] = map[string]any{}
 		}
 	}
+
+	for _, keyword := range []string{
+		"additionalItems", "additionalProperties", "contains", "contentSchema",
+		"else", "if", "items", "not", "propertyNames", "then",
+		"unevaluatedItems", "unevaluatedProperties",
+	} {
+		if value, ok := normalized[keyword]; ok {
+			normalized[keyword] = normalizeAPISIXSubschema(value)
+		}
+	}
+	for _, keyword := range []string{"allOf", "anyOf", "oneOf", "prefixItems"} {
+		if values, ok := normalized[keyword].([]any); ok {
+			items := make([]any, len(values))
+			for index, value := range values {
+				items[index] = normalizeAPISIXSubschema(value)
+			}
+			normalized[keyword] = items
+		}
+	}
+	for _, keyword := range []string{"$defs", "definitions", "dependentSchemas", "patternProperties", "properties"} {
+		if values, ok := normalized[keyword].(map[string]any); ok {
+			items := make(map[string]any, len(values))
+			for name, value := range values {
+				items[name] = normalizeAPISIXSubschema(value)
+			}
+			normalized[keyword] = items
+		}
+	}
 	return normalized
 }
 
-func normalizeAPISIXSchemaValue(value any) any {
-	switch value := value.(type) {
-	case map[string]any:
-		return normalizeAPISIXSchema(value)
-	case []any:
-		normalized := make([]any, len(value))
-		for index, item := range value {
-			normalized[index] = normalizeAPISIXSchemaValue(item)
-		}
-		return normalized
-	default:
-		return value
+func normalizeAPISIXSubschema(value any) any {
+	if schema, ok := value.(map[string]any); ok {
+		return normalizeAPISIXSchema(schema)
 	}
+	return value
 }

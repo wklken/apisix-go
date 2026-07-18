@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,12 +55,26 @@ func TestHandlerAcceptsScalarJSONBody(t *testing.T) {
 		BodySchema: map[string]any{"type": "string"},
 	})
 
-	res := performRequest(p, http.MethodPost, "http://example.com/get", `"hello"`, map[string]string{
-		"Content-Type": "application/json",
-	})
+	var upstreamBody string
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", strings.NewReader(`"hello"`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body = %q", res.Code, http.StatusNoContent, res.Body.String())
+	}
+	if upstreamBody != `"hello"` {
+		t.Fatalf("upstream body = %q, want unchanged scalar JSON", upstreamBody)
 	}
 }
 
@@ -74,6 +89,42 @@ func TestPostInitAcceptsAPISIXLegacyTableAndFunctionSchemaTypes(t *testing.T) {
 				t.Fatalf("PostInit() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestHandlerAcceptsObjectAndArrayForAPISIXLegacyTableType(t *testing.T) {
+	p := newTestPlugin(t, Config{BodySchema: map[string]any{"type": "table"}})
+
+	for _, body := range []string{`{"key":"value"}`, `["value"]`} {
+		res := performRequest(p, http.MethodPost, "http://example.com/get", body, map[string]string{
+			"Content-Type": "application/json",
+		})
+		if res.Code != http.StatusNoContent {
+			t.Fatalf("body %s: response code = %d, want %d; response = %q", body, res.Code, http.StatusNoContent, res.Body.String())
+		}
+	}
+}
+
+func TestNormalizeAPISIXSchemaDoesNotRewriteLiteralValues(t *testing.T) {
+	literal := map[string]any{"type": "table"}
+	schema := map[string]any{
+		"enum":    []any{literal},
+		"const":   literal,
+		"default": literal,
+		"properties": map[string]any{
+			"nested": map[string]any{"type": "table"},
+		},
+	}
+
+	normalized := normalizeAPISIXSchema(schema)
+	for _, keyword := range []string{"enum", "const", "default"} {
+		if got := normalized[keyword]; !reflect.DeepEqual(got, schema[keyword]) {
+			t.Fatalf("%s = %#v, want literal value %#v", keyword, got, schema[keyword])
+		}
+	}
+	nested := normalized["properties"].(map[string]any)["nested"].(map[string]any)
+	if got := nested["type"]; !reflect.DeepEqual(got, []any{"object", "array"}) {
+		t.Fatalf("nested type = %#v, want object-or-array union", got)
 	}
 }
 

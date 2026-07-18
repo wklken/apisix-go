@@ -108,7 +108,7 @@ cases:
     source: {file: t/plugin/request-validation.t, tests: [12]}
     config: {routes: [{id: request-validation-body-string, uri: /body-string, plugins: {request-validation: {body_schema: {type: string}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
     input: {method: POST, path: /body-string, headers: {Content-Type: application/json}, body: '"hello"'}
-    upstream: {respond: {status: 200, body: ok}}
+    upstream: {expect: {body: {equals: '"hello"'}}, respond: {status: 200, body: ok}}
     output: {status: 200, body: {equals: ok}}
 
   - name: body-schema-number
@@ -127,10 +127,18 @@ cases:
 
   - name: body-schema-table
     source: {file: t/plugin/request-validation.t, tests: [15]}
-    config: {routes: [{id: request-validation-body-table, uri: /body-table, plugins: {request-validation: {body_schema: {type: table}}}, upstream: {type: roundrobin, nodes: {'{{UPSTREAM_ADDR}}': 1}}}]}
-    input: {method: POST, path: /body-table, headers: {Content-Type: application/json}, body: '{"table":"value"}'}
-    upstream: {respond: {status: 200, body: ok}}
-    output: {status: 200, body: {equals: ok}}
+    config: {routes: [{id: request-validation-body-table, uri: /body-table, plugins: {request-validation: {body_schema: {type: table}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.upstream.ADDR}}': 1}}}]}
+    fixtures:
+      - name: upstream
+        kind: http
+        respond: [{status: 200, body: ok}, {status: 200, body: ok}]
+    steps:
+      - name: object-is-a-lua-table
+        input: {method: POST, path: /body-table, headers: {Content-Type: application/json}, body: '{"table":"value"}'}
+        output: {status: 200, body: {equals: ok}}
+      - name: array-is-a-lua-table
+        input: {method: POST, path: /body-table, headers: {Content-Type: application/json}, body: '["value"]'}
+        output: {status: 200, body: {equals: ok}}
 
   - name: body-schema-function
     source: {file: t/plugin/request-validation.t, tests: [16]}

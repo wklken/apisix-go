@@ -469,7 +469,7 @@ func buildSystemPluginConfigs(
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
-	return ai_runtime.EnableTerminal(chain.Then(ai_runtime.TerminalHandler(withBeforeProxyHooks(fallback))))
+	return ai_runtime.EnableTerminal(chain.Then(withBeforeProxyHooks(ai_runtime.TerminalHandler(fallback))))
 }
 
 func withBeforeProxyHooks(next http.Handler) http.Handler {

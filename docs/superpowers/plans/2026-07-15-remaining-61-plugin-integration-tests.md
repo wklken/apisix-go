@@ -817,7 +817,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `google-cloud-logging` — generic delivery omits OAuth/JWT exchange, monitored-resource/log fields, batching, credentials, endpoint, and error handling.
 - [ ] `loggly` — generic delivery omits token/tag endpoint construction, format/body fields, batching, timeout, and failure behavior.
 - [ ] `loki-logger` — generic delivery omits labels, tenant/auth headers, timestamp/value streams, custom format, batching, and failures.
-- [ ] `datadog` — generic delivery omits API-key/site/endpoint handling, service/source/tags, payload format, batching, and error behavior.
+- [ ] `datadog` — package-level metadata defaults/schema and exact DogStatsD 8192-byte coalescing versus 8193-byte ordered fallback are TDD-tested, task-reviewed, integrated, and race-clean. The 13-block manifest remains incomplete: block 11 requires the shared embedded-wildcard route prerequisite above so `/articles/*/comments` both matches with APISIX arbitrary-depth semantics and remains the exact plugin path tag; the other source-specific metric/tag/cardinality scenarios must then replace the stale generic six-datagram case.
 - [ ] `elasticsearch-logger` — generic delivery omits index/type/auth configuration, bulk framing, log formats, batching/retry, and response failures.
 - [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
 - [ ] `sls-logger` — generic delivery omits Aliyun signing, project/logstore endpoint, structured log groups, credentials, batching, and failures.

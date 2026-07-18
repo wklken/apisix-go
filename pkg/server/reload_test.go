@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 func TestReconcileInitialReloadEventDropsRepresentedSentinel(t *testing.T) {
@@ -176,6 +180,35 @@ func TestReloadSchedulerContinuousEventsReloadAtMaximumWait(t *testing.T) {
 	}
 }
 
+func TestBuilderResourceEtcdEventsScheduleHTTPReload(t *testing.T) {
+	const quiet = 10 * time.Millisecond
+	const maxWait = 100 * time.Millisecond
+	events := make(chan struct{}, 1)
+	reloads := make(chan struct{}, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runReloadScheduler(ctx, events, quiet, maxWait, func() { reloads <- struct{}{} })
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	for _, key := range []string{
+		"/apisix/global_rules/global-1",
+		"/apisix/plugin_configs/config-1",
+	} {
+		handleStoreEventUpdate(
+			&store.Event{Key: []byte(key)},
+			func() { events <- struct{}{} },
+			func() { t.Fatalf("HTTP builder resource %q scheduled a stream reload", key) },
+		)
+		waitForReload(t, reloads)
+	}
+}
+
 func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 	var calls []string
 	err := fetchAndSyncInitialEtcdConfig(
@@ -210,6 +243,44 @@ func TestFetchAndSyncInitialEtcdConfigWaitsForSuccessfulFetch(t *testing.T) {
 	}
 	if got, want := calls, []string{"fetch"}; !equalStrings(got, want) {
 		t.Fatalf("failed fetch calls = %v, want %v", got, want)
+	}
+}
+
+func TestReloadRetainsExistingHandlerForUndecodableRouteSnapshot(t *testing.T) {
+	events := make(chan *store.Event)
+	storage := store.NewStore(t.TempDir()+"/reload.db", events)
+	storage.Start()
+	t.Cleanup(storage.Stop)
+
+	put := func(id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/routes/" + id)
+		event.Value = value
+		events <- event
+	}
+	put("valid-route", []byte(`{"id":"valid-route","uri":"/valid"}`))
+	put("invalid-route", []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`))
+	storage.Sync()
+
+	oldHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Handler", "last-good")
+		w.WriteHeader(299)
+	})
+	server := &Server{
+		addr:    "127.0.0.1:9080",
+		storage: storage,
+		routes:  newRouteHandler(oldHandler, nil),
+	}
+
+	server.reload(context.Background())
+	response := httptest.NewRecorder()
+	server.routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/valid", nil))
+	if got, want := response.Code, 299; got != want {
+		t.Fatalf("status after invalid reload = %d, want retained handler status %d", got, want)
+	}
+	if got, want := response.Header().Get("X-Handler"), "last-good"; got != want {
+		t.Fatalf("handler marker after invalid reload = %q, want %q", got, want)
 	}
 }
 

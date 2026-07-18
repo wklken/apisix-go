@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
 	bolt "go.etcd.io/bbolt"
@@ -54,5 +55,23 @@ func TestGetStreamRouteReturnsNotFound(t *testing.T) {
 	}
 	if _, err := ListStreamRoutes(); err == nil {
 		t.Fatal("ListStreamRoutes() accepted an invalid route snapshot")
+	}
+
+	invalidRoute := []byte(`{"id":"invalid-route","uri":"/invalid","plugins":[]}`)
+	if err := streamStore.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("routes")).Put([]byte("invalid-route"), invalidRoute)
+	}); err != nil {
+		t.Fatalf("insert invalid HTTP route: %v", err)
+	}
+	routes, err := ListRoutes()
+	if err == nil {
+		t.Fatalf("ListRoutes() = %#v, nil; want strict route decode error", routes)
+	}
+	if !strings.Contains(err.Error(), `parse route "invalid-route"`) ||
+		!strings.Contains(err.Error(), "expected { character for map value") {
+		t.Fatalf("ListRoutes() error = %q, want route ID and decoder context", err)
+	}
+	if routes != nil {
+		t.Fatalf("ListRoutes() routes = %#v, want nil on decode failure", routes)
 	}
 }

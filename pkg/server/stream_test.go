@@ -70,6 +70,8 @@ func TestIsStreamRouteEvent(t *testing.T) {
 		{key: "/apisix/stream_routes/mqtt", stream: true},
 		{key: "/apisix/upstreams/mqtt", httpReload: true, stream: true},
 		{key: "/apisix/routes/http", httpReload: true},
+		{key: "/apisix/global_rules/1", httpReload: true},
+		{key: "/apisix/plugin_configs/1", httpReload: true},
 		{key: "/apisix/stream_routes"},
 	} {
 		event := &store.Event{Key: []byte(test.key)}

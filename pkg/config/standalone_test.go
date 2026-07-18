@@ -288,6 +288,34 @@ func TestStandaloneReloadSnapshotReportsStreamRoutesWithoutHTTPRoutes(t *testing
 	}
 }
 
+func TestStandaloneReloadSnapshotReportsBuilderResourceBucketsAsHTTPChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := `global_rules:
+  - id: global-1
+    plugins: {}
+plugin_configs:
+  - id: config-1
+    plugins: {}
+#END
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 4)
+	result, err := NewStandaloneFileWatcher(path, "yaml", events).ReloadSnapshot()
+	if err != nil {
+		t.Fatalf("ReloadSnapshot() error = %v", err)
+	}
+	want := []string{"global_rules", "plugin_configs"}
+	if !reflect.DeepEqual(result.ChangedHTTPRouteBuckets, want) {
+		t.Fatalf("changed HTTP route buckets = %v, want %v", result.ChangedHTTPRouteBuckets, want)
+	}
+	if len(result.ChangedStreamBuckets) != 0 {
+		t.Fatalf("changed stream buckets = %v, want none", result.ChangedStreamBuckets)
+	}
+}
+
 func TestStandaloneWatchReconcilesUpdateBeforeRegistration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := "routes:\n  - id: route-1\n    uri: /one\n#END\n"

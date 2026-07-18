@@ -957,6 +957,7 @@ func TestProxyMirrorRouteChainPreservesMainRequestAndMirrors(t *testing.T) {
 var (
 	routeStoreOnce   sync.Once
 	routeStoreEvents chan *store.Event
+	routeStore       *store.Store
 )
 
 func ensureRouteJWTAnonymousConsumer(t *testing.T) {
@@ -1048,8 +1049,8 @@ func ensureRouteStore(t *testing.T) {
 
 	routeStoreOnce.Do(func() {
 		routeStoreEvents = make(chan *store.Event, 16)
-		s := store.NewStore(t.TempDir()+"/route-test.db", routeStoreEvents)
-		s.Start()
+		routeStore = store.NewStore(t.TempDir()+"/route-test.db", routeStoreEvents)
+		routeStore.Start()
 	})
 }
 

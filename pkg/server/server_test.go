@@ -229,6 +229,20 @@ func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T
 			want: []string{"sync"},
 		},
 		{
+			name: "global-rule snapshot publishes HTTP handler",
+			result: config.StandaloneReloadResult{
+				ChangedHTTPRouteBuckets: []string{"global_rules"},
+			},
+			want: []string{"sync", "routes"},
+		},
+		{
+			name: "plugin-config snapshot publishes HTTP handler",
+			result: config.StandaloneReloadResult{
+				ChangedHTTPRouteBuckets: []string{"plugin_configs"},
+			},
+			want: []string{"sync", "routes"},
+		},
+		{
 			name: "failed snapshot does not publish",
 			err:  context.Canceled,
 		},

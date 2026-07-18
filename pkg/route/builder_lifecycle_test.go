@@ -606,3 +606,36 @@ func TestBuilderRejectsInvalidUnusedProxyCacheZoneBeforeRefresh(t *testing.T) {
 	}
 	builder.Stop()
 }
+
+func TestBuilderRejectsSnapshotContainingUndecodableRoute(t *testing.T) {
+	ensureRouteStore(t)
+
+	put := func(id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/routes/" + id)
+		event.Value = value
+		routeStoreEvents <- event
+	}
+	remove := func(id string) {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/routes/" + id)
+		routeStoreEvents <- event
+	}
+
+	put("strict-valid", []byte(`{"id":"strict-valid","uri":"/strict-valid"}`))
+	put("strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
+	routeStore.Sync()
+	t.Cleanup(func() {
+		remove("strict-valid")
+		remove("strict-invalid")
+		routeStore.Sync()
+	})
+
+	builder := NewBuilder(nil)
+	defer builder.Stop()
+	if handler := builder.Build(); handler != nil {
+		t.Fatal("Build() returned a partial handler, want nil for an undecodable route snapshot")
+	}
+}

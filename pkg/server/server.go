@@ -202,15 +202,21 @@ func (s *Server) Start() {
 	if standaloneConfigProvider(config.GlobalConfig) == "" {
 		s.storage.AddEventUpdateHook(
 			func(event *store.Event) {
-				if isHTTPRouteEvent(event) {
-					reloadGeneration.Add(1)
-					s.SendReloadEvent()
-				}
-				if s.streamRuntime != nil && isStreamRouteEvent(event) {
-					if err := s.reloadStreamRoutes(); err != nil {
-						logger.Errorf("reload stream routes fail: %s", err)
-					}
-				}
+				handleStoreEventUpdate(
+					event,
+					func() {
+						reloadGeneration.Add(1)
+						s.SendReloadEvent()
+					},
+					func() {
+						if s.streamRuntime == nil {
+							return
+						}
+						if err := s.reloadStreamRoutes(); err != nil {
+							logger.Errorf("reload stream routes fail: %s", err)
+						}
+					},
+				)
 			},
 		)
 	}
@@ -395,6 +401,15 @@ func isStreamRouteEvent(event *store.Event) bool {
 func isHTTPRouteEvent(event *store.Event) bool {
 	bucket, ok := routeEventBucket(event)
 	return ok && store.IsHTTPRouteReloadBucket(bucket)
+}
+
+func handleStoreEventUpdate(event *store.Event, reloadHTTP func(), reloadStream func()) {
+	if isHTTPRouteEvent(event) && reloadHTTP != nil {
+		reloadHTTP()
+	}
+	if isStreamRouteEvent(event) && reloadStream != nil {
+		reloadStream()
+	}
 }
 
 func routeEventBucket(event *store.Event) (string, bool) {

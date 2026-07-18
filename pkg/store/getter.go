@@ -5,7 +5,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -119,15 +118,21 @@ func ListRoutes() ([]resource.Route, error) {
 	for _, d := range data {
 		r, err := ParseRoute(d)
 		if err != nil {
-			logger.Errorf("parse route error: %s, skip", err)
-			continue
-			// FIXME: do skip, process
-			// FIXME: append d and error
-			// return nil, err
+			return nil, fmt.Errorf("parse route %q: %w", routeIDForDecodeError(d), err)
 		}
 		routes = append(routes, r)
 	}
 	return routes, nil
+}
+
+func routeIDForDecodeError(config []byte) string {
+	var identity struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(config, &identity); err == nil && identity.ID != "" {
+		return identity.ID
+	}
+	return "unknown"
 }
 
 func ListStreamRoutes() ([]resource.StreamRoute, error) {

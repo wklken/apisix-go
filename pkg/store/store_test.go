@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 
 	bolt "go.etcd.io/bbolt"
@@ -13,7 +14,6 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	}
 	storage := &Store{
 		events:         make(chan *Event),
-		flush:          make(chan chan struct{}),
 		db:             db,
 		consumerKV:     map[string][]byte{},
 		consumerToKeys: map[string][]string{},
@@ -34,6 +34,40 @@ func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	}
 }
 
+func TestSyncWaitsForAllPrequeuedBufferedEvents(t *testing.T) {
+	const eventCount = 64
+	db, err := bolt.Open(t.TempDir()+"/buffered-store.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	events := make(chan *Event, eventCount)
+	storage := &Store{
+		events:         events,
+		db:             db,
+		consumerKV:     map[string][]byte{},
+		consumerToKeys: map[string][]string{},
+	}
+	storage.InitBuckets()
+	for index := range eventCount {
+		id := fmt.Sprintf("route-%d", index)
+		events <- &Event{
+			Type:  EventTypePut,
+			Key:   []byte("/apisix/routes/" + id),
+			Value: []byte(`{"id":"` + id + `"}`),
+		}
+	}
+	storage.Start()
+	t.Cleanup(storage.Stop)
+
+	storage.Sync()
+	for index := range eventCount {
+		id := fmt.Sprintf("route-%d", index)
+		if got := storage.GetFromBucket("routes", []byte(id)); got == nil {
+			t.Fatalf("Sync() returned before buffered event %q was stored", id)
+		}
+	}
+}
+
 func TestRouteReloadBucketSemantics(t *testing.T) {
 	tests := []struct {
 		bucket string
@@ -44,6 +78,8 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		{bucket: "services", http: true},
 		{bucket: "upstreams", http: true, stream: true},
 		{bucket: "stream_routes", stream: true},
+		{bucket: "global_rules", http: true},
+		{bucket: "plugin_configs", http: true},
 		{bucket: "plugin_metadata"},
 		{bucket: "consumers"},
 	}

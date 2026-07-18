@@ -14,8 +14,8 @@ import (
 type EventUpdateHook func(event *Event)
 
 type Store struct {
-	events chan *Event
-	flush  chan chan struct{}
+	events  chan *Event
+	runDone chan struct{}
 	// Add other fields for kv storage in memory
 	db *bolt.DB
 
@@ -46,7 +46,6 @@ func NewStore(dbPath string, events chan *Event) *Store {
 
 		s = &Store{
 			events: events,
-			flush:  make(chan chan struct{}),
 			// Initialize other fields for kv storage in memory
 			db: db,
 
@@ -66,7 +65,7 @@ func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 // IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
 func IsHTTPRouteReloadBucket(bucket string) bool {
 	switch bucket {
-	case "routes", "services", "upstreams":
+	case "routes", "services", "upstreams", "global_rules", "plugin_configs":
 		return true
 	default:
 		return false
@@ -145,19 +144,26 @@ func (s *Store) GetFromBucket(bucketName string, id []byte) []byte {
 
 func (s *Store) Start() {
 	// Start goroutine to receive and process events
-	go s.processEvents()
+	s.runDone = make(chan struct{})
+	go func() {
+		defer close(s.runDone)
+		s.processEvents()
+	}()
 }
 
 // Sync waits until all events sent before the call have been processed.
 func (s *Store) Sync() {
 	done := make(chan struct{})
-	s.flush <- done
+	s.events <- &Event{done: done}
 	<-done
 }
 
 func (s *Store) Stop() {
 	// Close events channel
 	close(s.events)
+	if s.runDone != nil {
+		<-s.runDone
+	}
 	_ = s.db.Close()
 }
 
@@ -171,17 +177,10 @@ func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 }
 
 func (s *Store) processEvents() {
-	for {
-		var event *Event
-		select {
-		case done := <-s.flush:
-			close(done)
+	for event := range s.events {
+		if event.done != nil {
+			close(event.done)
 			continue
-		case next, ok := <-s.events:
-			if !ok {
-				return
-			}
-			event = next
 		}
 
 		bucketName, id := getTypeAndIDFromKey(event.Key)

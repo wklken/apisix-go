@@ -367,6 +367,27 @@ cases:
         output:
           status: 200
           body: {equals: chen after reload}
+      - name: undecodable-route-snapshot-retains-last-good-handler
+        config:
+          consumers: *raw_consumers
+          routes:
+            - id: jwe-decrypt-consumer-lifecycle
+              uri: /hello
+              plugins: []
+        config_probe:
+          input:
+            path: /jwe-reload-ready
+            headers:
+              Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+          output:
+            status: 204
+        config_timeout: 2s
+        input:
+          path: /jwe-reload-ready
+          headers:
+            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+        output:
+          status: 204
 
   - name: base64-consumer-created
     source:

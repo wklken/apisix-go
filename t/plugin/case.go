@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -197,11 +197,15 @@ type Matcher struct {
 	Values     []string `yaml:"values,omitempty"`
 }
 
-type matcherKind int
+type matcherScope string
 
 const (
-	matcherBody matcherKind = iota
-	matcherHeader
+	matcherBody           matcherScope = "body"
+	matcherHeader         matcherScope = "header"
+	matcherPath           matcherScope = "path"
+	matcherHost           matcherScope = "host"
+	matcherLogs           matcherScope = "logs"
+	matcherNetworkPayload matcherScope = "network payload"
 )
 
 func loadManifest(name string, data []byte) (*Manifest, error) {
@@ -545,7 +549,7 @@ func validateScenarioFiles(files []ScenarioFile) error {
 func (c *Case) validateSingleScenario() error {
 	logOnly := c.Input.Path == "" && c.Output.Status == 0 && c.Output.Logs != nil
 	if logOnly {
-		if err := c.Output.Logs.validate(matcherBody); err != nil {
+		if err := c.Output.Logs.validate(matcherLogs); err != nil {
 			return fmt.Errorf("output logs: %w", err)
 		}
 	} else {
@@ -700,7 +704,7 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 		return errors.New("elapsed_at_least must be less than elapsed_less_than")
 	}
 	if output.Logs != nil {
-		if err := output.Logs.validate(matcherBody); err != nil {
+		if err := output.Logs.validate(matcherLogs); err != nil {
 			return fmt.Errorf("output logs: %w", err)
 		}
 	}
@@ -775,10 +779,15 @@ func (a NetworkAssertion) validate() error {
 		return errors.New("exactly one of payload or payload_base64 is required")
 	}
 	matcher := a.Payload
+	kind := "payload"
 	if matcher == nil {
 		matcher = a.PayloadBase64
+		kind = "payload_base64"
 	}
-	return matcher.validate(matcherBody)
+	if err := matcher.validate(matcherNetworkPayload); err != nil {
+		return fmt.Errorf("network %s: %w", kind, err)
+	}
+	return nil
 }
 
 func (r NetworkResponse) validate() error {
@@ -795,6 +804,9 @@ func validateAfterShutdown(assertions []FileAssertion) error {
 	for i, assertion := range assertions {
 		if assertion.Path == nil || assertion.Path.Equals == nil {
 			return fmt.Errorf("after_shutdown assertion %d path must use equals", i+1)
+		}
+		if err := assertion.Path.validate(matcherPath); err != nil {
+			return fmt.Errorf("after_shutdown assertion %d path: %w", i+1, err)
 		}
 		if !strings.HasPrefix(*assertion.Path.Equals, "{{WORK_DIR}}/") {
 			return fmt.Errorf("after_shutdown assertion %d path must begin with {{WORK_DIR}}/", i+1)
@@ -831,12 +843,12 @@ func (r HTTPResponse) validate() error {
 
 func (a HTTPAssertion) validate() error {
 	if a.Path != nil {
-		if err := a.Path.validate(matcherBody); err != nil {
+		if err := a.Path.validate(matcherPath); err != nil {
 			return fmt.Errorf("upstream request path: %w", err)
 		}
 	}
 	if a.Host != nil {
-		if err := a.Host.validate(matcherBody); err != nil {
+		if err := a.Host.validate(matcherHost); err != nil {
 			return fmt.Errorf("upstream request host: %w", err)
 		}
 	}
@@ -853,18 +865,17 @@ func (a HTTPAssertion) validate() error {
 	return nil
 }
 
-func (m Matcher) validate(kind matcherKind) error {
+func (m Matcher) validate(scope matcherScope) error {
 	operations := 0
 	if m.Equals != nil {
 		operations++
 	}
 	if m.JSONEquals != nil {
 		operations++
-		if kind != matcherBody {
-			return errors.New("json_equals is only valid for bodies")
+		if scope != matcherBody {
+			return fmt.Errorf("json_equals is only valid for bodies, not %s fields", scope)
 		}
-		var expected any
-		if err := json.Unmarshal([]byte(*m.JSONEquals), &expected); err != nil {
+		if _, err := decodeSemanticJSON(*m.JSONEquals); err != nil {
 			return fmt.Errorf("invalid json_equals: %w", err)
 		}
 	}
@@ -882,7 +893,7 @@ func (m Matcher) validate(kind matcherKind) error {
 	}
 	if m.Absent != nil {
 		operations++
-		if kind != matcherHeader {
+		if scope != matcherHeader {
 			return errors.New("absent is only valid for headers")
 		}
 		if !*m.Absent {
@@ -891,7 +902,7 @@ func (m Matcher) validate(kind matcherKind) error {
 	}
 	if m.Values != nil {
 		operations++
-		if kind != matcherHeader {
+		if scope != matcherHeader {
 			return errors.New("values is only valid for headers")
 		}
 		if len(m.Values) == 0 {
@@ -923,15 +934,19 @@ func (m Matcher) match(value string, present bool) error {
 			return fmt.Errorf("got %q, want %q", value, *m.Equals)
 		}
 	case m.JSONEquals != nil:
-		var got any
-		if err := json.Unmarshal([]byte(value), &got); err != nil {
+		got, err := decodeSemanticJSON(value)
+		if err != nil {
 			return fmt.Errorf("decode actual JSON: %w", err)
 		}
-		var want any
-		if err := json.Unmarshal([]byte(*m.JSONEquals), &want); err != nil {
+		want, err := decodeSemanticJSON(*m.JSONEquals)
+		if err != nil {
 			return fmt.Errorf("decode expected JSON: %w", err)
 		}
-		if !reflect.DeepEqual(got, want) {
+		equal, err := semanticJSONEqual(got, want)
+		if err != nil {
+			return fmt.Errorf("compare semantic JSON: %w", err)
+		}
+		if !equal {
 			return fmt.Errorf("got JSON %s, want %s", value, *m.JSONEquals)
 		}
 	case m.Matches != nil:
@@ -950,6 +965,80 @@ func (m Matcher) match(value string, present bool) error {
 		return errors.New("matcher has no operation")
 	}
 	return nil
+}
+
+func decodeSemanticJSON(value string) (any, error) {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("multiple JSON values")
+		}
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func semanticJSONEqual(left, right any) (bool, error) {
+	switch leftValue := left.(type) {
+	case nil:
+		return right == nil, nil
+	case bool:
+		rightValue, ok := right.(bool)
+		return ok && leftValue == rightValue, nil
+	case string:
+		rightValue, ok := right.(string)
+		return ok && leftValue == rightValue, nil
+	case json.Number:
+		rightValue, ok := right.(json.Number)
+		if !ok {
+			return false, nil
+		}
+		leftNumber, ok := new(big.Rat).SetString(leftValue.String())
+		if !ok {
+			return false, fmt.Errorf("invalid JSON number %q", leftValue)
+		}
+		rightNumber, ok := new(big.Rat).SetString(rightValue.String())
+		if !ok {
+			return false, fmt.Errorf("invalid JSON number %q", rightValue)
+		}
+		return leftNumber.Cmp(rightNumber) == 0, nil
+	case []any:
+		rightValue, ok := right.([]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false, nil
+		}
+		for i := range leftValue {
+			equal, err := semanticJSONEqual(leftValue[i], rightValue[i])
+			if err != nil || !equal {
+				return equal, err
+			}
+		}
+		return true, nil
+	case map[string]any:
+		rightValue, ok := right.(map[string]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false, nil
+		}
+		for key, leftField := range leftValue {
+			rightField, ok := rightValue[key]
+			if !ok {
+				return false, nil
+			}
+			equal, err := semanticJSONEqual(leftField, rightField)
+			if err != nil || !equal {
+				return equal, err
+			}
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("unsupported decoded JSON value %T", left)
+	}
 }
 
 func mergeMap(dst, src map[string]any) {

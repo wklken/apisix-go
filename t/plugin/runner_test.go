@@ -2497,6 +2497,15 @@ func expandIterationMatcher(matcher *Matcher, replacement string) *Matcher {
 	return &expanded
 }
 
+func TestExpandIterationOutputExpandsSemanticJSONMatcher(t *testing.T) {
+	expected := `{"iteration":{{ITERATION}}}`
+	output := expandIterationOutput(HTTPOutput{Body: &Matcher{JSONEquals: &expected}}, 42)
+
+	if output.Body == nil || output.Body.JSONEquals == nil || *output.Body.JSONEquals != `{"iteration":42}` {
+		t.Fatalf("expanded json_equals = %#v, want iteration 42", output.Body)
+	}
+}
+
 func replaceIteration(value string, replacement string) string {
 	return strings.ReplaceAll(value, "{{ITERATION}}", replacement)
 }

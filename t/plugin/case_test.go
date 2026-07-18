@@ -674,6 +674,150 @@ cases:
 	}
 }
 
+func TestSemanticJSONMatcherPreservesArrayOrder(t *testing.T) {
+	expected := `{"items":[1,2,3]}`
+	matcher := Matcher{JSONEquals: &expected}
+
+	if err := matcher.match(`{"items":[1,3,2]}`, true); err == nil {
+		t.Fatal("match() error = nil, want array order mismatch")
+	}
+}
+
+func TestSemanticJSONMatcherComparesNumbersExactly(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+		actual   string
+		wantErr  bool
+	}{
+		{name: "integer and decimal", expected: `{"value":1}`, actual: `{"value":1.0}`},
+		{name: "integer and exponent", expected: `{"value":1}`, actual: `{"value":1e0}`},
+		{
+			name:     "large equivalent exponent",
+			expected: `{"value":9007199254740993}`,
+			actual:   `{"value":9.007199254740993e15}`,
+		},
+		{
+			name:     "adjacent large integers",
+			expected: `{"value":9007199254740992}`,
+			actual:   `{"value":9007199254740993}`,
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matcher := Matcher{JSONEquals: &tt.expected}
+			err := matcher.match(tt.actual, true)
+			if tt.wantErr && err == nil {
+				t.Fatal("match() error = nil, want numeric mismatch")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("match() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSemanticJSONMatcherRejectsMalformedJSON(t *testing.T) {
+	t.Run("expected during validation", func(t *testing.T) {
+		expected := `{"value":`
+		manifest := validManifest()
+		manifest.Cases[0].Output.Body = &Matcher{JSONEquals: &expected}
+		err := manifest.validate()
+		if err == nil || !strings.Contains(err.Error(), "output body: invalid json_equals") {
+			t.Fatalf("validate() error = %v, want invalid expected JSON", err)
+		}
+	})
+
+	t.Run("actual during matching", func(t *testing.T) {
+		expected := `{"value":1}`
+		err := (Matcher{JSONEquals: &expected}).match(`{"value":`, true)
+		if err == nil || !strings.Contains(err.Error(), "decode actual JSON") {
+			t.Fatalf("match() error = %v, want malformed actual JSON diagnostic", err)
+		}
+	})
+}
+
+func TestSemanticJSONMatcherRejectsOtherOperations(t *testing.T) {
+	jsonValue := `{"value":1}`
+	textValue := "value"
+	tests := []struct {
+		name    string
+		matcher Matcher
+	}{
+		{name: "equals", matcher: Matcher{JSONEquals: &jsonValue, Equals: &textValue}},
+		{name: "matches", matcher: Matcher{JSONEquals: &jsonValue, Matches: &textValue}},
+		{name: "not_matches", matcher: Matcher{JSONEquals: &jsonValue, NotMatches: &textValue}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.matcher.validate(matcherBody)
+			if err == nil || !strings.Contains(err.Error(), "exactly one") {
+				t.Fatalf("validate() error = %v, want matcher exclusivity error", err)
+			}
+		})
+	}
+}
+
+func TestSemanticJSONMatcherRejectsNonBodyFields(t *testing.T) {
+	jsonValue := `{"value":1}`
+	matcher := &Matcher{JSONEquals: &jsonValue}
+	filePath := "{{WORK_DIR}}/output.log"
+	fileBody := "ok"
+	tests := []struct {
+		name     string
+		want     string
+		validate func() error
+	}{
+		{
+			name: "path", want: "upstream request path",
+			validate: func() error { return (HTTPAssertion{Path: matcher}).validate() },
+		},
+		{
+			name: "host", want: "upstream request host",
+			validate: func() error { return (HTTPAssertion{Host: matcher}).validate() },
+		},
+		{
+			name: "header", want: `upstream request header "X-Test"`,
+			validate: func() error {
+				return (HTTPAssertion{Headers: map[string]Matcher{"X-Test": *matcher}}).validate()
+			},
+		},
+		{
+			name: "logs", want: "output logs",
+			validate: func() error {
+				return validateHTTPScenario(HTTPInput{Path: "/"}, HTTPOutput{Status: 200, Logs: matcher})
+			},
+		},
+		{
+			name: "network payload", want: "network payload",
+			validate: func() error {
+				return (NetworkAssertion{Payload: matcher}).validate()
+			},
+		},
+		{
+			name: "after shutdown path", want: "after_shutdown assertion 1 path",
+			validate: func() error {
+				return validateAfterShutdown([]FileAssertion{{
+					Path: &Matcher{Equals: &filePath, JSONEquals: &jsonValue},
+					Body: &Matcher{Equals: &fileBody},
+				}})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "json_equals") {
+				t.Fatalf("validate() error = %v, want contextual json_equals rejection containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestMatcherSupportsNegativeRegex(t *testing.T) {
 	pattern := `"consumer"|"service"`
 	matcher := Matcher{NotMatches: &pattern}

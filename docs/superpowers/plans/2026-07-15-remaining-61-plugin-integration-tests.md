@@ -361,7 +361,7 @@ git commit -m "test(plugin): convert core security integration suites"
 | `key-auth` | 58 | header/query keys, hide credentials, environment/Vault secret references, anonymous consumer with limiter chaining, realm, service inheritance, and domain-node/upstream-resource behavior across four pinned sources |
 | `basic-auth` | 44 | Basic parsing, malformed base64, username/password lookup, anonymous consumer, realm, duplicate headers, consumer/group attachment |
 | `jwt-auth` | 130 | token issue endpoint, header/query/cookie extraction, HS/RS/ES algorithms, exp/nbf/leeway, base64 secret, public keys, key claims, anonymous/realm, hide credentials |
-| `hmac-auth` | 70 | canonical string/signature algorithms, clock skew, signed headers/body digest, query order, escape rules, anonymous/realm, failure messages |
+| `hmac-auth` | 70 | consumer/route schema validation, canonical signatures and allowed algorithms, clock skew/default-date/replay behavior, signed-header cardinality, body digest and size limits, hide credentials, anonymous limiter chains, realm, and Vault/environment secrets |
 | `jwe-decrypt` | 23 | compact JWE extraction, protected headers, supported algorithms/encodings, key selection, header forwarding, malformed/decryption failures |
 
 Use test-local fixed keys copied from the pinned sources or existing package test fixtures; never generate assertions from the implementation under test.
@@ -890,6 +890,16 @@ blocks across seven sources and moves to Hard because it additionally requires
 relative-time token signing, the HS/RS/ES/EdDSA/JWK matrix, and bounded
 serverless-context behavior. These three plugins are serialized through one
 consumer/secret owner rather than implemented concurrently.
+
+The `hmac-auth` audit confirms 70 blocks across six pinned sources and keeps it
+at upper-end Medium after `basic-auth`. Its current eight cases and fifteen
+requests mechanically map the source numbers but omit consumer/route schema
+rejection, the clock/default-date/replay matrix, signed-header cardinality,
+allowed algorithms, hide-credential behavior, anonymous limiter chains,
+default realm, body-size transitions, and real Vault/environment resolution.
+After the shared consumer/secret owner lands, HMAC owns only the bounded
+SHA-1/SHA-256/SHA-512 and fixed/relative-Date signing helper plus its package
+and manifest; it must not run concurrently with another consumer/secret owner.
 
 - **Structural source-file stand-ins (34):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,

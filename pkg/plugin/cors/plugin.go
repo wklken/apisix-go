@@ -1,7 +1,9 @@
 package cors
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -75,6 +77,11 @@ const schema = `
 		"type": "boolean",
 		"default": false
 	  },
+	  "allow_private_network": {
+		"description": "allow private-network preflight requests",
+		"type": "boolean",
+		"default": false
+	  },
 	  "allow_origins_by_regex": {
 		"description": "you can use regex to allow specific origins when no credentials, for example use [.*\\.test.com$] to allow a.test.com and b.test.com",
 		"type": "array",
@@ -131,12 +138,13 @@ const metadataSchema = `
 }`
 
 type Config struct {
-	AllowOrigins    string `json:"allow_origins"`
-	AllowMethods    string `json:"allow_methods"`
-	AllowHeaders    string `json:"allow_headers"`
-	ExposeHeaders   string `json:"expose_headers"`
-	MaxAge          int    `json:"max_age"`
-	AllowCredential bool   `json:"allow_credential"`
+	AllowOrigins        string `json:"allow_origins"`
+	AllowMethods        string `json:"allow_methods"`
+	AllowHeaders        string `json:"allow_headers"`
+	ExposeHeaders       string `json:"expose_headers"`
+	MaxAge              int    `json:"max_age"`
+	AllowCredential     bool   `json:"allow_credential"`
+	AllowPrivateNetwork bool   `json:"allow_private_network"`
 
 	AllowOriginsByRegex []string `json:"allow_origins_by_regex"`
 	// FIXME: not supported yet
@@ -242,7 +250,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if origin, ok := p.timingAllowOrigin(r.Header.Get("Origin")); ok {
 			responseWriter.Header().Set("Timing-Allow-Origin", origin)
 		}
-		if r.Method == http.MethodOptions && r.Header.Get("Origin") == "" {
+		if p.config.AllowPrivateNetwork && r.Method == http.MethodOptions &&
+			strings.EqualFold(r.Header.Get("Access-Control-Request-Private-Network"), "true") {
+			responseWriter.Header().Set("Access-Control-Allow-Private-Network", "true")
+		}
+		if r.Method == http.MethodOptions {
 			responseWriter.WriteHeader(http.StatusOK)
 			return
 		}
@@ -273,6 +285,31 @@ func (w *varyResponseWriter) Write(body []byte) (int, error) {
 
 func (w *varyResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+func (w *varyResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *varyResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hijacker.Hijack()
+}
+
+func (w *varyResponseWriter) Push(target string, options *http.PushOptions) error {
+	pusher, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, options)
 }
 
 func normalizeVary(header http.Header) {

@@ -36,7 +36,7 @@ cases:
       - name: reject-string-max-age
         config: {routes: [{id: cors-base-schema-invalid, uri: /hello, plugins: {cors: {allow_origins: http://test.com, allow_methods: '', allow_headers: '', expose_headers: '', max_age: '600', allow_credential: true}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
         input: {method: GET, path: /hello}
-        output: {status: 404, logs: {matches: 'validate plugin cors config'}}
+        output: {status: 404, logs: {matches: 'max_age.*expected integer'}}
 
   - name: add-default-plugin
     source: {file: t/plugin/cors.t, tests: [3]}
@@ -118,6 +118,7 @@ cases:
               allow_methods: "**"
               allow_headers: "**"
               expose_headers: "*"
+              allow_private_network: true
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
@@ -129,6 +130,7 @@ cases:
       - {name: origin-and-request-headers, input: {method: GET, path: /hello, headers: {Origin: https://sub.domain.com, Access-Control-Request-Headers: "req-header1,req-header2"}}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {equals: "req-header1,req-header2"}, Access-Control-Expose-Headers: {equals: '*'}, Access-Control-Max-Age: {equals: '5'}}}}
       - {name: no-origin, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}, headers: {Access-Control-Allow-Origin: {equals: '*'}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {absent: true}, Access-Control-Expose-Headers: {equals: '*'}, Access-Control-Max-Age: {equals: '5'}}}}
       - {name: options-without-origin, input: {method: OPTIONS, path: /hello}, output: {status: 200, body: {equals: ''}}}
+      - {name: private-network-preflight, input: {method: OPTIONS, path: /hello, headers: {Origin: https://sub.domain.com, Access-Control-Request-Method: GET, Access-Control-Request-Headers: "req-header1,req-header2", Access-Control-Request-Private-Network: 'true'}}, output: {status: 200, body: {equals: ''}, headers: {Access-Control-Allow-Origin: {equals: https://sub.domain.com}, Access-Control-Allow-Methods: {equals: "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,CONNECT,TRACE"}, Access-Control-Allow-Headers: {equals: "req-header1,req-header2"}, Access-Control-Allow-Private-Network: {equals: 'true'}, Access-Control-Max-Age: {equals: '5'}}}}
   - name: explicit-credentials
     source: {file: t/plugin/cors.t, tests: [8, 9, 10]}
     config:

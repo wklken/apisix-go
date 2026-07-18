@@ -1,10 +1,30 @@
 package cors
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+var errHijackCalled = errors.New("hijack called")
+
+type optionalInterfaceWriter struct {
+	*httptest.ResponseRecorder
+	flushed  bool
+	hijacked bool
+}
+
+func (w *optionalInterfaceWriter) Flush() {
+	w.flushed = true
+}
+
+func (w *optionalInterfaceWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacked = true
+	return nil, nil, errHijackCalled
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -193,6 +213,56 @@ func TestHandlerReflectsDoubleStarRequestHeaders(t *testing.T) {
 	}
 	if got := rr.Code; got != http.StatusOK {
 		t.Fatalf("response code = %d, want %d", got, http.StatusOK)
+	}
+}
+
+func TestHandlerAllowsPrivateNetworkPreflight(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AllowOrigins:        "https://client.example",
+		AllowMethods:        http.MethodGet,
+		AllowPrivateNetwork: true,
+	})
+	req := httptest.NewRequest(http.MethodOptions, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://client.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Private-Network", "true")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("private-network preflight should not reach upstream handler")
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Fatalf("Access-Control-Allow-Private-Network = %q, want true", got)
+	}
+	if got := rr.Code; got != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", got, http.StatusOK)
+	}
+}
+
+func TestHandlerPreservesOptionalResponseWriterInterfaces(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	writer := &optionalInterfaceWriter{ResponseRecorder: httptest.NewRecorder()}
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("wrapped response writer does not implement http.Flusher")
+		}
+		flusher.Flush()
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("wrapped response writer does not implement http.Hijacker")
+		}
+		if _, _, err := hijacker.Hijack(); !errors.Is(err, errHijackCalled) {
+			t.Fatalf("Hijack() error = %v, want delegated sentinel", err)
+		}
+	})).ServeHTTP(writer, req)
+
+	if !writer.flushed || !writer.hijacked {
+		t.Fatalf("underlying capabilities called = flush %t, hijack %t", writer.flushed, writer.hijacked)
 	}
 }
 

@@ -1,173 +1,671 @@
 cases:
-    - config:
-        routes:
-            - id: proxy-mirror-source-1
-              plugins:
-                proxy-mirror:
-                    host: http://{{FIXTURE.mirror.ADDR}}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: mirror
-          expect:
-            - method: GET
-              path: {equals: /probe}
-          respond:
-            - body: mirror
-              headers: {}
-              status: 200
-      name: proxy-mirror-source-1
-      source:
-        file: t/plugin/proxy-mirror.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-            - 30
-            - 31
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: mirror-request-delivered
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 1s
-    - config:
-        routes:
-            - id: proxy-mirror-source-2
-              plugins:
-                proxy-mirror:
-                    host: http://{{FIXTURE.mirror.ADDR}}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: mirror
-          expect:
-            - method: GET
-              path: {equals: /probe}
-          respond:
-            - body: mirror
-              headers: {}
-              status: 200
-      name: proxy-mirror-source-2
-      source:
-        file: t/plugin/proxy-mirror2.t
-        tests:
-            - 1
-            - 2
-            - 3
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: mirror-request-delivered
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 1s
-    - config:
-        routes:
-            - id: proxy-mirror-source-3
-              plugins:
-                proxy-mirror:
-                    host: http://{{FIXTURE.mirror.ADDR}}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: mirror
-          expect:
-            - method: GET
-              path: {equals: /probe}
-          respond:
-            - body: mirror
-              headers: {}
-              status: 200
-      name: proxy-mirror-source-3
-      source:
-        file: t/plugin/proxy-mirror3.t
-        tests:
-            - 1
-            - 2
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: mirror-request-delivered
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 1s
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  - name: invalid-host-schema
+    source:
       file: t/plugin/proxy-mirror.t
-      tests: 31
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      tests: [1, 2, 3, 5]
+    variants:
+      - name: unsupported-scheme
+        config:
+          routes:
+            - id: invalid-host
+              uri: /hello
+              plugins:
+                proxy-mirror: {host: "ftp://127.0.0.1:1999"}
+              upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+        input: {path: /hello}
+        output:
+          status: 404
+          logs: {matches: "validate plugin proxy-mirror config"}
+      - name: invalid-port
+        config:
+          routes:
+            - id: invalid-port
+              uri: /hello
+              plugins:
+                proxy-mirror: {host: "http://127.0.0.1::1999"}
+              upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+        input: {path: /hello}
+        output:
+          status: 404
+          logs: {matches: "validate plugin proxy-mirror config"}
+      - name: missing-scheme
+        config:
+          routes:
+            - id: missing-scheme
+              uri: /hello
+              plugins:
+                proxy-mirror: {host: "127.0.0.1:1999"}
+              upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+        input: {path: /hello}
+        output:
+          status: 404
+          logs: {matches: "validate plugin proxy-mirror config"}
+      - name: host-must-not-contain-path
+        config:
+          routes:
+            - id: host-with-path
+              uri: /hello
+              plugins:
+                proxy-mirror: {host: "http://127.0.0.1:1999/invalid_uri"}
+              upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+        input: {path: /hello}
+        output:
+          status: 404
+          logs: {matches: "validate plugin proxy-mirror config"}
+
+  - name: accepted-host-and-protocol-schema
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [4, 22, 30, 31]
+    variants:
+      - name: http-without-port
+        config:
+          routes:
+            - id: accepted-http-no-port
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "http://127.0.0.1", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: &accepted_primary_fixture
+          - name: primary
+            kind: http
+            expect: [{method: GET, path: {equals: /accepted}}]
+            respond: [{status: 200, body: primary-ok}]
+        steps: &accepted_primary_step
+          - name: primary-still-served
+            input: {path: /accepted}
+            output: {status: 200, body: {equals: primary-ok}}
+            wait: 100ms
+      - name: short-hostname
+        config:
+          routes:
+            - id: accepted-short-host
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "http://a", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: *accepted_primary_fixture
+        steps: *accepted_primary_step
+      - name: domain-name
+        config:
+          routes:
+            - id: accepted-domain
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "http://ab.com", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: *accepted_primary_fixture
+        steps: *accepted_primary_step
+      - name: ipv6-without-port
+        config:
+          routes:
+            - id: accepted-ipv6
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "http://[::1]", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: *accepted_primary_fixture
+        steps: *accepted_primary_step
+      - name: ipv6-with-port
+        config:
+          routes:
+            - id: accepted-ipv6-port
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "http://[::1]:202", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: *accepted_primary_fixture
+        steps: *accepted_primary_step
+      - name: grpc-scheme
+        config:
+          routes:
+            - id: accepted-grpc
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "grpc://127.0.0.1:1", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: *accepted_primary_fixture
+        steps: *accepted_primary_step
+      - name: grpcs-scheme
+        config:
+          routes:
+            - id: accepted-grpcs
+              uri: /accepted
+              plugins:
+                proxy-mirror: {host: "grpcs://127.0.0.1:1", _meta: {filter: [[arg_mirror, "==", yes]]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        fixtures: *accepted_primary_fixture
+        steps: *accepted_primary_step
+
+  - name: normal-mirror-delivery
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [6, 7]
+    config:
+      routes:
+        - id: normal-mirror
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}"}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: "hello world\n"}]
+      - name: mirror
+        kind: http
+        expect: [{method: GET, protocol: HTTP/1.1, path: {equals: /hello}}]
+        respond: [{status: 200, body: ignored}]
+    steps:
+      - name: hit-route
+        input: {path: /hello}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: preserve-request-host-headers-query-and-body
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [8, 9]
+    config:
+      routes:
+        - id: preserve-request
+          uri: /uri
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}"}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: "/uri?a=1"}
+            headers:
+              api-key: {equals: hello}
+              api-key2: {equals: world}
+              name: {equals: jake}
+            body: {equals: request-body}
+        respond: [{status: 200, body: primary-body}]
+      - name: mirror
+        kind: http
+        expect:
+          - method: POST
+            protocol: HTTP/1.1
+            path: {equals: "/uri?a=1"}
+            host: {equals: 127.0.0.2}
+            headers:
+              api-key: {equals: hello}
+              api-key2: {equals: world}
+              name: {equals: jake}
+            body: {equals: request-body}
+        respond: [{status: 204}]
+    steps:
+      - name: original-request-preserved-for-both-destinations
+        input:
+          method: POST
+          path: /uri?a=1
+          headers:
+            Host: 127.0.0.2
+            api-key: hello
+            api-key2: world
+            name: jake
+          body: request-body
+        output: {status: 200, body: {equals: primary-body}}
+        wait: 100ms
+
+  - name: mirror-http11
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [10, 11]
+    config:
+      routes:
+        - id: mirror-http11
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}"}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: "hello world\n"}]
+      - name: mirror
+        kind: http
+        expect:
+          - method: GET
+            protocol: HTTP/1.1
+            path: {equals: /hello}
+            host: {equals: 127.0.0.2}
+            headers: {api-key: {equals: hello}}
+        respond: [{status: 204}]
+    steps:
+      - name: mirror-uses-http11
+        input: {path: /hello, headers: {Host: 127.0.0.2, api-key: hello}}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: live-route-deletion
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [12]
+    config:
+      routes:
+        - id: deletable-mirror
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}"}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+          - {method: GET, path: {equals: /applied}}
+        respond:
+          - {status: 200, body: before-delete}
+          - {status: 200, body: applied}
+      - name: mirror
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 204}]
+    steps:
+      - name: route-exists
+        input: {path: /hello}
+        output: {status: 200, body: {equals: before-delete}}
+        wait: 100ms
+      - name: route-is-deleted
+        config:
+          routes:
+            - id: applied-after-delete
+              uri: /applied
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe:
+          input: {path: /applied}
+          output: {status: 200, body: {equals: applied}}
+        input: {path: /hello}
+        output: {status: 404}
+
+  - name: invalid-sample-ratio
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [13]
+    config:
+      routes:
+        - id: invalid-ratio
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://127.0.0.1:1986", sample_ratio: 10}
+          upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+    input: {path: /hello}
+    output:
+      status: 404
+      logs: {matches: "sample_ratio.*must be <= 1"}
+
+  - name: sample-ratio-one
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [14, 15]
+    config:
+      routes:
+        - id: ratio-one
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}", sample_ratio: 1}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: "/hello?sample_ratio=1"}}]
+        respond: [{status: 200, body: "hello world\n"}]
+      - name: mirror
+        kind: http
+        expect: [{method: GET, path: {equals: "/hello?sample_ratio=1"}}]
+        respond: [{status: 204}]
+    steps:
+      - name: every-request-is-mirrored
+        input: {path: "/hello?sample_ratio=1"}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: concurrent-sample-ratio-half
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [16, 17]
+    config:
+      routes:
+        - id: ratio-half
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}", sample_ratio: 0.5}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: "/hello?sample_ratio=0.5"}}]
+        respond: [{status: 200, body: "hello world\n"}]
+        count: {at_least: 200, at_most: 200, timeout: 3s}
+      - name: mirror
+        kind: http
+        expect: [{method: GET, path: {equals: "/hello?sample_ratio=0.5"}}]
+        respond: [{status: 204}]
+        count: {at_least: 75, at_most: 125, timeout: 3s}
+    steps:
+      - name: two-hundred-bounded-concurrent-requests
+        repeat: 200
+        concurrency: 20
+        input: {path: "/hello?sample_ratio=0.5", without_cookies: true}
+        output: {status: 200, body: {equals: "hello world\n"}}
+
+  - name: replacement-path
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [18, 19, 20]
+    config:
+      routes:
+        - id: replacement-path
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://{{FIXTURE.mirror.ADDR}}", path: /a}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+          - {method: GET, path: {equals: "/hello?a=1"}}
+        respond:
+          - {status: 200, body: "hello world\n"}
+          - {status: 200, body: "hello world\n"}
+      - name: mirror
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /a}}
+          - {method: GET, path: {equals: "/a?a=1"}}
+        respond:
+          - {status: 204}
+          - {status: 204}
+    steps:
+      - name: replacement-without-query
+        input: {path: /hello}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+      - name: replacement-preserves-query
+        input: {path: "/hello?a=1"}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: invalid-custom-paths
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [21]
+    variants:
+      - name: missing-leading-slash
+        config:
+          routes:
+            - id: invalid-path-no-slash
+              uri: /hello
+              plugins:
+                proxy-mirror: {host: "http://127.0.0.1:1999", path: a}
+              upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+        input: {path: /hello}
+        output: {status: 404, logs: {matches: "'/path'.*does not match pattern"}}
+      - name: path-must-not-contain-query
+        config:
+          routes:
+            - id: invalid-path-query
+              uri: /hello
+              plugins:
+                proxy-mirror: {host: "http://127.0.0.1:1999", path: "/a?a=c"}
+              upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
+        input: {path: /hello}
+        output: {status: 404, logs: {matches: "'/path'.*does not match pattern"}}
+
+  - name: hostname-dns-delivery
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [23, 24]
+    config:
+      routes:
+        - id: dns-delivery
+          uri: /hello
+          plugins:
+            proxy-mirror:
+              host: "http://localhost:{{FIXTURE.mirror.PORT}}"
+              path: /hello
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: "hello world\n"}]
+      - name: mirror
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 204}]
+    steps:
+      - name: hostname-resolves-and-delivers
+        input: {path: /hello}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: dns-failure-does-not-break-primary
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [25, 26]
+    config:
+      routes:
+        - id: dns-failure
+          uri: /hello
+          plugins:
+            proxy-mirror: {host: "http://not-find-domain.invalid", path: /get}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: "hello world\n"}]
+    steps:
+      - name: primary-succeeds-while-mirror-dns-fails
+        input: {path: /hello}
+        output:
+          status: 200
+          body: {equals: "hello world\n"}
+          logs: {matches: "proxy-mirror request to not-find-domain\\.invalid failed"}
+        wait: 300ms
+
+  - name: prefix-path
+    source:
+      file: t/plugin/proxy-mirror.t
+      tests: [27, 28, 29]
+    config:
+      routes:
+        - id: prefix-path
+          uri: /hello
+          plugins:
+            proxy-mirror:
+              host: "http://{{FIXTURE.mirror.ADDR}}"
+              path: /a
+              path_concat_mode: prefix
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+          - {method: GET, path: {equals: "/hello?a=1"}}
+        respond:
+          - {status: 200, body: "hello world\n"}
+          - {status: 200, body: "hello world\n"}
+      - name: mirror
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /a/hello}}
+          - {method: GET, path: {equals: "/a/hello?a=1"}}
+        respond:
+          - {status: 204}
+          - {status: 204}
+    steps:
+      - name: prefix-without-query
+        input: {path: /hello}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+      - name: prefix-preserves-query
+        input: {path: "/hello?a=1"}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: proxy-rewrite-priority-ordering
+    source:
       file: t/plugin/proxy-mirror2.t
-      tests: 3
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      tests: [1, 2, 3]
+    config:
+      routes:
+        - id: rewrite-before-mirror
+          uri: /nope
+          plugins:
+            proxy-rewrite:
+              _meta: {priority: 1010}
+              uri: /hello
+            proxy-mirror:
+              _meta: {priority: 1008}
+              host: "http://{{FIXTURE.mirror.ADDR}}"
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+          - {method: GET, path: {equals: "/hello?a=b&b=c&c=d"}}
+        respond:
+          - {status: 200, body: "hello world\n"}
+          - {status: 200, body: "hello world\n"}
+      - name: mirror
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /hello}}
+          - {method: GET, path: {equals: "/hello?a=b&b=c&c=d"}}
+        respond:
+          - {status: 204}
+          - {status: 204}
+    steps:
+      - name: mirror-observes-rewritten-uri
+        input: {path: /nope}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+      - name: rewritten-uri-preserves-args
+        input: {path: "/nope?a=b&b=c&c=d"}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        wait: 100ms
+
+  - name: unary-h2c-grpc-mirror
+    source:
       file: t/plugin/proxy-mirror3.t
-      tests: 2
+      tests: [1]
+    config:
+      routes:
+        - id: unary-grpc-mirror
+          uri: /helloworld.Greeter/SayHello
+          methods: [POST]
+          plugins:
+            proxy-mirror:
+              host: "grpc://{{FIXTURE.mirror.ADDR}}"
+              sample_ratio: 1
+          upstream:
+            scheme: grpc
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: h2c
+        expect:
+          - method: POST
+            protocol: HTTP/2.0
+            path: {equals: /helloworld.Greeter/SayHello}
+            headers: {content-type: {equals: application/grpc}}
+            grpc: {message_base64: CgZhcGlzaXg=}
+        respond:
+          - grpc: {message_base64: CgxIZWxsbyBhcGlzaXg=, status: "0"}
+      - name: mirror
+        kind: h2c
+        expect:
+          - method: POST
+            protocol: HTTP/2.0
+            path: {equals: /helloworld.Greeter/SayHello}
+            headers: {content-type: {equals: application/grpc}}
+            grpc: {message_base64: CgZhcGlzaXg=}
+        respond:
+          - grpc: {message_base64: CgxIZWxsbyBhcGlzaXg=, status: "0"}
+    steps:
+      - name: unary-grpc-request-and-response
+        input:
+          method: POST
+          version: "2"
+          path: /helloworld.Greeter/SayHello
+          grpc: {message_base64: CgZhcGlzaXg=}
+        output:
+          status: 200
+          grpc: {message_base64: CgxIZWxsbyBhcGlzaXg=, status: "0"}
+        wait: 100ms
+
+  - name: grpc-web-finalized-mirror
+    source:
+      file: t/plugin/proxy-mirror3.t
+      tests: [2]
+    config:
+      routes:
+        - id: grpc-web-mirror
+          uri: /grpc/web/*
+          methods: [POST]
+          plugins:
+            grpc-web: {}
+            proxy-mirror:
+              host: "grpc://{{FIXTURE.mirror.ADDR}}"
+              sample_ratio: 1
+          upstream:
+            scheme: grpc
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: h2c
+        expect:
+          - method: POST
+            protocol: HTTP/2.0
+            path: {equals: /helloworld.Greeter/SayHello}
+            headers: {content-type: {equals: application/grpc}}
+            grpc: {message_base64: CgZhcGlzaXg=}
+        respond:
+          - grpc: {message_base64: CgxIZWxsbyBhcGlzaXg=, status: "0"}
+      - name: mirror
+        kind: h2c
+        expect:
+          - method: POST
+            protocol: HTTP/2.0
+            path: {equals: /helloworld.Greeter/SayHello}
+            headers: {content-type: {equals: application/grpc}}
+            grpc: {message_base64: CgZhcGlzaXg=}
+        respond:
+          - grpc: {message_base64: CgxIZWxsbyBhcGlzaXg=, status: "0"}
+    steps:
+      - name: grpc-web-is-transformed-before-mirroring
+        input:
+          method: POST
+          path: /grpc/web/helloworld.Greeter/SayHello
+          headers: {Content-Type: application/grpc-web+proto}
+          body_base64: AAAAAAgKBmFwaXNpeA==
+        output: {status: 200}
+        wait: 100ms
+
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-mirror.t
+    tests: 31
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-mirror2.t
+    tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-mirror3.t
+    tests: 2

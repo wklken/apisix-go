@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
@@ -40,6 +41,28 @@ func (p *recordingPlugin) Handler(next http.Handler) http.Handler {
 }
 
 var _ pluginpkg.Plugin = (*recordingPlugin)(nil)
+
+func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
+	var order []string
+	fallback := withBeforeProxyHooks(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, "fallback:"+r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = apisixctx.WithBeforeProxyHook(r, func(r *http.Request) {
+			order = append(order, "hook:"+r.URL.Path)
+		})
+		r.URL.Path = "/final"
+		fallback.ServeHTTP(w, r)
+		apisixctx.RunBeforeProxyHooks(r)
+	})
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/original", nil))
+
+	if got, want := strings.Join(order, ","), "hook:/final,fallback:/final"; got != want {
+		t.Fatalf("execution order = %q, want %q", got, want)
+	}
+}
 
 func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T) {
 	order := []string{}

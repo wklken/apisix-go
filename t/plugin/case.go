@@ -2,14 +2,17 @@ package pluginintegration
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +95,7 @@ func (e *Environment) UnmarshalYAML(value *yaml.Node) error {
 type CaseStep struct {
 	Name          string         `yaml:"name"`
 	Repeat        int            `yaml:"repeat,omitempty"`
+	Concurrency   int            `yaml:"concurrency,omitempty"`
 	Config        map[string]any `yaml:"config,omitempty"`
 	ConfigProbe   *ConfigProbe   `yaml:"config_probe,omitempty"`
 	ConfigTimeout time.Duration  `yaml:"config_timeout,omitempty"`
@@ -111,13 +115,25 @@ type ScenarioFile struct {
 }
 
 type FixtureSpec struct {
-	Name           string             `yaml:"name"`
-	Kind           string             `yaml:"kind"`
-	ExpectRequests *int               `yaml:"expect_requests,omitempty"`
-	Expect         []HTTPAssertion    `yaml:"expect,omitempty"`
-	Respond        []HTTPResponse     `yaml:"respond,omitempty"`
-	NetworkExpect  []NetworkAssertion `yaml:"network_expect,omitempty"`
-	NetworkRespond []NetworkResponse  `yaml:"network_respond,omitempty"`
+	Name           string                 `yaml:"name"`
+	Kind           string                 `yaml:"kind"`
+	ExpectRequests *int                   `yaml:"expect_requests,omitempty"`
+	Expect         []HTTPAssertion        `yaml:"expect,omitempty"`
+	Respond        []HTTPResponse         `yaml:"respond,omitempty"`
+	NetworkExpect  []NetworkAssertion     `yaml:"network_expect,omitempty"`
+	NetworkRespond []NetworkResponse      `yaml:"network_respond,omitempty"`
+	Count          *FixtureCountAssertion `yaml:"count,omitempty"`
+}
+
+type FixtureCountAssertion struct {
+	AtLeast int           `yaml:"at_least"`
+	AtMost  int           `yaml:"at_most"`
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+type GRPCMessage struct {
+	MessageBase64 string `yaml:"message_base64"`
+	Status        string `yaml:"status,omitempty"`
 }
 
 type NetworkAssertion struct {
@@ -158,10 +174,12 @@ type HTTPInput struct {
 	Headers        map[string]string   `yaml:"headers,omitempty"`
 	HeaderValues   map[string][]string `yaml:"header_values,omitempty"`
 	Body           string              `yaml:"body,omitempty"`
+	BodyBase64     string              `yaml:"body_base64,omitempty"`
 	BodyRepeat     *RepeatedBody       `yaml:"body_repeat,omitempty"`
 	HMAC           *HMACSignature      `yaml:"hmac,omitempty"`
 	Chunked        bool                `yaml:"chunked,omitempty"`
 	WithoutCookies bool                `yaml:"without_cookies,omitempty"`
+	GRPC           *GRPCMessage        `yaml:"grpc,omitempty"`
 }
 
 type HMACSignature struct {
@@ -185,12 +203,14 @@ type UpstreamSpec struct {
 
 type HTTPAssertion struct {
 	Method         string                   `yaml:"method,omitempty"`
+	Protocol       string                   `yaml:"protocol,omitempty"`
 	Path           *Matcher                 `yaml:"path,omitempty"`
 	Host           *Matcher                 `yaml:"host,omitempty"`
 	Headers        map[string]Matcher       `yaml:"headers,omitempty"`
 	Body           *Matcher                 `yaml:"body,omitempty"`
 	LokiPush       *LokiPushAssertion       `yaml:"loki_push,omitempty"`
 	SkyWalkingLogs *SkyWalkingLogsAssertion `yaml:"skywalking_logs,omitempty"`
+	GRPC           *GRPCMessage             `yaml:"grpc,omitempty"`
 }
 
 type LokiPushAssertion struct {
@@ -234,6 +254,7 @@ type HTTPResponse struct {
 	Chunks          []string          `yaml:"chunks,omitempty"`
 	EchoRequestBody bool              `yaml:"echo_request_body,omitempty"`
 	Delay           time.Duration     `yaml:"delay,omitempty"`
+	GRPC            *GRPCMessage      `yaml:"grpc,omitempty"`
 }
 
 type HTTPOutput struct {
@@ -252,6 +273,7 @@ type HTTPOutput struct {
 	ElapsedAtLeast          time.Duration            `yaml:"elapsed_at_least,omitempty"`
 	ElapsedLessThan         time.Duration            `yaml:"elapsed_less_than,omitempty"`
 	Captures                map[string]HeaderCapture `yaml:"captures,omitempty"`
+	GRPC                    *GRPCMessage             `yaml:"grpc,omitempty"`
 }
 
 type HeaderCapture struct {
@@ -464,12 +486,15 @@ func (c *Case) hasScenario() bool {
 		len(c.Input.Headers) > 0 ||
 		len(c.Input.HeaderValues) > 0 ||
 		c.Input.Body != "" ||
+		c.Input.BodyBase64 != "" ||
 		c.Input.BodyRepeat != nil ||
+		c.Input.GRPC != nil ||
 		c.Input.Chunked ||
 		c.Upstream != nil ||
 		c.Output.Status != 0 ||
 		len(c.Output.Headers) > 0 ||
 		c.Output.Body != nil ||
+		c.Output.GRPC != nil ||
 		c.Output.Logs != nil ||
 		len(c.Fixtures) > 0 ||
 		c.Output.GzipBody != nil ||
@@ -521,9 +546,10 @@ func (c *Case) validateScenario() error {
 	}
 	if len(c.Steps) > 0 || len(c.Fixtures) > 0 {
 		if c.Input.Method != "" || c.Input.Path != "" || len(c.Input.Headers) > 0 ||
-			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" || c.Input.BodyRepeat != nil ||
+			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" || c.Input.BodyBase64 != "" ||
+			c.Input.BodyRepeat != nil || c.Input.GRPC != nil ||
 			c.Input.Chunked ||
-			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil ||
+			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.GRPC != nil ||
 			c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
 			c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 || len(c.Output.UniqueHeaders) > 0 ||
 			len(c.Output.MonotonicHeaders) > 0 || len(c.Output.DifferentHeaders) > 0 ||
@@ -562,6 +588,15 @@ func (c *Case) validateScenario() error {
 			}
 			if step.Repeat < 0 {
 				return fmt.Errorf("step %q repeat must not be negative", step.Name)
+			}
+			if step.Concurrency < 0 || step.Concurrency > 64 {
+				return fmt.Errorf("step %q concurrency must be between 0 and 64", step.Name)
+			}
+			if step.Concurrency > 0 && step.Repeat <= 0 {
+				return fmt.Errorf("step %q concurrency requires a positive repeat", step.Name)
+			}
+			if step.Concurrency > 0 && len(step.Config) > 0 {
+				return fmt.Errorf("step %q concurrency must not be combined with config update", step.Name)
 			}
 			if step.ConfigTimeout < 0 {
 				return fmt.Errorf("step %q config_timeout must not be negative", step.Name)
@@ -697,11 +732,16 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 	if input.Version != "" && input.Version != "1.0" && input.Version != "1.1" && input.Version != "2" {
 		return fmt.Errorf("input version %q is not supported", input.Version)
 	}
-	if input.Version == "2" && input.Scheme != "https" {
-		return errors.New("HTTP/2 input requires HTTPS")
+	if input.BodyBase64 != "" {
+		if input.Body != "" || input.BodyRepeat != nil || input.GRPC != nil {
+			return errors.New("input body_base64, body, body_repeat, and grpc are mutually exclusive")
+		}
+		if _, err := base64.StdEncoding.DecodeString(input.BodyBase64); err != nil {
+			return fmt.Errorf("input body_base64: %w", err)
+		}
 	}
 	if input.BodyRepeat != nil {
-		if input.Body != "" {
+		if input.Body != "" || input.BodyBase64 != "" {
 			return errors.New("input body and body_repeat must not both be configured")
 		}
 		if input.BodyRepeat.Value == "" {
@@ -709,6 +749,20 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 		}
 		if input.BodyRepeat.Count <= 0 {
 			return errors.New("input body_repeat count must be positive")
+		}
+	}
+	if input.GRPC != nil {
+		if input.Body != "" || input.BodyBase64 != "" || input.BodyRepeat != nil {
+			return errors.New("input grpc must not be combined with body or body_repeat")
+		}
+		if err := input.GRPC.validate(false); err != nil {
+			return fmt.Errorf("input grpc: %w", err)
+		}
+		if input.Version != "2" {
+			return errors.New("input grpc requires HTTP/2")
+		}
+		if input.Method != http.MethodPost {
+			return errors.New("input grpc requires POST")
 		}
 	}
 	if input.HMAC != nil {
@@ -775,6 +829,14 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 			return fmt.Errorf("output body: %w", err)
 		}
 	}
+	if output.GRPC != nil {
+		if output.Body != nil || output.GzipBody != nil || output.BrotliBody != nil {
+			return errors.New("output grpc and body assertions are mutually exclusive")
+		}
+		if err := output.GRPC.validate(true); err != nil {
+			return fmt.Errorf("output grpc: %w", err)
+		}
+	}
 	if output.GzipBody != nil {
 		if output.Body != nil || output.BrotliBody != nil {
 			return errors.New("output body, gzip_body, and brotli_body are mutually exclusive")
@@ -822,14 +884,14 @@ func (f *FixtureSpec) validate() error {
 		return errors.New("name is required")
 	}
 	supportedKinds := map[string]bool{
-		"http": true, "https": true, "tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
+		"http": true, "https": true, "h2c": true, "tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
 		"redis": true, "redis-cluster": true, "redis-sentinel": true,
 		"kafka": true, "dubbo": true, "ldap": true,
 	}
 	if !supportedKinds[f.Kind] {
 		return fmt.Errorf("kind %q is not supported", f.Kind)
 	}
-	if f.Kind == "http" || f.Kind == "https" {
+	if f.Kind == "http" || f.Kind == "https" || f.Kind == "h2c" {
 		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
 			return fmt.Errorf("%s fixture must use expect/respond", f.Kind)
 		}
@@ -838,6 +900,9 @@ func (f *FixtureSpec) validate() error {
 		}
 		if f.ExpectRequests != nil && *f.ExpectRequests != len(f.Expect) {
 			return fmt.Errorf("expect_requests must equal the %d configured expectations", len(f.Expect))
+		}
+		if f.ExpectRequests != nil && f.Count != nil {
+			return errors.New("expect_requests and count must not both be configured")
 		}
 		for i := range f.Respond {
 			if err := f.Respond[i].validate(); err != nil {
@@ -849,10 +914,21 @@ func (f *FixtureSpec) validate() error {
 				return fmt.Errorf("expectation %d: %w", i+1, err)
 			}
 		}
+		if f.Count != nil {
+			if len(f.Expect) != 1 {
+				return errors.New("count assertion requires exactly one request expectation")
+			}
+			if err := f.Count.validate(); err != nil {
+				return fmt.Errorf("count: %w", err)
+			}
+		}
 		return nil
 	}
 	if f.ExpectRequests != nil {
 		return fmt.Errorf("%s fixture must not configure expect_requests", f.Kind)
+	}
+	if f.Count != nil {
+		return fmt.Errorf("%s fixture does not support count assertions", f.Kind)
 	}
 	if len(f.Expect) > 0 || len(f.Respond) > 0 {
 		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)
@@ -881,6 +957,35 @@ func (f *FixtureSpec) validate() error {
 	for i, response := range f.NetworkRespond {
 		if err := response.validate(); err != nil {
 			return fmt.Errorf("network response %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func (c FixtureCountAssertion) validate() error {
+	if c.AtLeast < 0 || c.AtMost <= 0 || c.AtMost < c.AtLeast {
+		return errors.New("at_least and at_most must define a non-negative bounded range")
+	}
+	if c.Timeout < 0 || c.Timeout > 5*time.Second {
+		return errors.New("timeout must be between 0 and 5s")
+	}
+	return nil
+}
+
+func (g GRPCMessage) validate(withStatus bool) error {
+	if g.MessageBase64 == "" {
+		return errors.New("message_base64 is required")
+	}
+	if _, err := base64.StdEncoding.DecodeString(g.MessageBase64); err != nil {
+		return fmt.Errorf("message_base64: %w", err)
+	}
+	if !withStatus && g.Status != "" {
+		return errors.New("status is only valid for a response")
+	}
+	if withStatus && g.Status != "" {
+		status, err := strconv.Atoi(g.Status)
+		if err != nil || status < 0 || status > 16 {
+			return errors.New("status must be a gRPC status code between 0 and 16")
 		}
 	}
 	return nil
@@ -1017,11 +1122,21 @@ func (r HTTPResponse) validate() error {
 	if r.Status != 0 && (r.Status < 100 || r.Status > 599) {
 		return errors.New("status must be between 100 and 599")
 	}
-	if r.Body != "" && len(r.Chunks) > 0 {
-		return errors.New("body and chunks must not both be configured")
+	configuredBodies := 0
+	if r.Body != "" || len(r.Chunks) > 0 {
+		configuredBodies++
 	}
-	if r.EchoRequestBody && (r.Body != "" || len(r.Chunks) > 0) {
-		return errors.New("echo_request_body must not be combined with body or chunks")
+	if r.EchoRequestBody {
+		configuredBodies++
+	}
+	if r.GRPC != nil {
+		configuredBodies++
+		if err := r.GRPC.validate(true); err != nil {
+			return fmt.Errorf("grpc: %w", err)
+		}
+	}
+	if configuredBodies > 1 || (r.Body != "" && len(r.Chunks) > 0) {
+		return errors.New("body, chunks, echo_request_body, and grpc are mutually exclusive")
 	}
 	if r.Delay < 0 {
 		return errors.New("delay must not be negative")
@@ -1033,6 +1148,9 @@ func (r HTTPResponse) validate() error {
 }
 
 func (a HTTPAssertion) validate() error {
+	if a.Protocol != "" && a.Protocol != "HTTP/1.0" && a.Protocol != "HTTP/1.1" && a.Protocol != "HTTP/2.0" {
+		return fmt.Errorf("upstream request protocol %q is not supported", a.Protocol)
+	}
 	if a.Path != nil {
 		if err := a.Path.validate(matcherPath); err != nil {
 			return fmt.Errorf("upstream request path: %w", err)
@@ -1063,8 +1181,11 @@ func (a HTTPAssertion) validate() error {
 	if a.SkyWalkingLogs != nil {
 		bodyAssertions++
 	}
+	if a.GRPC != nil {
+		bodyAssertions++
+	}
 	if bodyAssertions > 1 {
-		return errors.New("upstream request body, loki_push, and skywalking_logs are mutually exclusive")
+		return errors.New("upstream request body, loki_push, skywalking_logs, and grpc are mutually exclusive")
 	}
 	if a.LokiPush != nil {
 		if err := a.LokiPush.validate(); err != nil {
@@ -1074,6 +1195,11 @@ func (a HTTPAssertion) validate() error {
 	if a.SkyWalkingLogs != nil {
 		if err := a.SkyWalkingLogs.validate(); err != nil {
 			return fmt.Errorf("upstream SkyWalking logs: %w", err)
+		}
+	}
+	if a.GRPC != nil {
+		if err := a.GRPC.validate(false); err != nil {
+			return fmt.Errorf("upstream gRPC request: %w", err)
 		}
 	}
 	return nil

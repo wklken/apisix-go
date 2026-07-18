@@ -2,21 +2,28 @@ package proxy_mirror
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/proxy"
+	"golang.org/x/net/http2"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config Config
-	client *http.Client
+	config    Config
+	client    *http.Client
+	h2cClient *http.Client
 }
 
 const (
@@ -30,7 +37,7 @@ const schema = `
   "properties": {
     "host": {
       "type": "string",
-      "pattern": "^https?://([0-9A-Za-z.-]+|\\[[0-9A-Fa-f:]+\\])(:[0-9]+)?$"
+      "pattern": "^(https?|grpcs?)://([0-9A-Za-z.-]+|\\[[0-9A-Fa-f:]+\\])(:[0-9]+)?$"
     },
     "path": {
       "type": "string",
@@ -78,6 +85,15 @@ func (p *Plugin) PostInit() error {
 		Timeout:   5 * time.Second,
 		Transport: proxy.NewTransport((&proxy.TransportOptionBuilder{}).Build()),
 	}
+	p.h2cClient = &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
+			},
+		},
+	}
 
 	return nil
 }
@@ -88,17 +104,27 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := readAndRestoreBody(r)
-		if err == nil && p.shouldMirror() {
-			mirrorReq, err := p.buildMirrorRequest(r, body)
-			if err == nil {
-				go p.sendMirror(mirrorReq)
-			}
-		}
-
+		r = apisixctx.WithBeforeProxyHook(r, p.mirrorFinalizedRequest)
 		next.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) mirrorFinalizedRequest(r *http.Request) {
+	if !p.shouldMirror() {
+		return
+	}
+	body, err := readAndRestoreBody(r)
+	if err != nil {
+		logger.Errorf("proxy-mirror read request body: %s", err)
+		return
+	}
+	mirrorReq, err := p.buildMirrorRequest(r, body)
+	if err != nil {
+		logger.Errorf("proxy-mirror build request to %s: %s", p.config.Host, err)
+		return
+	}
+	go p.sendMirror(mirrorReq)
 }
 
 func readAndRestoreBody(r *http.Request) ([]byte, error) {
@@ -132,7 +158,7 @@ func (p *Plugin) buildMirrorRequest(r *http.Request, body []byte) (*http.Request
 		return nil, err
 	}
 	mirrorReq.Header = r.Header.Clone()
-	mirrorReq.Host = mirrorReq.URL.Host
+	mirrorReq.Host = r.Host
 
 	return mirrorReq, nil
 }
@@ -143,23 +169,48 @@ func (p *Plugin) mirrorURL(r *http.Request) (string, error) {
 		return "", err
 	}
 
-	mirrorPath := r.URL.Path
+	mirrorPath, rawQuery := effectiveRequestTarget(r)
 	if p.config.Path != "" {
 		if p.config.PathConcatMode == "prefix" {
-			mirrorPath = strings.TrimRight(p.config.Path, "/") + "/" + strings.TrimLeft(r.URL.Path, "/")
+			mirrorPath = strings.TrimRight(p.config.Path, "/") + "/" + strings.TrimLeft(mirrorPath, "/")
 		} else {
 			mirrorPath = p.config.Path
 		}
 	}
 
 	hostURL.Path = mirrorPath
-	hostURL.RawQuery = r.URL.RawQuery
+	hostURL.RawQuery = rawQuery
+	switch hostURL.Scheme {
+	case "grpc":
+		hostURL.Scheme = "http"
+	case "grpcs":
+		hostURL.Scheme = "https"
+	}
 	return hostURL.String(), nil
 }
 
-func (p *Plugin) sendMirror(req *http.Request) {
-	resp, err := p.client.Do(req)
+func effectiveRequestTarget(r *http.Request) (string, string) {
+	path, rawQuery := r.URL.Path, r.URL.RawQuery
+	rewrite, _ := r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	uri, _ := rewrite["uri"].(string)
+	if uri == "" {
+		return path, rawQuery
+	}
+	rewritten, err := url.ParseRequestURI(uri)
 	if err != nil {
+		return path, rawQuery
+	}
+	return rewritten.Path, rewritten.RawQuery
+}
+
+func (p *Plugin) sendMirror(req *http.Request) {
+	client := p.client
+	if strings.HasPrefix(p.config.Host, "grpc://") {
+		client = p.h2cClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Errorf("proxy-mirror request to %s failed: %s", req.URL.Host, err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()

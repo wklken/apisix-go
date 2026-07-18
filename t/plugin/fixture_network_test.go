@@ -706,6 +706,41 @@ func TestHarnessRunsGRPCFixture(t *testing.T) {
 	fixture.assert(t, spec)
 }
 
+func TestFixtureServerCountRangeWaitsForEventualRequests(t *testing.T) {
+	minCount, maxCount := 2, 3
+	spec := FixtureSpec{
+		Name:    "mirror",
+		Kind:    "http",
+		Expect:  []HTTPAssertion{{Method: http.MethodGet}},
+		Respond: []HTTPResponse{{Status: http.StatusNoContent}},
+		Count:   &FixtureCountAssertion{AtLeast: minCount, AtMost: maxCount, Timeout: time.Second},
+	}
+	fixture, err := startNamedFixture(spec)
+	if err != nil {
+		t.Fatalf("start fixture: %v", err)
+	}
+	defer fixture.close()
+	for range minCount {
+		response, requestErr := http.Get(fixture.url())
+		if requestErr != nil {
+			t.Fatalf("GET fixture: %v", requestErr)
+		}
+		_ = response.Body.Close()
+	}
+	fixture.assert(t, spec)
+}
+
+func TestBuildAndMatchUnaryGRPCFrame(t *testing.T) {
+	message := []byte("\x0a\x06apisix")
+	frame := buildUnaryGRPCFrame(message)
+	if err := matchUnaryGRPCFrame(frame, base64.StdEncoding.EncodeToString(message)); err != nil {
+		t.Fatalf("match unary gRPC frame: %v", err)
+	}
+	if err := matchUnaryGRPCFrame(append(frame, 0), base64.StdEncoding.EncodeToString(message)); err == nil {
+		t.Fatal("match unary gRPC frame accepted trailing bytes")
+	}
+}
+
 func TestHarnessAssertsFileAfterShutdown(t *testing.T) {
 	workDir := t.TempDir()
 	path := filepath.Join(workDir, "output.log")

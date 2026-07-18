@@ -5,11 +5,19 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+type BeforeProxyHook func(*http.Request)
+
+type beforeProxyHooks struct {
+	once  sync.Once
+	hooks []BeforeProxyHook
+}
 
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
 
@@ -23,7 +31,30 @@ const (
 	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
 	consumerPluginsRunKey   ContextKey = "consumer_plugins_run"
 	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
+	beforeProxyHooksKey     ContextKey = "before_proxy_hooks"
 )
+
+func WithBeforeProxyHook(r *http.Request, hook BeforeProxyHook) *http.Request {
+	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
+	hooks := make([]BeforeProxyHook, 0, 1)
+	if registered != nil {
+		hooks = append(hooks, registered.hooks...)
+	}
+	hooks = append(hooks, hook)
+	return r.WithContext(context.WithValue(r.Context(), beforeProxyHooksKey, &beforeProxyHooks{hooks: hooks}))
+}
+
+func RunBeforeProxyHooks(r *http.Request) {
+	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
+	if registered == nil {
+		return
+	}
+	registered.once.Do(func() {
+		for _, hook := range registered.hooks {
+			hook(r)
+		}
+	})
+}
 
 type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)
 

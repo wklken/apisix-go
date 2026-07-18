@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -32,12 +33,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	brotlidec "github.com/andybalholm/brotli"
 	apisixcmd "github.com/wklken/apisix-go/cmd"
 	"go.yaml.in/yaml/v3"
+	"golang.org/x/net/http2"
 )
 
 const helperProcessEnv = "APISIX_GO_INTEGRATION_HELPER"
@@ -1217,11 +1220,12 @@ func TestCaseEnvironmentHelperProcess(t *testing.T) {
 }
 
 type capturedRequest struct {
-	method  string
-	path    string
-	host    string
-	headers http.Header
-	body    string
+	method   string
+	path     string
+	host     string
+	protocol string
+	headers  http.Header
+	body     string
 }
 
 type fixtureServer struct {
@@ -1234,11 +1238,12 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		request := capturedRequest{
-			method:  r.Method,
-			path:    r.URL.RequestURI(),
-			host:    r.Host,
-			headers: r.Header.Clone(),
-			body:    string(body),
+			method:   r.Method,
+			path:     r.URL.RequestURI(),
+			host:     r.Host,
+			protocol: r.Proto,
+			headers:  r.Header.Clone(),
+			body:     string(body),
 		}
 		select {
 		case requests <- request:
@@ -1258,20 +1263,25 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 }
 
 func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
-	if spec.Kind != "http" && spec.Kind != "https" {
+	if spec.Kind != "http" && spec.Kind != "https" && spec.Kind != "h2c" {
 		return startNetworkFixture(spec)
 	}
-	requests := make(chan capturedRequest, len(spec.Respond)+len(spec.Expect)+1)
+	requestCapacity := len(spec.Respond) + len(spec.Expect) + 1
+	if spec.Count != nil && requestCapacity < spec.Count.AtMost+1 {
+		requestCapacity = spec.Count.AtMost + 1
+	}
+	requests := make(chan capturedRequest, requestCapacity)
 	var responseMu sync.Mutex
 	nextResponse := 0
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		request := capturedRequest{
-			method:  r.Method,
-			path:    r.URL.RequestURI(),
-			host:    r.Host,
-			headers: r.Header.Clone(),
-			body:    string(body),
+			method:   r.Method,
+			path:     r.URL.RequestURI(),
+			host:     r.Host,
+			protocol: r.Proto,
+			headers:  r.Header.Clone(),
+			body:     string(body),
 		}
 		select {
 		case requests <- request:
@@ -1289,9 +1299,16 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	})
 
 	var server *httptest.Server
-	if spec.Kind == "https" {
+	switch spec.Kind {
+	case "https":
 		server = httptest.NewTLSServer(handler)
-	} else {
+	case "h2c":
+		server = httptest.NewUnstartedServer(handler)
+		protocols := &http.Protocols{}
+		protocols.SetUnencryptedHTTP2(true)
+		server.Config.Protocols = protocols
+		server.Start()
+	default:
 		server = httptest.NewServer(handler)
 	}
 	return &fixtureServer{server: server, requests: requests}, nil
@@ -1309,6 +1326,23 @@ func writeFixtureResponse(w http.ResponseWriter, context context.Context, respon
 	}
 	for name, value := range response.Headers {
 		w.Header().Set(name, value)
+	}
+	if response.GRPC != nil {
+		message, err := base64.StdEncoding.DecodeString(response.GRPC.MessageBase64)
+		if err != nil {
+			http.Error(w, "invalid fixture gRPC message", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Trailer", "Grpc-Status")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buildUnaryGRPCFrame(message))
+		status := response.GRPC.Status
+		if status == "" {
+			status = "0"
+		}
+		w.Header().Set("Grpc-Status", status)
+		return
 	}
 	status := response.Status
 	if status == 0 {
@@ -1346,6 +1380,10 @@ func (f *fixtureServer) close() {
 
 func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
 	t.Helper()
+	if spec.Count != nil {
+		f.assertCount(t, spec)
+		return
+	}
 	for i, expected := range spec.Expect {
 		select {
 		case received := <-f.requests:
@@ -1376,6 +1414,53 @@ func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
 				extra.path,
 			)
 		default:
+		}
+	}
+}
+
+func (f *fixtureServer) assertCount(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	timeout := spec.Count.Timeout
+	if timeout == 0 {
+		timeout = 2 * time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	quiet := time.NewTimer(time.Hour)
+	if !quiet.Stop() {
+		<-quiet.C
+	}
+	defer quiet.Stop()
+	count := 0
+	for {
+		if count >= spec.Count.AtLeast {
+			quiet.Reset(100 * time.Millisecond)
+		}
+		select {
+		case received := <-f.requests:
+			if count >= spec.Count.AtLeast && !quiet.Stop() {
+				<-quiet.C
+			}
+			count++
+			assertUpstreamRequest(t, spec.Expect[0], received)
+			if count > spec.Count.AtMost {
+				t.Errorf("fixture %s request count exceeds %d", spec.Name, spec.Count.AtMost)
+				return
+			}
+		case <-quiet.C:
+			if count < spec.Count.AtLeast || count > spec.Count.AtMost {
+				t.Errorf(
+					"fixture %s request count = %d, want %d..%d",
+					spec.Name, count, spec.Count.AtLeast, spec.Count.AtMost,
+				)
+			}
+			return
+		case <-deadline.C:
+			t.Errorf(
+				"fixture %s request count = %d after %s, want %d..%d",
+				spec.Name, count, timeout, spec.Count.AtLeast, spec.Count.AtMost,
+			)
+			return
 		}
 	}
 }
@@ -1749,6 +1834,13 @@ func runCase(t *testing.T, spec Case) {
 	standaloneResources := spec.Config
 	tlsPort := 0
 	enableHTTP2 := caseUsesHTTP2(spec)
+	if enableHTTP2 {
+		runtimeOverrides, err = cloneConfigMap(spec.Runtime)
+		if err != nil {
+			t.Fatalf("clone runtime config for HTTP/2: %v", err)
+		}
+		ensureMap(runtimeOverrides, "apisix")["enable_http2"] = true
+	}
 	if spec.TLS != nil {
 		tlsPort, err = reservePort()
 		if err != nil {
@@ -1879,24 +1971,50 @@ func runCase(t *testing.T, spec Case) {
 				if repeat == 0 {
 					repeat = 1
 				}
-				for iteration := 1; iteration <= repeat; iteration++ {
-					run := func(t *testing.T) {
-						input := expandIterationInput(step.Input, iteration)
-						output := expandIterationOutput(step.Output, iteration)
-						if err := runHTTPInput(
-							t, client, address, tlsAddress, input, output, bodyLengths, headerHistory,
-							capturedCookies, capturedValues,
-						); err != nil {
-							requestFailed = true
-						}
-						if step.Wait > 0 {
-							time.Sleep(step.Wait)
-						}
+				if step.Concurrency > 0 {
+					var failed atomic.Bool
+					semaphore := make(chan struct{}, step.Concurrency)
+					var group sync.WaitGroup
+					for iteration := 1; iteration <= repeat; iteration++ {
+						iteration := iteration
+						group.Go(func() {
+							semaphore <- struct{}{}
+							defer func() { <-semaphore }()
+							input := expandIterationInput(step.Input, iteration)
+							output := expandIterationOutput(step.Output, iteration)
+							if err := runHTTPInput(
+								t, client, address, tlsAddress, input, output,
+								make(map[string]int), make(map[string][]string),
+								maps.Clone(capturedCookies), capturedValues,
+							); err != nil {
+								failed.Store(true)
+							}
+						})
 					}
-					if repeat == 1 {
-						run(t)
-					} else {
-						t.Run(strconv.Itoa(iteration), run)
+					group.Wait()
+					if failed.Load() {
+						requestFailed = true
+					}
+				} else {
+					for iteration := 1; iteration <= repeat; iteration++ {
+						run := func(t *testing.T) {
+							input := expandIterationInput(step.Input, iteration)
+							output := expandIterationOutput(step.Output, iteration)
+							if err := runHTTPInput(
+								t, client, address, tlsAddress, input, output, bodyLengths, headerHistory,
+								capturedCookies, capturedValues,
+							); err != nil {
+								requestFailed = true
+							}
+							if step.Wait > 0 {
+								time.Sleep(step.Wait)
+							}
+						}
+						if repeat == 1 {
+							run(t)
+						} else {
+							t.Run(strconv.Itoa(iteration), run)
+						}
 					}
 				}
 				if step.Output.Logs != nil {
@@ -1928,6 +2046,7 @@ func runCase(t *testing.T, spec Case) {
 		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
 	}
 
+	transport.CloseIdleConnections()
 	if err := process.stop(); err != nil {
 		t.Errorf("stop APISIX: %v", err)
 	}
@@ -2100,6 +2219,13 @@ func probeHTTPInput(
 		address = tlsAddress
 	}
 	body := input.Body
+	if input.BodyBase64 != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(input.BodyBase64)
+		if decodeErr != nil {
+			return fmt.Errorf("decode probe body_base64: %w", decodeErr)
+		}
+		body = string(decoded)
+	}
 	if input.BodyRepeat != nil {
 		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
 	}
@@ -2230,8 +2356,24 @@ func runHTTPInput(
 		address = tlsAddress
 	}
 	body := input.Body
+	if input.BodyBase64 != "" {
+		decoded, decodeErr := base64.StdEncoding.DecodeString(input.BodyBase64)
+		if decodeErr != nil {
+			t.Errorf("decode client body_base64: %v", decodeErr)
+			return decodeErr
+		}
+		body = string(decoded)
+	}
 	if input.BodyRepeat != nil {
 		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
+	}
+	if input.GRPC != nil {
+		message, decodeErr := base64.StdEncoding.DecodeString(input.GRPC.MessageBase64)
+		if decodeErr != nil {
+			t.Errorf("decode client gRPC message: %v", decodeErr)
+			return decodeErr
+		}
+		body = string(buildUnaryGRPCFrame(message))
 	}
 	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
 	if err != nil {
@@ -2249,6 +2391,10 @@ func runHTTPInput(
 			continue
 		}
 		request.Header.Set(name, value)
+	}
+	if input.GRPC != nil {
+		request.Header.Set("Content-Type", "application/grpc")
+		request.Header.Set("TE", "trailers")
 	}
 	for name, values := range input.HeaderValues {
 		for _, value := range values {
@@ -2273,6 +2419,17 @@ func runHTTPInput(
 		)
 	}
 	requestClient := client
+	var h2cTransport *http2.Transport
+	if input.Version == "2" && scheme == "http" {
+		h2cTransport = &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, address)
+			},
+		}
+		defer h2cTransport.CloseIdleConnections()
+		requestClient = &http.Client{Timeout: client.Timeout, Transport: h2cTransport, Jar: client.Jar}
+	}
 	if input.WithoutCookies {
 		clientWithoutCookies := *client
 		clientWithoutCookies.Jar = nil
@@ -2620,9 +2777,9 @@ func assertElapsed(t *testing.T, output HTTPOutput, elapsed time.Duration) {
 }
 
 func fixtureAssertionsConfigured(assertion HTTPAssertion) bool {
-	return assertion.Method != "" || assertion.Path != nil || assertion.Host != nil ||
+	return assertion.Method != "" || assertion.Protocol != "" || assertion.Path != nil || assertion.Host != nil ||
 		len(assertion.Headers) > 0 || assertion.Body != nil || assertion.LokiPush != nil ||
-		assertion.SkyWalkingLogs != nil
+		assertion.SkyWalkingLogs != nil || assertion.GRPC != nil
 }
 
 func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, body string) {
@@ -2634,6 +2791,22 @@ func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, bo
 	if expected.Body != nil {
 		if err := expected.Body.match(body, true); err != nil {
 			t.Errorf("response body: %v", err)
+		}
+	}
+	if expected.GRPC != nil {
+		if err := matchUnaryGRPCFrame([]byte(body), expected.GRPC.MessageBase64); err != nil {
+			t.Errorf("response gRPC frame: %v", err)
+		}
+		status := response.Trailer.Get("Grpc-Status")
+		if status == "" {
+			status = response.Header.Get("Grpc-Status")
+		}
+		wantStatus := expected.GRPC.Status
+		if wantStatus == "" {
+			wantStatus = "0"
+		}
+		if status != wantStatus {
+			t.Errorf("response gRPC status = %q, want %q", status, wantStatus)
 		}
 	}
 	if expected.GzipBody != nil {
@@ -2761,6 +2934,9 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 	if expected.Method != "" && received.method != expected.Method {
 		t.Errorf("upstream method = %q, want %q", received.method, expected.Method)
 	}
+	if expected.Protocol != "" && received.protocol != expected.Protocol {
+		t.Errorf("upstream protocol = %q, want %q", received.protocol, expected.Protocol)
+	}
 	if expected.Path != nil {
 		if err := expected.Path.match(received.path, true); err != nil {
 			t.Errorf("upstream path: %v", err)
@@ -2787,6 +2963,39 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 			t.Errorf("upstream SkyWalking logs: %v", err)
 		}
 	}
+	if expected.GRPC != nil {
+		if err := matchUnaryGRPCFrame([]byte(received.body), expected.GRPC.MessageBase64); err != nil {
+			t.Errorf("upstream gRPC frame: %v", err)
+		}
+	}
+}
+
+func buildUnaryGRPCFrame(message []byte) []byte {
+	frame := make([]byte, 5+len(message))
+	binary.BigEndian.PutUint32(frame[1:5], uint32(len(message)))
+	copy(frame[5:], message)
+	return frame
+}
+
+func matchUnaryGRPCFrame(frame []byte, messageBase64 string) error {
+	if len(frame) < 5 {
+		return fmt.Errorf("frame length = %d, want at least 5", len(frame))
+	}
+	if frame[0] != 0 {
+		return fmt.Errorf("compressed flag = %d, want 0", frame[0])
+	}
+	messageLength := int(binary.BigEndian.Uint32(frame[1:5]))
+	if messageLength != len(frame)-5 {
+		return fmt.Errorf("declared message length = %d, payload bytes = %d", messageLength, len(frame)-5)
+	}
+	want, err := base64.StdEncoding.DecodeString(messageBase64)
+	if err != nil {
+		return fmt.Errorf("decode expected message: %w", err)
+	}
+	if !bytes.Equal(frame[5:], want) {
+		return fmt.Errorf("message base64 = %q, want %q", base64.StdEncoding.EncodeToString(frame[5:]), messageBase64)
+	}
+	return nil
 }
 
 func assertHeaders(t *testing.T, scope string, expected map[string]Matcher, actual http.Header) {

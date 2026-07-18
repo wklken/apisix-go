@@ -3,6 +3,7 @@ package ctx
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -16,6 +17,25 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 
 	if got := req.Header.Get("X-Consumer-Username"); got != "bob" {
 		t.Fatalf("X-Consumer-Username = %q, want bob", got)
+	}
+}
+
+func TestBeforeProxyHooksRunInRegistrationOrder(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	var calls []string
+	req = WithBeforeProxyHook(req, func(r *http.Request) {
+		calls = append(calls, "first:"+r.URL.Path)
+	})
+	req = WithBeforeProxyHook(req, func(r *http.Request) {
+		calls = append(calls, "second:"+r.URL.Path)
+	})
+	req.URL.Path = "/final"
+
+	RunBeforeProxyHooks(req)
+	RunBeforeProxyHooks(req)
+
+	if got, want := calls, []string{"first:/final", "second:/final"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("hook calls = %#v, want %#v", got, want)
 	}
 }
 

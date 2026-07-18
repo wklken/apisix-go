@@ -170,7 +170,13 @@ func configuredTLSListenAddresses() []string {
 }
 
 func newConfiguredHTTPServer(handler http.Handler) *http.Server {
-	server := &http.Server{Handler: handler}
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	if frontendHTTP2Enabled() {
+		protocols.SetHTTP2(true)
+		protocols.SetUnencryptedHTTP2(true)
+	}
+	server := &http.Server{Handler: handler, Protocols: protocols}
 	if frontendHTTP2Enabled() {
 		if err := http2.ConfigureServer(server, nil); err != nil {
 			logger.Errorf("configure HTTP/2 server: %s", err)

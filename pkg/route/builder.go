@@ -40,6 +40,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -468,7 +469,14 @@ func buildSystemPluginConfigs(
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
-	return ai_runtime.EnableTerminal(chain.Then(ai_runtime.TerminalHandler(fallback)))
+	return ai_runtime.EnableTerminal(chain.Then(ai_runtime.TerminalHandler(withBeforeProxyHooks(fallback))))
+}
+
+func withBeforeProxyHooks(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.RunBeforeProxyHooks(r)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func buildRequestContextConfig(
@@ -894,12 +902,18 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	servers := make(map[string]int, len(upstream.Nodes))
 	// fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
 	scheme := upstream.Scheme
+	targetScheme := scheme
+	if strings.EqualFold(targetScheme, "grpc") {
+		targetScheme = "http"
+	} else if strings.EqualFold(targetScheme, "grpcs") {
+		targetScheme = "https"
+	}
 	for _, node := range upstream.Nodes {
 		host := node.Host
 		port := node.Port
 		weight := node.Weight
 
-		uri := fmt.Sprintf("%s://%s:%d", scheme, host, port)
+		uri := fmt.Sprintf("%s://%s:%d", targetScheme, host, port)
 		servers[uri] = weight
 	}
 
@@ -1018,7 +1032,15 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 
 	// responseHeaderTimeout := time.Duration(timeout) * time.Second
 
-	transport := pxy.NewTransport(opt.Build())
+	var transport http.RoundTripper = pxy.NewTransport(opt.Build())
+	if strings.EqualFold(scheme, "grpc") {
+		transport = &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, address)
+			},
+		}
+	}
 
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()

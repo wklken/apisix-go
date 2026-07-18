@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Work on `codex/plugin-integration-tests`; keep PR #4 draft until all final gates pass.
+- Work on `codex/plugin-integration-tests`; PR #4 is not ready while any item in the verified remaining-work ledger is unchecked.
 - Do not use subagents unless the user explicitly authorizes them; execute this plan inline with `superpowers:executing-plans`.
 - Run every Go command from Bash after `source .envrc`.
 - Pin every source to Apache APISIX commit `c3d7d5ec69774121f53d2e20d29d09c816795dd7`.
@@ -218,7 +218,7 @@ git commit -m "test(plugin): add network and shutdown fixtures"
 - Consumes: `FixtureSpec.Kind`, network payload scripts, and named fixture placeholders.
 - Produces: deterministic protocol servers used by limit/cache, logger, Dubbo, and LDAP manifests.
 
-- [x] **Step 1: Write RED tests for the exact commands/protocols used by the remaining sources**
+- [ ] **Step 1: Write RED tests for the exact commands/protocols used by the remaining sources**
 
 ```go
 func TestRedisFixtureSupportsPluginCommands(t *testing.T) {
@@ -231,7 +231,7 @@ func TestRedisFixtureSupportsPluginCommands(t *testing.T) {
 
 Use the repository's existing Redis client import, not a new package. Add protocol tests for `AUTH`, `SELECT`, `GET`, `SET` with `NX/PX/EX`, `INCR`, `INCRBY`, `DECR`, `EXPIRE`, `PTTL`, `DEL`, `HGET/HSET`, `EVAL/EVALSHA`, cluster `MOVED`, Sentinel `get-master-addr-by-name`, Kafka metadata/produce acknowledgements, Dubbo request ID and Hessian response frames, and LDAP bind/search success/failure.
 
-- [x] **Step 2: Run protocol tests RED**
+- [ ] **Step 2: Run protocol tests RED**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "Test(Redis|Kafka|Dubbo|LDAP)Fixture" -count=1 -v'
@@ -239,7 +239,7 @@ bash -lc 'source .envrc && go test ./t/plugin -run "Test(Redis|Kafka|Dubbo|LDAP)
 
 Expected: compile failure because fixture constructors are undefined.
 
-- [x] **Step 3: Implement only the scripted protocol surface asserted in Step 1**
+- [ ] **Step 3: Implement only the scripted protocol surface asserted in Step 1**
 
 ```go
 func startRedisFixture(spec FixtureSpec) (*networkFixture, error)
@@ -252,7 +252,7 @@ func startLDAPFixture(spec FixtureSpec) (*networkFixture, error)
 
 Keep state in per-fixture maps guarded by a mutex. Do not implement a general server: reject any command/API key not listed in Step 1 and include the unexpected payload in the test failure.
 
-- [x] **Step 4: Run all protocol fixtures GREEN and commit**
+- [ ] **Step 4: Run all protocol fixtures GREEN and commit**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "Test(Redis|Kafka|Dubbo|LDAP)Fixture" -count=1 -v'
@@ -291,7 +291,7 @@ The conversion acceptance matrix is exact:
 | `oas-validator` | three sources / 110 | inline and referenced OpenAPI operations, path/query/header/cookie/body validation, formats, nullable/composition, request/response modes, unmatched operations, schema errors |
 | `traffic-label` | two sources / 38 | first-match and match-all rules, nested expressions, variables, numeric/string headers, weighted actions, schema/config-time expression rejection |
 
-- [x] **Step 1: Convert one manifest at a time using the canonical shape**
+- [ ] **Step 1: Convert one manifest at a time using the canonical shape**
 
 ```yaml
 cases:
@@ -321,7 +321,7 @@ cases:
 
 Do not put setup-only requests in `steps`; include their source numbers in the case that owns the resulting standalone resource.
 
-- [x] **Step 2: For each plugin, prove RED then GREEN**
+- [ ] **Step 2: For each plugin, prove RED then GREEN**
 
 Run before editing and after conversion, replacing `<plugin>` with each table row:
 
@@ -332,7 +332,7 @@ bash -lc 'source .envrc && go test ./t/plugin -run "TestPluginIntegration/<plugi
 
 Expected before: semantic gate FAIL. Expected after: semantic gate and integration PASS. If integration exposes a mismatch, add `Test<Behavior>` in the matching package, observe RED, make the smallest production fix, and rerun package plus manifest.
 
-- [x] **Step 3: Run the wave gate and commit**
+- [ ] **Step 3: Run the wave gate and commit**
 
 ```bash
 bash -lc 'source .envrc && go test ./pkg/plugin/brotli ./pkg/plugin/fault_injection ./pkg/plugin/cors ./pkg/plugin/consumer_restriction ./pkg/plugin/request_validation ./pkg/plugin/oas_validator ./pkg/plugin/traffic_label -count=1'
@@ -354,7 +354,7 @@ git commit -m "test(plugin): convert core security integration suites"
 - Consumes: standalone consumers/groups, repeated headers, cookie reuse, response capture, and crypto helpers already present in package tests.
 - Produces: 5 real manifests covering 18 sources and 301 blocks.
 
-- [x] **Step 1: Translate the exact behavior sets**
+- [ ] **Step 1: Translate the exact behavior sets**
 
 | Manifest | Blocks | Required behavior groups |
 |---|---:|---|
@@ -366,7 +366,7 @@ git commit -m "test(plugin): convert core security integration suites"
 
 Use test-local fixed keys copied from the pinned sources or existing package test fixtures; never generate assertions from the implementation under test.
 
-- [x] **Step 2: Run each semantic and real-process gate RED then GREEN**
+- [ ] **Step 2: Run each semantic and real-process gate RED then GREEN**
 
 ```bash
 for plugin in key-auth basic-auth jwt-auth hmac-auth jwe-decrypt; do
@@ -375,7 +375,7 @@ for plugin in key-auth basic-auth jwt-auth hmac-auth jwe-decrypt; do
 done
 ```
 
-- [x] **Step 3: Run packages and commit**
+- [ ] **Step 3: Run packages and commit**
 
 ```bash
 bash -lc 'source .envrc && go test ./pkg/plugin/key_auth ./pkg/plugin/basic_auth ./pkg/plugin/jwt_auth ./pkg/plugin/hmac_auth ./pkg/plugin/jwe_decrypt -count=1'
@@ -396,11 +396,11 @@ git commit -m "test(plugin): convert credential authentication suites"
 - Consumes: LDAP fixture, HTTP/HTTPS fixtures, frontend TLS, cookies/captures, RSA/JWKS helpers, and standalone consumers/metadata.
 - Produces: 10 real manifests covering 30 sources and 407 blocks.
 
-- [x] **Step 1: Extend `fixture_auth_test.go` with deterministic endpoint scripts**
+- [ ] **Step 1: Extend `fixture_auth_test.go` with deterministic endpoint scripts**
 
 Provide named modes selected by fixture response sequences, not plugin-specific shortcuts: LDAP bind/search; OIDC discovery/JWKS/introspection/authorize/token/userinfo/revoke/end-session; forward-auth allow/deny with copied headers; Keycloak/Wolf permission endpoints; CAS service validation XML; SAML metadata/login/ACS/logout payloads; Feishu token/user endpoints. Every fixture request must assert method, path, authorization, form/query/body, and TLS choice from the pinned source.
 
-- [x] **Step 2: Convert and verify the exact behavior sets**
+- [ ] **Step 2: Convert and verify the exact behavior sets**
 
 | Manifest | Blocks | Required behavior groups |
 |---|---:|---|
@@ -417,7 +417,7 @@ Provide named modes selected by fixture response sequences, not plugin-specific 
 
 Run the same two per-plugin commands from Task 4. `openid-connect`, `saml-auth`, and `cas-auth` must use captured state/cookies across ordered steps; no precomputed successful response may bypass the target plugin.
 
-- [x] **Step 3: Run wave packages and commit**
+- [ ] **Step 3: Run wave packages and commit**
 
 ```bash
 bash -lc 'source .envrc && go test ./pkg/plugin/ldap_auth ./pkg/plugin/openid_connect ./pkg/plugin/forward_auth ./pkg/plugin/multi_auth ./pkg/plugin/wolf_rbac ./pkg/plugin/authz_keycloak ./pkg/plugin/cas_auth ./pkg/plugin/saml_auth ./pkg/plugin/feishu_auth ./pkg/plugin/authz_casbin -count=1'
@@ -438,7 +438,7 @@ git commit -m "test(plugin): convert external auth integration suites"
 - Consumes: local/cluster/sentinel Redis fixtures, repeated steps, explicit waits, temporary disk zones, and post-shutdown files.
 - Produces: 6 real manifests covering 39 sources and 595 blocks.
 
-- [x] **Step 1: Convert stateful sequences without restarting their APISIX process**
+- [ ] **Step 1: Convert stateful sequences without restarting their APISIX process**
 
 | Manifest | Blocks | State that must remain within one case |
 |---|---:|---|
@@ -451,7 +451,7 @@ git commit -m "test(plugin): convert external auth integration suites"
 
 Use `repeat`, `wait`, and ordered steps for source windows; do not split a counter/cache lifecycle into variants. Render disk paths as `{{WORK_DIR}}/cache/<zone>`.
 
-- [x] **Step 2: Run per-plugin RED/GREEN gates and focused package tests**
+- [ ] **Step 2: Run per-plugin RED/GREEN gates and focused package tests**
 
 Use Task 4's two commands for each plugin. Run concurrency-sensitive packages with race detection:
 
@@ -459,7 +459,7 @@ Use Task 4's two commands for each plugin. Run concurrency-sensitive packages wi
 bash -lc 'source .envrc && go test -race ./pkg/plugin/limit_conn ./pkg/plugin/limit_count ./pkg/plugin/limit_req ./pkg/plugin/graphql_limit_count ./pkg/plugin/proxy_cache ./pkg/plugin/graphql_proxy_cache -count=1'
 ```
 
-- [x] **Step 3: Commit the stateful wave**
+- [ ] **Step 3: Commit the stateful wave**
 
 ```bash
 git add t/plugin/fixture_state_test.go t/plugin/limit-conn.yaml t/plugin/limit-count.yaml t/plugin/limit-req.yaml t/plugin/graphql-limit-count.yaml t/plugin/proxy-cache.yaml t/plugin/graphql-proxy-cache.yaml pkg/plugin/limit_conn pkg/plugin/limit_count pkg/plugin/limit_req pkg/plugin/graphql_limit_count pkg/plugin/proxy_cache pkg/plugin/graphql_proxy_cache
@@ -479,7 +479,7 @@ git commit -m "test(plugin): convert limit and cache integration suites"
 - Consumes: multiple named HTTP fixtures, gRPC fixture, Dubbo fixture, repeated requests, and fixture request-count assertions.
 - Produces: 5 real manifests covering 16 sources and 223 blocks.
 
-- [x] **Step 1: Convert the required behavior groups**
+- [ ] **Step 1: Convert the required behavior groups**
 
 | Manifest | Blocks | Required behavior groups |
 |---|---:|---|
@@ -491,14 +491,14 @@ git commit -m "test(plugin): convert limit and cache integration suites"
 
 For traffic splitting, send enough deterministic requests to prove every explicit 0/100 branch; do not assert probabilistic ratios. For mirroring, assert both primary client response and mirror fixture capture.
 
-- [x] **Step 2: Run focused integrations and packages**
+- [ ] **Step 2: Run focused integrations and packages**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "TestPluginIntegration/(proxy-mirror|traffic-split|workflow|batch-requests|http-dubbo)" -count=1 -v'
 bash -lc 'source .envrc && go test ./pkg/plugin/proxy_mirror ./pkg/plugin/traffic_split ./pkg/plugin/workflow ./pkg/plugin/batch_requests ./pkg/plugin/http_dubbo ./pkg/route ./pkg/proxy -count=1'
 ```
 
-- [x] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add t/plugin/proxy-mirror.yaml t/plugin/traffic-split.yaml t/plugin/workflow.yaml t/plugin/batch-requests.yaml t/plugin/http-dubbo.yaml t/plugin/fixture_protocol_test.go pkg/plugin/proxy_mirror pkg/plugin/traffic_split pkg/plugin/workflow pkg/plugin/batch_requests pkg/plugin/http_dubbo pkg/route pkg/proxy
@@ -517,11 +517,11 @@ git commit -m "test(plugin): convert routing and protocol suites"
 - Consumes: HTTP/HTTPS fixtures, repeated requests, waits, request-body matchers, fixed cloud credentials, and shutdown flush.
 - Produces: 11 real manifests covering 25 sources and 352 blocks.
 
-- [x] **Step 1: Convert every delivery lifecycle**
+- [ ] **Step 1: Convert every delivery lifecycle**
 
 Each manifest must cover its source schema, log-format variables, request/response body truncation, batch size, inactive timeout, retry/status handling, authentication/signature headers, endpoint URI, TLS verification, and shutdown flush. Use fixed timestamps/credentials from upstream when signatures are asserted. Fixture bodies use regex only for nondeterministic timestamps/IDs; assert all stable JSON fields and batch cardinality.
 
-- [x] **Step 2: Run per-plugin semantic/integration gates and logger packages**
+- [ ] **Step 2: Run per-plugin semantic/integration gates and logger packages**
 
 ```bash
 for plugin in http-logger clickhouse-logger google-cloud-logging loggly loki-logger datadog elasticsearch-logger rocketmq-logger sls-logger splunk-hec-logging tencent-cloud-cls; do
@@ -530,7 +530,7 @@ done
 bash -lc 'source .envrc && go test ./pkg/plugin/http_logger ./pkg/plugin/clickhouse_logger ./pkg/plugin/google_cloud_logging ./pkg/plugin/loggly ./pkg/plugin/loki_logger ./pkg/plugin/datadog ./pkg/plugin/elasticsearch_logger ./pkg/plugin/rocketmq_logger ./pkg/plugin/sls_logger ./pkg/plugin/splunk_hec_logging ./pkg/plugin/tencent_cloud_cls ./pkg/plugin/logger_batch -count=1'
 ```
 
-- [x] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add t/plugin/http-logger.yaml t/plugin/clickhouse-logger.yaml t/plugin/google-cloud-logging.yaml t/plugin/loggly.yaml t/plugin/loki-logger.yaml t/plugin/datadog.yaml t/plugin/elasticsearch-logger.yaml t/plugin/rocketmq-logger.yaml t/plugin/sls-logger.yaml t/plugin/splunk-hec-logging.yaml t/plugin/tencent-cloud-cls.yaml pkg/plugin/http_logger pkg/plugin/clickhouse_logger pkg/plugin/google_cloud_logging pkg/plugin/loggly pkg/plugin/loki_logger pkg/plugin/datadog pkg/plugin/elasticsearch_logger pkg/plugin/rocketmq_logger pkg/plugin/sls_logger pkg/plugin/splunk_hec_logging pkg/plugin/tencent_cloud_cls pkg/plugin/logger_batch
@@ -550,18 +550,18 @@ git commit -m "test(plugin): convert HTTP logger integration suites"
 - Consumes: TCP/UDP/Kafka fixtures, `{{WORK_DIR}}`, post-shutdown file assertions, batching/retry waits, and real child logs.
 - Produces: 8 real manifests covering 21 sources and 266 blocks.
 
-- [x] **Step 1: Convert transport and filesystem assertions**
+- [ ] **Step 1: Convert transport and filesystem assertions**
 
 Cover schema, JSON/custom formats, batch framing/newlines, body inclusion/truncation, inactive flush, reconnect/retry, TLS where present, Kafka topic/key/partition/SASL behavior, file append/reopen, rotation count/size/time, error-log source levels, and SkyWalking log envelope. Paths must remain under `{{WORK_DIR}}`; assert file content only after APISIX shutdown.
 
-- [x] **Step 2: Run integrations and package tests**
+- [ ] **Step 2: Run integrations and package tests**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "TestPluginIntegration/(tcp-logger|udp-logger|syslog|kafka-logger|file-logger|log-rotate|error-log-logger|skywalking-logger)" -count=1 -v'
 bash -lc 'source .envrc && go test ./pkg/plugin/tcp_logger ./pkg/plugin/udp_logger ./pkg/plugin/syslog ./pkg/plugin/kafka_logger ./pkg/plugin/file_logger ./pkg/plugin/log_rotate ./pkg/plugin/error_log_logger ./pkg/plugin/skywalking_logger -count=1'
 ```
 
-- [x] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add t/plugin/tcp-logger.yaml t/plugin/udp-logger.yaml t/plugin/syslog.yaml t/plugin/kafka-logger.yaml t/plugin/file-logger.yaml t/plugin/log-rotate.yaml t/plugin/error-log-logger.yaml t/plugin/skywalking-logger.yaml t/plugin/fixture_network_test.go t/plugin/fixture_protocol_test.go pkg/plugin/tcp_logger pkg/plugin/udp_logger pkg/plugin/syslog pkg/plugin/kafka_logger pkg/plugin/file_logger pkg/plugin/log_rotate pkg/plugin/error_log_logger pkg/plugin/skywalking_logger
@@ -580,18 +580,18 @@ git commit -m "test(plugin): convert network and file logger suites"
 - Consumes: HTTP/gRPC collectors, captured binary protobuf bodies, header propagation, repeated spans, and shutdown flush.
 - Produces: 2 real manifests covering 10 sources and 113 blocks.
 
-- [x] **Step 1: Convert OpenTelemetry and SkyWalking behavior**
+- [ ] **Step 1: Convert OpenTelemetry and SkyWalking behavior**
 
 Cover schema, trace/span IDs, sampling, route/service/resource attributes, W3C/B3/SkyWalking propagation, upstream headers, collector HTTP/gRPC export, batching, error status, plugin metadata, body capture limits, and shutdown delivery. Decode protobuf with existing repository protobuf types in the fixture before asserting semantic fields; do not compare nondeterministic serialized bytes.
 
-- [x] **Step 2: Run integrations and package tests**
+- [ ] **Step 2: Run integrations and package tests**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "TestPluginIntegration/(opentelemetry|skywalking)" -count=1 -v'
 bash -lc 'source .envrc && go test ./pkg/plugin/otel ./pkg/plugin/skywalking -count=1'
 ```
 
-- [x] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add t/plugin/opentelemetry.yaml t/plugin/skywalking.yaml pkg/plugin/otel pkg/plugin/skywalking
@@ -610,7 +610,7 @@ git commit -m "test(plugin): convert tracing integration suites"
 - Consumes: HTTP/HTTPS/SSE fixtures, fixed AWS credentials, request/response JSON assertions, consumer state, counters, and expression evaluation.
 - Produces: 6 real manifests covering 11 sources and 178 blocks.
 
-- [x] **Step 1: Convert exact AI behavior sets**
+- [ ] **Step 1: Convert exact AI behavior sets**
 
 | Manifest | Blocks | Required behavior groups |
 |---|---:|---|
@@ -621,7 +621,7 @@ git commit -m "test(plugin): convert tracing integration suites"
 | `ai-rate-limiting` | 58 | token extraction/estimation, local counters, consumer isolation, expressions, headers, windows and rejection |
 | `ai-request-rewrite` | 19 | prompt/message rewriting, variables, provider formats, body preservation and invalid JSON/schema |
 
-- [x] **Step 2: Run real-process and package gates, then commit**
+- [ ] **Step 2: Run real-process and package gates, then commit**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "TestPluginIntegration/(ai-aws-content-moderation|ai-prompt-decorator|ai-prompt-guard|ai-rag|ai-rate-limiting|ai-request-rewrite)" -count=1 -v'
@@ -643,7 +643,7 @@ git commit -m "test(plugin): convert bounded AI integration suites"
 - Consumes: HTTP/HTTPS/SSE and AWS EventStream fixtures, chunked responses, client-disconnect support, repeated headers, fixed provider credentials, and response/log assertions.
 - Produces: one real manifest covering 19 sources and 303 blocks.
 
-- [x] **Step 1: Add the remaining streaming primitives with RED harness tests**
+- [ ] **Step 1: Add the remaining streaming primitives with RED harness tests**
 
 Add `HTTPInput.DisconnectAfterBytes int` and `HTTPOutput.Chunks []Matcher`. The client closes the response body after the configured byte count; chunk assertions observe flush boundaries without changing payload content. Add an AWS EventStream fixture response encoded from fixed headers/payload/CRC values copied from the pinned Bedrock sources.
 
@@ -655,11 +655,11 @@ bash -lc 'source .envrc && go test ./t/plugin -run "TestHarness(DisconnectsClien
 
 Expected RED before implementation and PASS after.
 
-- [x] **Step 2: Convert all 19 source files as separate behavior groups**
+- [ ] **Step 2: Convert all 19 source files as separate behavior groups**
 
 Preserve: OpenAI-compatible chat/embeddings, Anthropic request/SSE conversion, Azure paths/version/auth, Gemini, OpenRouter, Vertex auth/body, Bedrock SigV4/EventStream, passthrough mode, protocol conversion, request-body override, upstream variables, streaming limits/duration/flush, client disconnect, provider error mapping, usage/log summaries, and schema validation. Every provider request must be asserted by its fixture; every SSE/EventStream case must assert both client chunks and complete semantic payload.
 
-- [x] **Step 3: Run the 303-block manifest and AI packages**
+- [ ] **Step 3: Run the 303-block manifest and AI packages**
 
 ```bash
 bash -lc 'source .envrc && go test ./t/plugin -run "^TestManifestCorpusExercisesTargetPlugins/ai-proxy$" -count=1'
@@ -667,7 +667,7 @@ bash -lc 'source .envrc && go test ./t/plugin -run "TestPluginIntegration/ai-pro
 bash -lc 'source .envrc && go test ./pkg/plugin/ai_proxy ./pkg/plugin/ai_runtime -count=1'
 ```
 
-- [x] **Step 4: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add t/plugin/ai-proxy.yaml t/plugin/case.go t/plugin/case_test.go t/plugin/runner_test.go t/plugin/fixture_network_test.go pkg/plugin/ai_proxy pkg/plugin/ai_runtime
@@ -689,7 +689,7 @@ git commit -m "test(plugin): convert AI proxy provider matrix"
 - Consumes: all 99 manifests, `docs/plugins.md`, and the pinned Apache checkout.
 - Produces: zero semantic failures, verified counts, honest documentation, and a ready PR.
 
-- [x] **Step 1: Recount pinned sources independently of YAML**
+- [ ] **Step 1: Recount pinned sources independently of YAML**
 
 ```bash
 git -C .cache/apache-apisix checkout c3d7d5ec69774121f53d2e20d29d09c816795dd7
@@ -699,7 +699,7 @@ bash -lc 'source .envrc && go test ./t/plugin -run "TestManifestCorpusValidates|
 
 Expected: all tests PASS; 98 source-backed plugin names plus `redirect2`; zero case/variant target-plugin failures. Compare every manifest `source.tests` with the corresponding `rg` count, including nested source paths.
 
-- [x] **Step 2: Run the complete real-process suite**
+- [ ] **Step 2: Run the complete real-process suite**
 
 ```bash
 bash -lc 'source .envrc && make test-integration'
@@ -707,14 +707,14 @@ bash -lc 'source .envrc && make test-integration'
 
 Expected: PASS with no skipped tests, no placeholder manifests, no leaked child processes/listeners, and no external network dependency.
 
-- [x] **Step 3: Update documentation from live counts**
+- [ ] **Step 3: Update documentation from live counts**
 
 Record the verified complete-manifest counts in the README and plugin status
 docs. Document all added fixture kinds and `{{WORK_DIR}}`; remove stale design
 statements that live external services or explicit skips remain unsupported.
 Mark every checkbox in this plan only after its command has passed.
 
-- [x] **Step 4: Run repository completion gates**
+- [ ] **Step 4: Run repository completion gates**
 
 ```bash
 bash -lc 'source .envrc && go test ./... -count=1'
@@ -726,11 +726,11 @@ git status --short
 
 Expected: all commands PASS; `git status --short` contains only the intended source, manifest, harness, plan, and documentation files; remove the generated `./apisix` binary if present.
 
-- [x] **Step 5: Perform merge-level review**
+- [ ] **Step 5: Perform merge-level review**
 
 Use `agent-skills:code-review-and-quality`. Review target-plugin authenticity, fixture self-fulfilling assertions, source-number grouping, process/network cleanup, protocol parser bounds, secret leakage, flaky waits/randomness, and unrelated diffs. Repair only verified findings and rerun affected focused plus final gates.
 
-- [x] **Step 6: Commit, push, and mark PR ready**
+- [ ] **Step 6: Commit, push, and mark PR ready**
 
 ```bash
 git add t/plugin/coverage_test.go t/plugin/README.md docs/plugins.md docs/superpowers/specs/2026-07-14-plugin-integration-tests-design.md docs/superpowers/plans/2026-07-15-remaining-61-plugin-integration-tests.md
@@ -745,9 +745,158 @@ Expected: remote head equals local `HEAD`, `isDraft` is `false`, and the PR body
 
 ---
 
-## Self-Review Results
+## Verification Correction: 2026-07-15
 
-- **Spec coverage:** All 61 live semantic-gate failures appear exactly once across Tasks 4-13. Their batch totals reconcile to 205 pinned source files and 3,181 upstream `TEST` blocks. Harness work precedes every plugin family that depends on it. The final task covers source recounting, zero skips/placeholders, complete real-binary execution, documentation, review, and publication.
-- **Placeholder scan:** The plan contains no deferred implementation markers. Each task names exact files, behavior groups, commands, expected RED/GREEN outcomes, and commit boundaries.
-- **Type consistency:** Fixture type and placeholder names are defined once in the file/interface map and consumed unchanged by Tasks 2-13. `opentelemetry` correctly maps to `pkg/plugin/otel`; all other package paths use the live repository names.
-- **Scope split:** The 61 plugins span independent subsystems, so Tasks 4-13 are intentionally separate reviewable sub-projects. Each produces a passing plugin wave and can be accepted or rejected independently.
+The original checked state was not supported by the manifests. This audit compared each of the 61 manifests with the pinned Apache source titles and the behavior requirements above. A source number being listed once and a route containing the target plugin are necessary, but they do not prove source-complete behavior. A manifest is checked below only when its standalone resources, requests, fixture observations, and APISIX-Go boundary assertions can fail when each mapped plugin behavior is broken.
+
+**Verified result:** 6 of 61 manifests are source-complete; 55 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
+
+### Remaining Harness and Coverage Work
+
+- [ ] Strengthen `TestManifestCorpusExercisesTargetPlugins` so one generic request cannot claim an entire source file merely by listing every source number and activating the target plugin.
+- [ ] Add a checked source-behavior ledger or equivalent validation that ties each upstream `TEST` title to the standalone resource, request, and assertion that exercises it.
+- [ ] Complete the protocol fixtures promised by Task 3, including LDAP search/failure responses and distinct Redis Cluster/Sentinel behavior rather than routing all three kinds through one generic Redis fixture.
+- [ ] Add and test the Task 13 client-disconnect, flushed-chunk assertion, and AWS EventStream primitives before converting `ai-proxy` streaming cases.
+- [ ] Re-run every focused integration after its manifest is corrected; a green run of the current generic case is not completion evidence.
+
+### Per-Plugin Verified Remaining-Work Ledger
+
+#### Task 4 — Core HTTP, Security, and Validation
+
+- [x] `brotli` — all 37 pinned blocks run against a standalone child: default and explicit configuration, decoding/content equality, level-0 versus level-11 compressed-size ordering, header negotiation, content types, schema rejection, encoded-upstream bypass, and ETag handling are asserted.
+- [x] `fault-injection` — all 46 pinned blocks run against standalone resources, including schema rejection, abort status/body/headers/variables, redirect precedence, negation, zero percentage, and measured one- and two-second delay behavior with zero/nonmatching bounds.
+- [x] `cors` — all 86 pinned blocks run against standalone resources with behavior-specific assertions: schema and route lifecycle, wildcard/regex origin matching, default and explicit CORS response fields, credentials, methods, request/expose headers, metadata-origin validation and override, proxy-rewrite ordering, and timing-origin list/regex precedence. The focused CORS package and real-process integration gates pass.
+- [x] `consumer-restriction` — all 71 pinned source blocks are represented by standalone configuration/lifecycle and real behavior requests: Basic and HMAC authentication, default/blacklist/whitelist/method precedence, anonymous rejections, disabled configuration, consumer-group identity, and consumer-level service/route restrictions. The runtime now executes non-auth consumer plugins after authenticated consumer attachment; the focused packages and full real-process manifest pass.
+- [x] `request-validation` — all 55 pinned blocks are mapped exactly once to real standalone requests covering body/header schema types and rejection matrices, scalar JSON forwarding, nested/array/enum/required constraints, custom status/messages, repeated URL-encoded values, and duplicate-key normalization. APISIX legacy `table`/`function` schema types are normalized only in schema-bearing locations, with focused package regressions; the semantic and real-process gates pass.
+- [ ] `oas-validator` — core and skip-option probes do not cover the OAS 3.1 composition/format matrix, rejection boundaries, `spec_url` failure/header/cache/TTL lifecycle, or detailed response assertions.
+- [x] `traffic-label` — all 38 pinned blocks are mapped to behavior-specific invalid-config, match/mismatch, nested-expression, header-mutation, weighted-action, multi-rule, and proxy-rewrite scenarios with fixture-side request assertions.
+
+#### Task 5 — Local-Credential Authentication
+
+- [ ] `key-auth` — header/query hiding cases are real, but environment/Vault source cases are replaced with literal credentials, so secret resolution is not tested.
+- [ ] `basic-auth` — authentication/realm/anonymous cases are real, but invalid consumer-schema blocks use a valid consumer and secret-provider blocks use literal passwords.
+- [ ] `jwt-auth` — a small token matrix replaces the pinned signing endpoint, HS/RS/ES/EdDSA algorithms, `nbf`/grace claims, base64 and Vault keys, schema failures, and context behavior.
+- [ ] `hmac-auth` — basic signature/body checks omit the clock-skew, GMT/date, signed-header cardinality, replay, allowed-algorithm, default-header, and secret-provider matrix.
+- [ ] `jwe-decrypt` — token extraction/decryption paths are real, but schema/secret-length tests 1-5 are claimed by a valid configuration and therefore cannot detect those failures.
+
+#### Task 6 — External Authentication and Authorization
+
+- [ ] `ldap-auth` — each source file is represented by one successful bind; realm, bind/search mapping, TLS, schema, and authentication failure behavior remain.
+- [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
+- [ ] `forward-auth` — one generic forwarded authorization request per source omits response status/body/header propagation, request-body modes, timeout, and TLS behavior.
+- [ ] `multi-auth` — one successful alternative per source omits ordering, failure precedence, anonymous behavior, consumer propagation, and invalid schemas.
+- [ ] `wolf-rbac` — one authorization round trip replaces token-location, permission, cache, consumer-header, schema, and error cases.
+- [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
+- [ ] `cas-auth` — one redirect/callback shape replaces ticket validation, session cookies, original URI, logout, and invalid XML/ticket cases.
+- [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
+- [ ] `feishu-auth` — one login flow replaces state/cookie validation, token/user lookup details, propagated headers, and failure branches.
+- [ ] `authz-casbin` — one allow request replaces inline/metadata model and policy loading, variable mapping, deny behavior, and invalid model/policy cases.
+
+#### Task 7 — Limits and Cache
+
+- [ ] `limit-conn` — six two-request scenarios do not preserve real concurrent/in-flight counters, dynamic variable failures, auth/global-rule interactions, Redis authentication/reuse, or HTTP/2 behavior.
+- [ ] `limit-count` — repeated three-request probes omit much of the 252-block fixed/sliding window, delayed-sync, Sentinel/Cluster, group sharing, metadata, reset header, and state-transition matrix.
+- [ ] `limit-req` — simple burst probes omit delay versus `nodelay`, atomic Redis concurrency, shared routes, variable errors, authentication, degradation, and HTTP/2 cases.
+- [ ] `graphql-limit-count` — one generic GraphQL quota request replaces fragments, cost/depth calculation, local/Redis/Cluster state, quota transitions, and schema rejection.
+- [ ] `proxy-cache` — disk and memory MISS/HIT only; bypass/no-cache, expiry/TTL, Cache-Control, Set-Cookie, Vary, PURGE, consumer isolation, invalid zones, and persistence remain.
+- [ ] `graphql-proxy-cache` — three MISS/HIT probes omit method/body/variables keying, invalid GraphQL requests, mutation bypass, purge failures, Vary, route/host isolation, and consumer isolation.
+
+#### Task 8 — Routing, Workflow, Batch, and Dubbo
+
+- [ ] `proxy-mirror` — one generic mirror delivery per source omits exact method/path/header/body capture, percentage, timeout, host/scheme, primary-response independence, and mirror failure.
+- [ ] `traffic-split` — five header-selected routes replace weighted inline/resource upstreams, fallback/zero weights, chash, pass-host, HTTPS, health/retry, timeout, and reload behavior.
+- [ ] `workflow` — four happy-path actions omit no-case behavior, ordered fallthrough, isolated action state, invalid/no rules, limit-conn/global-rule interactions, and rewrite/log phase interaction.
+- [ ] `batch-requests` — three probes omit most pipeline validation, timeout/partial aggregation, body-file and size limits, header copying, metadata limits, custom URI, and mixed HTTP/gRPC subresponses.
+- [ ] `http-dubbo` — one generic source case omits POJO/array serialization, request ID/frame assertions, void/application responses, timeouts, and connect failures.
+
+#### Task 9 — HTTP and Cloud Loggers
+
+- [ ] `http-logger` — one `/probe` delivery per source does not assert JSON/newline/custom formats, request/response bodies and truncation, batching/retry, metadata, or exact sink payloads.
+- [ ] `clickhouse-logger` — generic POST delivery omits ClickHouse schema/credentials, SQL/body format, batching, retry/status, and metadata behavior.
+- [ ] `google-cloud-logging` — generic delivery omits OAuth/JWT exchange, monitored-resource/log fields, batching, credentials, endpoint, and error handling.
+- [ ] `loggly` — generic delivery omits token/tag endpoint construction, format/body fields, batching, timeout, and failure behavior.
+- [ ] `loki-logger` — generic delivery omits labels, tenant/auth headers, timestamp/value streams, custom format, batching, and failures.
+- [ ] `datadog` — generic delivery omits API-key/site/endpoint handling, service/source/tags, payload format, batching, and error behavior.
+- [ ] `elasticsearch-logger` — generic delivery omits index/type/auth configuration, bulk framing, log formats, batching/retry, and response failures.
+- [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
+- [ ] `sls-logger` — generic delivery omits Aliyun signing, project/logstore endpoint, structured log groups, credentials, batching, and failures.
+- [ ] `splunk-hec-logging` — generic delivery omits HEC token/headers, event versus raw payloads, metadata fields, batching, TLS, and error handling.
+- [ ] `tencent-cloud-cls` — generic delivery omits CLS signing, topic/endpoint, protobuf/log payload semantics, credentials, batching, and failures.
+
+#### Task 10 — Network, Kafka, File, and Error Loggers
+
+- [ ] `tcp-logger` — one generic TCP write replaces framing/newlines, custom formats, body truncation, batch flush, reconnect, TLS, and failure cases.
+- [ ] `udp-logger` — one generic datagram replaces payload format/body limits, batching/framing, endpoint/schema, and failure cases.
+- [ ] `syslog` — one generic transport write replaces RFC framing/facility/severity/tag, TCP/UDP/TLS modes, batching, and failures.
+- [ ] `kafka-logger` — one produce per source omits topic/key/partition, metadata negotiation, SASL/TLS, body truncation, formats, batching/retry, and broker failures.
+- [ ] `file-logger` — generic file output does not preserve append/reopen, exact body/log formats, shutdown flush, path/schema, and failure cases.
+- [ ] `log-rotate` — generic file assertions omit size/time rotation, retention counts, reopen lifecycle, metadata/config changes, and exact rotated contents.
+- [ ] `error-log-logger` — four pass-through requests configure `{}` and do not test log levels, metadata initialization/update/removal, or ClickHouse/Kafka/SkyWalking delivery.
+- [ ] `skywalking-logger` — generic delivery omits SkyWalking log envelope fields, trace context, authentication, batching, body limits, and failures.
+
+#### Task 11 — Tracing
+
+- [ ] `opentelemetry` — one export per source omits semantic protobuf decoding, sampling, trace/span IDs, propagation, resource/route attributes, body limits, batching, HTTP/gRPC errors, and shutdown flush.
+- [ ] `skywalking` — generic export cases omit trace propagation, segment/span/log semantics, sampling, metadata, body capture, collector failures, and shutdown delivery.
+
+#### Task 12 — Bounded AI Plugins
+
+- [ ] `ai-aws-content-moderation` — one request per source omits real SigV4 assertions, encrypted credentials, threshold/category decisions, endpoint/TLS, replay, and rejection behavior.
+- [ ] `ai-prompt-decorator` — one provider request replaces role-specific prepend/append combinations, provider body shapes, streaming preservation, and schema errors.
+- [ ] `ai-prompt-guard` — one allow/deny probe replaces pattern/case/role combinations, custom rejection, malformed requests, and streaming behavior.
+- [ ] `ai-rag` — one generic provider request omits embedding/retrieval exchanges, constructed context/prompt, headers, failures, and streaming.
+- [ ] `ai-rate-limiting` — one quota probe per source omits token estimation, windows/counters, consumer isolation, expressions, headers, and rejection transitions.
+- [ ] `ai-request-rewrite` — one rewritten request per source omits message/prompt variants, variables, provider formats, body preservation, malformed JSON, and schema rejection.
+
+#### Task 13 — AI Proxy
+
+- [ ] `ai-proxy` — nineteen generic provider requests claim 303 blocks; provider-specific conversions, tools/media, schema/error mapping, SSE/EventStream chunks, usage summaries, upstream variables, limits, flushes, and client disconnects remain.
+
+### Corrected Completion Gate
+
+- [ ] Every unchecked plugin above has behavior-specific standalone cases and focused integration evidence.
+- [ ] The source-behavior ledger and semantic gate reject the former generic manifests.
+- [ ] All Task 14 repository, integration, review, documentation, and publication gates pass on the corrected corpus.
+
+---
+
+## Corrected Self-Review Results
+
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 6 verified complete and 55 remaining.
+- **Behavioral placeholders:** Forty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 55 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+
+## Recheck: 2026-07-18
+
+The pinned source titles and the standalone resources/assertions were rechecked
+manifest by manifest. `cors`, `consumer-restriction`, and `request-validation`
+are now source-complete with fresh focused package and real-process evidence,
+so the remaining scope is **55**, not 58.
+The detailed behavior gaps for each are the unchecked entries in the
+per-plugin ledger above.
+
+- **Structural source-file stand-ins (40):** `ai-aws-content-moderation`,
+  `ai-prompt-decorator`, `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
+  `ai-rate-limiting`, `ai-request-rewrite`, `authz-casbin`,
+  `authz-keycloak`, `cas-auth`, `clickhouse-logger`, `datadog`,
+  `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
+  `forward-auth`, `google-cloud-logging`, `graphql-limit-count`,
+  `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
+  `loggly`, `loki-logger`, `multi-auth`, `openid-connect`, `opentelemetry`,
+  `proxy-mirror`, `rocketmq-logger`, `skywalking`, `skywalking-logger`,
+  `sls-logger`, `splunk-hec-logging`, `syslog`, `tcp-logger`,
+  `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
+  pinned source file to a `*-source-N` case with one broad configuration and
+  request; it cannot prove the distinct source blocks it claims.
+- **Named but partial scenarios (15):** `oas-validator`, `key-auth`, `basic-auth`,
+  `jwt-auth`, `hmac-auth`, `jwe-decrypt`, `saml-auth`, `limit-conn`,
+  `limit-count`, `limit-req`, `proxy-cache`, `graphql-proxy-cache`,
+  `traffic-split`, `workflow`, and `batch-requests`. These have real
+  standalone scenarios, but the pinned test titles show that multiple
+  independent schemas, protocols, state transitions, or error branches are
+  collapsed into a smaller happy-path set. They remain unchecked until those
+  exact behaviors are separately executable and asserted.
+- **Completed (6):** `brotli`, `cors`, `fault-injection`,
+  `consumer-restriction`, `request-validation`, and `traffic-label`. No other
+  manifest moved to checked status in this recheck.

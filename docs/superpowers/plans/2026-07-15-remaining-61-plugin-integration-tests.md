@@ -816,7 +816,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `clickhouse-logger` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates required/default/schema configuration, ClickHouse user/key/database headers, JSONEachRow SQL bodies, single and multiple endpoints, deterministic pending-entry overflow against a cancellable slow sink, request/response body capture and expressions, plugin metadata formats, and child-scoped `$ENV://` user resolution including empty values. Package, race, strict corpus, environment isolation, real-process, scoped lint, diff, build, post-integration, and task-review gates pass.
 - [ ] `google-cloud-logging` — generic delivery omits OAuth/JWT exchange, monitored-resource/log fields, batching, credentials, endpoint, and error handling.
 - [ ] `loggly` — generic delivery omits token/tag endpoint construction, format/body fields, batching, timeout, and failure behavior.
-- [ ] `loki-logger` — generic delivery omits labels, tenant/auth headers, timestamp/value streams, custom format, batching, and failures.
+- [x] `loki-logger` — all 22 pinned blocks map exactly once to real standalone cases. The corpus validates schema branches, tenant and authorization headers, custom endpoints, rich nested default records, static/dynamic/post-upstream labels, stable request timestamps, route and metadata format precedence, additive non-clobber extras, exact stream/value grouping and cardinality, three-request label isolation, and deterministic pending-entry overflow. Internal batch state uses a typed envelope so user fields cannot collide. Package, race, strict semantic matcher, repeated real-process, scoped lint, build, post-integration, and task-review gates pass.
 - [ ] `datadog` — package-level metadata defaults/schema and exact DogStatsD 8192-byte coalescing versus 8193-byte ordered fallback are TDD-tested, task-reviewed, integrated, and race-clean. The 13-block manifest remains incomplete: block 11 requires the shared embedded-wildcard route prerequisite above so `/articles/*/comments` both matches with APISIX arbitrary-depth semantics and remains the exact plugin path tag; the other source-specific metric/tag/cardinality scenarios must then replace the stale generic six-datagram case.
 - [ ] `elasticsearch-logger` — generic delivery omits index/type/auth configuration, bulk framing, log formats, batching/retry, and response failures.
 - [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 12 task-review-approved and 49 remaining.
-- **Behavioral placeholders:** Thirty-six manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 13 task-review-approved and 48 remaining.
+- **Behavioral placeholders:** Thirty-five manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 49 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 48 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,18 +875,18 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **12
-complete and 49 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **13
+complete and 48 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
-- **Structural source-file stand-ins (36):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (35):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `cas-auth`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
   `forward-auth`, `google-cloud-logging`, `graphql-limit-count`,
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
-  `loggly`, `loki-logger`, `multi-auth`, `openid-connect`, `opentelemetry`,
+  `loggly`, `multi-auth`, `openid-connect`, `opentelemetry`,
   `proxy-mirror`, `rocketmq-logger`, `skywalking`, `skywalking-logger`,
   `sls-logger`, `syslog`, `tcp-logger`,
   `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
@@ -900,9 +900,9 @@ complete and 49 remaining**; `oas-validator` also passed its task review with
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (12):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (13):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `jwe-decrypt`, `oas-validator`, `request-validation`, `splunk-hec-logging`, and `traffic-label`. No other
+  `jwe-decrypt`, `loki-logger`, `oas-validator`, `request-validation`, `splunk-hec-logging`, and `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -911,7 +911,7 @@ The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
 active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
-`clickhouse-logger`, `splunk-hec-logging`, and `jwe-decrypt` have now passed review, so **49 remain**. `datadog` moved from Easy to Medium after its
+`clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, and `loki-logger` have now passed review, so **48 remain**. `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
@@ -929,12 +929,12 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 3 remaining (6 at replan)
+### Easy — 2 remaining (6 at replan)
 
 - [x] `jwe-decrypt`
 - [ ] `udp-logger`
 - [x] `clickhouse-logger`
-- [ ] `loki-logger`
+- [x] `loki-logger`
 - [x] `splunk-hec-logging`
 - [ ] `skywalking-logger`
 

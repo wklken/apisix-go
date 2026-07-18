@@ -141,9 +141,16 @@ func TestHandlerRunsConsumerPluginsAfterAuthentication(t *testing.T) {
 	addHMACConsumer(t, "consumer-plugin-hmac-user", "consumer-plugin-hmac-key", "hmac-secret")
 	p := newTestPlugin(t, Config{})
 	date := time.Now().UTC().Format(http.TimeFormat)
-	auth := signatureHeader(t, "consumer-plugin-hmac-key", "hmac-secret", "hmac-sha256", []string{"date"}, map[string]string{
-		"date": date,
-	})
+	auth := signatureHeader(
+		t,
+		"consumer-plugin-hmac-key",
+		"hmac-secret",
+		"hmac-sha256",
+		[]string{"date"},
+		map[string]string{
+			"date": date,
+		},
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
@@ -185,6 +192,49 @@ func TestHandlerRejectsStaleDate(t *testing.T) {
 	}
 	if got := res.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
 		t.Fatalf("WWW-Authenticate = %q, want hmac realm", got)
+	}
+}
+
+func TestHandlerWritesExactMissingAuthorizationResponse(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if got := response.Body.String(); got != `{"message":"client request can't be validated: missing Authorization header"}` {
+		t.Fatalf("response body = %q", got)
+	}
+	if got := response.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
+		t.Fatalf("WWW-Authenticate = %q", got)
+	}
+}
+
+func TestHandlerWritesExactMissingAnonymousConsumerResponse(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-consumer"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	response := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(response, req)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if got := response.Body.String(); got != `{"message":"Invalid user authorization"}` {
+		t.Fatalf("response body = %q", got)
+	}
+	if got := response.Header().Get("WWW-Authenticate"); got != `hmac realm="hmac"` {
+		t.Fatalf("WWW-Authenticate = %q", got)
 	}
 }
 

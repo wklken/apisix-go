@@ -183,10 +183,12 @@ type HTTPInput struct {
 }
 
 type HMACSignature struct {
-	KeyID     string   `yaml:"key_id"`
-	Secret    string   `yaml:"secret"`
-	Algorithm string   `yaml:"algorithm,omitempty"`
-	Headers   []string `yaml:"headers"`
+	KeyID      string        `yaml:"key_id"`
+	Secret     string        `yaml:"secret"`
+	Algorithm  string        `yaml:"algorithm,omitempty"`
+	Headers    []string      `yaml:"headers"`
+	Date       string        `yaml:"date,omitempty"`
+	DateOffset time.Duration `yaml:"date_offset,omitempty"`
 }
 
 type RepeatedBody struct {
@@ -772,11 +774,12 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 		if strings.TrimSpace(input.HMAC.KeyID) == "" || input.HMAC.Secret == "" {
 			return errors.New("input hmac key_id and secret are required")
 		}
-		if input.HMAC.Algorithm != "" && input.HMAC.Algorithm != "hmac-sha256" {
+		if input.HMAC.Algorithm != "" &&
+			!slices.Contains([]string{"hmac-sha1", "hmac-sha256", "hmac-sha512"}, input.HMAC.Algorithm) {
 			return fmt.Errorf("input hmac algorithm %q is not supported", input.HMAC.Algorithm)
 		}
-		if len(input.HMAC.Headers) == 0 {
-			return errors.New("input hmac headers are required")
+		if input.HMAC.Date != "" && input.HMAC.DateOffset != 0 {
+			return errors.New("input hmac date and date_offset must not both be configured")
 		}
 		for _, header := range input.HMAC.Headers {
 			if strings.TrimSpace(header) == "" {

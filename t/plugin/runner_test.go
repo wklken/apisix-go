@@ -9,7 +9,9 @@ import (
 	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1" //nolint:gosec // HMAC-SHA1 is part of the pinned APISIX compatibility contract.
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -17,6 +19,7 @@ import (
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
+	"hash"
 	"io"
 	"maps"
 	"math/big"
@@ -99,6 +102,79 @@ func TestApplyHMACSignatureUsesCurrentDateAndRequestValues(t *testing.T) {
 	const want = `Signature keyId="access-key",algorithm="hmac-sha256",headers="@request-target date x-custom",signature="qtdRZdczKRmNsdekplbaCwFp/0tpSwe8luHI+BmlBaY="`
 	if got := request.Header.Get("Authorization"); got != want {
 		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestApplyHMACSignatureSupportsAllowedAlgorithms(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	tests := []struct {
+		algorithm string
+		signature string
+	}{
+		{algorithm: "hmac-sha1", signature: "FnXTLwY+O6iiAiO4l+5cOnuG0Ow="},
+		{algorithm: "hmac-sha256", signature: "crjfwqimorUuajKVJZDkOWJvkqyfaYn368lKs9xq0ok="},
+		{
+			algorithm: "hmac-sha512",
+			signature: "ZllVQnRVrqbwo6tD80SOHt3Ah4sQBUm6CcQE94MQPIbjgyQSerBc5JazJklJR1l1kUvI8bHQelRjS2+WrNCnOg==",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.algorithm, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+			applyHMACSignature(request, HMACSignature{
+				KeyID:     "access-key",
+				Secret:    "secret-key",
+				Algorithm: test.algorithm,
+				Headers:   []string{"@request-target", "date"},
+			}, now)
+
+			if got := request.Header.Get("Authorization"); !strings.HasSuffix(got, `signature="`+test.signature+`"`) {
+				t.Fatalf("Authorization = %q, want %s signature", got, test.algorithm)
+			}
+		})
+	}
+}
+
+func TestApplyHMACSignatureSupportsFixedAndRelativeDate(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	fixed := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	applyHMACSignature(fixed, HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{"date"},
+		Date:    "Thu, 24 Sep 2020 06:39:52 GMT",
+	}, now)
+	if got := fixed.Header.Get("Date"); got != "Thu, 24 Sep 2020 06:39:52 GMT" {
+		t.Fatalf("fixed Date = %q", got)
+	}
+
+	relative := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	applyHMACSignature(relative, HMACSignature{
+		KeyID:      "access-key",
+		Secret:     "secret-key",
+		Headers:    []string{"date"},
+		DateOffset: -2 * time.Second,
+	}, now)
+	if got := relative.Header.Get("Date"); got != "Sat, 18 Jul 2026 12:29:58 GMT" {
+		t.Fatalf("relative Date = %q", got)
+	}
+}
+
+func TestApplyHMACSignatureOmitsEmptyHeadersClauseAndCanSendUnsignedDate(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 12, 30, 0, 0, time.UTC)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	applyHMACSignature(request, HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{},
+		Date:    "now",
+	}, now)
+
+	if got := request.Header.Get("Date"); got != "Sat, 18 Jul 2026 12:30:00 GMT" {
+		t.Fatalf("Date = %q", got)
+	}
+	if got := request.Header.Get("Authorization"); strings.Contains(got, "headers=") {
+		t.Fatalf("Authorization = %q, want omitted headers clause", got)
 	}
 }
 
@@ -2467,9 +2543,21 @@ func applyHMACSignature(request *http.Request, spec HMACSignature, now time.Time
 	if algorithm == "" {
 		algorithm = "hmac-sha256"
 	}
+	date := spec.Date
+	if date == "now" {
+		date = now.UTC().Format(http.TimeFormat)
+	} else if date == "" && spec.DateOffset != 0 {
+		date = now.Add(spec.DateOffset).UTC().Format(http.TimeFormat)
+	}
+	if date != "" {
+		request.Header.Set("Date", date)
+	}
 	for _, header := range spec.Headers {
 		if strings.EqualFold(header, "date") {
-			request.Header.Set("Date", now.UTC().Format(http.TimeFormat))
+			if request.Header.Get("Date") == "" {
+				date = now.Add(spec.DateOffset).UTC().Format(http.TimeFormat)
+				request.Header.Set("Date", date)
+			}
 		}
 	}
 
@@ -2486,15 +2574,27 @@ func applyHMACSignature(request *http.Request, spec HMACSignature, now time.Time
 		}
 	}
 
-	mac := hmac.New(sha256.New, []byte(spec.Secret))
+	var hashFunc func() hash.Hash
+	switch algorithm {
+	case "hmac-sha1":
+		hashFunc = sha1.New
+	case "hmac-sha256":
+		hashFunc = sha256.New
+	case "hmac-sha512":
+		hashFunc = sha512.New
+	default:
+		panic("validated HMAC algorithm is unsupported: " + algorithm)
+	}
+	mac := hmac.New(hashFunc, []byte(spec.Secret))
 	_, _ = mac.Write([]byte(signingString.String()))
-	request.Header.Set("Authorization", fmt.Sprintf(
-		`Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"`,
-		spec.KeyID,
-		algorithm,
-		strings.Join(spec.Headers, " "),
-		base64.StdEncoding.EncodeToString(mac.Sum(nil)),
-	))
+	authorization := fmt.Sprintf(
+		`Signature keyId="%s",algorithm="%s"`, spec.KeyID, algorithm,
+	)
+	if len(spec.Headers) > 0 {
+		authorization += fmt.Sprintf(`,headers="%s"`, strings.Join(spec.Headers, " "))
+	}
+	authorization += fmt.Sprintf(`,signature="%s"`, base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	request.Header.Set("Authorization", authorization)
 }
 
 func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInput, error) {

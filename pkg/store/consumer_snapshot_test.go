@@ -40,6 +40,51 @@ func TestConsumerSnapshotRejectsInvalidBasicAuthUpdateAndKeepsLastGood(t *testin
 	}
 }
 
+func TestConsumerSnapshotRejectsInvalidHMACAuthUpdateAndKeepsLastGood(t *testing.T) {
+	consumerStore := &Store{
+		consumerKV:     make(map[string][]byte),
+		consumerToKeys: make(map[string][]string),
+	}
+	valid := []byte(
+		`{"username":"jack","plugins":{"hmac-auth":{"key_id":"my-access-key","secret_key":"my-secret-key"}}}`,
+	)
+	if err := consumerStore.consumerKVAdd([]byte("jack"), valid); err != nil {
+		t.Fatalf("seed consumerKVAdd() error = %v", err)
+	}
+
+	invalidUpdates := []struct {
+		name       string
+		value      string
+		diagnostic string
+	}{
+		{name: "missing secret", value: `{"key_id":"my-access-key"}`, diagnostic: "secret_key"},
+		{name: "missing key", value: `{"secret_key":"my-secret-key"}`, diagnostic: "key_id"},
+		{name: "empty", value: `{}`, diagnostic: "missing properties"},
+		{
+			name:       "long key",
+			value:      `{"key_id":"` + strings.Repeat("a", 257) + `","secret_key":"s"}`,
+			diagnostic: "length must be <= 256",
+		},
+		{
+			name:       "long secret",
+			value:      `{"key_id":"k","secret_key":"` + strings.Repeat("s", 257) + `"}`,
+			diagnostic: "length must be <= 256",
+		},
+	}
+	for _, test := range invalidUpdates {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := []byte(`{"username":"jack","plugins":{"hmac-auth":` + test.value + `}}`)
+			err := consumerStore.consumerKVAdd([]byte("jack"), invalid)
+			if err == nil || !strings.Contains(err.Error(), test.diagnostic) {
+				t.Fatalf("consumerKVAdd() error = %v, want %q", err, test.diagnostic)
+			}
+			if got := string(consumerStore.consumerKV["hmac-auth:my-access-key"]); got != "jack" {
+				t.Fatalf("last-good hmac-auth index = %q, want jack", got)
+			}
+		})
+	}
+}
+
 func TestConsumerKVAddCachesRawEnvironmentCredential(t *testing.T) {
 	t.Setenv("BASIC_AUTH_PASSWORD", "late-value")
 	consumerStore := &Store{

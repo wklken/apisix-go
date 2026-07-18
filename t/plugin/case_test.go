@@ -200,6 +200,64 @@ func TestManifestAcceptsHMACSignedInput(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsAllHMACAlgorithmsAndDateModes(t *testing.T) {
+	for _, algorithm := range []string{"hmac-sha1", "hmac-sha256", "hmac-sha512"} {
+		t.Run(algorithm, func(t *testing.T) {
+			manifest := validManifest()
+			manifest.Cases[0].Input.HMAC = &HMACSignature{
+				KeyID:     "access-key",
+				Secret:    "secret-key",
+				Algorithm: algorithm,
+				Headers:   []string{"date"},
+				Date:      "Thu, 24 Sep 2020 06:39:52 GMT",
+			}
+			if err := manifest.validate(); err != nil {
+				t.Fatalf("validate() error = %v", err)
+			}
+		})
+	}
+
+	manifest := validManifest()
+	manifest.Cases[0].Input.HMAC = &HMACSignature{
+		KeyID:      "access-key",
+		Secret:     "secret-key",
+		Headers:    []string{"date"},
+		DateOffset: -time.Second,
+	}
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("relative date validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsConflictingHMACDateModes(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input.HMAC = &HMACSignature{
+		KeyID:      "access-key",
+		Secret:     "secret-key",
+		Headers:    []string{"date"},
+		Date:       "Thu, 24 Sep 2020 06:39:52 GMT",
+		DateOffset: -time.Second,
+	}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "date and date_offset must not both be configured") {
+		t.Fatalf("validate() error = %v, want conflicting date modes", err)
+	}
+}
+
+func TestManifestAcceptsHMACWithoutSignedHeaders(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input.HMAC = &HMACSignature{
+		KeyID:   "access-key",
+		Secret:  "secret-key",
+		Headers: []string{},
+		Date:    "now",
+	}
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
 func TestManifestRejectsHMACInputWithAuthorizationHeader(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].Input.Headers = map[string]string{"Authorization": "static"}

@@ -34,8 +34,20 @@ type jwtAuth struct {
 }
 
 type hmacAuth struct {
-	KeyID string `json:"key_id"`
+	KeyID     string `json:"key_id"`
+	SecretKey string `json:"secret_key"`
 }
+
+const hmacAuthConsumerSchema = `
+{
+  "type": "object",
+  "title": "work with consumer object",
+  "required": ["key_id", "secret_key"],
+  "properties": {
+    "key_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "secret_key": {"type": "string", "minLength": 1, "maxLength": 256}
+  }
+}`
 
 type ldapAuth struct {
 	UserDN string `json:"user_dn"`
@@ -66,6 +78,11 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 	if basicAuthPlugin, ok := consumer.Plugins["basic-auth"]; ok {
 		if err := util.Validate(basicAuthPlugin, basicAuthConsumerSchema); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("basic-auth consumer configuration: %w", err)
+		}
+	}
+	if hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]; ok {
+		if err := util.Validate(hmacAuthPlugin, hmacAuthConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("hmac-auth consumer configuration: %w", err)
 		}
 	}
 	jweDecryptPlugin, hasJWEDecrypt := consumer.Plugins["jwe-decrypt"]

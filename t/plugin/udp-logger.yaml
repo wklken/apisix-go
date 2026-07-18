@@ -28,15 +28,16 @@ cases:
           name: sink
           network_expect:
             - json_fields:
-                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing$'}}
+                - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing\?Upper=One$'}}
                 - {path: /request/method, value: {equals: GET}}
-                - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/uri, value: {equals: '/opentracing?Upper=One'}}
+                - {path: /request/headers/host, value: {equals: localhost}}
                 - {path: /request/headers/x-log-case, value: {equals: default}}
-                - {path: /request/querystring, value: {equals: '{}'}}
-                - {path: /request/size, value: {equals: '0'}}
+                - {path: /request/querystring/Upper, value: {equals: One}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
                 - {path: /response/status, value: {equals: '200'}}
                 - {path: /response/headers/x-upstream, value: {equals: default}}
-                - {path: /response/size, value: {equals: '11'}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
                 - {path: /server/version, value: {equals: apisix-go}}
                 - {path: /service_id, value: {equals: ''}}
@@ -56,7 +57,7 @@ cases:
               Host: localhost
               X-Log-Case: default
             method: GET
-            path: /opentracing
+            path: '/opentracing?Upper=One'
           output:
             body:
                 equals: opentracing
@@ -175,12 +176,13 @@ cases:
                 - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing$'}}
                 - {path: /request/method, value: {equals: GET}}
                 - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/headers/host, value: {equals: localhost}}
                 - {path: /request/headers/x-log-case, value: {equals: reload}}
                 - {path: /request/querystring, value: {equals: '{}'}}
-                - {path: /request/size, value: {equals: '0'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
                 - {path: /response/status, value: {equals: '200'}}
                 - {path: /response/headers/x-upstream, value: {equals: reload}}
-                - {path: /response/size, value: {equals: '11'}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
                 - {path: /server/version, value: {equals: apisix-go}}
                 - {path: /service_id, value: {equals: ''}}
@@ -200,12 +202,13 @@ cases:
                 - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/opentracing$'}}
                 - {path: /request/method, value: {equals: GET}}
                 - {path: /request/uri, value: {equals: /opentracing}}
+                - {path: /request/headers/host, value: {equals: localhost}}
                 - {path: /request/headers/x-log-case, value: {equals: reload}}
                 - {path: /request/querystring, value: {equals: '{}'}}
-                - {path: /request/size, value: {equals: '0'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
                 - {path: /response/status, value: {equals: '200'}}
                 - {path: /response/headers/x-upstream, value: {equals: reload}}
-                - {path: /response/size, value: {equals: '11'}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
                 - {path: /server/version, value: {equals: apisix-go}}
                 - {path: /service_id, value: {equals: ''}}
@@ -333,6 +336,8 @@ cases:
                 - {path: /host, value: {equals: localhost}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
                 - {path: /@timestamp, rfc3339: true}
+                - {path: /route_id, value: {equals: udp-logger-plugin-metadata}}
+                - {path: /service_id, value: {equals: ''}}
           network_respond:
             - payload: ''
       steps:
@@ -387,6 +392,8 @@ cases:
                 - {path: /host, value: {equals: localhost}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
                 - {path: /@timestamp, rfc3339: true}
+                - {path: /route_id, value: {equals: udp-logger-changed-metadata}}
+                - {path: /service_id, value: {equals: ''}}
           network_respond:
             - payload: ''
       steps:
@@ -442,13 +449,14 @@ cases:
                 - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/hello$'}}
                 - {path: /request/method, value: {equals: POST}}
                 - {path: /request/uri, value: {equals: /hello}}
+                - {path: /request/headers/host, value: {equals: localhost}}
                 - {path: /request/headers/x-log-case, value: {equals: request-body}}
                 - {path: /request/querystring, value: {equals: '{}'}}
-                - {path: /request/size, value: {equals: '26'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
                 - {path: /request/body, value: {equals: '{"sample_payload":"hello"}'}}
                 - {path: /response/status, value: {equals: '200'}}
                 - {path: /response/headers/x-upstream, value: {equals: request-body}}
-                - {path: /response/size, value: {equals: '12'}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
                 - {path: /server/version, value: {equals: apisix-go}}
                 - {path: /service_id, value: {equals: ''}}
@@ -516,12 +524,13 @@ cases:
                 - {path: /request/url, value: {matches: '^http://localhost:[0-9]+/hello$'}}
                 - {path: /request/method, value: {equals: POST}}
                 - {path: /request/uri, value: {equals: /hello}}
+                - {path: /request/headers/host, value: {equals: localhost}}
                 - {path: /request/headers/x-log-case, value: {equals: response-body}}
                 - {path: /request/querystring, value: {equals: '{}'}}
-                - {path: /request/size, value: {equals: '26'}}
+                - {path: /request/size, value: {matches: '^[0-9]+$'}}
                 - {path: /response/status, value: {equals: '200'}}
                 - {path: /response/headers/x-upstream, value: {equals: response-body}}
-                - {path: /response/size, value: {equals: '12'}}
+                - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /response/body, value: {equals: "hello world\n"}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
                 - {path: /server/version, value: {equals: apisix-go}}

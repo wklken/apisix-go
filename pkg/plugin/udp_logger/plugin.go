@@ -248,6 +248,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		var logFields map[string]any
 		if len(p.LogFormat) > 0 {
 			logFields = resolveUDPLogFormat(r, request, p.LogFormat)
+			logFields["route_id"] = p.RouteID
+			logFields["service_id"] = apisixString(r, "$service_id")
 		} else {
 			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
 		}
@@ -278,6 +280,8 @@ type accessRequest struct {
 }
 
 func captureAccessRequest(r *http.Request, started time.Time, serverAddr string) accessRequest {
+	headers := collapseHeaderValues(r.Header)
+	headers["host"] = r.Host
 	return accessRequest{
 		method:        r.Method,
 		uri:           r.URL.RequestURI(),
@@ -285,8 +289,8 @@ func captureAccessRequest(r *http.Request, started time.Time, serverAddr string)
 		host:          hostWithoutPort(r.Host),
 		clientIP:      hostWithoutPort(r.RemoteAddr),
 		contentLength: max(r.ContentLength, 0),
-		headers:       collapseStringValues(r.Header),
-		queryString:   collapseStringValues(r.URL.Query()),
+		headers:       headers,
+		queryString:   collapseQueryValues(r.URL.Query()),
 		started:       started,
 	}
 }
@@ -321,6 +325,9 @@ func (p *Plugin) defaultAccessLog(
 	if apisixLatency < 0 {
 		apisixLatency = 0
 	}
+	// Go net/http does not expose NGINX's request_length or bytes_sent wire
+	// counters. These size fields are bounded body-byte approximations:
+	// ContentLength for the request and bytes written by the handler response.
 	log := map[string]any{
 		"request": map[string]any{
 			"url":         request.url,
@@ -332,7 +339,7 @@ func (p *Plugin) defaultAccessLog(
 		},
 		"response": map[string]any{
 			"status":  metrics.Code,
-			"headers": collapseStringValues(responseHeaders),
+			"headers": collapseHeaderValues(responseHeaders),
 			"size":    metrics.Written,
 		},
 		"server": map[string]any{
@@ -374,14 +381,22 @@ func requestURL(r *http.Request, serverAddr string) string {
 	return scheme + "://" + authority + r.URL.RequestURI()
 }
 
-func collapseStringValues(values map[string][]string) map[string]any {
+func collapseHeaderValues(values http.Header) map[string]any {
 	normalized := make(map[string][]string, len(values))
 	for key, value := range values {
 		key = strings.ToLower(key)
 		normalized[key] = append(normalized[key], value...)
 	}
-	collapsed := make(map[string]any, len(normalized))
-	for key, value := range normalized {
+	return collapseValues(normalized)
+}
+
+func collapseQueryValues(values map[string][]string) map[string]any {
+	return collapseValues(values)
+}
+
+func collapseValues(values map[string][]string) map[string]any {
+	collapsed := make(map[string]any, len(values))
+	for key, value := range values {
 		if len(value) == 1 {
 			collapsed[key] = value[0]
 		} else {

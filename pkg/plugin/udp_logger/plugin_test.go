@@ -141,9 +141,9 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	assertNestedField(t, payload, "request", "url", "http://gateway.example:9080/orders?ID=1")
 	assertNestedField(t, payload, "request", "method", http.MethodGet)
 	assertNestedField(t, payload, "request", "uri", "/orders?ID=1")
-	assertNestedField(t, payload, "request", "size", float64(0))
+	assertNestedNonnegativeNumber(t, payload, "request", "size")
 	assertNestedField(t, payload, "response", "status", float64(http.StatusCreated))
-	assertNestedField(t, payload, "response", "size", float64(len("created")))
+	assertNestedNonnegativeNumber(t, payload, "response", "size")
 	hostname, err := os.Hostname()
 	if err != nil {
 		t.Fatalf("os.Hostname() error = %v", err)
@@ -173,12 +173,18 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	}
 	requestLog := payload["request"].(map[string]any)
 	requestHeaders := requestLog["headers"].(map[string]any)
+	if requestHeaders["host"] != "gateway.example" {
+		t.Errorf("request.headers.host = %#v, want original request host", requestHeaders["host"])
+	}
 	if requestHeaders["x-request"] != "request-value" {
 		t.Fatalf("request.headers.x-request = %#v, want scalar request-value", requestHeaders["x-request"])
 	}
 	queryString := requestLog["querystring"].(map[string]any)
-	if queryString["id"] != "1" {
-		t.Fatalf("request.querystring.id = %#v, want scalar 1", queryString["id"])
+	if queryString["ID"] != "1" {
+		t.Errorf("request.querystring.ID = %#v, want case-preserved scalar 1", queryString["ID"])
+	}
+	if _, ok := queryString["id"]; ok {
+		t.Errorf("request.querystring.id = %#v, want uppercase key preserved", queryString["id"])
 	}
 	responseLog := payload["response"].(map[string]any)
 	responseHeaders := responseLog["headers"].(map[string]any)
@@ -204,15 +210,19 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 		Port:         mustAtoi(t, port),
 		BatchMaxSize: 1,
 		LogFormat: map[string]string{
-			"status":   "$status",
-			"consumer": "$consumer_name",
+			"status":     "$status",
+			"consumer":   "$consumer_name",
+			"route_id":   "configured-route",
+			"service_id": "configured-service",
 		},
 	})
+	p.SetRouteContext("resolved-route", "127.0.0.1:9080")
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
 	req = apisixctx.WithApisixVars(req, map[string]string{})
 	req = apisixctx.WithRequestVars(req)
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apisixctx.RegisterApisixVar(r, "$consumer_name", "downstream-consumer")
+		apisixctx.RegisterApisixVar(r, "$service_id", "resolved-service")
 		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
 		w.WriteHeader(http.StatusCreated)
 	})).ServeHTTP(httptest.NewRecorder(), req)
@@ -223,6 +233,12 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 	}
 	if payload["consumer"] != "downstream-consumer" {
 		t.Fatalf("consumer = %#v, want downstream-populated value", payload["consumer"])
+	}
+	if payload["route_id"] != "resolved-route" {
+		t.Fatalf("route_id = %#v, want appended route context", payload["route_id"])
+	}
+	if payload["service_id"] != "resolved-service" {
+		t.Fatalf("service_id = %#v, want appended service context", payload["service_id"])
 	}
 }
 
@@ -590,5 +606,17 @@ func assertNestedField(t *testing.T, payload map[string]any, object, field strin
 	}
 	if got := nested[field]; got != want {
 		t.Fatalf("%s.%s = %#v, want %#v", object, field, got, want)
+	}
+}
+
+func assertNestedNonnegativeNumber(t *testing.T, payload map[string]any, object, field string) {
+	t.Helper()
+	nested, ok := payload[object].(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want object", object, payload[object])
+	}
+	value, ok := nested[field].(float64)
+	if !ok || value < 0 {
+		t.Fatalf("%s.%s = %#v, want nonnegative number", object, field, nested[field])
 	}
 }

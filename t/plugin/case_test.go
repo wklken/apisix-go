@@ -3,6 +3,7 @@ package pluginintegration
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadManifestRejectsUnknownField(t *testing.T) {
@@ -36,6 +37,38 @@ func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
 	manifest := validManifest()
 	if err := manifest.validate(); err != nil {
 		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsMixedEncodedBodyMatchers(t *testing.T) {
+	body := "ok"
+	manifest := validManifest()
+	manifest.Cases[0].Output.BrotliBody = &Matcher{Equals: &body}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "body, gzip_body, and brotli_body are mutually exclusive") {
+		t.Fatalf("validate() error = %v, want encoded body matcher rejection", err)
+	}
+}
+
+func TestManifestRejectsNonPositiveBodyLengthLimit(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Output.BodyLengthLessThanValue = new(0)
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "body_length_less_than_value must be positive") {
+		t.Fatalf("validate() error = %v, want non-positive body length limit rejection", err)
+	}
+}
+
+func TestManifestRejectsInvalidElapsedRange(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Output.ElapsedAtLeast = time.Second
+	manifest.Cases[0].Output.ElapsedLessThan = time.Second
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "elapsed_at_least must be less than elapsed_less_than") {
+		t.Fatalf("validate() error = %v, want invalid elapsed range rejection", err)
 	}
 }
 

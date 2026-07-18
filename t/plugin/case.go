@@ -112,8 +112,9 @@ type HTTPInput struct {
 }
 
 type RepeatedBody struct {
-	Value string `yaml:"value"`
-	Count int    `yaml:"count"`
+	Value  string `yaml:"value"`
+	Count  int    `yaml:"count"`
+	Suffix string `yaml:"suffix,omitempty"`
 }
 
 type UpstreamSpec struct {
@@ -139,17 +140,21 @@ type HTTPResponse struct {
 }
 
 type HTTPOutput struct {
-	Status             int                      `yaml:"status"`
-	Headers            map[string]Matcher       `yaml:"headers,omitempty"`
-	UniqueHeaders      []string                 `yaml:"unique_headers,omitempty"`
-	MonotonicHeaders   []string                 `yaml:"monotonic_headers,omitempty"`
-	DifferentHeaders   [][]string               `yaml:"different_headers,omitempty"`
-	Body               *Matcher                 `yaml:"body,omitempty"`
-	GzipBody           *Matcher                 `yaml:"gzip_body,omitempty"`
-	Logs               *Matcher                 `yaml:"logs,omitempty"`
-	SaveBodyLength     string                   `yaml:"save_body_length,omitempty"`
-	BodyLengthLessThan string                   `yaml:"body_length_less_than,omitempty"`
-	Captures           map[string]HeaderCapture `yaml:"captures,omitempty"`
+	Status                  int                      `yaml:"status"`
+	Headers                 map[string]Matcher       `yaml:"headers,omitempty"`
+	UniqueHeaders           []string                 `yaml:"unique_headers,omitempty"`
+	MonotonicHeaders        []string                 `yaml:"monotonic_headers,omitempty"`
+	DifferentHeaders        [][]string               `yaml:"different_headers,omitempty"`
+	Body                    *Matcher                 `yaml:"body,omitempty"`
+	GzipBody                *Matcher                 `yaml:"gzip_body,omitempty"`
+	BrotliBody              *Matcher                 `yaml:"brotli_body,omitempty"`
+	Logs                    *Matcher                 `yaml:"logs,omitempty"`
+	SaveBodyLength          string                   `yaml:"save_body_length,omitempty"`
+	BodyLengthLessThan      string                   `yaml:"body_length_less_than,omitempty"`
+	BodyLengthLessThanValue *int                     `yaml:"body_length_less_than_value,omitempty"`
+	ElapsedAtLeast          time.Duration            `yaml:"elapsed_at_least,omitempty"`
+	ElapsedLessThan         time.Duration            `yaml:"elapsed_less_than,omitempty"`
+	Captures                map[string]HeaderCapture `yaml:"captures,omitempty"`
 }
 
 type HeaderCapture struct {
@@ -357,7 +362,7 @@ func (c *Case) hasScenario() bool {
 		c.Input.BodyRepeat != nil || c.Input.Chunked ||
 		c.Upstream != nil || c.Output.Status != 0 ||
 		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil || len(c.Fixtures) > 0 ||
-		c.Output.GzipBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" ||
+		c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 ||
 		len(c.Output.UniqueHeaders) > 0 || len(c.Output.MonotonicHeaders) > 0 ||
 		len(c.Output.DifferentHeaders) > 0 || len(c.Output.Captures) > 0 ||
 		len(c.Steps) > 0 || c.TLS != nil || len(c.AfterShutdown) > 0
@@ -390,8 +395,8 @@ func (c *Case) validateScenario() error {
 			len(c.Input.HeaderValues) > 0 || c.Input.Body != "" || c.Input.BodyRepeat != nil ||
 			c.Input.Chunked ||
 			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil ||
-			c.Output.GzipBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
-			c.Output.BodyLengthLessThan != "" || len(c.Output.UniqueHeaders) > 0 ||
+			c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
+			c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 || len(c.Output.UniqueHeaders) > 0 ||
 			len(c.Output.MonotonicHeaders) > 0 || len(c.Output.DifferentHeaders) > 0 ||
 			len(c.Output.Captures) > 0 {
 			return errors.New("steps and fixtures must not be mixed with input, upstream, or output")
@@ -539,11 +544,19 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 		}
 	}
 	if output.GzipBody != nil {
-		if output.Body != nil {
-			return errors.New("output body and gzip_body must not both be configured")
+		if output.Body != nil || output.BrotliBody != nil {
+			return errors.New("output body, gzip_body, and brotli_body are mutually exclusive")
 		}
 		if err := output.GzipBody.validate(matcherBody); err != nil {
 			return fmt.Errorf("output gzip body: %w", err)
+		}
+	}
+	if output.BrotliBody != nil {
+		if output.Body != nil || output.GzipBody != nil {
+			return errors.New("output body, gzip_body, and brotli_body are mutually exclusive")
+		}
+		if err := output.BrotliBody.validate(matcherBody); err != nil {
+			return fmt.Errorf("output brotli body: %w", err)
 		}
 	}
 	if output.SaveBodyLength != "" && strings.TrimSpace(output.SaveBodyLength) == "" {
@@ -551,6 +564,18 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 	}
 	if output.BodyLengthLessThan != "" && strings.TrimSpace(output.BodyLengthLessThan) == "" {
 		return errors.New("body_length_less_than must not be blank")
+	}
+	if output.BodyLengthLessThanValue != nil && *output.BodyLengthLessThanValue <= 0 {
+		return errors.New("body_length_less_than_value must be positive")
+	}
+	if output.ElapsedAtLeast < 0 {
+		return errors.New("elapsed_at_least must not be negative")
+	}
+	if output.ElapsedLessThan < 0 {
+		return errors.New("elapsed_less_than must not be negative")
+	}
+	if output.ElapsedAtLeast > 0 && output.ElapsedLessThan > 0 && output.ElapsedAtLeast >= output.ElapsedLessThan {
+		return errors.New("elapsed_at_least must be less than elapsed_less_than")
 	}
 	if output.Logs != nil {
 		if err := output.Logs.validate(matcherBody); err != nil {

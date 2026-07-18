@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	brotlidec "github.com/andybalholm/brotli"
 	apisixcmd "github.com/wklken/apisix-go/cmd"
 	"go.yaml.in/yaml/v3"
 )
@@ -620,7 +621,7 @@ func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
 }
 
 func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
-	body := "AAAAAA"
+	body := "AAAAAAtail"
 	caseSpec := Case{
 		Name:   "repeated-chunked-body",
 		Source: CaseSource{Tests: []int{1}},
@@ -640,7 +641,7 @@ func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
 			Method:     http.MethodPost,
 			Path:       "/body",
 			Chunked:    true,
-			BodyRepeat: &RepeatedBody{Value: "A", Count: 6},
+			BodyRepeat: &RepeatedBody{Value: "A", Count: 6, Suffix: "tail"},
 		},
 		Upstream: &UpstreamSpec{
 			Expect:  HTTPAssertion{Body: &Matcher{Equals: &body}},
@@ -799,6 +800,99 @@ func TestHarnessSupportsHTTP10AndGzipBody(t *testing.T) {
 				},
 			},
 		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessSupportsBrotliBody(t *testing.T) {
+	body := "01234567890123456789"
+	caseSpec := Case{
+		Name:   "brotli-body",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "brotli-body",
+					"uri": "/brotli",
+					"plugins": map[string]any{
+						"brotli": map[string]any{
+							"types":      []any{"text/plain"},
+							"min_length": 1,
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{{
+			Name: "primary",
+			Kind: "http",
+			Respond: []HTTPResponse{{
+				Status:  http.StatusOK,
+				Headers: map[string]string{"Content-Type": "text/plain"},
+				Body:    body,
+			}},
+		}},
+		Steps: []CaseStep{{
+			Name: "compressed-response-preserves-body",
+			Input: HTTPInput{
+				Method:  http.MethodGet,
+				Path:    "/brotli",
+				Headers: map[string]string{"Accept-Encoding": "br"},
+			},
+			Output: HTTPOutput{
+				Status:     http.StatusOK,
+				BrotliBody: &Matcher{Equals: &body},
+				Headers:    map[string]Matcher{"Content-Encoding": {Equals: new("br")}},
+			},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessSupportsElapsedAssertions(t *testing.T) {
+	caseSpec := Case{
+		Name:   "elapsed-assertions",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "elapsed-assertions",
+					"uri": "/delay",
+					"plugins": map[string]any{
+						"fault-injection": map[string]any{
+							"delay": map[string]any{"duration": 0.05},
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{{
+			Name: "primary",
+			Kind: "http",
+			Respond: []HTTPResponse{{
+				Status: http.StatusOK,
+				Body:   "ok",
+			}},
+		}},
+		Steps: []CaseStep{{
+			Name:  "delay-is-observable",
+			Input: HTTPInput{Method: http.MethodGet, Path: "/delay"},
+			Output: HTTPOutput{
+				Status:         http.StatusOK,
+				Body:           &Matcher{Equals: new("ok")},
+				ElapsedAtLeast: 40 * time.Millisecond,
+			},
+		}},
 	}
 
 	runCase(t, caseSpec)
@@ -1561,7 +1655,7 @@ func runHTTPInput(
 	}
 	body := input.Body
 	if input.BodyRepeat != nil {
-		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count)
+		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
 	}
 	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
 	if err != nil {
@@ -1605,6 +1699,7 @@ func runHTTPInput(
 		clientWithoutCookies.Jar = nil
 		requestClient = &clientWithoutCookies
 	}
+	started := time.Now()
 	response, err := requestClient.Do(request)
 	if err != nil {
 		t.Errorf("client request: %v", err)
@@ -1624,6 +1719,7 @@ func runHTTPInput(
 	}
 	assertOutput(t, output, response, string(responseBody))
 	assertBodyLength(t, output, len(responseBody), bodyLengths)
+	assertElapsed(t, output, time.Since(started))
 	assertGeneratedHeaders(t, output, response.Header, headerHistory)
 	captureResponseCookies(response, capturedCookies)
 	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
@@ -1648,6 +1744,10 @@ func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInpu
 		repeated.Value, err = replaceCapturePlaceholders(repeated.Value, captured)
 		if err != nil {
 			return input, fmt.Errorf("body_repeat: %w", err)
+		}
+		repeated.Suffix, err = replaceCapturePlaceholders(repeated.Suffix, captured)
+		if err != nil {
+			return input, fmt.Errorf("body_repeat suffix: %w", err)
 		}
 		input.BodyRepeat = &repeated
 	}
@@ -1757,6 +1857,7 @@ func runRawHTTP10Input(
 	capturedValues map[string]string,
 ) error {
 	t.Helper()
+	started := time.Now()
 	var connection net.Conn
 	var err error
 	if request.URL.Scheme == "https" {
@@ -1807,6 +1908,7 @@ func runRawHTTP10Input(
 	}
 	assertOutput(t, output, response, string(body))
 	assertBodyLength(t, output, len(body), bodyLengths)
+	assertElapsed(t, output, time.Since(started))
 	assertGeneratedHeaders(t, output, response.Header, headerHistory)
 	captureResponseCookies(response, capturedCookies)
 	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
@@ -1881,12 +1983,25 @@ func assertBodyLength(t *testing.T, output HTTPOutput, length int, saved map[str
 			t.Errorf("response body length = %d, want less than %s (%d)", length, output.BodyLengthLessThan, reference)
 		}
 	}
+	if output.BodyLengthLessThanValue != nil && length >= *output.BodyLengthLessThanValue {
+		t.Errorf("response body length = %d, want less than %d", length, *output.BodyLengthLessThanValue)
+	}
 	if output.SaveBodyLength != "" {
 		if _, exists := saved[output.SaveBodyLength]; exists {
 			t.Errorf("body length reference %q is already saved", output.SaveBodyLength)
 			return
 		}
 		saved[output.SaveBodyLength] = length
+	}
+}
+
+func assertElapsed(t *testing.T, output HTTPOutput, elapsed time.Duration) {
+	t.Helper()
+	if output.ElapsedAtLeast > 0 && elapsed < output.ElapsedAtLeast {
+		t.Errorf("response elapsed time = %s, want at least %s", elapsed, output.ElapsedAtLeast)
+	}
+	if output.ElapsedLessThan > 0 && elapsed >= output.ElapsedLessThan {
+		t.Errorf("response elapsed time = %s, want less than %s", elapsed, output.ElapsedLessThan)
 	}
 }
 
@@ -1922,6 +2037,16 @@ func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, bo
 			t.Errorf("gzip response body: %v", err)
 		}
 	}
+	if expected.BrotliBody != nil {
+		decoded, err := io.ReadAll(brotlidec.NewReader(strings.NewReader(body)))
+		if err != nil {
+			t.Errorf("read brotli response body: %v", err)
+			return
+		}
+		if err := expected.BrotliBody.match(string(decoded), true); err != nil {
+			t.Errorf("brotli response body: %v", err)
+		}
+	}
 }
 
 func expandIterationInput(input HTTPInput, iteration int) HTTPInput {
@@ -1949,6 +2074,7 @@ func expandIterationInput(input HTTPInput, iteration int) HTTPInput {
 	if input.BodyRepeat != nil {
 		repeated := *input.BodyRepeat
 		repeated.Value = replaceIteration(repeated.Value, replacement)
+		repeated.Suffix = replaceIteration(repeated.Suffix, replacement)
 		input.BodyRepeat = &repeated
 	}
 	return input
@@ -1958,6 +2084,7 @@ func expandIterationOutput(output HTTPOutput, iteration int) HTTPOutput {
 	replacement := strconv.Itoa(iteration)
 	output.Body = expandIterationMatcher(output.Body, replacement)
 	output.GzipBody = expandIterationMatcher(output.GzipBody, replacement)
+	output.BrotliBody = expandIterationMatcher(output.BrotliBody, replacement)
 	output.Logs = expandIterationMatcher(output.Logs, replacement)
 	if output.Headers != nil {
 		headers := make(map[string]Matcher, len(output.Headers))

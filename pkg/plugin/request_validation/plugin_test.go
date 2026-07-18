@@ -49,6 +49,34 @@ func TestHandlerRejectsInvalidHeaders(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsScalarJSONBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{"type": "string"},
+	})
+
+	res := performRequest(p, http.MethodPost, "http://example.com/get", `"hello"`, map[string]string{
+		"Content-Type": "application/json",
+	})
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body = %q", res.Code, http.StatusNoContent, res.Body.String())
+	}
+}
+
+func TestPostInitAcceptsAPISIXLegacyTableAndFunctionSchemaTypes(t *testing.T) {
+	for _, schemaType := range []string{"table", "function"} {
+		t.Run(schemaType, func(t *testing.T) {
+			p := &Plugin{config: Config{BodySchema: map[string]any{"type": schemaType}}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestHandlerAcceptsValidHeaders(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		HeaderSchema: map[string]any{

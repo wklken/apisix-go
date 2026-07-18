@@ -749,7 +749,7 @@ Expected: remote head equals local `HEAD`, `isDraft` is `false`, and the PR body
 
 The original checked state was not supported by the manifests. This audit compared each of the 61 manifests with the pinned Apache source titles and the behavior requirements above. A source number being listed once and a route containing the target plugin are necessary, but they do not prove source-complete behavior. A manifest is checked below only when its standalone resources, requests, fixture observations, and APISIX-Go boundary assertions can fail when each mapped plugin behavior is broken.
 
-**Verified result:** 7 of 61 manifests have passed source-completeness review; 54 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
+**Verified result:** 8 of 61 manifests have passed source-completeness review; 53 remain. Thirty-nine manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
 
 ### Remaining Harness and Coverage Work
 
@@ -790,7 +790,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `cas-auth` — one redirect/callback shape replaces ticket validation, session cookies, original URI, logout, and invalid XML/ticket cases.
 - [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
 - [ ] `feishu-auth` — one login flow replaces state/cookie validation, token/user lookup details, propagated headers, and failure branches.
-- [ ] `authz-casbin` — one allow request replaces inline/metadata model and policy loading, variable mapping, deny behavior, and invalid model/policy cases.
+- [x] `authz-casbin` — all 21 pinned blocks map exactly once to standalone schema, metadata, inline, file, disabled, route-policy-shape, and request behavior. Deny-to-allow and policy1-to-policy2-to-policy1 transitions use atomic standalone snapshot replacement, a side-effect-free applied-state probe, and one consuming request. The shared watcher survives invalid/Remove/Rename/Create/Write sequences and later valid snapshots; workdir file paths are confined. Package/corpus, watcher recovery, race, real-process `-count=10`, scoped lint/build, post-integration, and task-review gates pass.
 
 #### Task 7 — Limits and Cache
 
@@ -862,10 +862,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 7 task-review-approved and 54 remaining.
-- **Behavioral placeholders:** Forty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 8 task-review-approved and 53 remaining.
+- **Behavioral placeholders:** Thirty-nine manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 54 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 53 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -874,13 +874,13 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **7
-complete and 54 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **8
+complete and 53 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
-- **Structural source-file stand-ins (40):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (39):** `ai-aws-content-moderation`,
   `ai-prompt-decorator`, `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
-  `ai-rate-limiting`, `ai-request-rewrite`, `authz-casbin`,
+  `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `cas-auth`, `clickhouse-logger`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
   `forward-auth`, `google-cloud-logging`, `graphql-limit-count`,
@@ -899,9 +899,9 @@ complete and 54 remaining**; `oas-validator` also passed its task review with
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (7):** `brotli`, `consumer-restriction`, `cors`,
-  `fault-injection`, `oas-validator`, `request-validation`, and
-  `traffic-label`. No other
+- **Task-review-approved (8):** `authz-casbin`, `brotli`,
+  `consumer-restriction`, `cors`, `fault-injection`, `oas-validator`,
+  `request-validation`, and `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -909,7 +909,8 @@ complete and 54 remaining**; `oas-validator` also passed its task review with
 The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
 active execution tiers below contained 55 remaining manifests before Easy
-Wave 1. `traffic-label` has now passed review, so **54 remain**.
+Wave 1. `traffic-label` and `authz-casbin` have now passed review, so **53
+remain**.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
 the harness/protocol work needed to make its source titles executable. The
@@ -926,10 +927,9 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 9 manifests
+### Easy — 8 manifests
 
 - [ ] `jwe-decrypt`
-- [ ] `authz-casbin`
 - [ ] `datadog`
 - [ ] `udp-logger`
 - [ ] `clickhouse-logger`

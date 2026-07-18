@@ -1,103 +1,819 @@
-cases:
-    - config:
-        consumers:
-            - username: wolf-user
-              plugins:
-                wolf-rbac:
-                    appid: integration
-                    server: '{{FIXTURE.auth.URL}}'
-        routes:
-            - id: wolf-rbac-source-1
-              plugins:
-                wolf-rbac:
-                    appid: integration
-                    server: http://127.0.0.1:1
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          expect:
-            - method: GET
-              path: {equals: /probe}
-              headers:
-                X-Username: {equals: integration}
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: auth
-          expect:
-            - method: GET
-              path: {matches: '^/wolf/rbac/access_check\?.*action=GET.*'}
-              headers:
-                X-Rbac-Token: {equals: token}
-          respond:
-            - body: '{"ok":true,"reason":"","data":{"userInfo":{"id":"1","username":"integration"}}}'
-              headers: {}
-              status: 200
-      name: wolf-rbac-source-1
-      source:
-        file: t/plugin/wolf-rbac.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-            - 30
-            - 31
-            - 32
-            - 33
-            - 34
-            - 35
-            - 36
-            - 37
-            - 38
-            - 39
-            - 40
-            - 41
-            - 42
-      steps:
-        - input:
-            headers:
-                Authorization: V1#integration#token
-            method: GET
-            path: /probe
-          name: wolf-permission-check-allows-user
-          output:
-            body: {equals: hello world}
-            status: 200
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/wolf-rbac.t
-      tests: 42
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/wolf-rbac.t
+    tests: 42
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/security-warning2.t
+    tests: 2
+    test_numbers: [19, 20]
+
+cases:
+  - name: schema-defaults
+    source: {file: t/plugin/wolf-rbac.t, tests: [1]}
+    runtime: {plugins: [wolf-rbac]}
+    config:
+      routes:
+        - id: wolf-defaults
+          uri: /schema
+          plugins: {wolf-rbac: {}}
+    input: {path: /schema}
+    output:
+      status: 401
+      body: {json_equals: '{"message":"Missing rbac token in request"}'}
+      logs: {matches: 'Using wolf-rbac server with no TLS is a security risk'}
+
+  - name: schema-rejections
+    source: {file: t/plugin/wolf-rbac.t, tests: [2, 40]}
+    variants:
+      - name: appid-must-be-string
+        runtime: {plugins: [wolf-rbac]}
+        config:
+          routes:
+            - id: wolf-invalid-appid
+              uri: /schema
+              plugins: {wolf-rbac: {appid: 123}}
+        input: {path: /schema}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin wolf-rbac config:.*appid.*expected string.*got number'}
+      - name: ssl-verify-must-be-boolean
+        runtime: {plugins: [wolf-rbac]}
+        config:
+          routes:
+            - id: wolf-invalid-ssl-verify
+              uri: /schema
+              plugins: {wolf-rbac: {ssl_verify: 'true'}}
+        input: {path: /schema}
+        output:
+          status: 404
+          logs: {matches: 'validate plugin wolf-rbac config:.*ssl_verify.*expected boolean.*got string'}
+
+  - name: public-login-apis
+    source: {file: t/plugin/wolf-rbac.t, tests: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
+    runtime: {plugins: [public-api, wolf-rbac]}
+    config:
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+        - username: wolf_rbac_unreachable
+          plugins:
+            wolf-rbac: {appid: unreachable-app, server: 'http://127.0.0.1:1'}
+      routes:
+        - id: wolf-login
+          uri: /apisix/plugin/wolf-rbac/login
+          plugins: {public-api: {}}
+        - id: wolf-userinfo
+          uri: /apisix/plugin/wolf-rbac/user_info
+          plugins: {public-api: {}}
+        - id: wolf-change-pwd
+          uri: /apisix/plugin/wolf-rbac/change_pwd
+          plugins: {public-api: {}}
+        - id: wolf-protected
+          uris: [/hello*, /wolf/rbac/*]
+          plugins: {wolf-rbac: {}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 5
+        expect:
+          - &login_missing_username
+            method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","password":"123456"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","username":"not-found","password":"123456"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin","password":"wrong-password"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'}
+        respond:
+          - {status: 200, body: '{"ok":false,"reason":"ERR_USERNAME_MISSING"}'}
+          - {status: 200, body: '{"ok":false,"reason":"ERR_PASSWORD_MISSING"}'}
+          - {status: 200, body: '{"ok":false,"reason":"ERR_USER_NOT_FOUND"}'}
+          - {status: 200, body: '{"ok":false,"reason":"ERR_PASSWORD_ERROR"}'}
+          - {status: 200, body: '{"ok":true,"data":{"token":"wolf-rbac-token","userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}'}
+    steps:
+      - name: missing-appid
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: username=admin&password=123456
+        output: {status: 400, body: {json_equals: '{"message":"appid is missing"}'}}
+      - name: unknown-appid
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: appid=not-found&username=admin&password=123456
+        output: {status: 400, body: {json_equals: '{"message":"appid not found"}'}}
+      - name: unavailable-provider
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: appid=unreachable-app&username=admin&password=123456
+        output:
+          status: 500
+          body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+          logs: {matches: 'request to wolf-server failed:.*connect'}
+      - name: username-missing-business-denial
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: appid=wolf-rbac-app&password=123456
+        output:
+          status: 200
+          body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+          logs: {matches: 'ERR_USERNAME_MISSING'}
+      - name: password-missing-business-denial
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: appid=wolf-rbac-app&username=admin
+        output:
+          status: 200
+          body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+          logs: {matches: 'ERR_PASSWORD_MISSING'}
+      - name: username-not-found-business-denial
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: appid=wolf-rbac-app&username=not-found&password=123456
+        output:
+          status: 200
+          body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+          logs: {matches: 'ERR_USER_NOT_FOUND'}
+      - name: wrong-password-business-denial
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: appid=wolf-rbac-app&username=admin&password=wrong-password
+        output:
+          status: 200
+          body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+          logs: {matches: 'ERR_PASSWORD_ERROR'}
+      - name: successful-login-wraps-token
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/json}
+          body: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'
+        output:
+          status: 200
+          body: {json_equals: '{"rbac_token":"V1#wolf-rbac-app#wolf-rbac-token","user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
+          logs: {not_matches: 'wrong-password|123456|wolf-rbac-token'}
+
+  - name: permission-tokens-and-user-headers
+    source: {file: t/plugin/wolf-rbac.t, tests: [13, 14, 15, 16, 17, 18, 19, 20, 26]}
+    runtime: {plugins: [wolf-rbac]}
+    config:
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+      routes:
+        - id: wolf-protected
+          uris: [/hello*, /wolf/rbac/*]
+          plugins: {wolf-rbac: {}}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 6
+        expect:
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello1'}
+            headers: &permission_headers
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {equals: wolf-rbac-token}
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+            headers: *permission_headers
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+            headers: *permission_headers
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+            headers: *permission_headers
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+            headers: *permission_headers
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fwolf%2Frbac%2Fcustom%2Fheaders'}
+            headers: *permission_headers
+        respond:
+          - {status: 403, body: '{"ok":false,"reason":"ERR_ACCESS_DENIED"}'}
+          - &permission_success {status: 200, body: '{"ok":true,"data":{"userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}'}
+          - *permission_success
+          - *permission_success
+          - *permission_success
+          - *permission_success
+      - name: primary
+        kind: http
+        expect_requests: 5
+        expect:
+          - path: {equals: '/hello?rbac_token=V1%23wolf-rbac-app%23wolf-rbac-token'}
+            headers: &user_headers
+              X-UserId: {equals: '100'}
+              X-Username: {equals: admin}
+              X-Nickname: {equals: administrator}
+          - path: {equals: /hello}
+            headers: *user_headers
+          - path: {equals: /hello}
+            headers: *user_headers
+          - path: {equals: /hello}
+            headers: *user_headers
+          - path: {equals: '/wolf/rbac/custom/headers?rbac_token=V1%23wolf-rbac-app%23wolf-rbac-token'}
+            headers: *user_headers
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: 'id:100,username:admin,nickname:administrator'}
+    steps:
+      - name: missing-token
+        input: {path: /hello}
+        output: {status: 401, body: {json_equals: '{"message":"Missing rbac token in request"}'}}
+      - name: malformed-token
+        input: {path: /hello, headers: {X-Rbac-Token: invalid-rbac-token}}
+        output: {status: 401, body: {json_equals: '{"message":"invalid rbac token: parse failed"}'}}
+      - name: unknown-token-appid
+        input: {path: /hello, headers: {X-Rbac-Token: 'V1#invalid-appid#rbac-token'}}
+        output:
+          status: 401
+          body: {json_equals: '{"message":"Invalid appid in rbac token"}'}
+          logs: {matches: 'consumer \[invalid-appid\] not found'}
+      - name: permission-denied
+        input: {path: /hello1, headers: {X-Rbac-Token: 'V1#wolf-rbac-app#wolf-rbac-token'}}
+        output:
+          status: 403
+          body: {json_equals: '{"message":"ERR_ACCESS_DENIED"}'}
+          logs: {matches: 'status:403, reason:ERR_ACCESS_DENIED'}
+      - &query_token_step
+        name: query-token
+        input: {path: '/hello?rbac_token=V1%23wolf-rbac-app%23wolf-rbac-token'}
+        output: &allowed_output
+          status: 200
+          headers:
+            X-UserId: {equals: '100'}
+            X-Username: {equals: admin}
+            X-Nickname: {equals: administrator}
+          body: {equals: hello world}
+      - name: authorization-token
+        input: {path: /hello, headers: {Authorization: 'V1#wolf-rbac-app#wolf-rbac-token'}}
+        output: *allowed_output
+      - name: x-rbac-token
+        input: {path: /hello, headers: {X-Rbac-Token: 'V1#wolf-rbac-app#wolf-rbac-token'}}
+        output: *allowed_output
+      - name: cookie-token
+        input: {path: /hello, headers: {Cookie: 'x-rbac-token=V1#wolf-rbac-app#wolf-rbac-token'}}
+        output: *allowed_output
+      - name: injected-user-headers-reach-upstream
+        input: {path: '/wolf/rbac/custom/headers?rbac_token=V1%23wolf-rbac-app%23wolf-rbac-token'}
+        output:
+          status: 200
+          headers:
+            X-UserId: {equals: '100'}
+            X-Username: {equals: admin}
+            X-Nickname: {equals: administrator}
+          body: {equals: 'id:100,username:admin,nickname:administrator'}
+          logs: {not_matches: 'wolf-rbac-token|V1#wolf-rbac-app'}
+
+  - name: public-user-info
+    source: {file: t/plugin/wolf-rbac.t, tests: [21, 22, 23]}
+    runtime: {plugins: [public-api, wolf-rbac]}
+    config:
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+      routes:
+        - id: wolf-init
+          uri: /_wolf-init
+          plugins: {wolf-rbac: {}}
+        - id: wolf-userinfo
+          uri: /apisix/plugin/wolf-rbac/user_info
+          plugins: {public-api: {}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /wolf/rbac/user_info}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {equals: wolf-rbac-token}
+            body: {json_equals: '{}'}
+        respond:
+          - {status: 200, body: '{"ok":true,"data":{"userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}'}
+    steps:
+      - name: missing-token
+        input: {path: /apisix/plugin/wolf-rbac/user_info}
+        output: {status: 401, body: {json_equals: '{"message":"Missing rbac token in request"}'}}
+      - name: malformed-token
+        input: {path: /apisix/plugin/wolf-rbac/user_info, headers: {X-Rbac-Token: invalid-rbac-token}}
+        output: {status: 401, body: {json_equals: '{"message":"invalid rbac token: parse failed"}'}}
+      - name: user-info
+        input:
+          path: /apisix/plugin/wolf-rbac/user_info
+          headers: {Cookie: 'x-rbac-token=V1#wolf-rbac-app#wolf-rbac-token'}
+        output:
+          status: 200
+          body: {json_equals: '{"user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
+
+  - name: password-change-bodies
+    source: {file: t/plugin/wolf-rbac.t, tests: [24, 25, 27, 28]}
+    runtime: {plugins: [public-api, wolf-rbac]}
+    config:
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+      routes:
+        - id: wolf-init
+          uri: /_wolf-init
+          plugins: {wolf-rbac: {}}
+        - id: wolf-change-pwd
+          uri: /apisix/plugin/wolf-rbac/change_pwd
+          plugins: {public-api: {}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 4
+        expect:
+          - method: POST
+            path: {equals: /wolf/rbac/change_pwd}
+            headers: &password_headers
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {equals: wolf-rbac-token}
+            body: {json_equals: '{"oldPassword":"error","newPassword":"abcdef"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/change_pwd}
+            headers: *password_headers
+            body: {json_equals: '{"oldPassword":"123456","newPassword":"abcdef"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/change_pwd}
+            headers: *password_headers
+            body: {json_equals: '{"oldPassword":"123456","newPassword":"abcdef"}'}
+          - method: POST
+            path: {equals: /wolf/rbac/change_pwd}
+            headers: *password_headers
+            body: {json_equals: '{"newPassword":"abcdef","oldPassword":"123456","test1":"test","test10":"test","test100":"test","test11":"test","test12":"test","test13":"test","test14":"test","test15":"test","test16":"test","test17":"test","test18":"test","test19":"test","test2":"test","test20":"test","test21":"test","test22":"test","test23":"test","test24":"test","test25":"test","test26":"test","test27":"test","test28":"test","test29":"test","test3":"test","test30":"test","test31":"test","test32":"test","test33":"test","test34":"test","test35":"test","test36":"test","test37":"test","test38":"test","test39":"test","test4":"test","test40":"test","test41":"test","test42":"test","test43":"test","test44":"test","test45":"test","test46":"test","test47":"test","test48":"test","test49":"test","test5":"test","test50":"test","test51":"test","test52":"test","test53":"test","test54":"test","test55":"test","test56":"test","test57":"test","test58":"test","test59":"test","test6":"test","test60":"test","test61":"test","test62":"test","test63":"test","test64":"test","test65":"test","test66":"test","test67":"test","test68":"test","test69":"test","test7":"test","test70":"test","test71":"test","test72":"test","test73":"test","test74":"test","test75":"test","test76":"test","test77":"test","test78":"test","test79":"test","test8":"test","test80":"test","test81":"test","test82":"test","test83":"test","test84":"test","test85":"test","test86":"test","test87":"test","test88":"test","test89":"test","test9":"test","test90":"test","test91":"test","test92":"test","test93":"test","test94":"test","test95":"test","test96":"test","test97":"test","test98":"test","test99":"test"}'}
+        respond:
+          - {status: 200, body: '{"ok":false,"reason":"ERR_OLD_PASSWORD_INCORRECT"}'}
+          - &password_success {status: 200, body: '{"ok":true,"data":{}}'}
+          - *password_success
+          - *password_success
+    steps:
+      - name: old-password-incorrect
+        input:
+          method: PUT
+          path: /apisix/plugin/wolf-rbac/change_pwd
+          headers: {Content-Type: application/json, Cookie: 'x-rbac-token=V1#wolf-rbac-app#wolf-rbac-token'}
+          body: '{"oldPassword":"error","newPassword":"abcdef"}'
+        output:
+          status: 200
+          body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+          logs: {matches: 'ERR_OLD_PASSWORD_INCORRECT'}
+      - name: json-password-change
+        input:
+          method: PUT
+          path: /apisix/plugin/wolf-rbac/change_pwd
+          headers: {Content-Type: application/json, Cookie: 'x-rbac-token=V1#wolf-rbac-app#wolf-rbac-token'}
+          body: '{"oldPassword":"123456","newPassword":"abcdef"}'
+        output: &password_success_output
+          status: 200
+          body: {json_equals: '{"message":"success to change password"}'}
+      - name: raw-form-password-change
+        input:
+          method: PUT
+          path: /apisix/plugin/wolf-rbac/change_pwd
+          headers: {Cookie: 'x-rbac-token=V1#wolf-rbac-app#wolf-rbac-token'}
+          body: oldPassword=123456&newPassword=abcdef
+        output: *password_success_output
+      - name: more-than-one-hundred-form-fields
+        input:
+          method: PUT
+          path: /apisix/plugin/wolf-rbac/change_pwd
+          headers: {Cookie: 'x-rbac-token=V1#wolf-rbac-app#wolf-rbac-token'}
+          body: 'test1=test&test2=test&test3=test&test4=test&test5=test&test6=test&test7=test&test8=test&test9=test&test10=test&test11=test&test12=test&test13=test&test14=test&test15=test&test16=test&test17=test&test18=test&test19=test&test20=test&test21=test&test22=test&test23=test&test24=test&test25=test&test26=test&test27=test&test28=test&test29=test&test30=test&test31=test&test32=test&test33=test&test34=test&test35=test&test36=test&test37=test&test38=test&test39=test&test40=test&test41=test&test42=test&test43=test&test44=test&test45=test&test46=test&test47=test&test48=test&test49=test&test50=test&test51=test&test52=test&test53=test&test54=test&test55=test&test56=test&test57=test&test58=test&test59=test&test60=test&test61=test&test62=test&test63=test&test64=test&test65=test&test66=test&test67=test&test68=test&test69=test&test70=test&test71=test&test72=test&test73=test&test74=test&test75=test&test76=test&test77=test&test78=test&test79=test&test80=test&test81=test&test82=test&test83=test&test84=test&test85=test&test86=test&test87=test&test88=test&test89=test&test90=test&test91=test&test92=test&test93=test&test94=test&test95=test&test96=test&test97=test&test98=test&test99=test&test100=test&oldPassword=123456&newPassword=abcdef'
+        output:
+          status: 200
+          body: {json_equals: '{"message":"success to change password"}'}
+          logs: {not_matches: '123456|abcdef|wolf-rbac-token'}
+
+  - name: permission-retry-and-error-mapping
+    source: {file: t/plugin/wolf-rbac.t, tests: [29, 30]}
+    runtime: {plugins: [wolf-rbac]}
+    config:
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+      routes:
+        - id: wolf-errors
+          uri: /hello/*
+          plugins: {wolf-rbac: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 4
+        expect:
+          - &retry_500
+            method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello%2F500'}
+            headers: *permission_headers
+          - *retry_500
+          - *retry_500
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello%2F401'}
+            headers: *permission_headers
+        respond:
+          - &server_error {status: 500, body: '{"ok":false,"reason":"ERR_SERVER_ERROR"}'}
+          - *server_error
+          - *server_error
+          - {status: 401, body: '{"ok":false,"reason":"ERR_TOKEN_INVALID"}'}
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: retries-three-times-before-500
+        input: {path: /hello/500, headers: {X-Rbac-Token: 'V1#wolf-rbac-app#wolf-rbac-token'}}
+        output:
+          status: 500
+          body: {json_equals: '{"message":"request to wolf-server failed, status:500"}'}
+          logs: {matches: 'status:500, reason:request to wolf-server failed, status:500'}
+      - name: provider-401-is-not-retried
+        input: {path: /hello/401, headers: {X-Rbac-Token: 'V1#wolf-rbac-app#wolf-rbac-token'}}
+        output:
+          status: 401
+          body: {json_equals: '{"message":"ERR_TOKEN_INVALID"}'}
+          logs: {matches: 'status:401, reason:ERR_TOKEN_INVALID'}
+
+  - name: vault-appid-reference
+    source: {file: t/plugin/wolf-rbac.t, tests: [31, 32, 33]}
+    runtime: {plugins: [public-api, wolf-rbac]}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: root
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac:
+              appid: '$secret://vault/test1/wolf_rbac_unit_test/appid'
+              server: '{{FIXTURE.auth.URL}}'
+      routes:
+        - id: wolf-init
+          uri: /_wolf-init
+          plugins: {wolf-rbac: {}}
+        - id: wolf-login
+          uri: /apisix/plugin/wolf-rbac/login
+          plugins: {public-api: {}}
+    fixtures: &secret_fixtures
+      - name: vault
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /v1/kv/apisix/wolf_rbac_unit_test}
+            headers:
+              X-Vault-Token: {equals: root}
+              X-Vault-Namespace: {absent: true}
+        respond: [{status: 200, body: '{"data":{"appid":"wolf-rbac-app"}}'}]
+      - name: auth
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'}
+        respond:
+          - {status: 200, body: '{"ok":true,"data":{"token":"wolf-rbac-token","userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}'}
+    steps: &secret_login_steps
+      - name: resolved-appid-login
+        input:
+          method: POST
+          path: /apisix/plugin/wolf-rbac/login
+          headers: {Content-Type: application/json}
+          body: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'
+        output:
+          status: 200
+          body: {json_equals: '{"rbac_token":"V1#wolf-rbac-app#wolf-rbac-token","user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
+
+  - name: vault-token-environment-reference
+    source: {file: t/plugin/wolf-rbac.t, tests: [34, 35]}
+    runtime: {plugins: [public-api, wolf-rbac]}
+    environment: {VAULT_TOKEN: root}
+    config:
+      secrets:
+        - id: vault/test1
+          uri: '{{FIXTURE.vault.URL}}'
+          prefix: kv/apisix
+          token: '$ENV://VAULT_TOKEN'
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac:
+              appid: '$secret://vault/test1/wolf_rbac_unit_test/appid'
+              server: '{{FIXTURE.auth.URL}}'
+      routes:
+        - id: wolf-init
+          uri: /_wolf-init
+          plugins: {wolf-rbac: {}}
+        - id: wolf-login
+          uri: /apisix/plugin/wolf-rbac/login
+          plugins: {public-api: {}}
+    fixtures: *secret_fixtures
+    steps: *secret_login_steps
+
+  - name: consumer-replacement-and-echo-rewrite
+    source: {file: t/plugin/wolf-rbac.t, tests: [36, 37]}
+    runtime: {plugins: [public-api, wolf-rbac, echo]}
+    config:
+      consumers:
+        - username: wolf_rbac_unit_test
+          plugins:
+            wolf-rbac: {appid: old-wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+      routes:
+        - id: wolf-consumer-echo
+          uri: /hello
+          plugins: {wolf-rbac: {}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: wolf-consumer-login
+          uri: /apisix/plugin/wolf-rbac/login
+          plugins: {public-api: {}}
+    fixtures:
+      - name: auth
+        kind: http
+        expect_requests: 2
+        expect:
+          - method: POST
+            path: {equals: /wolf/rbac/login.rest}
+            headers:
+              Content-Type: {equals: 'application/json; charset=utf-8'}
+              X-Rbac-Token: {absent: true}
+            body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'}
+          - method: GET
+            path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+            headers: *permission_headers
+        respond:
+          - {status: 200, body: '{"ok":true,"data":{"token":"wolf-rbac-token","userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}'}
+          - *permission_success
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - path: {equals: /hello}
+            headers: *user_headers
+        respond: [{status: 200, body: original-upstream-body}]
+    steps:
+      - name: replace-consumer-with-echo-plugin
+        config:
+          consumers:
+            - username: wolf_rbac_with_other_plugins
+              plugins:
+                wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+                echo: {body: "consumer merge echo plugins\n"}
+          routes:
+            - id: wolf-consumer-echo
+              uri: /hello
+              plugins: {wolf-rbac: {}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: wolf-consumer-login
+              uri: /apisix/plugin/wolf-rbac/login
+              plugins: {public-api: {}}
+        config_timeout: 5s
+        config_probe:
+          input:
+            method: POST
+            path: /apisix/plugin/wolf-rbac/login
+            headers: {Content-Type: application/json}
+            body: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'
+          output:
+            status: 200
+            body: {json_equals: '{"rbac_token":"V1#wolf-rbac-app#wolf-rbac-token","user_info":{"nickname":"administrator","username":"admin","id":"100"}}'}
+        input: {path: /hello, headers: {Authorization: 'V1#wolf-rbac-app#wolf-rbac-token'}}
+        output:
+          status: 200
+          headers:
+            X-UserId: {equals: '100'}
+            X-Username: {equals: admin}
+            X-Nickname: {equals: administrator}
+          body: {equals: "consumer merge echo plugins\n"}
+          logs: {not_matches: 'consumer merge echo plugins|wolf-rbac-token|V1#wolf-rbac-app'}
+
+  - name: ssl-verification
+    source: {file: t/plugin/wolf-rbac.t, tests: [38, 39]}
+    variants:
+      - name: ssl-verify-false-allows-self-signed-provider
+        runtime: {plugins: [public-api, wolf-rbac]}
+        config:
+          consumers:
+            - username: wolf_rbac_ssl_verify_false
+              plugins:
+                wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}', ssl_verify: false}
+          routes:
+            - id: wolf-init
+              uri: /_wolf-init
+              plugins: {wolf-rbac: {server: '{{FIXTURE.auth.URL}}'}}
+            - id: wolf-login
+              uri: /apisix/plugin/wolf-rbac/login
+              plugins: {public-api: {}}
+        fixtures:
+          - name: auth
+            kind: https
+            expect_requests: 1
+            expect:
+              - method: POST
+                path: {equals: /wolf/rbac/login.rest}
+                body: {json_equals: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'}
+            respond:
+              - {status: 200, body: '{"ok":true,"data":{"token":"wolf-rbac-token","userInfo":{"username":"admin","id":"100"}}}'}
+        steps:
+          - name: login-through-self-signed-provider
+            input:
+              method: POST
+              path: /apisix/plugin/wolf-rbac/login
+              headers: {Content-Type: application/json}
+              body: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'
+            output:
+              status: 200
+              body: {json_equals: '{"rbac_token":"V1#wolf-rbac-app#wolf-rbac-token","user_info":{"username":"admin","id":"100"}}'}
+      - name: ssl-verify-true-rejects-self-signed-provider
+        runtime: {plugins: [public-api, wolf-rbac]}
+        config:
+          consumers:
+            - username: wolf_rbac_ssl_verify_true
+              plugins:
+                wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}', ssl_verify: true}
+          routes:
+            - id: wolf-init
+              uri: /_wolf-init
+              plugins: {wolf-rbac: {server: '{{FIXTURE.auth.URL}}'}}
+            - id: wolf-login
+              uri: /apisix/plugin/wolf-rbac/login
+              plugins: {public-api: {}}
+        fixtures:
+          - name: auth
+            kind: https
+            expect_requests: 0
+            respond: [{status: 200, body: should-not-run}]
+        steps:
+          - name: verified-client-rejects-self-signed-provider
+            input:
+              method: POST
+              path: /apisix/plugin/wolf-rbac/login
+              headers: {Content-Type: application/json}
+              body: '{"appid":"wolf-rbac-app","username":"admin","password":"123456"}'
+            output:
+              status: 500
+              body: {json_equals: '{"message":"request to wolf-server failed!"}'}
+              logs: {matches: 'request to wolf-server failed:.*(x509|certificate)'}
+
+  - name: trusted-and-untrusted-real-ip
+    source: {file: t/plugin/wolf-rbac.t, tests: [41, 42]}
+    variants:
+      - name: trusted-real-ip-is-forwarded
+        runtime: {plugins: [real-ip, wolf-rbac]}
+        config:
+          consumers:
+            - username: wolf_rbac_unit_test
+              plugins:
+                wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+          routes:
+            - id: wolf-trusted-real-ip
+              uri: /hello
+              plugins:
+                real-ip: {source: http_x_real_ip, trusted_addresses: [127.0.0.0/8]}
+                wolf-rbac: {}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: auth
+            kind: http
+            expect_requests: 1
+            expect:
+              - method: GET
+                path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=192.0.2.10&resName=%2Fhello'}
+                headers: *permission_headers
+            respond: [*permission_success]
+          - name: primary
+            kind: http
+            expect_requests: 1
+            expect: [{path: {equals: /hello}}]
+            respond: [{status: 200, body: hello world}]
+        steps:
+          - name: trusted-header
+            input:
+              path: /hello
+              headers: {Authorization: 'V1#wolf-rbac-app#wolf-rbac-token', X-Real-IP: 192.0.2.10}
+            output: *allowed_output
+      - name: untrusted-real-ip-is-ignored
+        runtime: {plugins: [real-ip, wolf-rbac]}
+        config:
+          consumers:
+            - username: wolf_rbac_unit_test
+              plugins:
+                wolf-rbac: {appid: wolf-rbac-app, server: '{{FIXTURE.auth.URL}}'}
+          routes:
+            - id: wolf-untrusted-real-ip
+              uri: /hello
+              plugins:
+                real-ip: {source: http_x_real_ip, trusted_addresses: [192.0.2.1]}
+                wolf-rbac: {}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: auth
+            kind: http
+            expect_requests: 1
+            expect:
+              - method: GET
+                path: {equals: '/wolf/rbac/access_check?action=GET&appID=wolf-rbac-app&clientIP=127.0.0.1&resName=%2Fhello'}
+                headers: *permission_headers
+            respond: [*permission_success]
+          - name: primary
+            kind: http
+            expect_requests: 1
+            expect: [{path: {equals: /hello}}]
+            respond: [{status: 200, body: hello world}]
+        steps:
+          - name: spoofed-header
+            input:
+              path: /hello
+              headers: {Authorization: 'V1#wolf-rbac-app#wolf-rbac-token', X-Real-IP: 192.0.2.10}
+            output: *allowed_output
+
+  - name: http-server-security-warning
+    source: {file: t/plugin/security-warning2.t, tests: [19]}
+    runtime: {plugins: [wolf-rbac]}
+    config:
+      routes:
+        - id: wolf-http-warning
+          uri: /warning
+          plugins: {wolf-rbac: {server: 'http://127.0.0.1:12180'}}
+    input: {path: /warning}
+    output:
+      status: 401
+      body: {json_equals: '{"message":"Missing rbac token in request"}'}
+      logs: {matches: 'Using wolf-rbac server with no TLS is a security risk'}
+
+  - name: https-server-no-security-warning
+    source: {file: t/plugin/security-warning2.t, tests: [20]}
+    runtime: {plugins: [wolf-rbac]}
+    config:
+      routes:
+        - id: wolf-https-no-warning
+          uri: /warning
+          plugins: {wolf-rbac: {server: '{{FIXTURE.auth.URL}}'}}
+    fixtures:
+      - name: auth
+        kind: https
+        expect_requests: 0
+        respond: [{status: 200, body: should-not-run}]
+    steps:
+      - name: https-config
+        input: {path: /warning}
+        output:
+          status: 401
+          body: {json_equals: '{"message":"Missing rbac token in request"}'}
+          logs: {not_matches: 'Using wolf-rbac server with no TLS is a security risk'}

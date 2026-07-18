@@ -1,7 +1,9 @@
 package wolf_rbac
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -79,6 +81,23 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitAppliesOfficialDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+
+	if p.config.AppID != "unset" {
+		t.Fatalf("appid = %q, want unset", p.config.AppID)
+	}
+	if p.config.Server != "http://127.0.0.1:12180" {
+		t.Fatalf("server = %q, want official default", p.config.Server)
+	}
+	if p.config.HeaderPrefix != "X-" {
+		t.Fatalf("header_prefix = %q, want X-", p.config.HeaderPrefix)
+	}
+	if p.config.SSLVerify != nil {
+		t.Fatalf("ssl_verify = %v, want unset", *p.config.SSLVerify)
+	}
 }
 
 func TestHandlerChecksWolfPermissionAndAttachesConsumer(t *testing.T) {
@@ -268,6 +287,60 @@ func TestHandlerRetriesTransientWolfServerFailure(t *testing.T) {
 	}
 }
 
+func TestHandlerUsesRealIPFromRequestContext(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	t.Cleanup(wolf.Close)
+	addWolfConsumer(t, "wolf-real-ip-user", "app-real-ip", wolf.URL)
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctx.RemoteAddrKey, "192.0.2.10"))
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Authorization", "V1#app-real-ip#wolf-token")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-requests:
+		if clientIP := got.URL.Query().Get("clientIP"); clientIP != "192.0.2.10" {
+			t.Fatalf("clientIP = %q, want request-context real IP", clientIP)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Wolf access_check request")
+	}
+}
+
+func TestHandlerStopsAfterThreeWolfServerFailures(t *testing.T) {
+	requests := 0
+	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(wolf.Close)
+	addWolfConsumer(t, "wolf-retry-exhausted-user", "app-retry-exhausted", wolf.URL)
+	p := newTestPlugin(t, Config{})
+
+	res := performRequest(t, p, "V1#app-retry-exhausted#wolf-token")
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", res.Code, res.Body.String())
+	}
+	if got := strings.TrimSpace(res.Body.String()); got != `{"message":"request to wolf-server failed, status:500"}` {
+		t.Fatalf("body = %q, want exhausted retry diagnostic", got)
+	}
+	if requests != wolfRetryMax {
+		t.Fatalf("wolf requests = %d, want %d", requests, wolfRetryMax)
+	}
+}
+
 func TestPostInitRegistersWolfRBACPublicAPIs(t *testing.T) {
 	public_api.ResetRegistryForTest()
 	t.Cleanup(public_api.ResetRegistryForTest)
@@ -333,6 +406,60 @@ func TestWolfRBACLoginPublicAPIForwardsCredentialsAndWrapsToken(t *testing.T) {
 	}
 	if response["rbac_token"] != "V1#app-login#wolf-token" {
 		t.Fatalf("rbac_token = %v, want wrapped Wolf token", response["rbac_token"])
+	}
+}
+
+func TestWolfRBACLoginBusinessDenialReturnsGenericFailureWithStatusOK(t *testing.T) {
+	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/wolf/rbac/login.rest" {
+			t.Fatalf("request = %s %s, want POST login.rest", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":     false,
+			"reason": "ERR_PASSWORD_ERROR",
+		})
+	}))
+	t.Cleanup(wolf.Close)
+	addWolfConsumer(t, "wolf-login-denied-user", "app-login-denied", wolf.URL)
+
+	_ = newTestPlugin(t, Config{})
+	handler := public_api.Lookup(http.MethodPost, WolfLoginURI)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		WolfLoginURI,
+		strings.NewReader("appid=app-login-denied&username=admin&password=wrong-password"),
+	)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"request to wolf-server failed!"}` {
+		t.Fatalf("body = %q, want generic Wolf failure", got)
+	}
+}
+
+func TestRequestArgumentsPreservesMoreThanOneHundredFormFields(t *testing.T) {
+	values := url.Values{
+		"oldPassword": {"123456"},
+		"newPassword": {"abcdef"},
+	}
+	for index := 1; index <= 100; index++ {
+		values.Set(fmt.Sprintf("test%d", index), "test")
+	}
+	req := httptest.NewRequest(http.MethodPut, WolfChangePasswordURI, strings.NewReader(values.Encode()))
+
+	args, err := requestArguments(req)
+	if err != nil {
+		t.Fatalf("requestArguments() error = %v", err)
+	}
+	if len(args) != 102 {
+		t.Fatalf("argument count = %d, want 102", len(args))
+	}
+	if args["test100"] != "test" || args["oldPassword"] != "123456" || args["newPassword"] != "abcdef" {
+		t.Fatalf("arguments = %#v, want all password and overflow fields", args)
 	}
 }
 

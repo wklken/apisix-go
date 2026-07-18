@@ -777,7 +777,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `key-auth` — header/query hiding cases are real, but environment/Vault source cases are replaced with literal credentials, so secret resolution is not tested.
 - [x] `basic-auth` — all 44 pinned blocks across three sources map exactly once to standalone consumer/route schema, parsing/credential, last-good reload, hide/preserve, Vault/env, scheme, anonymous limiter, missing-consumer, and realm behavior. Raw validated consumer snapshots persist without secret I/O; only the selected auth plugin resolves a deep copy lazily per request, unresolved references fail closed across Basic/Key/JWT/HMAC, and late Vault provisioning retries without reload. Package/race/cross-auth/store stress, full real-process, sensitive repeats, confidentiality assertions, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `jwt-auth` — a small token matrix replaces the pinned signing endpoint, HS/RS/ES/EdDSA algorithms, `nbf`/grace claims, base64 and Vault keys, schema failures, and context behavior.
-- [ ] `hmac-auth` — basic signature/body checks omit the clock-skew, GMT/date, signed-header cardinality, replay, allowed-algorithm, default-header, and secret-provider matrix.
+- [x] `hmac-auth` — all 70 pinned blocks across six sources map exactly once to 32 isolated standalone groups and 61 real requests. The cases cover strict consumer/route schemas and last-good behavior, parsing and lookup, Date/GMT/skew/replay, SHA-1/SHA-256/SHA-512 plus allowlists, signed-header defaults/cardinality, body digest/413/restoration, hidden credentials, normal and anonymous limiter chains, realms, real Vault lazy retry, and environment resolution. Package/store and race tests, full real-process coverage, sensitive repeats, independent OpenSSL vectors, confidentiality checks, scoped lint, build, post-integration gates, and task review pass.
 - [x] `jwe-decrypt` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates schema and secret lengths, supported key-management/content-encryption algorithms, protected headers, header/cookie/query extraction, forwarded headers, malformed and decryption failures, consumer key selection, and live Jack-to-Chen consumer replacement. The standalone lifecycle now publishes only completed snapshots, synchronizes store events with a same-channel FIFO barrier, fails closed on malformed routes/global rules, and retains the last-good security handler. Package, race, scheduler stress, strict corpus, repeated real-process, scoped lint, build, post-integration, and task-review gates pass.
 
 #### Task 6 — External Authentication and Authorization
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 19 task-review-approved and 42 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 20 task-review-approved and 41 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 42 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 41 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,8 +875,8 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **19
-complete and 42 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **20
+complete and 41 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
 The local-credential source audit corrected two complexity assumptions before
@@ -945,17 +945,17 @@ successful callback.
   `tencent-cloud-cls`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
   request; it cannot prove the distinct source blocks it claims.
-- **Named but partial scenarios (12):** `key-auth`,
-  `jwt-auth`, `hmac-auth`, `saml-auth`, `limit-conn`,
+- **Named but partial scenarios (11):** `key-auth`,
+  `jwt-auth`, `saml-auth`, `limit-conn`,
   `limit-count`, `limit-req`, `proxy-cache`, `graphql-proxy-cache`,
   `traffic-split`, `workflow`, and `batch-requests`. These have real
   standalone scenarios, but the pinned test titles show that multiple
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (19):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (20):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `basic-auth`, `cas-auth`, `forward-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
+  `basic-auth`, `cas-auth`, `forward-auth`, `hmac-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -966,7 +966,7 @@ active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
 `clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, `loki-logger`,
 `skywalking-logger`, `udp-logger`, `forward-auth`, `proxy-mirror`, and
-`basic-auth` and `cas-auth` have now passed review, so **42 remain**.
+`basic-auth`, `cas-auth`, and `hmac-auth` have now passed review, so **41 remain**.
 `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
@@ -1009,11 +1009,11 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 25 manifests
+### Medium — 24 manifests
 
 - [ ] `datadog`
 - [x] `basic-auth`
-- [ ] `hmac-auth`
+- [x] `hmac-auth`
 - [x] `forward-auth`
 - [ ] `multi-auth`
 - [ ] `wolf-rbac`

@@ -141,7 +141,7 @@ cases:
     steps:
       - name: request
         input: {method: GET, path: /hello}
-        output: {status: 200, body: {equals: "hello world"}}
+        output: {status: 200, body: {equals: "hello world"}, elapsed_at_least: 900ms}
 
   - name: abort-status-200
     source: {file: t/plugin/fault-injection.t, tests: [12, 13]}
@@ -221,7 +221,7 @@ cases:
     steps:
       - name: request
         input: {method: GET, path: /hello}
-        output: {status: 200, body: {equals: "hello1 world"}}
+        output: {status: 200, body: {equals: "hello1 world"}, elapsed_less_than: 500ms}
 
   - name: body-variable
     source: {file: t/plugin/fault-injection.t, tests: [22, 23]}
@@ -341,7 +341,7 @@ cases:
           plugins:
             fault-injection:
               delay:
-                duration: 0.05
+                duration: 2
                 vars: [[[arg_name, "==", jack], [arg_age, "!", "<", 18]]]
           upstream:
             type: roundrobin
@@ -355,10 +355,10 @@ cases:
     steps:
       - name: delayed
         input: {method: GET, path: "/hello?name=jack&age=22"}
-        output: {status: 200, body: {equals: "hello world"}}
+        output: {status: 200, body: {equals: "hello world"}, elapsed_at_least: 1800ms}
       - name: no-delay
         input: {method: GET, path: /hello}
-        output: {status: 200, body: {equals: "hello world"}}
+        output: {status: 200, body: {equals: "hello world"}, elapsed_less_than: 500ms}
 
   - name: abort-and-delay-vars
     source: {file: t/plugin/fault-injection.t, tests: [37, 38, 39]}
@@ -374,7 +374,7 @@ cases:
                 body: "Fault Injection!\n"
                 vars: [[[arg_name, "==", jack], [arg_age, "!", "<", 18]]]
               delay:
-                duration: 0.05
+                duration: 2
                 vars: [[[http_apikey, "==", api-key]]]
           upstream:
             type: roundrobin
@@ -386,10 +386,10 @@ cases:
     steps:
       - name: abort-and-delay
         input: {method: GET, path: "/hello?name=jack&age=18", headers: {apikey: api-key}}
-        output: {status: 403, body: {equals: "Fault Injection!\n"}}
+        output: {status: 403, body: {equals: "Fault Injection!\n"}, elapsed_at_least: 1800ms}
       - name: delay-only
         input: {method: GET, path: "/hello?name=jack&age=16", headers: {apikey: api-key}}
-        output: {status: 200, body: {equals: "hello world"}}
+        output: {status: 200, body: {equals: "hello world"}, elapsed_at_least: 1800ms}
 
   - name: negated-vars
     source: {file: t/plugin/fault-injection2.t, tests: [1, 2, 3]}

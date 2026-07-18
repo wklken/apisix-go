@@ -126,8 +126,9 @@ type NetworkAssertion struct {
 }
 
 type NetworkJSONFieldAssertion struct {
-	Path  string  `yaml:"path"`
-	Value Matcher `yaml:"value"`
+	Path    string  `yaml:"path"`
+	Value   Matcher `yaml:"value,omitempty"`
+	RFC3339 bool    `yaml:"rfc3339,omitempty"`
 }
 
 type NetworkResponse struct {
@@ -893,8 +894,14 @@ func (a NetworkAssertion) validate() error {
 	}
 	if len(a.JSONFields) > 0 {
 		for i, field := range a.JSONFields {
-			if !strings.HasPrefix(field.Path, "/") {
-				return fmt.Errorf("json field %d path must be a JSON pointer", i+1)
+			if _, err := parseJSONPointer(field.Path); err != nil {
+				return fmt.Errorf("json field %d path: %w", i+1, err)
+			}
+			if field.RFC3339 {
+				if field.Value.configured() {
+					return fmt.Errorf("json field %d must configure exactly one of value or rfc3339", i+1)
+				}
+				continue
 			}
 			if err := field.Value.validate(matcherNetworkPayload); err != nil {
 				return fmt.Errorf("json field %d value: %w", i+1, err)
@@ -912,6 +919,44 @@ func (a NetworkAssertion) validate() error {
 		return fmt.Errorf("network %s: %w", kind, err)
 	}
 	return nil
+}
+
+func (m Matcher) configured() bool {
+	return m.Equals != nil || m.JSONEquals != nil || m.Matches != nil ||
+		m.NotMatches != nil || m.Absent != nil || m.Values != nil
+}
+
+func parseJSONPointer(pointer string) ([]string, error) {
+	if pointer == "" {
+		return nil, nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return nil, errors.New("must be a JSON pointer")
+	}
+	parts := strings.Split(pointer[1:], "/")
+	for i, raw := range parts {
+		var decoded strings.Builder
+		for offset := 0; offset < len(raw); offset++ {
+			if raw[offset] != '~' {
+				decoded.WriteByte(raw[offset])
+				continue
+			}
+			if offset+1 >= len(raw) {
+				return nil, errors.New("invalid JSON pointer escape at end of token")
+			}
+			offset++
+			switch raw[offset] {
+			case '0':
+				decoded.WriteByte('~')
+			case '1':
+				decoded.WriteByte('/')
+			default:
+				return nil, fmt.Errorf("invalid JSON pointer escape ~%c", raw[offset])
+			}
+		}
+		parts[i] = decoded.String()
+	}
+	return parts, nil
 }
 
 func (r NetworkResponse) validate() error {

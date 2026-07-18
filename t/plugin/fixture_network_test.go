@@ -360,6 +360,12 @@ func matchNetworkJSONFields(fields []NetworkJSONFieldAssertion, payload []byte) 
 		if err != nil {
 			return fmt.Errorf("JSON field %s: %w", field.Path, err)
 		}
+		if field.RFC3339 {
+			if _, err := time.Parse(time.RFC3339, encoded); err != nil {
+				return fmt.Errorf("JSON field %s is not RFC3339: %w", field.Path, err)
+			}
+			continue
+		}
 		if err := field.Value.match(encoded, true); err != nil {
 			return fmt.Errorf("JSON field %s: %w", field.Path, err)
 		}
@@ -369,8 +375,11 @@ func matchNetworkJSONFields(fields []NetworkJSONFieldAssertion, payload []byte) 
 
 func resolveJSONPointer(document any, pointer string) (any, error) {
 	current := document
-	for raw := range strings.SplitSeq(strings.TrimPrefix(pointer, "/"), "/") {
-		part := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
+	parts, err := parseJSONPointer(pointer)
+	if err != nil {
+		return nil, err
+	}
+	for _, part := range parts {
 		switch value := current.(type) {
 		case map[string]any:
 			var ok bool
@@ -379,8 +388,8 @@ func resolveJSONPointer(document any, pointer string) (any, error) {
 				return nil, fmt.Errorf("JSON field %s is missing", pointer)
 			}
 		case []any:
-			index, err := strconv.Atoi(part)
-			if err != nil || index < 0 || index >= len(value) {
+			index, err := canonicalJSONPointerIndex(part)
+			if err != nil || index >= len(value) {
 				return nil, fmt.Errorf("JSON field %s has invalid array index %q", pointer, part)
 			}
 			current = value[index]
@@ -389,6 +398,21 @@ func resolveJSONPointer(document any, pointer string) (any, error) {
 		}
 	}
 	return current, nil
+}
+
+func canonicalJSONPointerIndex(value string) (int, error) {
+	if value == "0" {
+		return 0, nil
+	}
+	if value == "" || value[0] < '1' || value[0] > '9' {
+		return 0, errors.New("array index is not canonical")
+	}
+	for i := 1; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, errors.New("array index is not canonical")
+		}
+	}
+	return strconv.Atoi(value)
 }
 
 func networkJSONValue(value any) (string, error) {
@@ -536,6 +560,81 @@ func TestMatchNetworkAssertionJSONFieldsRejectsTrailingData(t *testing.T) {
 	err := matchNetworkAssertion(assertion, []byte(`{"status":200} trailing`))
 	if err == nil || !strings.Contains(err.Error(), "trailing JSON payload") {
 		t.Fatalf("matchNetworkAssertion() error = %v, want trailing JSON payload rejection", err)
+	}
+}
+
+func TestMatchNetworkAssertionJSONFieldsRFC3339(t *testing.T) {
+	assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+		Path:    "/@timestamp",
+		RFC3339: true,
+	}}}
+	if err := matchNetworkAssertion(assertion, []byte(`{"@timestamp":"2026-07-18T12:30:00+08:00"}`)); err != nil {
+		t.Fatalf("matchNetworkAssertion() error = %v, want parsed RFC3339 timestamp", err)
+	}
+	if err := matchNetworkAssertion(assertion, []byte(`{"@timestamp":"2026-07-18 12:30:00"}`)); err == nil {
+		t.Fatal("matchNetworkAssertion() error = nil, want invalid RFC3339 rejection")
+	}
+}
+
+func TestMatchNetworkAssertionJSONFieldsSupportsRootPointer(t *testing.T) {
+	want := `{"status":200}`
+	assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+		Path:  "",
+		Value: Matcher{Equals: &want},
+	}}}
+	if err := matchNetworkAssertion(assertion, []byte(want)); err != nil {
+		t.Fatalf("matchNetworkAssertion() error = %v, want root pointer match", err)
+	}
+}
+
+func TestMatchNetworkAssertionJSONFieldsSupportsEscapedKeys(t *testing.T) {
+	want := "ok"
+	assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+		Path:  "/a~1b/m~0n",
+		Value: Matcher{Equals: &want},
+	}}}
+	if err := matchNetworkAssertion(assertion, []byte(`{"a/b":{"m~n":"ok"}}`)); err != nil {
+		t.Fatalf("matchNetworkAssertion() error = %v, want escaped-key match", err)
+	}
+}
+
+func TestMatchNetworkAssertionJSONFieldsRejectsNonCanonicalArrayIndex(t *testing.T) {
+	want := "one"
+	for _, pointer := range []string{"/+1/id", "/01/id", "/-1/id"} {
+		t.Run(pointer, func(t *testing.T) {
+			assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+				Path:  pointer,
+				Value: Matcher{Equals: &want},
+			}}}
+			if err := matchNetworkAssertion(assertion, []byte(`[{"id":"zero"},{"id":"one"}]`)); err == nil {
+				t.Fatalf("matchNetworkAssertion() error = nil, want non-canonical index %q rejection", pointer)
+			}
+		})
+	}
+}
+
+func TestMatchNetworkAssertionJSONFieldsRejectionPaths(t *testing.T) {
+	want := "expected"
+	assertion := NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+		Path:  "/field",
+		Value: Matcher{Equals: &want},
+	}}}
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{name: "malformed JSON", payload: `{"field":`, want: "decode JSON payload"},
+		{name: "missing field", payload: `{}`, want: "is missing"},
+		{name: "wrong exact value", payload: `{"field":"actual"}`, want: "want \"expected\""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := matchNetworkAssertion(assertion, []byte(test.payload))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("matchNetworkAssertion() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

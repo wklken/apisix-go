@@ -74,6 +74,62 @@ cases:
 	}
 }
 
+func TestManifestAcceptsNetworkJSONRFC3339(t *testing.T) {
+	const manifestYAML = `source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: udp-json-rfc3339
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: sink
+        kind: udp
+        network_expect:
+          - json_fields:
+              - path: /@timestamp
+                rfc3339: true
+        network_respond:
+          - payload: ''
+    steps:
+      - name: request
+        input:
+          path: /hello
+        output:
+          status: 200
+`
+	if _, err := loadManifest("udp-json-rfc3339.yaml", []byte(manifestYAML)); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestNetworkJSONFieldRejectsMixedMatcherModes(t *testing.T) {
+	value := "2026-07-18T12:30:00Z"
+	err := (NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+		Path:    "/@timestamp",
+		Value:   Matcher{Equals: &value},
+		RFC3339: true,
+	}}}).validate()
+	if err == nil || !strings.Contains(err.Error(), "exactly one of value or rfc3339") {
+		t.Fatalf("validate() error = %v, want mixed matcher rejection", err)
+	}
+}
+
+func TestNetworkJSONFieldRejectsInvalidPointerEscape(t *testing.T) {
+	value := "ok"
+	err := (NetworkAssertion{JSONFields: []NetworkJSONFieldAssertion{{
+		Path:  "/invalid~2key",
+		Value: Matcher{Equals: &value},
+	}}}).validate()
+	if err == nil || !strings.Contains(err.Error(), "invalid JSON pointer escape") {
+		t.Fatalf("validate() error = %v, want invalid pointer escape rejection", err)
+	}
+}
+
 func TestManifestRejectsMixedEncodedBodyMatchers(t *testing.T) {
 	body := "ok"
 	manifest := validManifest()

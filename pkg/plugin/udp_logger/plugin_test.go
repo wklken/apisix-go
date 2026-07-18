@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -108,7 +109,7 @@ func TestHandlerBatchesUDPLogs(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultLogHasAPISIXAccessFields(t *testing.T) {
+func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -118,34 +119,110 @@ func TestHandlerDefaultLogHasAPISIXAccessFields(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), BatchMaxSize: 1})
 	p.SetRouteContext("route-default", "127.0.0.1:9080")
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders?id=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders?ID=1", nil)
 	req.Host = "gateway.example"
 	req.RemoteAddr = "192.0.2.10:54321"
+	req.Header.Set("X-Request", "request-value")
 	req = apisixctx.WithApisixVars(req, map[string]string{})
 	req = apisixctx.WithRequestVars(req)
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apisixctx.RegisterApisixVar(r, "$balancer_ip", "198.51.100.20")
 		apisixctx.RegisterApisixVar(r, "$balancer_port", "1980")
+		apisixctx.RegisterApisixVar(r, "$service_id", "service-default")
+		apisixctx.RegisterApisixVar(r, "$consumer_name", "alice")
 		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
 		apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(7))
+		w.Header().Set("X-Upstream", "response-value")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("created"))
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
 	payload := waitForUDPPayload(t, received)
+	assertNestedField(t, payload, "request", "url", "http://gateway.example:9080/orders?ID=1")
 	assertNestedField(t, payload, "request", "method", http.MethodGet)
-	assertNestedField(t, payload, "request", "uri", "/orders?id=1")
-	assertNestedField(t, payload, "request", "host", "gateway.example")
+	assertNestedField(t, payload, "request", "uri", "/orders?ID=1")
+	assertNestedField(t, payload, "request", "size", float64(0))
 	assertNestedField(t, payload, "response", "status", float64(http.StatusCreated))
 	assertNestedField(t, payload, "response", "size", float64(len("created")))
-	assertNestedField(t, payload, "server", "address", "127.0.0.1:9080")
-	assertNestedField(t, payload, "route", "id", "route-default")
-	assertNestedField(t, payload, "client", "ip", "192.0.2.10")
-	assertNestedField(t, payload, "upstream", "address", "198.51.100.20:1980")
-	assertNestedField(t, payload, "upstream", "status", float64(http.StatusCreated))
-	assertNestedField(t, payload, "upstream", "latency", float64(7))
-	if _, ok := payload["timing"].(map[string]any); !ok {
-		t.Fatalf("timing = %#v, want object", payload["timing"])
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("os.Hostname() error = %v", err)
+	}
+	assertNestedField(t, payload, "server", "hostname", hostname)
+	assertNestedField(t, payload, "server", "version", "apisix-go")
+	if payload["service_id"] != "service-default" {
+		t.Fatalf("service_id = %#v, want service-default", payload["service_id"])
+	}
+	if payload["route_id"] != "route-default" {
+		t.Fatalf("route_id = %#v, want route-default", payload["route_id"])
+	}
+	assertNestedField(t, payload, "consumer", "username", "alice")
+	if payload["client_ip"] != "192.0.2.10" {
+		t.Fatalf("client_ip = %#v, want port-free address", payload["client_ip"])
+	}
+	if payload["upstream"] != "198.51.100.20:1980" {
+		t.Fatalf("upstream = %#v, want selected upstream", payload["upstream"])
+	}
+	if payload["upstream_latency"] != float64(7) {
+		t.Fatalf("upstream_latency = %#v, want 7", payload["upstream_latency"])
+	}
+	for _, field := range []string{"start_time", "latency", "apisix_latency"} {
+		if _, ok := payload[field].(float64); !ok {
+			t.Fatalf("%s = %#v, want numeric milliseconds", field, payload[field])
+		}
+	}
+	requestLog := payload["request"].(map[string]any)
+	requestHeaders := requestLog["headers"].(map[string]any)
+	if requestHeaders["x-request"] != "request-value" {
+		t.Fatalf("request.headers.x-request = %#v, want scalar request-value", requestHeaders["x-request"])
+	}
+	queryString := requestLog["querystring"].(map[string]any)
+	if queryString["id"] != "1" {
+		t.Fatalf("request.querystring.id = %#v, want scalar 1", queryString["id"])
+	}
+	responseLog := payload["response"].(map[string]any)
+	responseHeaders := responseLog["headers"].(map[string]any)
+	if responseHeaders["x-upstream"] != "response-value" {
+		t.Fatalf("response.headers.x-upstream = %#v, want scalar response-value", responseHeaders["x-upstream"])
+	}
+	for _, field := range []string{"route", "client", "timing"} {
+		if _, ok := payload[field]; ok {
+			t.Fatalf("%s = %#v, want APISIX flat full-log contract", field, payload[field])
+		}
+	}
+}
+
+func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		BatchMaxSize: 1,
+		LogFormat: map[string]string{
+			"status":   "$status",
+			"consumer": "$consumer_name",
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$consumer_name", "downstream-consumer")
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForUDPPayload(t, received)
+	if payload["status"] != float64(http.StatusCreated) {
+		t.Fatalf("status = %#v, want downstream status", payload["status"])
+	}
+	if payload["consumer"] != "downstream-consumer" {
+		t.Fatalf("consumer = %#v, want downstream-populated value", payload["consumer"])
 	}
 }
 
@@ -170,7 +247,9 @@ func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
 	req.Host = "logs.example:9080"
 	req.RemoteAddr = "192.0.2.10:54321"
 	before := time.Now()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Host = "upstream.internal:1980"
+		r.RemoteAddr = "198.51.100.30:12345"
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 	after := time.Now()

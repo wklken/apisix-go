@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -17,9 +18,9 @@ import (
 )
 
 const (
-	// version  = "0.1"
 	priority = 400
 	name     = "udp-logger"
+	version  = "apisix-go"
 )
 
 const schema = `
@@ -226,11 +227,7 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		request := captureAccessRequest(r, started)
-		var logFields map[string]any
-		if len(p.LogFormat) > 0 {
-			logFields = resolveUDPLogFormat(r, request, p.LogFormat)
-		}
+		request := captureAccessRequest(r, started, p.ServerAddr)
 
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
@@ -248,8 +245,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		if logFields == nil {
-			logFields = p.defaultAccessLog(r, request, metrics)
+		var logFields map[string]any
+		if len(p.LogFormat) > 0 {
+			logFields = resolveUDPLogFormat(r, request, p.LogFormat)
+		} else {
+			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
 		}
 
 		if requestBody != "" {
@@ -268,19 +268,25 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 type accessRequest struct {
 	method        string
 	uri           string
+	url           string
 	host          string
 	clientIP      string
 	contentLength int64
+	headers       map[string]any
+	queryString   map[string]any
 	started       time.Time
 }
 
-func captureAccessRequest(r *http.Request, started time.Time) accessRequest {
+func captureAccessRequest(r *http.Request, started time.Time, serverAddr string) accessRequest {
 	return accessRequest{
 		method:        r.Method,
 		uri:           r.URL.RequestURI(),
+		url:           requestURL(r, serverAddr),
 		host:          hostWithoutPort(r.Host),
 		clientIP:      hostWithoutPort(r.RemoteAddr),
 		contentLength: max(r.ContentLength, 0),
+		headers:       collapseStringValues(r.Header),
+		queryString:   collapseStringValues(r.URL.Query()),
 		started:       started,
 	}
 }
@@ -306,42 +312,83 @@ func (p *Plugin) defaultAccessLog(
 	r *http.Request,
 	request accessRequest,
 	metrics httpsnoop.Metrics,
+	responseHeaders http.Header,
 ) map[string]any {
-	upstreamStatus := requestInt(r, "$status")
-	if upstreamStatus == 0 {
-		upstreamStatus = metrics.Code
+	hostname, _ := os.Hostname()
+	latency := float64(metrics.Duration) / float64(time.Millisecond)
+	upstreamLatency := requestInt64(r, "$upstream_latency")
+	apisixLatency := latency - float64(upstreamLatency)
+	if apisixLatency < 0 {
+		apisixLatency = 0
 	}
-	return map[string]any{
+	log := map[string]any{
 		"request": map[string]any{
-			"method": request.method,
-			"uri":    request.uri,
-			"host":   request.host,
-			"size":   request.contentLength,
+			"url":         request.url,
+			"uri":         request.uri,
+			"method":      request.method,
+			"headers":     request.headers,
+			"querystring": request.queryString,
+			"size":        request.contentLength,
 		},
 		"response": map[string]any{
-			"status": metrics.Code,
-			"size":   metrics.Written,
+			"status":  metrics.Code,
+			"headers": collapseStringValues(responseHeaders),
+			"size":    metrics.Written,
 		},
 		"server": map[string]any{
-			"address":  p.ServerAddr,
-			"hostname": request.host,
+			"hostname": hostname,
+			"version":  version,
 		},
-		"route": map[string]any{
-			"id": p.RouteID,
-		},
-		"client": map[string]any{
-			"ip": request.clientIP,
-		},
-		"timing": map[string]any{
-			"start_time": request.started.Format(time.RFC3339Nano),
-			"latency":    metrics.Duration.Milliseconds(),
-		},
-		"upstream": map[string]any{
-			"address": upstreamAddress(r),
-			"status":  upstreamStatus,
-			"latency": requestInt64(r, "$upstream_latency"),
-		},
+		"service_id":       apisixString(r, "$service_id"),
+		"route_id":         p.RouteID,
+		"client_ip":        request.clientIP,
+		"start_time":       float64(request.started.UnixNano()) / float64(time.Millisecond),
+		"latency":          latency,
+		"upstream_latency": upstreamLatency,
+		"apisix_latency":   apisixLatency,
+		"upstream":         upstreamAddress(r),
 	}
+	if consumer := apisixString(r, "$consumer_name"); consumer != "" {
+		log["consumer"] = map[string]any{"username": consumer}
+	}
+	return log
+}
+
+func requestURL(r *http.Request, serverAddr string) string {
+	scheme := r.URL.Scheme
+	if scheme == "" {
+		scheme = "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+	}
+	host := hostWithoutPort(r.Host)
+	_, port, err := net.SplitHostPort(serverAddr)
+	if err != nil {
+		_, port, _ = net.SplitHostPort(r.Host)
+	}
+	authority := host
+	if port != "" {
+		authority = net.JoinHostPort(host, port)
+	}
+	return scheme + "://" + authority + r.URL.RequestURI()
+}
+
+func collapseStringValues(values map[string][]string) map[string]any {
+	normalized := make(map[string][]string, len(values))
+	for key, value := range values {
+		key = strings.ToLower(key)
+		normalized[key] = append(normalized[key], value...)
+	}
+	collapsed := make(map[string]any, len(normalized))
+	for key, value := range normalized {
+		if len(value) == 1 {
+			collapsed[key] = value[0]
+		} else {
+			collapsed[key] = value
+		}
+	}
+	return collapsed
 }
 
 func hostWithoutPort(address string) string {
@@ -358,6 +405,11 @@ func upstreamAddress(r *http.Request) string {
 		return host
 	}
 	return net.JoinHostPort(host, port)
+}
+
+func apisixString(r *http.Request, key string) string {
+	value, _ := apisixctx.GetApisixVar(r, key).(string)
+	return value
 }
 
 func requestInt(r *http.Request, key string) int {

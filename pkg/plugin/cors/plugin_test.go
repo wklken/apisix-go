@@ -15,6 +15,7 @@ type optionalInterfaceWriter struct {
 	*httptest.ResponseRecorder
 	flushed  bool
 	hijacked bool
+	pushed   string
 }
 
 func (w *optionalInterfaceWriter) Flush() {
@@ -24,6 +25,11 @@ func (w *optionalInterfaceWriter) Flush() {
 func (w *optionalInterfaceWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.hijacked = true
 	return nil, nil, errHijackCalled
+}
+
+func (w *optionalInterfaceWriter) Push(target string, _ *http.PushOptions) error {
+	w.pushed = target
+	return nil
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -259,10 +265,18 @@ func TestHandlerPreservesOptionalResponseWriterInterfaces(t *testing.T) {
 		if _, _, err := hijacker.Hijack(); !errors.Is(err, errHijackCalled) {
 			t.Fatalf("Hijack() error = %v, want delegated sentinel", err)
 		}
+
+		pusher, ok := w.(http.Pusher)
+		if !ok {
+			t.Fatal("wrapped response writer does not implement http.Pusher")
+		}
+		if err := pusher.Push("/stream", nil); err != nil {
+			t.Fatalf("Push() error = %v", err)
+		}
 	})).ServeHTTP(writer, req)
 
-	if !writer.flushed || !writer.hijacked {
-		t.Fatalf("underlying capabilities called = flush %t, hijack %t", writer.flushed, writer.hijacked)
+	if !writer.flushed || !writer.hijacked || writer.pushed != "/stream" {
+		t.Fatalf("underlying capabilities called = flush %t, hijack %t, push %q", writer.flushed, writer.hijacked, writer.pushed)
 	}
 }
 

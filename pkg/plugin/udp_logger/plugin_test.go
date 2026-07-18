@@ -325,6 +325,23 @@ func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	}
 }
 
+func TestMetadataSchemaRejectsStringLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{
+		"log_format": "'$host' '$time_iso8601'",
+	}, p.GetMetadataSchema())
+	if err == nil {
+		t.Fatal("metadata schema accepted string log_format, want object validation error")
+	}
+	if !strings.Contains(err.Error(), "log_format") || !strings.Contains(err.Error(), "object") {
+		t.Fatalf("metadata schema error = %v, want log_format object validation error", err)
+	}
+}
+
 func startUDPServer(t *testing.T) (string, <-chan string) {
 	t.Helper()
 

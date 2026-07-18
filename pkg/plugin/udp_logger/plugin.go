@@ -103,6 +103,23 @@ const schema = `
 	"required": ["host", "port"]
 }`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
@@ -143,6 +160,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true

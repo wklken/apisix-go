@@ -1,62 +1,427 @@
 cases:
-    - config:
+    - name: valid-route-emits-udp-log
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [1, 4, 5]
+      config:
         routes:
-            - id: udp-logger-source-1
+            - id: udp-logger-valid-route
               plugins:
                 udp-logger:
                     batch_max_size: 1
                     host: '{{FIXTURE.sink.HOST}}'
-                    inactive_timeout: 1
-                    log_format:
-                        path: '$uri'
                     port: '{{FIXTURE.sink.PORT}}'
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /probe
+              uri: /opentracing
       fixtures:
         - kind: http
           name: primary
           respond:
-            - body: hello world
-              headers: {}
+            - body: opentracing
               status: 200
         - kind: udp
           name: sink
           network_expect:
             - payload:
-                matches: '.*"path":"/probe".*'
+                equals: '{}'
           network_respond:
-            - payload: ok
-      name: udp-logger-source-1
+            - payload: ''
+      steps:
+        - name: request-reaches-upstream-and-logs
+          input:
+            method: GET
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            status: 200
+          wait: 1s
+
+    - name: missing-host-is-rejected
       source:
         file: t/plugin/udp-logger.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
+        tests: [2]
+      config:
+        routes:
+            - id: udp-logger-missing-host
+              plugins:
+                udp-logger:
+                    port: 3000
+              uri: /missing-host
+      input:
+        method: GET
+        path: /missing-host
+      output:
+        logs:
+            matches: 'validate plugin udp-logger config:.*host.*required'
+        status: 404
+
+    - name: string-timeout-is-rejected
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [3]
+      config:
+        routes:
+            - id: udp-logger-string-timeout
+              plugins:
+                udp-logger:
+                    host: 127.0.0.1
+                    port: 3000
+                    timeout: '10'
+              uri: /string-timeout
+      input:
+        method: GET
+        path: /string-timeout
+      output:
+        logs:
+            matches: 'validate plugin udp-logger config:.*timeout.*expected integer.*got string'
+        status: 404
+
+    - name: failed-udp-send-keeps-proxy-response
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [6]
+      config:
+        routes:
+            - id: udp-logger-unreachable-sink
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: 312.0.0.1
+                    port: 2000
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /opentracing
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: opentracing
+              status: 200
       steps:
-        - input:
+        - name: upstream-response-is-not-broken-by-logger-failure
+          input:
             method: GET
-            path: /probe
-          name: udp-log-delivered
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            logs:
+                matches: 'failed to connect to udp server:.*312\.0\.0\.1'
+            status: 200
+          wait: 1s
+
+    - name: live-update-switches-udp-destination
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [7]
+      config:
+        routes:
+            - id: udp-logger-live-update
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.first.HOST}}'
+                    port: '{{FIXTURE.first.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /opentracing
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: opentracing
+              status: 200
+            - body: opentracing
+              status: 200
+        - kind: udp
+          name: first
+          network_expect:
+            - payload:
+                equals: '{}'
+          network_respond:
+            - payload: ''
+        - kind: udp
+          name: second
+          network_expect:
+            - payload:
+                equals: '{}'
+          network_respond:
+            - payload: ''
+      steps:
+        - name: request-reaches-first-udp-sink
+          input:
+            method: GET
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            status: 200
+          wait: 1s
+        - name: reload-routes-and-send-to-second-udp-sink
+          config:
+            routes:
+                - id: udp-logger-live-update
+                  plugins:
+                    udp-logger:
+                        batch_max_size: 1
+                        host: '{{FIXTURE.second.HOST}}'
+                        port: '{{FIXTURE.second.PORT}}'
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /opentracing
+                - id: udp-logger-live-update-probe
+                  plugins:
+                    mocking:
+                        _meta:
+                            priority: -1000
+                        response_example: ready
+                        response_status: 204
+                  uri: /reload-probe
+          config_probe:
+            input:
+                path: /reload-probe
+            output:
+                status: 204
+          config_timeout: 2s
+          input:
+            method: GET
+            path: /opentracing
+          output:
+            body:
+                equals: opentracing
+            status: 200
+          wait: 1s
+
+    - name: metadata-string-log-format-is-rejected
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [8]
+      config:
+        plugin_metadata:
+            - id: udp-logger
+              log_format: "'$host' '$time_iso8601'"
+        routes:
+            - id: udp-logger-invalid-metadata
+              plugins:
+                udp-logger:
+                    host: 127.0.0.1
+                    port: 3000
+              uri: /invalid-metadata
+      input:
+        method: GET
+        path: /invalid-metadata
+      output:
+        logs:
+            matches: 'validate plugin udp-logger metadata:.*log_format.*expected object.*got string'
+        status: 404
+
+    - name: metadata-custom-log-format-is-delivered
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [9, 10]
+      config:
+        plugin_metadata:
+            - id: udp-logger
+              log_format:
+                '@timestamp': '$time_iso8601'
+                case name: plugin_metadata
+                client_ip: '$remote_addr'
+                host: '$host'
+        routes:
+            - id: udp-logger-plugin-metadata
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - payload:
+                matches: '"case name":"plugin_metadata".*"client_ip":"127\.0\.0\.1:[0-9]+".*"host":""'
+          network_respond:
+            - payload: ''
+      steps:
+        - name: custom-metadata-format-reaches-sink
+          input:
+            method: GET
+            path: /hello
           output:
             body:
                 equals: hello world
             status: 200
-          wait: 2s
+          wait: 1s
+
+    - name: changed-metadata-log-format-is-delivered
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [11, 12]
+      config:
+        plugin_metadata:
+            - id: udp-logger
+              log_format:
+                '@timestamp': '$time_iso8601'
+                case name: logger format in plugin
+                client_ip: '$remote_addr'
+                host: '$host'
+        routes:
+            - id: udp-logger-changed-metadata
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - payload:
+                matches: '"case name":"logger format in plugin".*"client_ip":"127\.0\.0\.1:[0-9]+".*"host":""'
+          network_respond:
+            - payload: ''
+      steps:
+        - name: changed-metadata-format-reaches-sink
+          input:
+            method: GET
+            path: /hello
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 1s
+
+    - name: include-request-body-is-logged-and-forwarded
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [13]
+      config:
+        routes:
+            - id: udp-logger-request-body
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    include_req_body: true
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          expect:
+            - body:
+                equals: '{"sample_payload":"hello"}'
+              method: POST
+              path:
+                equals: /hello
+          respond:
+            - body: upstream received request body
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - payload:
+                matches: 'request.*sample_payload.*hello'
+          network_respond:
+            - payload: ''
+      steps:
+        - name: request-body-reaches-upstream-and-udp-log
+          input:
+            method: POST
+            path: /hello
+            body: '{"sample_payload":"hello"}'
+          output:
+            body:
+                equals: upstream received request body
+            status: 200
+          wait: 1s
+
+    - name: include-response-body-is-logged-and-preserved
+      source:
+        file: t/plugin/udp-logger.t
+        tests: [14]
+      config:
+        routes:
+            - id: udp-logger-response-body
+              plugins:
+                udp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    include_resp_body: true
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /hello
+      fixtures:
+        - kind: http
+          name: primary
+          expect:
+            - body:
+                equals: '{"sample_payload":"hello"}'
+              method: POST
+              path:
+                equals: /hello
+          respond:
+            - body: '{"upstream":"response"}'
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - payload:
+                matches: 'response.*upstream.*response'
+          network_respond:
+            - payload: ''
+      steps:
+        - name: response-body-reaches-client-and-udp-log
+          input:
+            method: POST
+            path: /hello
+            body: '{"sample_payload":"hello"}'
+          output:
+            body:
+                equals: '{"upstream":"response"}'
+            status: 200
+          wait: 1s
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

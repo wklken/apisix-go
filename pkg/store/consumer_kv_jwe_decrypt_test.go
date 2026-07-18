@@ -148,15 +148,26 @@ func TestConsumerKVAddDoesNotPartiallyIndexMalformedJWEDecryptConsumer(t *testin
 }
 
 func TestConsumerKVAddAcceptsJWEDecryptRawURLAndStandardBase64Secrets(t *testing.T) {
-	secret := []byte("abcdefghijklmnopqrstuvwxyz123456")
+	encodedSecretBytes := make([]byte, 32)
+	copy(encodedSecretBytes, []byte{0xfb, 0xff, 0xbe})
+	rawURLSecret := base64.RawURLEncoding.EncodeToString(encodedSecretBytes)
+	standardSecret := base64.StdEncoding.EncodeToString(encodedSecretBytes)
+	if !strings.Contains(rawURLSecret, "-") || !strings.Contains(rawURLSecret, "_") {
+		t.Fatalf("Raw URL base64 fixture = %q, want '-' and '_'", rawURLSecret)
+	}
+	if !strings.Contains(standardSecret, "+") || !strings.Contains(standardSecret, "/") ||
+		!strings.HasSuffix(standardSecret, "=") {
+		t.Fatalf("standard base64 fixture = %q, want '+', '/', and padding", standardSecret)
+	}
+
 	tests := []struct {
 		name   string
 		secret string
 		base64 bool
 	}{
-		{name: "raw", secret: string(secret)},
-		{name: "raw URL base64", secret: base64.RawURLEncoding.EncodeToString(secret), base64: true},
-		{name: "standard base64", secret: base64.StdEncoding.EncodeToString(secret), base64: true},
+		{name: "raw", secret: "abcdefghijklmnopqrstuvwxyz123456"},
+		{name: "raw URL base64", secret: rawURLSecret, base64: true},
+		{name: "standard base64", secret: standardSecret, base64: true},
 	}
 
 	for _, tt := range tests {

@@ -749,7 +749,7 @@ Expected: remote head equals local `HEAD`, `isDraft` is `false`, and the PR body
 
 The original checked state was not supported by the manifests. This audit compared each of the 61 manifests with the pinned Apache source titles and the behavior requirements above. A source number being listed once and a route containing the target plugin are necessary, but they do not prove source-complete behavior. A manifest is checked below only when its standalone resources, requests, fixture observations, and APISIX-Go boundary assertions can fail when each mapped plugin behavior is broken.
 
-**Verified result:** 8 of 61 manifests have passed source-completeness review; 53 remain. Thirty-nine manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
+**Verified result:** 9 of 61 manifests have passed source-completeness review; 52 remain. Thirty-eight manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
 
 ### Remaining Harness and Coverage Work
 
@@ -757,6 +757,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] Add a checked source-behavior ledger or equivalent validation that ties each upstream `TEST` title to the standalone resource, request, and assertion that exercises it.
 - [ ] Complete the protocol fixtures promised by Task 3, including LDAP search/failure responses and distinct Redis Cluster/Sentinel behavior rather than routing all three kinds through one generic Redis fixture.
 - [ ] Add and test the Task 13 client-disconnect, flushed-chunk assertion, and AWS EventStream primitives before converting `ai-proxy` streaming cases.
+- [ ] Add APISIX embedded-wildcard route support before completing `datadog` block 11. `/articles/*/comments` must retain the authored matched URI for plugin variables while matching APISIX arbitrary-depth wildcard semantics; both methodless and method-specific routes currently bypass/reject or panic inconsistently in Chi.
 - [ ] Re-run every focused integration after its manifest is corrected; a green run of the current generic case is not completion evidence.
 
 ### Per-Plugin Verified Remaining-Work Ledger
@@ -842,7 +843,7 @@ The original checked state was not supported by the manifests. This audit compar
 #### Task 12 — Bounded AI Plugins
 
 - [ ] `ai-aws-content-moderation` — one request per source omits real SigV4 assertions, encrypted credentials, threshold/category decisions, endpoint/TLS, replay, and rejection behavior.
-- [ ] `ai-prompt-decorator` — one provider request replaces role-specific prepend/append combinations, provider body shapes, streaming preservation, and schema errors.
+- [x] `ai-prompt-decorator` — all 17 pinned blocks map exactly once to real Chat Completions and Responses API requests. Standalone cases assert prepend, append, both, request-to-request isolation, invalid empty configuration, instructions creation/prepend, string/array input append, combined transformations, and the Chat regression with semantic upstream JSON. The shared `json_equals` matcher preserves arbitrary numeric precision, defines mathematical number equality, preserves array order, ignores object-key order, rejects malformed JSON and non-body scopes, and expands iteration placeholders. Package, matcher/corpus, full tests, real-process, scoped lint/build, post-integration, and task-review gates pass.
 - [ ] `ai-prompt-guard` — one allow/deny probe replaces pattern/case/role combinations, custom rejection, malformed requests, and streaming behavior.
 - [ ] `ai-rag` — one generic provider request omits embedding/retrieval exchanges, constructed context/prompt, headers, failures, and streaming.
 - [ ] `ai-rate-limiting` — one quota probe per source omits token estimation, windows/counters, consumer isolation, expressions, headers, and rejection transitions.
@@ -862,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 8 task-review-approved and 53 remaining.
-- **Behavioral placeholders:** Thirty-nine manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 9 task-review-approved and 52 remaining.
+- **Behavioral placeholders:** Thirty-eight manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 53 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 52 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -874,12 +875,12 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **8
-complete and 53 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **9
+complete and 52 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
-- **Structural source-file stand-ins (39):** `ai-aws-content-moderation`,
-  `ai-prompt-decorator`, `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
+- **Structural source-file stand-ins (38):** `ai-aws-content-moderation`,
+  `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `cas-auth`, `clickhouse-logger`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
@@ -899,9 +900,9 @@ complete and 53 remaining**; `oas-validator` also passed its task review with
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (8):** `authz-casbin`, `brotli`,
-  `consumer-restriction`, `cors`, `fault-injection`, `oas-validator`,
-  `request-validation`, and `traffic-label`. No other
+- **Task-review-approved (9):** `ai-prompt-decorator`, `authz-casbin`,
+  `brotli`, `consumer-restriction`, `cors`, `fault-injection`,
+  `oas-validator`, `request-validation`, and `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -909,8 +910,9 @@ complete and 53 remaining**; `oas-validator` also passed its task review with
 The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
 active execution tiers below contained 55 remaining manifests before Easy
-Wave 1. `traffic-label` and `authz-casbin` have now passed review, so **53
-remain**.
+Wave 1. `traffic-label`, `authz-casbin`, and `ai-prompt-decorator` have now
+passed review, so **52 remain**. `datadog` moved from Easy to Medium after its
+pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
 the harness/protocol work needed to make its source titles executable. The
@@ -927,25 +929,22 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 8 manifests
+### Easy — 6 manifests
 
 - [ ] `jwe-decrypt`
-- [ ] `datadog`
 - [ ] `udp-logger`
 - [ ] `clickhouse-logger`
 - [ ] `loki-logger`
 - [ ] `splunk-hec-logging`
 - [ ] `skywalking-logger`
-- [ ] `ai-prompt-decorator`
 
 Execution waves:
 
 1. `traffic-label`, `jwe-decrypt`, and `authz-casbin` in three isolated
    worktrees. These are package/manifest-local and have no shared fixture
    prerequisite.
-2. `datadog`, `clickhouse-logger`, and `ai-prompt-decorator` in parallel. One
-   owner may extend UDP capture, one owns the HTTP logger case, and one owns AI
-   request-body assertions.
+2. `clickhouse-logger` and one other HTTP logger in parallel after the initial
+   source-specific matcher contracts are stable.
 3. `udp-logger` plus at most two HTTP logger manifests in parallel after the
    UDP capture contract is stable. Shared `logger_batch` production changes
    are serialized through one owner; other lanes stop at manifest/package
@@ -954,8 +953,9 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 30 manifests
+### Medium — 31 manifests
 
+- [ ] `datadog`
 - [ ] `key-auth`
 - [ ] `basic-auth`
 - [ ] `jwt-auth`
@@ -1006,7 +1006,8 @@ Execution waves:
    production change to the same `ai_protocols`, `ai_auth`, or `ai_runtime`
    owner. Fixed clocks, credentials, and signed-request fixtures are shared
    contracts rather than per-plugin variants.
-6. Dependency exception: `graphql-limit-count` follows the Hard Redis owner,
+6. Dependency exceptions: `datadog` follows the shared embedded-wildcard route
+   prerequisite; `graphql-limit-count` follows the Hard Redis owner,
    `graphql-proxy-cache` follows the Hard `proxy-cache` owner, and `workflow`
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.

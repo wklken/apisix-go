@@ -749,7 +749,7 @@ Expected: remote head equals local `HEAD`, `isDraft` is `false`, and the PR body
 
 The original checked state was not supported by the manifests. This audit compared each of the 61 manifests with the pinned Apache source titles and the behavior requirements above. A source number being listed once and a route containing the target plugin are necessary, but they do not prove source-complete behavior. A manifest is checked below only when its standalone resources, requests, fixture observations, and APISIX-Go boundary assertions can fail when each mapped plugin behavior is broken.
 
-**Verified result:** 5 of 61 manifests have passed source-completeness review; 56 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
+**Verified result:** 6 of 61 manifests have passed source-completeness review; 55 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
 
 ### Remaining Harness and Coverage Work
 
@@ -766,7 +766,7 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `brotli` — all 37 pinned blocks run against a standalone child: default and explicit configuration, decoding/content equality, level-0 versus level-11 compressed-size ordering, header negotiation, content types, schema rejection, encoded-upstream bypass, and ETag handling are asserted.
 - [x] `fault-injection` — all 46 pinned blocks run against standalone resources, including schema rejection, abort status/body/headers/variables, redirect precedence, negation, zero percentage, and measured one- and two-second delay behavior with zero/nonmatching bounds.
 - [x] `cors` — all 86 pinned blocks run against standalone resources with behavior-specific assertions: schema and route lifecycle, wildcard/regex origin matching, default and explicit CORS response fields, credentials, methods, request/expose headers, metadata-origin validation and override, proxy-rewrite ordering, and timing-origin list/regex precedence. The focused CORS package and real-process integration gates pass.
-- [ ] `consumer-restriction` — all 71 pinned source blocks have standalone cases and the direct auth paths now execute non-auth consumer plugins, but runtime and harness blockers remain. `multi-auth` invokes child authenticators as probes, so those probes can run consumer plugins too early, swallow a valid authentication result, duplicate side effects, and lose the consumer-over-route precedence marker before the real downstream request; directly stacked auth plugins also need an already-run guard. The consumer-plugin chain cache keys only serialized consumer configuration even though instances are initialized with route/service-specific context, so identical consumer configuration on later routes can reuse the first route's quota, logger, or telemetry context. Finally, the HMAC helper must reject a static `Authorization` supplied through either `headers` or `header_values` instead of silently overwriting one form. Add RED-then-GREEN probe-isolation, exactly-once, downstream-override, cross-route cache-context, and HMAC validation coverage, then re-run the task review.
+- [x] `consumer-restriction` — all 71 pinned source blocks run as standalone cases. Direct and `multi-auth` paths isolate authentication probes, execute consumer plugins exactly once around the real downstream request, preserve consumer-over-route precedence, and keep route/service identity in cached consumer chains. Stacked auth execution is idempotent and the HMAC helper rejects static `Authorization` in both header maps. Exact RED-then-GREEN regressions, affected packages, race tests, real-process `consumer-restriction` and `multi-auth`, manifest validation, and `make build` pass; task review approved the result.
 - [x] `request-validation` — all 55 pinned blocks are mapped exactly once to real standalone requests covering body/header schema types and rejection matrices, scalar JSON forwarding, nested/array/enum/required constraints, custom status/messages, repeated URL-encoded values, and duplicate-key normalization. APISIX legacy `table`/`function` schema types are normalized only in schema-bearing locations, with focused package regressions; the semantic and real-process gates pass.
 - [x] `oas-validator` — all 112 pinned blocks across the three sources are mapped exactly once to standalone validation behavior. The manifest covers request and response modes, inline and URL specifications, OAS 3.1 composition/format and parameter/body matrices, initialization-time inline-JSON rejection, lazy external-reference failures, URL headers/cache/TTL behavior, and all 36 pinned runtime diagnostics. Focused package, semantic, real-process, lint, and build gates pass; task review approved the result.
 - [ ] `traffic-label` — the 38 source numbers are structurally mapped and the focused suite passes, but source test 18 (`rules: []`) is claimed by the same case as test 17 (missing `rules`), source test 9's two pipelined requests are reduced to one request, deterministic 0/100 weighted-action boundaries are absent, and invalid-config assertions do not identify the intended schema/compiler failures. Split and assert those behaviors, then re-run the task review.
@@ -862,20 +862,22 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 5 task-review-approved and 56 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 6 task-review-approved and 55 remaining.
 - **Behavioral placeholders:** Forty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 56 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 55 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
 The pinned source titles and standalone resources/assertions are being rechecked
 manifest by manifest. Passing focused package and real-process tests is necessary
 but does not restore a checkbox until a task review confirms source-complete
-behavior. `consumer-restriction` and `traffic-label` were therefore unchecked
-after their reviews found the concrete gaps recorded above. The currently
-approved scope is **5 complete and 56 remaining**; `oas-validator` passed its
-task review with 112 source blocks and 36 runtime diagnostics verified.
+behavior. `consumer-restriction` and `traffic-label` were initially unchecked
+after their reviews found concrete gaps. `consumer-restriction` has since
+passed its follow-up runtime review; `traffic-label` remains unchecked. The
+currently approved scope is **6 complete and 55 remaining**; `oas-validator`
+also passed its task review with 112 source blocks and 36 runtime diagnostics
+verified.
 
 - **Structural source-file stand-ins (40):** `ai-aws-content-moderation`,
   `ai-prompt-decorator`, `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
@@ -890,7 +892,7 @@ task review with 112 source blocks and 36 runtime diagnostics verified.
   `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
   request; it cannot prove the distinct source blocks it claims.
-- **Named but partial scenarios (16):** `consumer-restriction`, `key-auth`, `basic-auth`,
+- **Named but partial scenarios (15):** `key-auth`, `basic-auth`,
   `jwt-auth`, `hmac-auth`, `jwe-decrypt`, `saml-auth`, `limit-conn`,
   `limit-count`, `limit-req`, `proxy-cache`, `graphql-proxy-cache`,
   `traffic-label`, `traffic-split`, `workflow`, and `batch-requests`. These have real
@@ -898,6 +900,177 @@ task review with 112 source blocks and 36 runtime diagnostics verified.
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (5):** `brotli`, `cors`, `fault-injection`,
-  `oas-validator`, and `request-validation`. No other
+- **Task-review-approved (6):** `brotli`, `consumer-restriction`, `cors`,
+  `fault-injection`, `oas-validator`, and `request-validation`. No other
   manifest moved to checked status in this recheck.
+
+## Complexity and Parallel Execution Replan: 2026-07-18
+
+The classification audit started with 56 unchecked manifests at commit
+`335203d`. Its consumer-restriction review then approved that manifest, so the
+active execution tiers below contain the current **55 remaining** manifests.
+Each manifest was checked against its pinned Apache source matrix, current
+standalone YAML, `docs/plugins.md` implementation status, package tests, and
+the harness/protocol work needed to make its source titles executable. The
+tier is implementation and review cost, not the plugin's documented runtime
+coverage percentage.
+
+- **Easy:** existing runtime and harness are sufficient; work is primarily
+  splitting cases and strengthening source-specific assertions, with at most a
+  bounded package-local fix.
+- **Medium:** a focused fixture, lifecycle, state, signing, or production-path
+  change is likely, but no broad protocol emulator or major streaming owner is
+  required.
+- **Hard:** protocol-accurate external fixtures, concurrency/state lifecycle,
+  shared cache/broker/telemetry owners, substantial streaming/cancellation, or
+  a very large source matrix dominate the work.
+
+### Easy — 10 manifests
+
+- [ ] `traffic-label`
+- [ ] `jwe-decrypt`
+- [ ] `authz-casbin`
+- [ ] `datadog`
+- [ ] `udp-logger`
+- [ ] `clickhouse-logger`
+- [ ] `loki-logger`
+- [ ] `splunk-hec-logging`
+- [ ] `skywalking-logger`
+- [ ] `ai-prompt-decorator`
+
+Execution waves:
+
+1. `traffic-label`, `jwe-decrypt`, and `authz-casbin` in three isolated
+   worktrees. These are package/manifest-local and have no shared fixture
+   prerequisite.
+2. `datadog`, `clickhouse-logger`, and `ai-prompt-decorator` in parallel. One
+   owner may extend UDP capture, one owns the HTTP logger case, and one owns AI
+   request-body assertions.
+3. `udp-logger` plus at most two HTTP logger manifests in parallel after the
+   UDP capture contract is stable. Shared `logger_batch` production changes
+   are serialized through one owner; other lanes stop at manifest/package
+   evidence if they expose the same runtime gap.
+4. Finish the remaining HTTP logger manifests with the same rule: YAML and
+   package-local work may proceed in parallel, but common batch/retry/shutdown
+   code has one owner and one review range.
+
+### Medium — 30 manifests
+
+- [ ] `key-auth`
+- [ ] `basic-auth`
+- [ ] `jwt-auth`
+- [ ] `hmac-auth`
+- [ ] `forward-auth`
+- [ ] `multi-auth`
+- [ ] `wolf-rbac`
+- [ ] `cas-auth`
+- [ ] `feishu-auth`
+- [ ] `graphql-limit-count`
+- [ ] `graphql-proxy-cache`
+- [ ] `proxy-mirror`
+- [ ] `traffic-split`
+- [ ] `workflow`
+- [ ] `batch-requests`
+- [ ] `http-logger`
+- [ ] `google-cloud-logging`
+- [ ] `loggly`
+- [ ] `elasticsearch-logger`
+- [ ] `sls-logger`
+- [ ] `tencent-cloud-cls`
+- [ ] `tcp-logger`
+- [ ] `syslog`
+- [ ] `file-logger`
+- [ ] `log-rotate`
+- [ ] `skywalking`
+- [ ] `ai-aws-content-moderation`
+- [ ] `ai-prompt-guard`
+- [ ] `ai-rag`
+- [ ] `ai-request-rewrite`
+
+Execution waves:
+
+1. Run `key-auth`, `basic-auth`, and `jwt-auth` in isolated worktrees; then run
+   `hmac-auth` and `multi-auth` after their shared consumer-runner baseline is
+   integrated. Only one lane may change consumer attachment or `pkg/route`.
+2. Establish one scripted HTTP auth-fixture contract with `forward-auth`, then
+   parallelize package/manifest work for `wolf-rbac`, `cas-auth`, and
+   `feishu-auth`. Changes to `fixture_auth_test.go` remain single-owner.
+3. Run `proxy-mirror`, `traffic-split`, and `batch-requests` in parallel only
+   while their changes stay in distinct mirror, route/proxy, and batch/protocol
+   owners.
+4. Process HTTP/cloud loggers in groups of three isolated manifests, with one
+   serialized `logger_batch` owner. Process `tcp-logger`/`syslog` through one
+   network-fixture owner, and `file-logger` before `log-rotate` through one
+   filesystem-lifecycle owner.
+5. Run bounded AI manifests in isolated worktrees, never concurrently with a
+   production change to the same `ai_protocols`, `ai_auth`, or `ai_runtime`
+   owner. Fixed clocks, credentials, and signed-request fixtures are shared
+   contracts rather than per-plugin variants.
+6. Dependency exception: `graphql-limit-count` follows the Hard Redis owner,
+   `graphql-proxy-cache` follows the Hard `proxy-cache` owner, and `workflow`
+   follows the limiter owners. They remain Medium because their own conversion
+   is bounded, but they are not scheduled before those Hard prerequisites.
+
+### Hard — 15 manifests
+
+- [ ] `ldap-auth`
+- [ ] `openid-connect`
+- [ ] `authz-keycloak`
+- [ ] `saml-auth`
+- [ ] `limit-conn`
+- [ ] `limit-count`
+- [ ] `limit-req`
+- [ ] `proxy-cache`
+- [ ] `http-dubbo`
+- [ ] `rocketmq-logger`
+- [ ] `kafka-logger`
+- [ ] `error-log-logger`
+- [ ] `opentelemetry`
+- [ ] `ai-rate-limiting`
+- [ ] `ai-proxy`
+
+Execution waves:
+
+1. Build independent foundation owners in parallel: LDAP bind/search/TLS,
+   Redis state/concurrency beginning with `limit-conn`, and one broker/protocol
+   fixture beginning with `rocketmq-logger`.
+2. Continue owners sequentially within their conflict group while other groups
+   run in parallel: `limit-req` then `limit-count`; `http-dubbo` and Kafka only
+   after the protocol-fixture owner is free; `proxy-cache` owns cache-zone and
+   persistence semantics.
+3. Run `authz-keycloak`, then `saml-auth`, then `openid-connect` through the
+   serialized auth/session fixture owner. `openid-connect` is last in that
+   group because it combines discovery/JWKS, cookies/PKCE, TLS, and Redis
+   sessions.
+4. Run `error-log-logger` only after Kafka and the HTTP/SkyWalking sink
+   contracts are stable. Run `opentelemetry` with exclusive ownership of OTLP
+   protobuf, HTTP/gRPC collector, batching, shutdown, and HTTP/2 isolation
+   fixtures.
+5. Run `ai-rate-limiting` after bounded AI state conventions are stable.
+   `ai-proxy` is last because it owns the 303-block provider matrix and the new
+   disconnect, flushed-chunk, and AWS EventStream harness contracts.
+
+### Parallel Worker and Merge Contract
+
+- Use at most three implementation subagents concurrently, each in a distinct
+  ignored git worktree and branch created from the same reviewed integration
+  head. Never let parallel implementers share the repository index.
+- Each worker owns one manifest/task, follows RED-then-GREEN for production or
+  harness changes, commits a scoped range, and produces a diff package. A
+  separate task reviewer must approve source completeness and code quality
+  before the range is integrated.
+- Cherry-pick approved ranges into `codex/plugin-integration-tests` one at a
+  time. Re-run the plugin's semantic and real-process gates after integration;
+  rebase/re-execute a worker if an earlier range changed one of its consumed
+  shared contracts.
+- Shared owners are serialized: consumer/auth pipeline, auth fixtures, Redis,
+  Dubbo/broker protocol fixtures, `logger_batch`, network fixtures, file
+  lifecycle, cache zones, tracing collectors, and AI protocol/runtime/streaming.
+  Parallel lanes may edit distinct YAML/package files but must stop and report
+  before modifying a shared owner assigned to another lane.
+- Current full-suite baseline is not green: `t/plugin` has two unrelated
+  `chaitin-waf` expectation mismatches (`metadata-rejects-empty-nodes` and
+  `metadata-requires-node-host`), and repository lint has five existing
+  findings outside the current consumer fix. Workers must report these exact
+  baseline failures separately and may not claim `go test ./...` or repository
+  lint passed until they are resolved.

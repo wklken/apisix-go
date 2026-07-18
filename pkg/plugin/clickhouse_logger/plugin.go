@@ -283,8 +283,8 @@ func resolveClickHouseUser(user string) (string, error) {
 		return "", fmt.Errorf("clickhouse-logger user environment variable name is empty")
 	}
 	value, ok := os.LookupEnv(name)
-	if !ok || value == "" {
-		return "", fmt.Errorf("clickhouse-logger user environment variable %q is not set or empty", name)
+	if !ok {
+		return "", fmt.Errorf("clickhouse-logger user environment variable %q is not set", name)
 	}
 	return value, nil
 }

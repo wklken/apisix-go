@@ -863,10 +863,8 @@ func TestHTTPFixtureResponseDelayStopsOnRequestCancellation(t *testing.T) {
 }
 
 func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
-	const environmentVariable = "CLICK_HOUSE_USER"
-	if _, present := os.LookupEnv(environmentVariable); present {
-		t.Fatalf("%s is set in the parent process", environmentVariable)
-	}
+	const environmentVariable = "APISIX_GO_HARNESS_CLICKHOUSE_USER"
+	t.Setenv(environmentVariable, "ambient-user")
 
 	caseSpec := Case{
 		Name:        "case-environment",
@@ -878,7 +876,7 @@ func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
 				"uri": "/probe",
 				"plugins": map[string]any{"clickhouse-logger": map[string]any{
 					"endpoint_addr":    "{{FIXTURE.sink.URL}}",
-					"user":             "$ENV://CLICK_HOUSE_USER",
+					"user":             "$ENV://APISIX_GO_HARNESS_CLICKHOUSE_USER",
 					"password":         "",
 					"database":         "default",
 					"logtable":         "logs",
@@ -918,19 +916,16 @@ func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
 	}
 
 	runCase(t, caseSpec)
-	if _, present := os.LookupEnv(environmentVariable); present {
-		t.Fatalf("%s leaked from child process into parent", environmentVariable)
+	if got := os.Getenv(environmentVariable); got != "ambient-user" {
+		t.Fatalf("parent %s = %q, want ambient value preserved", environmentVariable, got)
 	}
 }
 
 func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
 	const environmentName = "APISIX_GO_CASE_ENVIRONMENT_VALUE"
-	if _, present := os.LookupEnv(environmentName); present {
-		t.Fatalf("%s is set in the parent process", environmentName)
-	}
+	t.Setenv(environmentName, "ambient-user")
 
 	parent := append([]string(nil), os.Environ()...)
-	parent = append(parent, environmentName+"=ambient", environmentName+"=duplicate")
 	configured := Environment{
 		environmentHelperProcessEnv: "1",
 		environmentName:             "fixture-user",
@@ -944,6 +939,9 @@ func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
 	if !strings.Contains(string(firstOutput), "fixture-user") {
 		t.Fatalf("configured child output = %q, want case environment value", firstOutput)
 	}
+	if got := os.Getenv(environmentName); got != "ambient-user" {
+		t.Fatalf("parent %s after configured child = %q, want ambient value preserved", environmentName, got)
+	}
 
 	second := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
 	second.Env = childEnvironment(os.Environ(), Environment{environmentHelperProcessEnv: "1"})
@@ -954,8 +952,11 @@ func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
 	if strings.Contains(string(secondOutput), "fixture-user") {
 		t.Fatalf("unconfigured child output = %q, want no value leaked from configured child", secondOutput)
 	}
-	if _, present := os.LookupEnv(environmentName); present {
-		t.Fatalf("%s leaked from child process into parent", environmentName)
+	if !strings.Contains(string(secondOutput), "ambient-user") {
+		t.Fatalf("unconfigured child output = %q, want ambient value", secondOutput)
+	}
+	if got := os.Getenv(environmentName); got != "ambient-user" {
+		t.Fatalf("parent %s after unconfigured child = %q, want ambient value preserved", environmentName, got)
 	}
 }
 

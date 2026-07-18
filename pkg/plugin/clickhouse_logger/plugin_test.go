@@ -77,15 +77,12 @@ func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
 }
 
 func TestPostInitRejectsInvalidClickHouseUserEnvironmentReference(t *testing.T) {
-	t.Setenv("CLICK_HOUSE_USER_EMPTY", "")
-
 	for _, test := range []struct {
 		name string
 		user string
 	}{
 		{name: "missing-name", user: "$ENV://"},
 		{name: "missing-value", user: "$ENV://CLICK_HOUSE_USER_MISSING"},
-		{name: "empty-value", user: "$ENV://CLICK_HOUSE_USER_EMPTY"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := &Plugin{config: Config{
@@ -102,6 +99,22 @@ func TestPostInitRejectsInvalidClickHouseUserEnvironmentReference(t *testing.T) 
 				t.Fatalf("PostInit() error = nil, want invalid environment reference rejection")
 			}
 		})
+	}
+}
+
+func TestPostInitPreservesEmptyClickHouseUserEnvironmentValue(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER_EMPTY", "")
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "$ENV://CLICK_HOUSE_USER_EMPTY",
+		Password:      "secret",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	})
+
+	if p.config.User != "" {
+		t.Fatalf("user = %q, want preserved empty environment value", p.config.User)
 	}
 }
 

@@ -28,6 +28,24 @@ func TestDecryptPluginConfigsUsesKeyringAndNestedFields(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"feishu-auth": map[string]any{
+			"secret_fallbacks": []any{
+				encryptForTest(t, key, "old-secret-1"),
+				encryptForTest(t, key, "old-secret-2"),
+			},
+		},
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
+	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
+		t.Fatalf("feishu-auth secret_fallbacks = %#v, want plaintext values", fallbacks)
+	}
+}
+
 func TestDecryptPluginConfigsSupportsAIMapsAndInstanceArrays(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

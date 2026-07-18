@@ -147,8 +147,6 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Errorf("list routes fail: %s", err)
 		return nil
 	}
-	fmt.Printf("routes: %+v\n", routes)
-
 	mux := chi.NewRouter()
 
 	for _, r := range routes {

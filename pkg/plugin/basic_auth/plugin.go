@@ -92,7 +92,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		user, pass, err := parseBasicAuthorization(authHeader)
 		if err != nil {
-			logger.Warn(err.Error())
+			if !ctx.RecordAuthProbeDiagnostic(r, err.Error()) {
+				logger.Warn(err.Error())
+			}
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
@@ -104,6 +106,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		consumer, err := store.GetConsumerByPluginKey("basic-auth", user)
 		if err != nil {
+			ctx.RecordAuthProbeDiagnostic(r, "failed to find user: invalid user")
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
@@ -157,7 +160,10 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
-		logger.Errorf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
+		message := fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
+		if !ctx.RecordAuthProbeDiagnostic(r, message) {
+			logger.Error(message)
+		}
 		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 		return true
 	}

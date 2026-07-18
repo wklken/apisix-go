@@ -157,13 +157,17 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	var authenticatedRequest *http.Request
+	originalContext := r.Context()
 	probeNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authenticatedRequest = r
+		authenticatedRequest = r.WithContext(originalContext)
 	})
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
-	originalContext := r.Context()
 	probeRequest := r.Clone(originalContext)
 	bodyState := a.isolateRequestBody(r, probeRequest)
+	var recordedDiagnostic bytes.Buffer
+	probeRequest = ctx.WithAuthProbeDiagnosticRecorder(probeRequest, func(message string) {
+		appendFailureDiagnostic(&recordedDiagnostic, message)
+	})
 	probeRequest = ctx.WithConsumerPluginRunner(
 		probeRequest,
 		func(w http.ResponseWriter, r *http.Request, next http.Handler) {
@@ -172,18 +176,35 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	)
 	a.plugin.Handler(probeNext).ServeHTTP(writer, probeRequest)
 	if authenticatedRequest != nil {
-		if bodyState != nil {
-			_ = bodyState.source.Close()
-		}
 		return authenticatedRequest, authFailure{}
 	}
 	if bodyState != nil {
 		bodyState.restore(r)
 	}
+	message := strings.TrimSpace(recordedDiagnostic.String())
+	if message == "" {
+		message = strings.TrimSpace(writer.body.String())
+	}
 	return nil, authFailure{
 		name:    a.name,
 		status:  writer.status,
-		message: strings.TrimSpace(writer.body.String()),
+		message: message,
+	}
+}
+
+func appendFailureDiagnostic(buffer *bytes.Buffer, message string) {
+	message = strings.TrimSpace(message)
+	if message == "" || buffer.Len() >= maxFailureDiagnosticBytes {
+		return
+	}
+	if buffer.Len() > 0 {
+		remaining := maxFailureDiagnosticBytes - buffer.Len()
+		separator := "; "
+		_, _ = buffer.WriteString(separator[:min(len(separator), remaining)])
+	}
+	remaining := maxFailureDiagnosticBytes - buffer.Len()
+	if remaining > 0 {
+		_, _ = buffer.WriteString(message[:min(len(message), remaining)])
 	}
 }
 

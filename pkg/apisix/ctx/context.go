@@ -32,6 +32,7 @@ const (
 	RemotePortKey           ContextKey = "remote_port"
 	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
 	consumerPluginsRunKey   ContextKey = "consumer_plugins_run"
+	authProbeDiagnosticKey  ContextKey = "auth_probe_diagnostic_recorder"
 	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
 	beforeProxyHooksKey     ContextKey = "before_proxy_hooks"
 )
@@ -104,6 +105,21 @@ func applyProxyRewriteURI(r *http.Request, uri string) {
 }
 
 type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)
+
+type AuthProbeDiagnosticRecorder func(string)
+
+func WithAuthProbeDiagnosticRecorder(r *http.Request, recorder AuthProbeDiagnosticRecorder) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), authProbeDiagnosticKey, recorder))
+}
+
+func RecordAuthProbeDiagnostic(r *http.Request, message string) bool {
+	recorder, _ := r.Context().Value(authProbeDiagnosticKey).(AuthProbeDiagnosticRecorder)
+	if recorder == nil {
+		return false
+	}
+	recorder(message)
+	return true
+}
 
 func WithConsumerPluginRunner(r *http.Request, runner ConsumerPluginRunner) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), consumerPluginRunnerKey, runner))

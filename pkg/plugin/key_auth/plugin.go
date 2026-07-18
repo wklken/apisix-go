@@ -2,6 +2,7 @@ package key_auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -132,6 +133,7 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
+		ctx.RecordAuthProbeDiagnostic(r, fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer))
 		writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid user authorization"}`)
 		return true
 	}

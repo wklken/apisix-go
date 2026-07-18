@@ -100,6 +100,51 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsProbeDiagnosticInsteadOfDiscardingDetail(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	req.Header.Set("Authorization", "Basic invalid%%")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid basic authorization reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "Failed to decode authentication header") {
+		t.Fatalf("probe diagnostics = %v, want detailed decode failure", diagnostics)
+	}
+}
+
+func TestHandlerRecordsMissingConsumerProbeDiagnostic(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	req.Header.Set("Authorization", basicHeader("missing-basic-probe-user", "ignored"))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing basic-auth consumer reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || diagnostics[0] != "failed to find user: invalid user" {
+		t.Fatalf("probe diagnostics = %v, want missing-user detail", diagnostics)
+	}
+}
+
 func TestHandlerFailsClosedThenRetriesLateEnvironmentPassword(t *testing.T) {
 	const environmentName = "BASIC_AUTH_PLUGIN_LATE_PASSWORD"
 	previous, existed := os.LookupEnv(environmentName)

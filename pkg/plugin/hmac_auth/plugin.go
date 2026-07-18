@@ -166,7 +166,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if !strings.HasPrefix(logMessage, "client request can't be validated:") {
 				logMessage = "client request can't be validated: " + logMessage
 			}
-			logger.Warn(logMessage)
+			if !ctx.RecordAuthProbeDiagnostic(r, logMessage) {
+				logger.Warn(logMessage)
+			}
 			if statusCode == http.StatusUnauthorized && p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
@@ -196,7 +198,10 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
-		logger.Errorf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
+		message := fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer)
+		if !ctx.RecordAuthProbeDiagnostic(r, message) {
+			logger.Error(message)
+		}
 		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
 		return true
 	}

@@ -137,6 +137,29 @@ func TestHandlerAcceptsSignedDateAndAttachesConsumer(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsProbeAndMissingAnonymousDiagnostics(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-probe-anonymous"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing HMAC authorization reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 2 || !strings.Contains(diagnostics[0], "missing Authorization header") ||
+		!strings.Contains(diagnostics[1], "failed to get anonymous consumer missing-probe-anonymous") {
+		t.Fatalf("probe diagnostics = %v, want ordered auth and anonymous failures", diagnostics)
+	}
+}
+
 func TestHandlerRunsConsumerPluginsAfterAuthentication(t *testing.T) {
 	addHMACConsumer(t, "consumer-plugin-hmac-user", "consumer-plugin-hmac-key", "hmac-secret")
 	p := newTestPlugin(t, Config{})

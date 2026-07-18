@@ -186,6 +186,7 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
+		ctx.RecordAuthProbeDiagnostic(r, fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer))
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
 		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
 		return true

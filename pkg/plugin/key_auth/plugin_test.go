@@ -222,6 +222,28 @@ func TestHandlerUsesAnonymousConsumerWhenKeyIsMissing(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsMissingAnonymousConsumerProbeDiagnostic(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-key-anonymous"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing key-auth anonymous consumer reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || diagnostics[0] != "failed to get anonymous consumer missing-key-anonymous" {
+		t.Fatalf("probe diagnostics = %v, want missing-anonymous detail", diagnostics)
+	}
+}
+
 func TestHandlerRejectsInvalidKey(t *testing.T) {
 	addKeyAuthConsumer(t, "valid-key-user", "valid-key")
 	p := newTestPlugin(t, Config{})

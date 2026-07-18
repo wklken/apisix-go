@@ -299,21 +299,14 @@ func TestHandlerRestoresBodyAfterFailedHMACAlternative(t *testing.T) {
 		{"key-auth": {"header": "apikey"}},
 	}})
 	body := "body that is longer than ten bytes"
+	source := &countingReadCloser{Reader: strings.NewReader(body)}
 	req := httptest.NewRequest(http.MethodPost, "/body", strings.NewReader(body))
+	req.Body = source
 	req = ctx.WithApisixVars(req, map[string]string{})
 	req = ctx.WithRequestVars(req)
 	req.Header.Set("apikey", "body-api-key")
 	req.Header.Set("Digest", "SHA-256=unused")
-	date := time.Now().UTC().Format(http.TimeFormat)
-	req.Header.Set("Date", date)
-	signing := "body-hmac-key\nPOST /body\ndate: " + date + "\n"
-	mac := hmac.New(sha256.New, []byte("body-hmac-secret"))
-	_, _ = mac.Write([]byte(signing))
-	req.Header.Set(
-		"Authorization",
-		`Signature keyId="body-hmac-key",algorithm="hmac-sha256",headers="@request-target date",signature="`+
-			base64.StdEncoding.EncodeToString(mac.Sum(nil))+`"`,
-	)
+	setTestHMACSignature(req, "body-hmac-key", "body-hmac-secret")
 	res := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +322,58 @@ func TestHandlerRestoresBodyAfterFailedHMACAlternative(t *testing.T) {
 
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+	if source.closeCalls != 0 {
+		t.Fatalf("source body close calls before server ownership ends = %d, want 0", source.closeCalls)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close final request body: %v", err)
+	}
+	if source.closeCalls != 1 {
+		t.Fatalf("source body close calls after final close = %d, want 1", source.closeCalls)
+	}
+}
+
+func TestHandlerLeavesSuccessfulHMACBodyOwnedByServer(t *testing.T) {
+	addAuthConsumer(t, "body-hmac-success-user", map[string]any{
+		"hmac-auth": map[string]any{"key_id": "success-hmac-key", "secret_key": "success-hmac-secret"},
+	})
+	waitForConsumerKey(t, "hmac-auth", "success-hmac-key")
+
+	p := newTestPlugin(t, Config{AuthPlugins: []AuthPluginConfig{
+		{"hmac-auth": {"validate_request_body": true, "max_req_body_size": 10}},
+		{"key-auth": {}},
+	}})
+	body := "small"
+	source := &countingReadCloser{Reader: strings.NewReader(body)}
+	req := httptest.NewRequest(http.MethodPost, "/body", strings.NewReader(body))
+	req.Body = source
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req = ctx.WithRequestVars(req)
+	digest := sha256.Sum256([]byte(body))
+	req.Header.Set("Digest", "SHA-256="+base64.StdEncoding.EncodeToString(digest[:]))
+	setTestHMACSignature(req, "success-hmac-key", "success-hmac-secret")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil || string(got) != body {
+			t.Fatalf("downstream body = %q, err=%v; want %q", got, err, body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+	if source.closeCalls != 0 {
+		t.Fatalf("source body close calls before server ownership ends = %d, want 0", source.closeCalls)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close server-owned request body: %v", err)
+	}
+	if source.closeCalls != 1 {
+		t.Fatalf("source body close calls after final close = %d, want 1", source.closeCalls)
 	}
 }
 
@@ -359,6 +404,24 @@ func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestSuccessfulDirectAuthDoesNotLeakProbeRecorderContext(t *testing.T) {
+	req := newMultiAuthRequest()
+	authenticated, failure := (configuredAuth{name: "direct-success-auth", plugin: directSuccessAuth{}}).succeeds(req)
+	if authenticated == nil || failure.name != "" {
+		t.Fatalf(
+			"direct success result = (%v, %+v), want authenticated request without failure",
+			authenticated,
+			failure,
+		)
+	}
+	if authenticated.Header.Get("X-Direct-Auth") != "authenticated" {
+		t.Fatalf("authenticated header = %q, want preserved mutation", authenticated.Header.Get("X-Direct-Auth"))
+	}
+	if ctx.RecordAuthProbeDiagnostic(authenticated, "must not be captured") {
+		t.Fatal("successful request leaked the auth-probe diagnostic recorder")
+	}
+}
+
 func TestProbeResponseWriterBoundsFailureDiagnostic(t *testing.T) {
 	writer := &probeResponseWriter{header: http.Header{}}
 	body := make([]byte, maxFailureDiagnosticBytes+1024)
@@ -373,6 +436,31 @@ func TestProbeResponseWriterBoundsFailureDiagnostic(t *testing.T) {
 
 type statusOnlyAuth struct{}
 
+type directSuccessAuth struct{}
+
+type countingReadCloser struct {
+	io.Reader
+	closeCalls int
+}
+
+func (r *countingReadCloser) Close() error {
+	r.closeCalls++
+	return nil
+}
+
+func setTestHMACSignature(req *http.Request, keyID string, secret string) {
+	date := time.Now().UTC().Format(http.TimeFormat)
+	req.Header.Set("Date", date)
+	signing := keyID + "\n" + req.Method + " " + req.URL.RequestURI() + "\ndate: " + date + "\n"
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(signing))
+	req.Header.Set(
+		"Authorization",
+		`Signature keyId="`+keyID+`",algorithm="hmac-sha256",headers="@request-target date",signature="`+
+			base64.StdEncoding.EncodeToString(mac.Sum(nil))+`"`,
+	)
+}
+
 func (statusOnlyAuth) Init() error       { return nil }
 func (statusOnlyAuth) PostInit() error   { return nil }
 func (statusOnlyAuth) Config() any       { return &struct{}{} }
@@ -380,6 +468,17 @@ func (statusOnlyAuth) GetSchema() string { return `{}` }
 func (statusOnlyAuth) Handler(http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
+	})
+}
+
+func (directSuccessAuth) Init() error       { return nil }
+func (directSuccessAuth) PostInit() error   { return nil }
+func (directSuccessAuth) Config() any       { return &struct{}{} }
+func (directSuccessAuth) GetSchema() string { return `{}` }
+func (directSuccessAuth) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Direct-Auth", "authenticated")
+		next.ServeHTTP(w, r)
 	})
 }
 

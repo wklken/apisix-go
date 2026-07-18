@@ -352,13 +352,15 @@ cases:
         output:
           status: 401
           body: {equals: '{"message":"Authorization Failed"}'}
-          logs: {matches: 'hmac-auth failed to authenticate the request.*missing Authorization header'}
+          logs:
+            matches: '(?s)basic-auth failed to authenticate the request.*Missing authorization in request.*key-auth failed to authenticate the request.*Invalid API key in request.*jwt-auth failed to authenticate the request.*Missing JWT token in request.*hmac-auth failed to authenticate the request.*missing Authorization header'
       - name: invalid-basic-reaches-later-alternatives
         input: {path: /hello, headers: {Authorization: 'Basic YmFyOmJhcgo='}}
         output:
           status: 401
           body: {equals: '{"message":"Authorization Failed"}'}
-          logs: {matches: 'hmac-auth failed to authenticate the request.*does not start with.*Signature'}
+          logs:
+            matches: '(?s)basic-auth failed to authenticate the request.*failed to find user: invalid user.*key-auth failed to authenticate the request.*Missing API key in request.*jwt-auth failed to authenticate the request.*JWT token invalid.*hmac-auth failed to authenticate the request.*does not start with.*Signature'
       - name: missing-hmac-header-is-an-exact-401
         input: {path: /hello}
         output:
@@ -430,18 +432,18 @@ cases:
     steps:
       - name: valid-key-runs-consumer-chain-once
         input: {path: /hello, headers: {apikey: auth-one}}
-        output: {status: 200, body: {equals: hello world}, logs: {not_matches: 'failed to authenticate the request'}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large)'}}
       - name: valid-basic-runs-consumer-chain-once
         input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
-        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|\bbar\b)'}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|\bbar\b)'}}
       - name: exactly-once-chain-allows-two-successes-before-limit
         input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
-        output: {status: 503, logs: {not_matches: 'failed to authenticate the request'}}
+        output: {status: 503, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large)'}}
       - name: valid-hmac-authentication
         input:
           path: /hello
           hmac: {key_id: hmac-key, secret: hmac-secret, algorithm: hmac-sha256, headers: ['@request-target', date]}
-        output: {status: 200, body: {equals: hmac world}, logs: {not_matches: '(failed to authenticate the request|hmac-secret)'}}
+        output: {status: 200, body: {equals: hmac world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|hmac-secret)'}}
       - name: oversized-hmac-probe-preserves-body-for-valid-key
         input:
           method: POST
@@ -452,7 +454,7 @@ cases:
         output:
           status: 200
           body: {equals: 'body that is longer than ten bytes'}
-          logs: {not_matches: '(failed to authenticate the request|hmac-secret)'}
+          logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|hmac-secret)'}
 
   - name: jwt-consumer-token-failures
     source: {file: t/plugin/multi-auth2.t, tests: [10, 11, 12, 13]}
@@ -515,7 +517,7 @@ cases:
         input:
           path: /hello
           headers: {Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs'}
-        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|my-secret-key)'}}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: '(failed to authenticate the request|Invalid authorization header format|client request can''t be validated|request body too large|my-secret-key)'}}
 
   - name: missing-anonymous-consumers-fail-closed
     source: {file: t/plugin/multi-auth2.t, tests: [15, 16]}
@@ -534,4 +536,5 @@ cases:
     output:
       status: 401
       body: {equals: '{"message":"Authorization Failed"}'}
-      logs: {matches: 'hmac-auth failed to authenticate the request.*Invalid user authorization'}
+      logs:
+        matches: '(?s)basic-auth failed to authenticate the request.*failed to get anonymous consumer not-found-anonymous.*key-auth failed to authenticate the request.*failed to get anonymous consumer not-found-anonymous.*jwt-auth failed to authenticate the request.*failed to get anonymous consumer not-found-anonymous.*hmac-auth failed to authenticate the request.*failed to get anonymous consumer anonymous'

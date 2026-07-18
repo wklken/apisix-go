@@ -125,3 +125,21 @@ func TestRunConsumerPluginsRunsRunnerOnceAcrossStackedAuthCalls(t *testing.T) {
 		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
+
+func TestAuthProbeDiagnosticRecorderIsRequestScoped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	var diagnostics []string
+	if RecordAuthProbeDiagnostic(req, "outside") {
+		t.Fatal("RecordAuthProbeDiagnostic() recorded without a request recorder")
+	}
+
+	req = WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	if !RecordAuthProbeDiagnostic(req, "first") || !RecordAuthProbeDiagnostic(req, "second") {
+		t.Fatal("RecordAuthProbeDiagnostic() did not use the installed recorder")
+	}
+	if !reflect.DeepEqual(diagnostics, []string{"first", "second"}) {
+		t.Fatalf("diagnostics = %v, want [first second]", diagnostics)
+	}
+}

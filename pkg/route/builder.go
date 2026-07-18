@@ -99,9 +99,12 @@ func convertURI(uri string) (string, error) {
 }
 
 type Builder struct {
-	serverAddr string
-	stoppers   []pluginStopper
-	stopOnce   sync.Once
+	serverAddr            string
+	stoppers              []pluginStopper
+	stopperMu             sync.Mutex
+	consumerPluginChains  map[string]alice.Chain
+	consumerPluginChainMu sync.Mutex
+	stopOnce              sync.Once
 }
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -109,12 +112,18 @@ func NewBuilder(storage *store.Store) *Builder {
 }
 
 func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
-	return &Builder{serverAddr: normalizeServerAddr(serverAddr)}
+	return &Builder{
+		serverAddr:           normalizeServerAddr(serverAddr),
+		consumerPluginChains: make(map[string]alice.Chain),
+	}
 }
 
 func (b *Builder) Stop() {
 	b.stopOnce.Do(func() {
-		for _, stopper := range b.stoppers {
+		b.stopperMu.Lock()
+		stoppers := append([]pluginStopper(nil), b.stoppers...)
+		b.stopperMu.Unlock()
+		for _, stopper := range stoppers {
 			stopper.Stop()
 		}
 	})
@@ -307,7 +316,104 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	return withAIExecutionTerminal(chain, handler), nil
+	return b.withConsumerPluginRunner(withAIExecutionTerminal(chain, handler), routeContext, resourcePlugins), nil
+}
+
+func (b *Builder) withConsumerPluginRunner(
+	handler http.Handler,
+	routeContext pluginRouteContext,
+	resourcePlugins map[string]resource.PluginConfig,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			b.runConsumerPlugins(w, r, next, routeContext, resourcePlugins)
+		})
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (b *Builder) runConsumerPlugins(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	routeContext pluginRouteContext,
+	resourcePlugins map[string]resource.PluginConfig,
+) {
+	consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
+	if !ok {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	pluginConfigs := consumerPluginConfigs(consumer, resourcePlugins)
+	if len(pluginConfigs) == 0 {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	chain, err := b.consumerPluginChain(pluginConfigs, routeContext)
+	if err != nil {
+		logger.Errorf("initialize consumer plugins for %s: %s", consumer.Username, err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	chain.Then(next).ServeHTTP(w, r)
+}
+
+func consumerPluginConfigs(
+	consumer resource.Consumer,
+	resourcePlugins map[string]resource.PluginConfig,
+) map[string]resource.PluginConfig {
+	pluginConfigs := make(map[string]resource.PluginConfig)
+	if consumer.GroupID != "" {
+		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
+			maps.Copy(pluginConfigs, group.Plugins)
+		}
+	}
+	maps.Copy(pluginConfigs, consumer.Plugins)
+
+	for name := range resourcePlugins {
+		delete(pluginConfigs, name)
+	}
+	for name := range pluginConfigs {
+		if isConsumerAuthenticationPlugin(name) {
+			delete(pluginConfigs, name)
+		}
+	}
+	return pluginConfigs
+}
+
+func isConsumerAuthenticationPlugin(name string) bool {
+	switch name {
+	case "basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *Builder) consumerPluginChain(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) (alice.Chain, error) {
+	encoded, err := stdjson.Marshal(pluginConfigs)
+	if err != nil {
+		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
+	}
+	key := string(encoded)
+
+	b.consumerPluginChainMu.Lock()
+	defer b.consumerPluginChainMu.Unlock()
+	if chain, ok := b.consumerPluginChains[key]; ok {
+		return chain, nil
+	}
+	plugins, err := b.initPluginsStrict(pluginConfigs, routeContext)
+	if err != nil {
+		return alice.New(), err
+	}
+	chain := plugin.BuildPluginChain(plugins...)
+	b.consumerPluginChains[key] = chain
+	return chain, nil
 }
 
 func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) alice.Chain {
@@ -653,6 +759,14 @@ func (b *Builder) initPluginsStrict(
 		if err := p.Init(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
+		if metadataSchema := p.GetMetadataSchema(); metadataSchema != "" {
+			var metadata map[string]any
+			if err := store.GetPluginMetadata(name, &metadata); err == nil {
+				if err := util.Validate(metadata, metadataSchema); err != nil {
+					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, err)
+				}
+			}
+		}
 
 		err = util.Validate(config, p.GetSchema())
 		if err != nil {
@@ -684,7 +798,7 @@ func (b *Builder) initPluginsStrict(
 		}
 		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
 		if stopper, ok := p.(pluginStopper); ok {
-			b.stoppers = append(b.stoppers, stopper)
+			b.addStopper(stopper)
 		}
 
 		initialized := plugin.Plugin(p)
@@ -701,6 +815,12 @@ func (b *Builder) initPluginsStrict(
 		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
 	}
 	return plugins, nil
+}
+
+func (b *Builder) addStopper(stopper pluginStopper) {
+	b.stopperMu.Lock()
+	b.stoppers = append(b.stoppers, stopper)
+	b.stopperMu.Unlock()
 }
 
 func (b *Builder) initGlobalPlugins(

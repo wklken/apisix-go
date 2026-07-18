@@ -85,7 +85,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			p.writeAuthError(w, `{"message": "Missing authorization in request"}`)
+			p.writeAuthError(w, `{"message":"Missing authorization in request"}`)
 			return
 		}
 
@@ -94,7 +94,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			p.writeAuthError(w, `{"message": "Invalid authorization in request"}`)
+			p.writeAuthError(w, `{"message":"Invalid authorization in request"}`)
 			return
 		}
 		user = normalizeCredential(user)
@@ -105,7 +105,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			p.writeAuthError(w, `{"message": "Invalid user authorization"}`)
+			p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 			return
 		}
 
@@ -114,7 +114,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			p.writeAuthError(w, `{"message": "Missing authorization config in consumer settings"}`)
+			p.writeAuthError(w, `{"message":"Missing authorization config in consumer settings"}`)
 			return
 		}
 
@@ -124,7 +124,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			p.writeAuthError(w, `{"message": "Invalid authorization config in consumer settings"}`)
+			p.writeAuthError(w, `{"message":"Invalid authorization config in consumer settings"}`)
 			return
 		}
 
@@ -132,7 +132,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			p.writeAuthError(w, `{"message": "Invalid user authorization"}`)
+			p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 			return
 		}
 
@@ -142,7 +142,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		ctx.AttachConsumer(r, consumer)
 
-		next.ServeHTTP(w, r)
+		ctx.RunConsumerPlugins(w, r, next)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -154,18 +154,20 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
-		p.writeAuthError(w, `{"message": "Invalid user authorization"}`)
+		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
 		return true
 	}
 
 	ctx.AttachConsumer(r, consumer)
-	next.ServeHTTP(w, r)
+	ctx.RunConsumerPlugins(w, r, next)
 	return true
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, body string) {
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, p.config.Realm))
-	http.Error(w, body, http.StatusUnauthorized)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(body))
 }
 
 func normalizeCredential(value string) string {

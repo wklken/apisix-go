@@ -14,6 +14,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
@@ -34,6 +35,88 @@ func TestWorkflowRouteChainAllowsNonMatchingRequest(t *testing.T) {
 	}
 	if res.Header().Get("X-Route-Fallback") != "reached" {
 		t.Fatal("fallback handler was not reached for a non-matching workflow rule")
+	}
+}
+
+func TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer(t *testing.T) {
+	metrics.Init()
+	ensureRouteStore(t)
+	consumer := map[string]any{
+		"username": "restricted-basic-user",
+		"plugins": map[string]any{
+			"basic-auth": map[string]any{
+				"username": "restricted-basic-user",
+				"password": "secret",
+			},
+			"consumer-restriction": map[string]any{
+				"type":          "route_id",
+				"blacklist":     []any{"consumer-plugin-route"},
+				"rejected_code": http.StatusUnauthorized,
+			},
+		},
+	}
+	body, err := apisixjson.Marshal(consumer)
+	if err != nil {
+		t.Fatalf("marshal consumer: %v", err)
+	}
+	event := store.NewEvent()
+	event.Type = store.EventTypePut
+	event.Key = []byte("/apisix/consumers/restricted-basic-user")
+	event.Value = body
+	routeStoreEvents <- event
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.GetConsumer("restricted-basic-user"); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := store.GetConsumer("restricted-basic-user"); err != nil {
+		t.Fatalf("store consumer: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	port, err := strconv.Atoi(upstreamURL.Port())
+	if err != nil {
+		t.Fatalf("parse upstream port: %v", err)
+	}
+
+	builder := NewBuilderWithServerAddr(nil, "127.0.0.1:9080")
+	t.Cleanup(builder.Stop)
+	handler, err := builder.buildHandlerStrict(resource.Route{
+		ID:  "consumer-plugin-route",
+		Uri: "/restricted",
+		Plugins: map[string]resource.PluginConfig{
+			"basic-auth": map[string]any{},
+		},
+		Upstream: resource.Upstream{
+			Type:   "roundrobin",
+			Scheme: upstreamURL.Scheme,
+			Nodes:  []resource.Node{{Host: upstreamURL.Hostname(), Port: port, Weight: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildHandlerStrict() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://route.example.com/restricted", nil)
+	req.Header.Set("Authorization", "Basic cmVzdHJpY3RlZC1iYXNpYy11c2VyOnNlY3JldA==")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want consumer restriction rejection", response.Code)
+	}
+	if got := strings.TrimSpace(response.Body.String()); got != `{"message":"The route_id is forbidden."}` {
+		t.Fatalf("body = %q", got)
 	}
 }
 

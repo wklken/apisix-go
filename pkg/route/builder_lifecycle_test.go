@@ -10,11 +10,13 @@ import (
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	apisixjson "github.com/wklken/apisix-go/pkg/json"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type recordingPlugin struct {
@@ -339,6 +341,52 @@ func TestInitPluginsStrictRejectsInvalidProxyControlConfig(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("initPluginsStrict() error = nil, want invalid config rejection")
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
+func TestInitPluginsStrictRejectsInvalidPluginMetadata(t *testing.T) {
+	ensureRouteStore(t)
+
+	metadata := map[string]any{"allow_origins": map[string]any{"key": "*a"}}
+	body, err := apisixjson.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	routeStoreEvents <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/plugin_metadata/cors"),
+		Value: body,
+	}
+
+	deadline := time.Now().Add(time.Second)
+	storedMetadata := false
+	for time.Now().Before(deadline) {
+		var stored map[string]any
+		if err := store.GetPluginMetadata("cors", &stored); err == nil {
+			origins, ok := stored["allow_origins"].(map[string]any)
+			if ok && origins["key"] == "*a" {
+				storedMetadata = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !storedMetadata {
+		t.Fatal("timed out waiting for CORS metadata")
+	}
+
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"cors": map[string]any{"allow_origins_by_metadata": []any{"key"}},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "invalid-cors-metadata"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "validate plugin cors metadata") {
+		t.Fatalf("initPluginsStrict() error = %v, want invalid CORS metadata rejection", err)
 	}
 	if len(plugins) != 0 {
 		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))

@@ -140,6 +140,21 @@ func TestHandlerRejectsMissingAuthorization(t *testing.T) {
 	}
 }
 
+func TestHandlerFormatsMissingAuthorizationLikeAPISIX(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Body.String(); got != `{"message":"Missing authorization in request"}` {
+		t.Fatalf("body = %q, want APISIX response JSON", got)
+	}
+}
+
 func TestHandlerUsesAnonymousConsumerOnMissingAuthorization(t *testing.T) {
 	addBasicAuthConsumer(t, "anonymous-basic-user", "unused")
 	p := newTestPlugin(t, Config{AnonymousConsumer: "anonymous-basic-user"})

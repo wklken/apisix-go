@@ -16,11 +16,27 @@ import (
 type ContextKey string
 
 const (
-	ProxyRewriteKey ContextKey = "proxy-rewrite"
-	RequestIDKey    ContextKey = "request_id"
-	RemoteAddrKey   ContextKey = "remote_addr"
-	RemotePortKey   ContextKey = "remote_port"
+	ProxyRewriteKey         ContextKey = "proxy-rewrite"
+	RequestIDKey            ContextKey = "request_id"
+	RemoteAddrKey           ContextKey = "remote_addr"
+	RemotePortKey           ContextKey = "remote_port"
+	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
 )
+
+type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)
+
+func WithConsumerPluginRunner(r *http.Request, runner ConsumerPluginRunner) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), consumerPluginRunnerKey, runner))
+}
+
+func RunConsumerPlugins(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	runner, _ := r.Context().Value(consumerPluginRunnerKey).(ConsumerPluginRunner)
+	if runner == nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+	runner(w, r, next)
+}
 
 func contextValue(c context.Context, key string) any {
 	if value := c.Value(key); value != nil {

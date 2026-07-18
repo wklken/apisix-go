@@ -2,263 +2,413 @@ sources:
   - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/consumer-restriction.t, tests: 53}
   - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/consumer-restriction2.t, tests: 18}
 cases:
-  - name: consumer-whitelist
-    source: {file: t/plugin/consumer-restriction.t, tests: [1, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16]}
+  - name: schema-default-whitelist
+    source: {file: t/plugin/consumer-restriction.t, tests: [1]}
     config:
       consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
-        - username: jack2
-          plugins: {key-auth: {key: auth-two}}
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
       routes:
-        - id: consumer-whitelist
+        - id: consumer-restriction-schema-default
           uri: /hello
           plugins:
-            key-auth: {}
-            consumer-restriction: {whitelist: [jack1]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+            basic-auth: {}
+            consumer-restriction: {title: whitelist, whitelist: [jack1, jack2]}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing API key in request"}'}}}
-      - {name: allowed, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: rejected, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: jack1-is-accepted, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack2-is-accepted, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
-  - name: consumer-blacklist
-    source: {file: t/plugin/consumer-restriction.t, tests: [2, 9, 10, 11, 12, 17, 18, 19, 20, 25, 26, 27]}
+  - name: schema-accepts-blacklist-whitelist-and-methods
+    source: {file: t/plugin/consumer-restriction.t, tests: [2]}
     config:
       consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
-        - username: jack2
-          plugins: {key-auth: {key: auth-two}}
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
       routes:
-        - id: consumer-blacklist
+        - id: consumer-restriction-schema-priority
           uri: /hello
           plugins:
-            key-auth: {}
-            consumer-restriction: {blacklist: [jack1], rejected_msg: request is forbidden}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+            basic-auth: {}
+            consumer-restriction: {whitelist: [jack1], blacklist: [jack2], allowed_by_methods: []}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: blocked, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
-      - {name: allowed, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: whitelist-is-accepted, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: blacklist-wins, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
-  - name: allowed-by-method
-    source: {file: t/plugin/consumer-restriction.t, tests: [21, 22, 23, 24]}
+  - name: basic-auth-whitelist
+    source: {file: t/plugin/consumer-restriction.t, tests: [3, 4, 5, 6, 7, 8]}
     config:
       consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
       routes:
-        - id: consumer-method
+        - id: consumer-restriction-basic-whitelist
           uri: /hello
-          plugins:
-            key-auth: {}
-            consumer-restriction: {allowed_by_methods: [{user: jack1, methods: [POST, GET]}]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+          plugins: {basic-auth: {}, consumer-restriction: {whitelist: [jack1]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: get, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: post, input: {method: POST, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
+      - {name: jack1-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
-  - name: priority
+  - name: basic-auth-blacklist
+    source: {file: t/plugin/consumer-restriction.t, tests: [9, 10, 11, 12]}
+    config:
+      consumers:
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
+      routes:
+        - id: consumer-restriction-basic-blacklist
+          uri: /hello
+          plugins: {basic-auth: {}, consumer-restriction: {blacklist: [jack1], rejected_msg: request is forbidden}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
+      - {name: jack1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: jack2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: whitelist-without-authentication
+    source: {file: t/plugin/consumer-restriction.t, tests: [13, 14, 15, 16]}
+    config:
+      routes:
+        - id: consumer-restriction-unauthenticated-whitelist
+          uri: /hello
+          plugins: {consumer-restriction: {whitelist: [jack1]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: missing-identity, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+      - {name: jack1-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+      - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+
+  - name: blacklist-without-authentication
+    source: {file: t/plugin/consumer-restriction.t, tests: [17, 18, 19, 20]}
+    config:
+      routes:
+        - id: consumer-restriction-unauthenticated-blacklist
+          uri: /hello
+          plugins: {consumer-restriction: {blacklist: [jack1]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: missing-identity, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+      - {name: jack1-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+      - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+
+  - name: allowed-by-methods-rejects-get
+    source: {file: t/plugin/consumer-restriction.t, tests: [21, 22]}
+    config:
+      consumers: [{username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}]
+      routes:
+        - id: consumer-restriction-post-only
+          uri: /hello
+          plugins: {basic-auth: {}, consumer-restriction: {allowed_by_methods: [{user: jack1, methods: [POST]}]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: get-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+
+  - name: allowed-by-methods-permits-get
+    source: {file: t/plugin/consumer-restriction.t, tests: [23, 24]}
+    config:
+      consumers: [{username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}]
+      routes:
+        - id: consumer-restriction-get-and-post
+          uri: /hello
+          plugins: {basic-auth: {}, consumer-restriction: {allowed_by_methods: [{user: jack1, methods: [POST, GET]}]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: get-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: blacklist-precedes-allowed-by-methods
+    source: {file: t/plugin/consumer-restriction.t, tests: [25, 26, 27]}
+    config:
+      consumers:
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
+      routes:
+        - id: consumer-restriction-blacklist-precedence
+          uri: /hello
+          plugins: {basic-auth: {}, consumer-restriction: {blacklist: [jack1], allowed_by_methods: [{user: jack1, methods: [POST, GET]}]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: blacklisted-jack1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: jack2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: whitelist-precedes-allowed-by-methods
     source: {file: t/plugin/consumer-restriction.t, tests: [28, 29, 30]}
     config:
       consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
-        - username: jack2
-          plugins: {key-auth: {key: auth-two}}
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
       routes:
-        - id: consumer-priority
+        - id: consumer-restriction-whitelist-precedence
           uri: /hello
-          plugins:
-            key-auth: {}
-            consumer-restriction:
-              whitelist: [jack1]
-              allowed_by_methods: [{user: jack1, methods: [POST]}]
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+          plugins: {basic-auth: {}, consumer-restriction: {whitelist: [jack1], allowed_by_methods: [{user: jack1, methods: [POST]}]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: whitelisted, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: other-consumer, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {matches: consumer_name}}}
+      - {name: whitelisted-jack1-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
 
-  - name: disabled
+  - name: removal-disables-consumer-restriction
     source: {file: t/plugin/consumer-restriction.t, tests: [31, 32, 33, 34]}
     config:
-      consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
-        - username: jack2
-          plugins: {key-auth: {key: auth-two}}
       routes:
-        - id: consumer-disabled
+        - id: consumer-restriction-removed
           uri: /hello
-          plugins:
-            key-auth: {}
-            consumer-restriction: {_meta: {disable: true}, whitelist: [jack1]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+          plugins: {consumer-restriction: {_meta: {disable: true}, whitelist: [jack1]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: disabled-plugin, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack1-is-not-authenticated-but-passes, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack2-is-not-authenticated-but-passes, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: missing-authorization-passes, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
 
-  - name: service-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46]}
+  - name: consumer-plugin-whitelists-service-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [35, 36, 37, 38]}
     config:
       consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+            consumer-restriction: {type: service_id, whitelist: ['1'], rejected_code: 401}
       services:
-        - id: service-allow
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: service_id, whitelist: [service-allow]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        - id: service-block
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: service_id, blacklist: [service-block]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: '1'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
       routes:
-        - id: service-allow-route
-          uri: /allow
-          service_id: service-allow
-        - id: service-block-route
-          uri: /block
-          service_id: service-block
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+        - id: '1'
+          uri: /hello
+          methods: [GET]
+          service_id: '1'
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: allowed-service, input: {method: GET, path: /allow, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: blocked-service, input: {method: GET, path: /block, headers: {apikey: auth-one}}, output: {status: 403, body: {matches: service_id}}}
+      - name: matching-service-is-allowed
+        input:
+          method: GET
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
+            X-Custom-Header-A: asld$%dfasf
+            X-Custom-Header-B: 23879fmsldfk
+        output: {status: 200, body: {equals: hello world}}
 
-  - name: route-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [47, 48, 49, 50, 51, 52, 53]}
+  - name: consumer-plugin-rejects-unlisted-service-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [39, 40, 41]}
     config:
       consumers:
-        - username: jack1
-          plugins: {key-auth: {key: auth-one}}
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+            consumer-restriction: {type: service_id, whitelist: ['1'], rejected_code: 401}
+      services:
+        - id: '2'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
       routes:
-        - id: route-allowed
-          uri: /allowed
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: route_id, whitelist: [route-allowed]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-        - id: route-blocked
-          uri: /blocked
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: route_id, blacklist: [route-blocked]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+        - id: '1'
+          uri: /hello
+          methods: [GET]
+          service_id: '2'
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: allowed-route, input: {method: GET, path: /allowed, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: blocked-route, input: {method: GET, path: /blocked, headers: {apikey: auth-one}}, output: {status: 403, body: {matches: route_id}}}
+      - name: unlisted-service-is-rejected
+        input:
+          method: GET
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
+            X-Custom-Header-A: asld$%dfasf
+            X-Custom-Header-B: 23879fmsldfk
+        output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
 
-  - name: group-whitelist
+  - name: consumer-plugin-blacklists-matching-service-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [42, 43, 44]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+            consumer-restriction: {type: service_id, blacklist: ['1'], rejected_code: 401}
+      services:
+        - id: '1'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      routes:
+        - id: '1'
+          uri: /hello
+          methods: [GET]
+          service_id: '1'
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - name: blacklisted-service-is-rejected
+        input:
+          method: GET
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
+            X-Custom-Header-A: asld$%dfasf
+            X-Custom-Header-B: 23879fmsldfk
+        output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
+
+  - name: consumer-plugin-allows-unlisted-service-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [45, 46]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+            consumer-restriction: {type: service_id, blacklist: ['1'], rejected_code: 401}
+      services:
+        - id: '2'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      routes:
+        - id: '1'
+          uri: /hello
+          methods: [GET]
+          service_id: '2'
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - name: unlisted-service-is-allowed
+        input:
+          method: GET
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
+            X-Custom-Header-A: asld$%dfasf
+            X-Custom-Header-B: 23879fmsldfk
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: consumer-plugin-whitelists-route-id
+    source: {file: t/plugin/consumer-restriction.t, tests: [47, 48]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+            consumer-restriction: {type: route_id, whitelist: ['1'], rejected_code: 401}
+      routes:
+        - id: '1'
+          uri: /hello
+          methods: [GET]
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - name: matching-route-is-allowed
+        input:
+          method: GET
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
+            X-Custom-Header-A: asld$%dfasf
+            X-Custom-Header-B: 23879fmsldfk
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: consumer-plugin-blacklists-route-id-and-cleans-up-resources
+    source: {file: t/plugin/consumer-restriction.t, tests: [49, 50, 51, 52, 53]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+            consumer-restriction: {type: route_id, blacklist: ['1'], rejected_code: 401}
+      routes:
+        - id: '1'
+          uri: /hello
+          methods: [GET]
+          plugins: {hmac-auth: {clock_skew: 1000000000}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - name: blacklisted-route-is-rejected
+        input:
+          method: GET
+          path: /hello
+          headers:
+            Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
+            Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="qpVbFXMKQuWu5uIHlS5Ov9VMVxL5dbj5EHwrgPnBohU="'
+            X-Custom-Header-A: asld$%dfasf
+            X-Custom-Header-B: 23879fmsldfk
+        output: {status: 401, body: {equals: '{"message":"The route_id is forbidden."}'}}
+
+  - name: consumer-group-whitelist
     source: {file: t/plugin/consumer-restriction2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9]}
     config:
       consumer_groups:
-        - id: group1
-          plugins: {}
-        - id: group2
-          plugins: {}
+        - {id: group1, plugins: {}}
+        - {id: group2, plugins: {}}
       consumers:
-        - username: jack1
-          group_id: group1
-          plugins: {key-auth: {key: auth-one}}
-        - username: jack2
-          group_id: group2
-          plugins: {key-auth: {key: auth-two}}
+        - {username: jack1, group_id: group1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, group_id: group2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
+        - {username: jack3, plugins: {basic-auth: {username: jack2021, password: '123456'}}}
       routes:
-        - id: group-whitelist
+        - id: consumer-restriction-group-whitelist
           uri: /hello
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: consumer_group_id, whitelist: [group1]}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+          plugins: {basic-auth: {}, consumer-restriction: {type: consumer_group_id, whitelist: [group1]}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: group1, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: group2, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {matches: consumer_group_id}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
+      - {name: group1-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: group2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_group_id is forbidden."}'}}}
 
-  - name: group-blacklist
+  - name: consumer-group-blacklist
     source: {file: t/plugin/consumer-restriction2.t, tests: [10, 11, 12, 13, 14]}
     config:
       consumer_groups:
-        - id: group1
-          plugins: {}
-        - id: group2
-          plugins: {}
+        - {id: group1, plugins: {}}
+        - {id: group2, plugins: {}}
       consumers:
-        - username: jack1
-          group_id: group1
-          plugins: {key-auth: {key: auth-one}}
-        - username: jack2
-          group_id: group2
-          plugins: {key-auth: {key: auth-two}}
+        - {username: jack1, group_id: group1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, group_id: group2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
+        - {username: jack3, plugins: {basic-auth: {username: jack2021, password: '123456'}}}
       routes:
-        - id: group-blacklist
+        - id: consumer-restriction-group-blacklist
           uri: /hello
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: consumer_group_id, blacklist: [group2], rejected_msg: request is forbidden}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+          plugins: {basic-auth: {}, consumer-restriction: {type: consumer_group_id, blacklist: [group1], rejected_msg: request is forbidden}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: group1, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: group2, input: {method: GET, path: /hello, headers: {apikey: auth-two}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
+      - {name: group1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: group2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: consumer-without-group-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjE6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_group_id for this request"}'}}}
 
-  - name: group-service-route
-    source: {file: t/plugin/consumer-restriction2.t, tests: [15, 16, 17, 18]}
+  - name: service-id-blacklist-without-identity
+    source: {file: t/plugin/consumer-restriction2.t, tests: [15, 16]}
     config:
-      consumer_groups:
-        - id: group1
-          plugins: {}
-      consumers:
-        - username: jack1
-          group_id: group1
-          plugins: {key-auth: {key: auth-one}}
-      services:
-        - id: group-service-route
-          plugins:
-            key-auth: {}
-            consumer-restriction: {type: service_id, blacklist: [group-service-route], rejected_msg: request is forbidden}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
       routes:
-        - id: group-service-route
+        - id: consumer-restriction-service-blacklist-no-identity
           uri: /hello
-          service_id: group-service-route
-    fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
+          plugins: {consumer-restriction: {type: service_id, blacklist: ['1'], rejected_msg: request is forbidden}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: service-id, input: {method: GET, path: /hello, headers: {apikey: auth-one}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the service_id for this request"}'}}}
+
+  - name: service-id-whitelist-without-identity
+    source: {file: t/plugin/consumer-restriction2.t, tests: [17, 18]}
+    config:
+      routes:
+        - id: consumer-restriction-service-whitelist-no-identity
+          uri: /hello
+          plugins: {consumer-restriction: {type: service_id, whitelist: ['1'], rejected_msg: request is forbidden}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
+    steps:
+      - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the service_id for this request"}'}}}

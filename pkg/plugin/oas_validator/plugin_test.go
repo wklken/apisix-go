@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -73,6 +75,59 @@ func TestHandlerPassesAndRestoresValidRequestBody(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerMatchesOpenAPIServerURLPrefix(t *testing.T) {
+	p := newTestPlugin(t, Config{Spec: `{
+  "openapi": "3.0.2",
+  "servers": [{"url": "/api/v3"}],
+  "paths": {
+    "/pets": {
+      "get": {"responses": {"204": {"description": "no content"}}}
+    }
+  }
+}`})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/pets", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerPrefersLiteralPathOverPathParameter(t *testing.T) {
+	spec := &compiledSpec{operations: []compiledOperation{
+		{
+			method:   http.MethodGet,
+			template: "/api/v31/pet/{petId}",
+			segments: splitPath("/api/v31/pet/{petId}"),
+		},
+		{
+			method:   http.MethodGet,
+			template: "/api/v31/pet/findByStatus",
+			segments: splitPath("/api/v31/pet/findByStatus"),
+		},
+	}}
+
+	operation, _ := spec.match(http.MethodGet, "/api/v31/pet/findByStatus")
+	if operation == nil || operation.template != "/api/v31/pet/findByStatus" {
+		t.Fatalf("matched operation = %#v, want literal path", operation)
+	}
+}
+
+func TestMetadataSchemaRejectsNonpositiveSpecURLTTL(t *testing.T) {
+	p := newTestPlugin(t, Config{Spec: testSpec()})
+	metadataSchema := p.GetMetadataSchema()
+	if err := util.Validate(map[string]any{"spec_url_ttl": 1}, metadataSchema); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	if err := util.Validate(map[string]any{"spec_url_ttl": 0}, metadataSchema); err == nil {
+		t.Fatal("zero spec_url_ttl accepted")
 	}
 }
 

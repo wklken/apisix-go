@@ -3,6 +3,8 @@ package multi_auth
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"strings"
 
@@ -26,8 +28,9 @@ type Plugin struct {
 }
 
 const (
-	priority = 2600
-	name     = "multi-auth"
+	priority                  = 2600
+	name                      = "multi-auth"
+	maxFailureDiagnosticBytes = 4 * 1024
 )
 
 const schema = `
@@ -67,6 +70,22 @@ type probeResponseWriter struct {
 	header http.Header
 	status int
 	body   bytes.Buffer
+}
+
+type authFailure struct {
+	name    string
+	status  int
+	message string
+}
+
+type probeBodyState struct {
+	source   io.ReadCloser
+	captured bytes.Buffer
+}
+
+type replayReadCloser struct {
+	io.Reader
+	closer io.Closer
 }
 
 func (p *Plugin) Init() error {
@@ -118,11 +137,17 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failures := make([]authFailure, 0, len(p.auths))
 		for _, auth := range p.auths {
-			if authenticatedRequest, ok := auth.succeeds(r); ok {
+			authenticatedRequest, failure := auth.succeeds(r)
+			if authenticatedRequest != nil {
 				ctx.RunConsumerPlugins(w, authenticatedRequest, next)
 				return
 			}
+			failures = append(failures, failure)
+		}
+		for _, failure := range failures {
+			failure.log()
 		}
 
 		w.WriteHeader(http.StatusUnauthorized)
@@ -130,7 +155,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func (a configuredAuth) succeeds(r *http.Request) (*http.Request, bool) {
+func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	var authenticatedRequest *http.Request
 	probeNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authenticatedRequest = r
@@ -138,6 +163,7 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, bool) {
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
 	originalContext := r.Context()
 	probeRequest := r.Clone(originalContext)
+	bodyState := a.isolateRequestBody(r, probeRequest)
 	probeRequest = ctx.WithConsumerPluginRunner(
 		probeRequest,
 		func(w http.ResponseWriter, r *http.Request, next http.Handler) {
@@ -145,18 +171,54 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, bool) {
 		},
 	)
 	a.plugin.Handler(probeNext).ServeHTTP(writer, probeRequest)
-	if authenticatedRequest == nil {
-		r.Body = probeRequest.Body
-		message := strings.TrimSpace(writer.body.String())
-		if message == "" {
-			logger.Warn(fmt.Sprintf("%s failed to authenticate the request, code: %d", a.name, writer.status))
-		} else {
-			logger.Warn(fmt.Sprintf(
-				"%s failed to authenticate the request, code: %d. error: %s", a.name, writer.status, message,
-			))
+	if authenticatedRequest != nil {
+		if bodyState != nil {
+			_ = bodyState.source.Close()
 		}
+		return authenticatedRequest, authFailure{}
 	}
-	return authenticatedRequest, authenticatedRequest != nil
+	if bodyState != nil {
+		bodyState.restore(r)
+	}
+	return nil, authFailure{
+		name:    a.name,
+		status:  writer.status,
+		message: strings.TrimSpace(writer.body.String()),
+	}
+}
+
+func (a configuredAuth) isolateRequestBody(original *http.Request, probe *http.Request) *probeBodyState {
+	config, ok := a.plugin.Config().(*hmac_auth.Config)
+	if !ok || !config.ValidateRequestBody || original.Body == nil {
+		return nil
+	}
+
+	limit := config.MaxReqBodySize
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	state := &probeBodyState{source: original.Body}
+	probe.Body = io.NopCloser(io.TeeReader(io.LimitReader(state.source, limit), &state.captured))
+	return state
+}
+
+func (f authFailure) log() {
+	if f.message == "" {
+		logger.Warn(fmt.Sprintf("%s failed to authenticate the request, code: %d", f.name, f.status))
+		return
+	}
+	logger.Warn(fmt.Sprintf("%s failed to authenticate the request, code: %d. error: %s", f.name, f.status, f.message))
+}
+
+func (s *probeBodyState) restore(request *http.Request) {
+	request.Body = &replayReadCloser{
+		Reader: io.MultiReader(bytes.NewReader(s.captured.Bytes()), s.source),
+		closer: s.source,
+	}
+}
+
+func (r *replayReadCloser) Close() error {
+	return r.closer.Close()
 }
 
 func newAuthPlugin(name string) (authPlugin, error) {
@@ -192,7 +254,11 @@ func (w *probeResponseWriter) Write(body []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.body.Write(body)
+	remaining := maxFailureDiagnosticBytes - w.body.Len()
+	if remaining > 0 {
+		_, _ = w.body.Write(body[:min(len(body), remaining)])
+	}
+	return len(body), nil
 }
 
 var _ http.ResponseWriter = (*probeResponseWriter)(nil)

@@ -2,7 +2,10 @@ package multi_auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -283,6 +286,52 @@ func TestHandlerDoesNotLetFailedAuthMutateLaterAlternative(t *testing.T) {
 	}
 }
 
+func TestHandlerRestoresBodyAfterFailedHMACAlternative(t *testing.T) {
+	addAuthConsumer(t, "body-fallback-user", map[string]any{
+		"hmac-auth": map[string]any{"key_id": "body-hmac-key", "secret_key": "body-hmac-secret"},
+		"key-auth":  map[string]any{"key": "body-api-key"},
+	})
+	waitForConsumerKey(t, "hmac-auth", "body-hmac-key")
+	waitForConsumerKey(t, "key-auth", "body-api-key")
+
+	p := newTestPlugin(t, Config{AuthPlugins: []AuthPluginConfig{
+		{"hmac-auth": {"validate_request_body": true, "max_req_body_size": 10}},
+		{"key-auth": {"header": "apikey"}},
+	}})
+	body := "body that is longer than ten bytes"
+	req := httptest.NewRequest(http.MethodPost, "/body", strings.NewReader(body))
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req = ctx.WithRequestVars(req)
+	req.Header.Set("apikey", "body-api-key")
+	req.Header.Set("Digest", "SHA-256=unused")
+	date := time.Now().UTC().Format(http.TimeFormat)
+	req.Header.Set("Date", date)
+	signing := "body-hmac-key\nPOST /body\ndate: " + date + "\n"
+	mac := hmac.New(sha256.New, []byte("body-hmac-secret"))
+	_, _ = mac.Write([]byte(signing))
+	req.Header.Set(
+		"Authorization",
+		`Signature keyId="body-hmac-key",algorithm="hmac-sha256",headers="@request-target date",signature="`+
+			base64.StdEncoding.EncodeToString(mac.Sum(nil))+`"`,
+	)
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read downstream body: %v", err)
+		}
+		if string(got) != body {
+			t.Fatalf("downstream body = %q, want %q", got, body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestPostInitRejectsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
 	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
 		{"basic-auth": {}, "key-auth": {}},
@@ -300,9 +349,25 @@ func TestPostInitRejectsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
 
 func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
 	req := newMultiAuthRequest()
-	authenticated, ok := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(req)
-	if ok || authenticated != nil {
-		t.Fatalf("status-only auth result = (%v, %t), want (nil, false)", authenticated, ok)
+	authenticated, failure := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(req)
+	if authenticated != nil || failure.status != http.StatusUnauthorized || failure.message != "" {
+		t.Fatalf(
+			"status-only auth result = (%v, %+v), want nil request with 401 empty-message failure",
+			authenticated,
+			failure,
+		)
+	}
+}
+
+func TestProbeResponseWriterBoundsFailureDiagnostic(t *testing.T) {
+	writer := &probeResponseWriter{header: http.Header{}}
+	body := make([]byte, maxFailureDiagnosticBytes+1024)
+	written, err := writer.Write(body)
+	if err != nil || written != len(body) {
+		t.Fatalf("Write() = (%d, %v), want (%d, nil)", written, err, len(body))
+	}
+	if writer.body.Len() != maxFailureDiagnosticBytes {
+		t.Fatalf("captured diagnostic bytes = %d, want %d", writer.body.Len(), maxFailureDiagnosticBytes)
 	}
 }
 

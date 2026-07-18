@@ -45,6 +45,46 @@ func TestPostInitMatchesAPISIXDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitPreservesAPISIXConfigMatrix(t *testing.T) {
+	trueValue := true
+	tests := []struct {
+		name     string
+		config   Config
+		mode     int
+		level    int
+		window   int
+		block    int
+		wantVary *bool
+	}{
+		{name: "defaults", config: Config{}, mode: 0, level: 6, window: 19, block: 0},
+		{name: "mode one", config: Config{Mode: new(1)}, mode: 1, level: 6, window: 19, block: 0},
+		{name: "level five", config: Config{CompLevel: new(5)}, mode: 0, level: 5, window: 19, block: 0},
+		{name: "window twelve", config: Config{CompLevel: new(5), LGWin: new(12)}, mode: 0, level: 5, window: 12, block: 0},
+		{name: "vary", config: Config{CompLevel: new(5), LGWin: new(12), Vary: &trueValue}, mode: 0, level: 5, window: 12, block: 0, wantVary: &trueValue},
+		{name: "block sixteen", config: Config{CompLevel: new(5), LGWin: new(12), LGBlock: new(16), Vary: &trueValue}, mode: 0, level: 5, window: 12, block: 16, wantVary: &trueValue},
+		{name: "mode two", config: Config{Mode: new(2), CompLevel: new(5), LGWin: new(12), LGBlock: new(16), Vary: &trueValue}, mode: 2, level: 5, window: 12, block: 16, wantVary: &trueValue},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, tt.config)
+			if len(p.config.Types) != 1 || p.config.Types[0] != "text/html" || *p.config.MinLength != 20 || *p.config.HTTPVersion != 1.1 {
+				t.Fatalf("shared defaults = types %#v, minimum %d, HTTP %g", p.config.Types, *p.config.MinLength, *p.config.HTTPVersion)
+			}
+			if *p.config.Mode != tt.mode || *p.config.CompLevel != tt.level || *p.config.LGWin != tt.window || *p.config.LGBlock != tt.block {
+				t.Fatalf("mode/level/window/block = %d/%d/%d/%d, want %d/%d/%d/%d", *p.config.Mode, *p.config.CompLevel, *p.config.LGWin, *p.config.LGBlock, tt.mode, tt.level, tt.window, tt.block)
+			}
+			if tt.wantVary == nil {
+				if p.config.Vary != nil {
+					t.Fatalf("Vary = %v, want unset", *p.config.Vary)
+				}
+			} else if p.config.Vary == nil || *p.config.Vary != *tt.wantVary {
+				t.Fatalf("Vary = %v, want %v", p.config.Vary, *tt.wantVary)
+			}
+		})
+	}
+}
+
 func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	vary := true
 	p := newTestPlugin(t, Config{

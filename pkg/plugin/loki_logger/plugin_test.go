@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -97,6 +98,104 @@ func TestBuildPayloadUsesLokiStreamShape(t *testing.T) {
 	}
 	if entry["path"] != "/orders" {
 		t.Fatalf("entry path = %v, want /orders", entry["path"])
+	}
+}
+
+func TestBuildBatchPayloadGroupsEntriesByResolvedLabels(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:3100"},
+		LogLabels: map[string]string{
+			"service": "$http_x_service_name",
+		},
+	})
+
+	payload := p.buildBatchPayload([]map[string]any{
+		{"http_x_service_name": "svc-alpha", "request_headers_x_service_name": "svc-alpha"},
+		{"http_x_service_name": "svc-beta", "request_headers_x_service_name": "svc-beta"},
+		{"http_x_service_name": "", "request_headers_x_service_name": ""},
+	})
+
+	if len(payload.Streams) != 3 {
+		t.Fatalf("streams = %d, want one stream per resolved label set", len(payload.Streams))
+	}
+	if got := payload.Streams[0].Stream["service"]; got != "svc-alpha" {
+		t.Fatalf("first stream service = %q, want svc-alpha", got)
+	}
+	if got := payload.Streams[1].Stream["service"]; got != "svc-beta" {
+		t.Fatalf("second stream service = %q, want svc-beta", got)
+	}
+	if got := payload.Streams[2].Stream["service"]; got != "" {
+		t.Fatalf("third stream service = %q, want empty header value", got)
+	}
+}
+
+func TestResolveLabelsLeavesMissingDynamicValuesEmpty(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:3100"},
+		LogLabels: map[string]string{
+			"service": "$http_x_service_name",
+		},
+	})
+
+	labels := p.resolveLabels(map[string]any{})
+	if got := labels["service"]; got != "" {
+		t.Fatalf("missing dynamic label = %q, want empty value", got)
+	}
+}
+
+func TestHandlerDefaultLogIncludesRequestFields(t *testing.T) {
+	bodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		bodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Timeout:       1000,
+		BatchMaxSize:  1,
+	})
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	r.Header.Set("Test-Header", "only-for-test#1")
+	r = apisixctx.WithApisixVars(r, map[string]string{"$route_id": "loki-default"})
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), r)
+
+	select {
+	case body := <-bodies:
+		entry := extractLokiEntry(t, body)
+		if got := entry["route_id"]; got != "loki-default" {
+			t.Fatalf("route_id = %#v, want loki-default", got)
+		}
+		if got := entry["request_method"]; got != http.MethodGet {
+			t.Fatalf("request_method = %#v, want GET", got)
+		}
+		if got := entry["request_headers_test_header"]; got != "only-for-test#1" {
+			t.Fatalf("request_headers_test_header = %#v, want only-for-test#1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Loki body")
+	}
+}
+
+func TestMetadataSchemaAcceptsAdditiveLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	metadata := map[string]any{
+		"log_format_extra":    map[string]any{"upstream_host": "$upstream_unresolved_host"},
+		"max_pending_entries": 1,
+	}
+	if err := util.Validate(metadata, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata schema rejected additive log format: %v", err)
 	}
 }
 

@@ -21,7 +21,8 @@ type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 
-	client *resty.Client
+	client         *resty.Client
+	logFormatExtra map[string]string
 }
 
 const (
@@ -154,8 +155,27 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    },
+    "log_format_extra": {
+      "type": "object"
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
+	LogFormatExtra    map[string]string `json:"log_format_extra"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
@@ -205,6 +225,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -270,6 +291,7 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		p.logFormatExtra = metadata.LogFormatExtra
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -291,10 +313,6 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
@@ -317,7 +335,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			status = recorder.StatusCode()
 		}
 
-		logFields := apisixlog.GetFields(r, p.LogFormat)
+		logFields := p.logFields(r)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
@@ -328,6 +346,44 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) logFields(r *http.Request) map[string]any {
+	var fields map[string]any
+	if len(p.LogFormat) > 0 {
+		fields = apisixlog.GetFields(r, p.LogFormat)
+	} else {
+		fields = p.defaultLogFields(r)
+	}
+	for key, value := range p.logFormatExtra {
+		fields[key] = p.resolveLogFormatValue(r, value)
+	}
+	return fields
+}
+
+func (p *Plugin) defaultLogFields(r *http.Request) map[string]any {
+	fields := map[string]any{
+		"request_method": r.Method,
+		"request_uri":    r.URL.RequestURI(),
+		"remote_addr":    base.RequestVar(r, "$remote_addr", 0),
+	}
+	if routeID := base.RequestVar(r, "$route_id", 0); routeID != "" {
+		fields["route_id"] = routeID
+	}
+	for key, values := range r.Header {
+		name := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+		value := strings.Join(values, ",")
+		fields["request_headers_"+name] = value
+		fields["http_"+name] = value
+	}
+	return fields
+}
+
+func (p *Plugin) resolveLogFormatValue(r *http.Request, value string) any {
+	if value == "$upstream_unresolved_host" {
+		return base.RequestVar(r, "$balancer_ip", 0)
+	}
+	return apisixlog.GetField(r, value)
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -369,7 +425,8 @@ func (p *Plugin) buildPayload(log map[string]any) lokiPayload {
 }
 
 func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
-	values := make([][2]string, 0, len(entries))
+	streams := make([]lokiStream, 0, len(entries))
+	streamIndex := make(map[string]int, len(entries))
 	for _, logEntry := range entries {
 		logTime := fmt.Sprintf("%d", time.Now().UnixNano())
 		if value, ok := logEntry["loki_log_time"]; ok {
@@ -390,21 +447,20 @@ func (p *Plugin) buildBatchPayload(entries []map[string]any) lokiPayload {
 		if err != nil {
 			body = []byte(`{}`)
 		}
-		values = append(values, [2]string{logTime, string(body)})
+		labels := p.resolveLabels(logEntry)
+		labelKey, err := json.Marshal(labels)
+		if err != nil {
+			labelKey = []byte{}
+		}
+		index, ok := streamIndex[string(labelKey)]
+		if !ok {
+			index = len(streams)
+			streamIndex[string(labelKey)] = index
+			streams = append(streams, lokiStream{Stream: labels})
+		}
+		streams[index].Values = append(streams[index].Values, [2]string{logTime, string(body)})
 	}
-
-	labels := map[string]string{}
-	if len(entries) > 0 {
-		labels = p.resolveLabels(entries[0])
-	}
-	return lokiPayload{
-		Streams: []lokiStream{
-			{
-				Stream: labels,
-				Values: values,
-			},
-		},
-	}
+	return lokiPayload{Streams: streams}
 }
 
 func (p *Plugin) resolveLabels(log map[string]any) map[string]string {
@@ -413,8 +469,11 @@ func (p *Plugin) resolveLabels(log map[string]any) map[string]string {
 		if after, ok := strings.CutPrefix(value, "$"); ok {
 			if resolved, ok := log[after]; ok {
 				labels[key] = fmt.Sprint(resolved)
-				continue
 			}
+			if _, ok := labels[key]; !ok {
+				labels[key] = ""
+			}
+			continue
 		}
 		labels[key] = value
 	}

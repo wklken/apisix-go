@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	cgzip "compress/gzip"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hmac"
@@ -16,6 +17,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +41,8 @@ import (
 )
 
 const helperProcessEnv = "APISIX_GO_INTEGRATION_HELPER"
+
+const environmentHelperProcessEnv = "APISIX_GO_CASE_ENVIRONMENT_HELPER"
 
 func TestPluginIntegration(t *testing.T) {
 	files, err := filepath.Glob("*.yaml")
@@ -799,6 +804,161 @@ func TestHarnessRunsNamedFixtures(t *testing.T) {
 	runCase(t, caseSpec)
 }
 
+func TestHTTPFixtureResponseDelay(t *testing.T) {
+	fixture, err := startNamedFixture(FixtureSpec{
+		Name: "delayed",
+		Kind: "http",
+		Respond: []HTTPResponse{{
+			Delay:  100 * time.Millisecond,
+			Status: http.StatusOK,
+			Body:   "delayed",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("startNamedFixture() error = %v", err)
+	}
+	defer fixture.close()
+
+	started := time.Now()
+	response, err := http.Get(fixture.url())
+	if err != nil {
+		t.Fatalf("GET delayed fixture: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if elapsed := time.Since(started); elapsed < 80*time.Millisecond {
+		t.Fatalf("fixture response elapsed = %s, want at least 80ms", elapsed)
+	}
+}
+
+func TestHTTPFixtureResponseDelayStopsOnRequestCancellation(t *testing.T) {
+	fixture, err := startNamedFixture(FixtureSpec{
+		Name: "cancellable",
+		Kind: "http",
+		Respond: []HTTPResponse{{
+			Delay:  5 * time.Second,
+			Status: http.StatusOK,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("startNamedFixture() error = %v", err)
+	}
+	defer fixture.close()
+
+	context, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(context, http.MethodGet, fixture.url(), nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	cancelTimer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer cancelTimer.Stop()
+
+	started := time.Now()
+	_, err = http.DefaultClient.Do(request)
+	if err == nil {
+		t.Fatal("canceled GET error = nil")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("canceled fixture response elapsed = %s, want prompt cancellation", elapsed)
+	}
+}
+
+func TestHarnessPassesCaseEnvironmentOnlyToConfiguredChild(t *testing.T) {
+	const environmentVariable = "CLICK_HOUSE_USER"
+	if _, present := os.LookupEnv(environmentVariable); present {
+		t.Fatalf("%s is set in the parent process", environmentVariable)
+	}
+
+	caseSpec := Case{
+		Name:        "case-environment",
+		Source:      CaseSource{Tests: []int{1}},
+		Environment: Environment{environmentVariable: "fixture-user"},
+		Config: map[string]any{
+			"routes": []any{map[string]any{
+				"id":  "case-environment",
+				"uri": "/probe",
+				"plugins": map[string]any{"clickhouse-logger": map[string]any{
+					"endpoint_addr":    "{{FIXTURE.sink.URL}}",
+					"user":             "$ENV://CLICK_HOUSE_USER",
+					"password":         "",
+					"database":         "default",
+					"logtable":         "logs",
+					"batch_max_size":   1,
+					"inactive_timeout": 1,
+				}},
+				"upstream": map[string]any{
+					"type":  "roundrobin",
+					"nodes": map[string]any{"{{FIXTURE.primary.ADDR}}": 1},
+				},
+			}},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name:    "primary",
+				Kind:    "http",
+				Respond: []HTTPResponse{{Status: http.StatusOK, Body: "ok"}},
+			},
+			{
+				Name: "sink",
+				Kind: "http",
+				Expect: []HTTPAssertion{{
+					Method: http.MethodPost,
+					Headers: map[string]Matcher{
+						"X-ClickHouse-User": {Equals: new("fixture-user")},
+					},
+				}},
+				Respond: []HTTPResponse{{Status: http.StatusOK}},
+			},
+		},
+		Steps: []CaseStep{{
+			Name:   "deliver-log",
+			Input:  HTTPInput{Path: "/probe"},
+			Output: HTTPOutput{Status: http.StatusOK, Body: &Matcher{Equals: new("ok")}},
+			Wait:   time.Second,
+		}},
+	}
+
+	runCase(t, caseSpec)
+	if _, present := os.LookupEnv(environmentVariable); present {
+		t.Fatalf("%s leaked from child process into parent", environmentVariable)
+	}
+}
+
+func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
+	const environmentName = "APISIX_GO_CASE_ENVIRONMENT_VALUE"
+	if _, present := os.LookupEnv(environmentName); present {
+		t.Fatalf("%s is set in the parent process", environmentName)
+	}
+
+	parent := append([]string(nil), os.Environ()...)
+	parent = append(parent, environmentName+"=ambient", environmentName+"=duplicate")
+	configured := Environment{
+		environmentHelperProcessEnv: "1",
+		environmentName:             "fixture-user",
+	}
+	first := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
+	first.Env = childEnvironment(parent, configured)
+	firstOutput, err := first.CombinedOutput()
+	if err != nil {
+		t.Fatalf("configured child error = %v, output = %s", err, firstOutput)
+	}
+	if !strings.Contains(string(firstOutput), "fixture-user") {
+		t.Fatalf("configured child output = %q, want case environment value", firstOutput)
+	}
+
+	second := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
+	second.Env = childEnvironment(os.Environ(), Environment{environmentHelperProcessEnv: "1"})
+	secondOutput, err := second.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unconfigured child error = %v, output = %s", err, secondOutput)
+	}
+	if strings.Contains(string(secondOutput), "fixture-user") {
+		t.Fatalf("unconfigured child output = %q, want no value leaked from configured child", secondOutput)
+	}
+	if _, present := os.LookupEnv(environmentName); present {
+		t.Fatalf("%s leaked from child process into parent", environmentName)
+	}
+}
+
 func TestHarnessRunsChunkedFixture(t *testing.T) {
 	body := "hello world"
 	caseSpec := Case{
@@ -1048,6 +1208,13 @@ func TestAPISIXProcess(t *testing.T) {
 	apisixcmd.Execute()
 }
 
+func TestCaseEnvironmentHelperProcess(t *testing.T) {
+	if os.Getenv(environmentHelperProcessEnv) != "1" {
+		return
+	}
+	fmt.Print(os.Getenv("APISIX_GO_CASE_ENVIRONMENT_VALUE"))
+}
+
 type capturedRequest struct {
 	method  string
 	path    string
@@ -1077,7 +1244,7 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 		default:
 		}
 
-		writeFixtureResponse(w, spec.Respond, string(body))
+		writeFixtureResponse(w, r.Context(), spec.Respond, string(body))
 	})
 
 	var server *httptest.Server
@@ -1117,7 +1284,7 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 		}
 		responseMu.Unlock()
 		response := spec.Respond[responseIndex]
-		writeFixtureResponse(w, response, string(body))
+		writeFixtureResponse(w, r.Context(), response, string(body))
 	})
 
 	var server *httptest.Server
@@ -1129,7 +1296,16 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	return &fixtureServer{server: server, requests: requests}, nil
 }
 
-func writeFixtureResponse(w http.ResponseWriter, response HTTPResponse, requestBody string) {
+func writeFixtureResponse(w http.ResponseWriter, context context.Context, response HTTPResponse, requestBody string) {
+	if response.Delay > 0 {
+		timer := time.NewTimer(response.Delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-context.Done():
+			return
+		}
+	}
 	for name, value := range response.Headers {
 		w.Header().Set(name, value)
 	}
@@ -1214,7 +1390,7 @@ type apisixProcess struct {
 	logPath string
 }
 
-func startAPISIX(workDir string) (*apisixProcess, error) {
+func startAPISIX(workDir string, environment Environment) (*apisixProcess, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("locate test executable: %w", err)
@@ -1226,7 +1402,10 @@ func startAPISIX(workDir string) (*apisixProcess, error) {
 	}
 	command := exec.Command(executable, "-test.run=^TestAPISIXProcess$")
 	command.Dir = workDir
-	command.Env = append(os.Environ(), helperProcessEnv+"=1")
+	childEnvironmentOverrides := make(Environment, len(environment)+1)
+	maps.Copy(childEnvironmentOverrides, environment)
+	childEnvironmentOverrides[helperProcessEnv] = "1"
+	command.Env = childEnvironment(os.Environ(), childEnvironmentOverrides)
 	command.Stdout = logFile
 	command.Stderr = logFile
 	if err := command.Start(); err != nil {
@@ -1244,6 +1423,40 @@ func startAPISIX(workDir string) (*apisixProcess, error) {
 		_ = logFile.Close()
 	}()
 	return process, nil
+}
+
+func childEnvironment(inherited []string, environment Environment) []string {
+	overrides := make(map[string]struct{}, len(environment))
+	for name := range environment {
+		overrides[name] = struct{}{}
+	}
+
+	result := make([]string, 0, len(inherited)+len(environment))
+	seen := make(map[string]struct{}, len(inherited)+len(environment))
+	for _, entry := range inherited {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || name == "" {
+			continue
+		}
+		if _, overridden := overrides[name]; overridden {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, entry)
+	}
+
+	names := make([]string, 0, len(environment))
+	for name := range environment {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		result = append(result, name+"="+environment[name])
+	}
+	return result
 }
 
 func (p *apisixProcess) waitReady(address string, timeout time.Duration) error {
@@ -1561,7 +1774,11 @@ func runCase(t *testing.T, spec Case) {
 	if err := writeStandaloneConfigSnapshot(filepath.Join(confDir, "apisix.yaml"), standaloneConfig); err != nil {
 		t.Fatalf("write standalone config: %v", err)
 	}
-	process, err := startAPISIX(workDir)
+	environment, err := expandEnvironment(spec.Environment, replacements)
+	if err != nil {
+		t.Fatalf("expand case environment: %v", err)
+	}
+	process, err := startAPISIX(workDir, environment)
 	if err != nil {
 		t.Fatalf("start APISIX: %v", err)
 	}
@@ -1730,6 +1947,21 @@ func runCase(t *testing.T, spec Case) {
 			}
 		}
 	}
+}
+
+func expandEnvironment(environment Environment, replacements map[string]string) (Environment, error) {
+	if len(environment) == 0 {
+		return nil, nil
+	}
+	expanded := make(Environment, len(environment))
+	for name, value := range environment {
+		replaced, err := replaceFixturePlaceholders([]byte(value), replacements)
+		if err != nil {
+			return nil, fmt.Errorf("environment variable %q: %w", name, err)
+		}
+		expanded[name] = string(replaced)
+	}
+	return expanded, nil
 }
 
 func writeScenarioFiles(workDir string, files []ScenarioFile) error {

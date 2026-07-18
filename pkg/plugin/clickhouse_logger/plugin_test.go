@@ -60,6 +60,51 @@ func TestPostInitSetsClickHouseDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitResolvesClickHouseUserFromEnvironment(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER", "fixture-user")
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{"http://127.0.0.1:8123"},
+		User:          "$ENV://CLICK_HOUSE_USER",
+		Password:      "secret",
+		Database:      "default",
+		LogTable:      "apisix_logs",
+	})
+
+	if p.config.User != "fixture-user" {
+		t.Fatalf("user = %q, want resolved environment value", p.config.User)
+	}
+}
+
+func TestPostInitRejectsInvalidClickHouseUserEnvironmentReference(t *testing.T) {
+	t.Setenv("CLICK_HOUSE_USER_EMPTY", "")
+
+	for _, test := range []struct {
+		name string
+		user string
+	}{
+		{name: "missing-name", user: "$ENV://"},
+		{name: "missing-value", user: "$ENV://CLICK_HOUSE_USER_MISSING"},
+		{name: "empty-value", user: "$ENV://CLICK_HOUSE_USER_EMPTY"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: Config{
+				EndpointAddrs: []string{"http://127.0.0.1:8123"},
+				User:          test.user,
+				Password:      "secret",
+				Database:      "default",
+				LogTable:      "apisix_logs",
+			}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatalf("PostInit() error = nil, want invalid environment reference rejection")
+			}
+		})
+	}
+}
+
 func TestPostInitRejectsInvalidEncryptedPassword(t *testing.T) {
 	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
@@ -143,11 +188,14 @@ func TestEndpointURLPrefersDeprecatedEndpointAddr(t *testing.T) {
 
 func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 	oldRandomEndpointIndex := randomEndpointIndex
+	next := 0
 	randomEndpointIndex = func(n int) int {
 		if n != 2 {
 			t.Fatalf("random endpoint count = %d, want 2", n)
 		}
-		return 1
+		index := next
+		next = (next + 1) % n
+		return index
 	}
 	t.Cleanup(func() {
 		randomEndpointIndex = oldRandomEndpointIndex
@@ -161,8 +209,11 @@ func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 		LogTable:      "apisix_logs",
 	})
 
+	if got := p.endpointURL(); got != "http://127.0.0.1:8123" {
+		t.Fatalf("first endpointURL() = %q, want first endpoint_addrs entry", got)
+	}
 	if got := p.endpointURL(); got != "http://127.0.0.2:8123" {
-		t.Fatalf("endpointURL() = %q, want selected endpoint_addrs entry", got)
+		t.Fatalf("second endpointURL() = %q, want second endpoint_addrs entry", got)
 	}
 }
 

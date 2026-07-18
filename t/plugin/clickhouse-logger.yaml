@@ -1,178 +1,350 @@
-cases:
-    - config:
-        routes:
-            - id: clickhouse-logger-source-1
-              plugins:
-                clickhouse-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    database: default
-                    endpoint_addr: '{{FIXTURE.sink.URL}}'
-                    logtable: logs
-                    password: integration
-                    user: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: clickhouse-logger-source-1
-      source:
-        file: t/plugin/clickhouse-logger.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: clickhouse-logger-source-2
-              plugins:
-                clickhouse-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    database: default
-                    endpoint_addr: '{{FIXTURE.sink.URL}}'
-                    logtable: logs
-                    password: integration
-                    user: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: clickhouse-logger-source-2
-      source:
-        file: t/plugin/clickhouse-logger2.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: clickhouse-logger-source-3
-              plugins:
-                clickhouse-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    database: default
-                    endpoint_addr: '{{FIXTURE.sink.URL}}'
-                    logtable: logs
-                    password: integration
-                    user: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: clickhouse-logger-source-3
-      source:
-        file: t/plugin/clickhouse-logger3.t
-        tests:
-            - 1
-            - 2
-            - 3
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/clickhouse-logger.t
-      tests: 12
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/clickhouse-logger2.t
-      tests: 8
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/clickhouse-logger3.t
-      tests: 3
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/clickhouse-logger.t
+    tests: 12
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/clickhouse-logger2.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/clickhouse-logger3.t
+    tests: 3
+cases:
+  - name: full-configuration
+    source: {file: t/plugin/clickhouse-logger.t, tests: [1]}
+    config:
+      routes:
+        - id: clickhouse-full
+          uri: /full
+          plugins:
+            clickhouse-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              user: full-user
+              password: full-password
+              database: full-db
+              logtable: full_logs
+              timeout: 3
+              retry_delay: 1
+              batch_max_size: 1
+              max_retry_count: 1
+              name: clickhouse logger
+              ssl_verify: false
+              inactive_timeout: 1
+              log_format: {case: full-configuration}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /full}}], respond: [{status: 200, body: full-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /}
+            headers:
+              Content-Type: {equals: application/json}
+              X-ClickHouse-User: {equals: full-user}
+              X-ClickHouse-Key: {equals: full-password}
+              X-ClickHouse-Database: {equals: full-db}
+            body: {matches: '^INSERT INTO full_logs FORMAT JSONEachRow \{"case":"full-configuration"\}$'}
+        respond: [{status: 200}]
+    steps:
+      - {name: deliver-full-log, input: {path: /full}, output: {status: 200, body: {equals: full-ok}}, wait: 1s}
+  - name: basic-configuration-defaults
+    source: {file: t/plugin/clickhouse-logger.t, tests: [2]}
+    config:
+      routes:
+        - id: clickhouse-basic
+          uri: /basic
+          plugins:
+            clickhouse-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              user: default
+              password: a
+              database: default
+              logtable: basic_logs
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: basic-defaults}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /basic}}], respond: [{status: 200, body: basic-ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /}
+            headers: {X-ClickHouse-User: {equals: default}, X-ClickHouse-Key: {equals: a}, X-ClickHouse-Database: {equals: default}}
+            body: {matches: '^INSERT INTO basic_logs FORMAT JSONEachRow \{"case":"basic-defaults"\}$'}
+        respond: [{status: 200}]
+    steps:
+      - {name: deliver-basic-log, input: {path: /basic}, output: {status: 200, body: {equals: basic-ok}}, wait: 1s}
+  - name: missing-endpoint-is-rejected
+    source: {file: t/plugin/clickhouse-logger.t, tests: [3]}
+    config:
+      routes:
+        - id: clickhouse-missing-endpoint
+          uri: /missing-endpoint
+          plugins:
+            clickhouse-logger: {user: default, password: a, database: default, logtable: logs}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    input: {path: /missing-endpoint}
+    output:
+      status: 404
+      logs: {matches: 'value should match only one schema|matches none|endpoint'}
+  - name: route-plugin-setup
+    source: {file: t/plugin/clickhouse-logger.t, tests: [4]}
+    config:
+      routes:
+        - id: clickhouse-route-setup
+          uri: /opentracing
+          plugins:
+            clickhouse-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              user: default
+              password: a
+              database: default
+              logtable: route_logs
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: route-plugin-setup}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /opentracing}}], respond: [{status: 200, body: route-ok}]}
+      - name: sink
+        kind: http
+        expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO route_logs FORMAT JSONEachRow \{"case":"route-plugin-setup"\}$'}}]
+        respond: [{status: 200}]
+    steps:
+      - {name: route-setup-delivery, input: {path: /opentracing}, output: {status: 200, body: {equals: route-ok}}, wait: 1s}
+  - name: multi-endpoint-real-delivery
+    source: {file: t/plugin/clickhouse-logger.t, tests: [5, 6, 7, 8]}
+    config:
+      routes:
+        - id: clickhouse-multi
+          uri: /multi
+          plugins:
+            clickhouse-logger:
+              endpoint_addrs: ['{{FIXTURE.sink.URL}}/one', '{{FIXTURE.sink.URL}}/two']
+              user: default
+              password: ''
+              database: default
+              logtable: multi_logs
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: multi-endpoint}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+          - {method: GET, path: {equals: /multi}}
+        respond: [{status: 200, body: multi-ok}]
+      - name: sink
+        kind: http
+        expect:
+          - {method: POST, path: {matches: '^/(one|two)$'}, headers: {X-ClickHouse-User: {equals: default}, X-ClickHouse-Key: {equals: ''}, X-ClickHouse-Database: {equals: default}}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+          - {method: POST, path: {matches: '^/(one|two)$'}, body: {matches: '^INSERT INTO multi_logs FORMAT JSONEachRow \{"case":"multi-endpoint"\}$'}}
+        respond: [{status: 200}]
+    steps:
+      - name: repeated-real-hits
+        repeat: 12
+        input: {path: /multi}
+        output: {status: 200, body: {equals: multi-ok}}
+  - name: single-endpoint-real-delivery
+    source: {file: t/plugin/clickhouse-logger.t, tests: [9, 10, 11]}
+    config:
+      routes:
+        - id: clickhouse-single
+          uri: /single
+          plugins:
+            clickhouse-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              user: default
+              password: ''
+              database: default
+              logtable: single_logs
+              batch_max_size: 1
+              inactive_timeout: 1
+              log_format: {case: single-endpoint}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /single}}], respond: [{status: 200, body: single-ok}]}
+      - name: sink
+        kind: http
+        expect: [{method: POST, path: {equals: /}, headers: {X-ClickHouse-User: {equals: default}, X-ClickHouse-Key: {equals: ''}, X-ClickHouse-Database: {equals: default}}, body: {matches: '^INSERT INTO single_logs FORMAT JSONEachRow \{"case":"single-endpoint"\}$'}}]
+        respond: [{status: 200}]
+    steps:
+      - {name: single-route-hit-and-log, input: {path: /single}, output: {status: 200, body: {equals: single-ok}}, wait: 1s}
+  - name: pending-entry-overflow-drops-third-entry
+    source: {file: t/plugin/clickhouse-logger.t, tests: [12]}
+    config:
+      plugin_metadata:
+        - id: clickhouse-logger
+          max_pending_entries: 1
+          log_format: {case: pending-overflow}
+      routes:
+        - id: clickhouse-overflow
+          uri: /overflow
+          plugins:
+            clickhouse-logger:
+              endpoint_addr: '{{FIXTURE.sink.URL}}'
+              user: default
+              password: a
+              database: default
+              logtable: overflow_logs
+              batch_max_size: 1
+              inactive_timeout: 1
+              timeout: 3
+              max_retry_count: 0
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}]
+        respond: [{status: 200, body: overflow-ok}]
+      - name: sink
+        kind: http
+        expect:
+          - {method: POST, path: {equals: /}, body: {matches: '^INSERT INTO overflow_logs FORMAT JSONEachRow \{"case":"pending-overflow"\}$'}}
+          - {method: POST, path: {equals: /}, body: {matches: '^INSERT INTO overflow_logs FORMAT JSONEachRow \{"case":"pending-overflow"\}$'}}
+        respond: [{delay: 2s, status: 200}, {delay: 2s, status: 200}]
+    steps:
+      - name: overflow-while-two-deliveries-are-blocked
+        repeat: 3
+        input: {path: /overflow}
+        output: {status: 200, body: {equals: overflow-ok}, logs: {matches: 'max pending entries limit exceeded'}}
+  - name: response-body-enabled
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [1]}
+    config:
+      routes:
+        - id: clickhouse-response-enabled
+          uri: /response-enabled
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, log_format: {case: response-enabled}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /response-enabled}}], respond: [{status: 200, body: hello-response}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-enabled","response":\{"body":"hello-response"\}\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: response-body-is-delivered, input: {path: /response-enabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
+  - name: response-body-default-disabled
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [2]}
+    config:
+      routes:
+        - id: clickhouse-response-disabled
+          uri: /response-disabled
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, log_format: {case: response-disabled}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /response-disabled}}], respond: [{status: 200, body: hello-response}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-disabled"\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: response-body-is-absent-by-default, input: {path: /response-disabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
+  - name: response-body-expression-matches
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [3]}
+    config:
+      routes:
+        - id: clickhouse-response-expression
+          uri: /response-expression
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, include_resp_body_expr: [[arg_foo, '==', bar]], log_format: {case: response-expression}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: '/response-expression?foo=bar'}}], respond: [{status: 200, body: hello-response}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-expression","response":\{"body":"hello-response"\}\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: expression-captures-response, input: {path: '/response-expression?foo=bar'}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
+  - name: response-body-expression-skips
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [4]}
+    config:
+      routes:
+        - id: clickhouse-response-skip
+          uri: /response-skip
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, include_resp_body_expr: [[arg_foo, '==', bar]], log_format: {case: response-skip}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: '/response-skip?foo=unknown'}}], respond: [{status: 200, body: hello-response}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-skip"\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: expression-skips-response, input: {path: '/response-skip?foo=unknown'}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
+  - name: request-body-enabled-default
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [5, 6]}
+    config:
+      routes:
+        - id: clickhouse-request-enabled
+          uri: /request-enabled
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, log_format: {case: request-enabled}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/request-enabled?foo=bar'}, body: {equals: '{"sample":"hello"}'}}], respond: [{status: 200, body: hello-request}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-enabled","request":\{"body":"\{\\"sample\\":\\"hello\\"\}"\}\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: default-request-body-is-delivered, input: {method: POST, path: '/request-enabled?foo=bar', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
+  - name: request-body-expression-matches
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [7]}
+    config:
+      routes:
+        - id: clickhouse-request-expression
+          uri: /request-expression
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_req_body_expr: [[arg_foo, '==', bar]], log_format: {case: request-expression}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/request-expression?foo=bar'}, body: {equals: '{"sample":"hello"}'}}], respond: [{status: 200, body: hello-request}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-expression","request":\{"body":"\{\\"sample\\":\\"hello\\"\}"\}\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: expression-captures-request, input: {method: POST, path: '/request-expression?foo=bar', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
+  - name: request-body-expression-skips
+    source: {file: t/plugin/clickhouse-logger2.t, tests: [8]}
+    config:
+      routes:
+        - id: clickhouse-request-skip
+          uri: /request-skip
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_req_body_expr: [[arg_foo, '==', bar]], log_format: {case: request-skip}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/request-skip?foo=unknown'}, body: {equals: '{"sample":"hello"}'}}], respond: [{status: 200, body: hello-request}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-skip"\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: expression-skips-request, input: {method: POST, path: '/request-skip?foo=unknown', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
+  - name: user-resolves-from-environment
+    source: {file: t/plugin/clickhouse-logger3.t, tests: [1, 2, 3]}
+    environment: {CLICK_HOUSE_USER: environment-user}
+    config:
+      routes:
+        - id: clickhouse-environment-user
+          uri: /environment-user
+          plugins:
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: '$ENV://CLICK_HOUSE_USER', password: '', database: default, logtable: environment_logs, batch_max_size: 1, inactive_timeout: 1, log_format: {case: environment-user}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /environment-user}}], respond: [{status: 200, body: environment-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, headers: {X-ClickHouse-User: {equals: environment-user}, X-ClickHouse-Key: {equals: ''}, X-ClickHouse-Database: {equals: default}}, body: {matches: '^INSERT INTO environment_logs FORMAT JSONEachRow \{"case":"environment-user"\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: environment-user-delivery, input: {path: /environment-user}, output: {status: 200, body: {equals: environment-ok}}, wait: 1s}

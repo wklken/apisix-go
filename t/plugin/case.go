@@ -34,6 +34,7 @@ type Case struct {
 	Name          string          `yaml:"name"`
 	Source        CaseSource      `yaml:"source"`
 	Variants      []CaseVariant   `yaml:"variants,omitempty"`
+	Environment   Environment     `yaml:"environment,omitempty"`
 	Runtime       map[string]any  `yaml:"runtime,omitempty"`
 	Config        map[string]any  `yaml:"config,omitempty"`
 	Input         HTTPInput       `yaml:"input,omitempty"`
@@ -48,6 +49,7 @@ type Case struct {
 
 type CaseVariant struct {
 	Name          string          `yaml:"name"`
+	Environment   Environment     `yaml:"environment,omitempty"`
 	Runtime       map[string]any  `yaml:"runtime,omitempty"`
 	Config        map[string]any  `yaml:"config,omitempty"`
 	Input         HTTPInput       `yaml:"input,omitempty"`
@@ -62,6 +64,29 @@ type CaseVariant struct {
 
 type FrontendTLS struct {
 	SNI string `yaml:"sni"`
+}
+
+type Environment map[string]string
+
+func (e *Environment) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return errors.New("environment must be a mapping")
+	}
+
+	environment := make(Environment, len(value.Content)/2)
+	for i := 0; i < len(value.Content); i += 2 {
+		name := value.Content[i]
+		entry := value.Content[i+1]
+		if name.Kind != yaml.ScalarNode || name.Tag != "!!str" {
+			return errors.New("environment variable name must be a string")
+		}
+		if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" {
+			return fmt.Errorf("environment variable %q value must be a string", name.Value)
+		}
+		environment[name.Value] = entry.Value
+	}
+	*e = environment
+	return nil
 }
 
 type CaseStep struct {
@@ -163,6 +188,7 @@ type HTTPResponse struct {
 	Body            string            `yaml:"body,omitempty"`
 	Chunks          []string          `yaml:"chunks,omitempty"`
 	EchoRequestBody bool              `yaml:"echo_request_body,omitempty"`
+	Delay           time.Duration     `yaml:"delay,omitempty"`
 }
 
 type HTTPOutput struct {
@@ -388,20 +414,40 @@ func (c *Case) validate() error {
 }
 
 func (c *Case) hasScenario() bool {
-	return len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" || c.Input.Path != "" ||
-		len(c.Input.Headers) > 0 || len(c.Input.HeaderValues) > 0 || c.Input.Body != "" ||
-		c.Input.BodyRepeat != nil || c.Input.Chunked ||
-		c.Upstream != nil || c.Output.Status != 0 ||
-		len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.Logs != nil || len(c.Fixtures) > 0 ||
-		c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.SaveBodyLength != "" || c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 ||
-		len(c.Output.UniqueHeaders) > 0 || len(c.Output.MonotonicHeaders) > 0 ||
-		len(c.Output.DifferentHeaders) > 0 || len(c.Output.Captures) > 0 || len(c.Files) > 0 ||
-		len(c.Steps) > 0 || c.TLS != nil || len(c.AfterShutdown) > 0
+	return len(c.Environment) > 0 || len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" ||
+		c.Input.Path != "" ||
+		len(c.Input.Headers) > 0 ||
+		len(c.Input.HeaderValues) > 0 ||
+		c.Input.Body != "" ||
+		c.Input.BodyRepeat != nil ||
+		c.Input.Chunked ||
+		c.Upstream != nil ||
+		c.Output.Status != 0 ||
+		len(c.Output.Headers) > 0 ||
+		c.Output.Body != nil ||
+		c.Output.Logs != nil ||
+		len(c.Fixtures) > 0 ||
+		c.Output.GzipBody != nil ||
+		c.Output.BrotliBody != nil ||
+		c.Output.SaveBodyLength != "" ||
+		c.Output.BodyLengthLessThan != "" ||
+		c.Output.BodyLengthLessThanValue != nil ||
+		c.Output.ElapsedAtLeast > 0 ||
+		c.Output.ElapsedLessThan > 0 ||
+		len(c.Output.UniqueHeaders) > 0 ||
+		len(c.Output.MonotonicHeaders) > 0 ||
+		len(c.Output.DifferentHeaders) > 0 ||
+		len(c.Output.Captures) > 0 ||
+		len(c.Files) > 0 ||
+		len(c.Steps) > 0 ||
+		c.TLS != nil ||
+		len(c.AfterShutdown) > 0
 }
 
 func (v *CaseVariant) caseSpec() *Case {
 	return &Case{
 		Name:          v.Name,
+		Environment:   v.Environment,
 		Runtime:       v.Runtime,
 		Config:        v.Config,
 		Input:         v.Input,
@@ -418,6 +464,9 @@ func (v *CaseVariant) caseSpec() *Case {
 func (c *Case) validateScenario() error {
 	if len(c.Config) == 0 {
 		return errors.New("config is required")
+	}
+	if err := validateEnvironment(c.Environment); err != nil {
+		return err
 	}
 	if err := validateScenarioFiles(c.Files); err != nil {
 		return err
@@ -502,6 +551,18 @@ func (c *Case) validateScenario() error {
 		return nil
 	}
 	return c.validateSingleScenario()
+}
+
+var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validateEnvironment(environment Environment) error {
+	for name := range environment {
+		if strings.ContainsRune(name, '\x00') || strings.Contains(name, "=") ||
+			!environmentNamePattern.MatchString(name) {
+			return fmt.Errorf("environment variable name %q must be a nonempty POSIX-style name", name)
+		}
+	}
+	return nil
 }
 
 func validateConfigProbeInput(input HTTPInput) error {
@@ -837,6 +898,12 @@ func (r HTTPResponse) validate() error {
 	}
 	if r.EchoRequestBody && (r.Body != "" || len(r.Chunks) > 0) {
 		return errors.New("echo_request_body must not be combined with body or chunks")
+	}
+	if r.Delay < 0 {
+		return errors.New("delay must not be negative")
+	}
+	if r.Delay > 5*time.Second {
+		return errors.New("delay must not exceed 5s")
 	}
 	return nil
 }

@@ -313,6 +313,173 @@ cases:
 	}
 }
 
+func TestManifestAcceptsCaseAndVariantEnvironment(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 2
+cases:
+  - name: case-environment
+    source:
+      tests: [1]
+    environment:
+      CLICK_HOUSE_USER: fixture-user
+    config:
+      routes: []
+    output:
+      logs:
+        matches: ready
+  - name: variant-environment
+    source:
+      tests: [2]
+    variants:
+      - name: child
+        environment:
+          CLICK_HOUSE_USER: fixture-user
+        config:
+          routes: []
+        output:
+          logs:
+            matches: ready
+`)
+
+	if _, err := loadManifest("environment.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestManifestRejectsInvalidEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		environment string
+	}{
+		{name: "invalid-name", environment: "1INVALID: value"},
+		{name: "non-string-value", environment: "VALID: 1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := []byte("source:\n" +
+				"  repository: https://github.com/apache/apisix\n" +
+				"  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7\n" +
+				"  file: t/plugin/example.t\n" +
+				"  tests: 1\n" +
+				"cases:\n" +
+				"  - name: invalid-environment\n" +
+				"    source:\n" +
+				"      tests: [1]\n" +
+				"    environment:\n" +
+				"      " + test.environment + "\n" +
+				"    config:\n" +
+				"      routes: []\n" +
+				"    output:\n" +
+				"      logs:\n" +
+				"        matches: ready\n")
+
+			if _, err := loadManifest("invalid-environment.yaml", data); err == nil {
+				t.Fatal("loadManifest() error = nil, want environment validation failure")
+			}
+		})
+	}
+}
+
+func TestManifestRejectsCaseEnvironmentWithVariants(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: mixed-environment
+    source:
+      tests: [1]
+    environment:
+      CLICK_HOUSE_USER: fixture-user
+    variants:
+      - name: child
+        config:
+          routes: []
+        output:
+          logs:
+            matches: ready
+`)
+
+	if _, err := loadManifest("mixed-environment.yaml", data); err == nil {
+		t.Fatal("loadManifest() error = nil, want case environment and variants rejection")
+	}
+}
+
+func TestManifestAcceptsHTTPFixtureResponseDelay(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: delayed-sink
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: sink
+        kind: http
+        respond:
+          - delay: 100ms
+            status: 200
+    steps:
+      - name: request
+        input:
+          path: /probe
+        output:
+          status: 200
+`)
+
+	if _, err := loadManifest("delayed-sink.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestManifestRejectsInvalidHTTPFixtureResponseDelay(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		delay string
+	}{
+		{name: "negative", delay: "-1s"},
+		{name: "too-long", delay: "6s"},
+		{name: "not-a-duration", delay: "not-a-duration"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := []byte("source:\n" +
+				"  repository: https://github.com/apache/apisix\n" +
+				"  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7\n" +
+				"  file: t/plugin/example.t\n" +
+				"  tests: 1\n" +
+				"cases:\n" +
+				"  - name: invalid-delay\n" +
+				"    source:\n" +
+				"      tests: [1]\n" +
+				"    config:\n" +
+				"      routes: []\n" +
+				"    fixtures:\n" +
+				"      - name: sink\n" +
+				"        kind: http\n" +
+				"        respond:\n" +
+				"          - delay: " + test.delay + "\n" +
+				"            status: 200\n" +
+				"    steps:\n" +
+				"      - name: request\n" +
+				"        input:\n" +
+				"          path: /probe\n" +
+				"        output:\n" +
+				"          status: 200\n")
+
+			if _, err := loadManifest("invalid-delay.yaml", data); err == nil {
+				t.Fatal("loadManifest() error = nil, want fixture response delay rejection")
+			}
+		})
+	}
+}
+
 func TestManifestAcceptsStepsAndNamedFixtures(t *testing.T) {
 	data := []byte(`source:
   repository: https://github.com/apache/apisix

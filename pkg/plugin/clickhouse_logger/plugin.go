@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -198,6 +199,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	user, err := resolveClickHouseUser(p.config.User)
+	if err != nil {
+		return err
+	}
+	p.config.User = user
+
 	keyring, enabled := data_encryption.Keyring()
 	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.Password)
 	if err != nil {
@@ -263,6 +270,23 @@ func (p *Plugin) PostInit() error {
 	}, p.SendBatch)
 
 	return nil
+}
+
+func resolveClickHouseUser(user string) (string, error) {
+	const environmentPrefix = "$ENV://"
+	if !strings.HasPrefix(user, environmentPrefix) {
+		return user, nil
+	}
+
+	name := strings.TrimPrefix(user, environmentPrefix)
+	if name == "" {
+		return "", fmt.Errorf("clickhouse-logger user environment variable name is empty")
+	}
+	value, ok := os.LookupEnv(name)
+	if !ok || value == "" {
+		return "", fmt.Errorf("clickhouse-logger user environment variable %q is not set or empty", name)
+	}
+	return value, nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

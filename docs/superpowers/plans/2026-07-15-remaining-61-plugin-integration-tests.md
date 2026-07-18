@@ -288,7 +288,7 @@ The conversion acceptance matrix is exact:
 | `cors` | four sources / 86 | simple/preflight requests, wildcard/regex origins, methods, request/expose headers, credentials, max-age, allow-private-network, missing/disallowed origins, schema rejection |
 | `consumer-restriction` | two sources / 71 | username/group/service/route allow/deny, anonymous behavior, consumer groups, plugin metadata, custom message/status, missing consumer |
 | `request-validation` | two sources / 55 | JSON/body/form/header/query validation, coercion, required/additional fields, arrays/nested objects, custom rejection status/message, malformed payloads |
-| `oas-validator` | three sources / 110 | inline and referenced OpenAPI operations, path/query/header/cookie/body validation, formats, nullable/composition, request/response modes, unmatched operations, schema errors |
+| `oas-validator` | three sources / 112 | inline and referenced OpenAPI operations, path/query/header/cookie/body validation, formats, nullable/composition, request/response modes, unmatched operations, schema errors |
 | `traffic-label` | two sources / 38 | first-match and match-all rules, nested expressions, variables, numeric/string headers, weighted actions, schema/config-time expression rejection |
 
 - [ ] **Step 1: Convert one manifest at a time using the canonical shape**
@@ -749,7 +749,7 @@ Expected: remote head equals local `HEAD`, `isDraft` is `false`, and the PR body
 
 The original checked state was not supported by the manifests. This audit compared each of the 61 manifests with the pinned Apache source titles and the behavior requirements above. A source number being listed once and a route containing the target plugin are necessary, but they do not prove source-complete behavior. A manifest is checked below only when its standalone resources, requests, fixture observations, and APISIX-Go boundary assertions can fail when each mapped plugin behavior is broken.
 
-**Verified result:** 6 of 61 manifests are source-complete; 55 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
+**Verified result:** 5 of 61 manifests have passed source-completeness review; 56 remain. Forty manifests use the especially weak one-generic-`source-N`-case-per-source-file pattern. The named manifests were also checked individually because descriptive case names alone are not sufficient.
 
 ### Remaining Harness and Coverage Work
 
@@ -766,10 +766,10 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `brotli` — all 37 pinned blocks run against a standalone child: default and explicit configuration, decoding/content equality, level-0 versus level-11 compressed-size ordering, header negotiation, content types, schema rejection, encoded-upstream bypass, and ETag handling are asserted.
 - [x] `fault-injection` — all 46 pinned blocks run against standalone resources, including schema rejection, abort status/body/headers/variables, redirect precedence, negation, zero percentage, and measured one- and two-second delay behavior with zero/nonmatching bounds.
 - [x] `cors` — all 86 pinned blocks run against standalone resources with behavior-specific assertions: schema and route lifecycle, wildcard/regex origin matching, default and explicit CORS response fields, credentials, methods, request/expose headers, metadata-origin validation and override, proxy-rewrite ordering, and timing-origin list/regex precedence. The focused CORS package and real-process integration gates pass.
-- [x] `consumer-restriction` — all 71 pinned source blocks are represented by standalone configuration/lifecycle and real behavior requests: Basic and HMAC authentication, default/blacklist/whitelist/method precedence, anonymous rejections, disabled configuration, consumer-group identity, and consumer-level service/route restrictions. The runtime now executes non-auth consumer plugins after authenticated consumer attachment; the focused packages and full real-process manifest pass.
+- [ ] `consumer-restriction` — all 71 pinned source blocks have standalone cases and the direct auth paths now execute non-auth consumer plugins, but runtime and harness blockers remain. `multi-auth` invokes child authenticators as probes, so those probes can run consumer plugins too early, swallow a valid authentication result, duplicate side effects, and lose the consumer-over-route precedence marker before the real downstream request; directly stacked auth plugins also need an already-run guard. The consumer-plugin chain cache keys only serialized consumer configuration even though instances are initialized with route/service-specific context, so identical consumer configuration on later routes can reuse the first route's quota, logger, or telemetry context. Finally, the HMAC helper must reject a static `Authorization` supplied through either `headers` or `header_values` instead of silently overwriting one form. Add RED-then-GREEN probe-isolation, exactly-once, downstream-override, cross-route cache-context, and HMAC validation coverage, then re-run the task review.
 - [x] `request-validation` — all 55 pinned blocks are mapped exactly once to real standalone requests covering body/header schema types and rejection matrices, scalar JSON forwarding, nested/array/enum/required constraints, custom status/messages, repeated URL-encoded values, and duplicate-key normalization. APISIX legacy `table`/`function` schema types are normalized only in schema-bearing locations, with focused package regressions; the semantic and real-process gates pass.
-- [ ] `oas-validator` — core and skip-option probes do not cover the OAS 3.1 composition/format matrix, rejection boundaries, `spec_url` failure/header/cache/TTL lifecycle, or detailed response assertions.
-- [x] `traffic-label` — all 38 pinned blocks are mapped to behavior-specific invalid-config, match/mismatch, nested-expression, header-mutation, weighted-action, multi-rule, and proxy-rewrite scenarios with fixture-side request assertions.
+- [x] `oas-validator` — all 112 pinned blocks across the three sources are mapped exactly once to standalone validation behavior. The manifest covers request and response modes, inline and URL specifications, OAS 3.1 composition/format and parameter/body matrices, initialization-time inline-JSON rejection, lazy external-reference failures, URL headers/cache/TTL behavior, and all 36 pinned runtime diagnostics. Focused package, semantic, real-process, lint, and build gates pass; task review approved the result.
+- [ ] `traffic-label` — the 38 source numbers are structurally mapped and the focused suite passes, but source test 18 (`rules: []`) is claimed by the same case as test 17 (missing `rules`), source test 9's two pipelined requests are reduced to one request, deterministic 0/100 weighted-action boundaries are absent, and invalid-config assertions do not identify the intended schema/compiler failures. Split and assert those behaviors, then re-run the task review.
 
 #### Task 5 — Local-Credential Authentication
 
@@ -862,19 +862,20 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 6 verified complete and 55 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 5 task-review-approved and 56 remaining.
 - **Behavioral placeholders:** Forty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 55 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 56 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
-The pinned source titles and the standalone resources/assertions were rechecked
-manifest by manifest. `cors`, `consumer-restriction`, and `request-validation`
-are now source-complete with fresh focused package and real-process evidence,
-so the remaining scope is **55**, not 58.
-The detailed behavior gaps for each are the unchecked entries in the
-per-plugin ledger above.
+The pinned source titles and standalone resources/assertions are being rechecked
+manifest by manifest. Passing focused package and real-process tests is necessary
+but does not restore a checkbox until a task review confirms source-complete
+behavior. `consumer-restriction` and `traffic-label` were therefore unchecked
+after their reviews found the concrete gaps recorded above. The currently
+approved scope is **5 complete and 56 remaining**; `oas-validator` passed its
+task review with 112 source blocks and 36 runtime diagnostics verified.
 
 - **Structural source-file stand-ins (40):** `ai-aws-content-moderation`,
   `ai-prompt-decorator`, `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
@@ -889,14 +890,14 @@ per-plugin ledger above.
   `tencent-cloud-cls`, `udp-logger`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
   request; it cannot prove the distinct source blocks it claims.
-- **Named but partial scenarios (15):** `oas-validator`, `key-auth`, `basic-auth`,
+- **Named but partial scenarios (16):** `consumer-restriction`, `key-auth`, `basic-auth`,
   `jwt-auth`, `hmac-auth`, `jwe-decrypt`, `saml-auth`, `limit-conn`,
   `limit-count`, `limit-req`, `proxy-cache`, `graphql-proxy-cache`,
-  `traffic-split`, `workflow`, and `batch-requests`. These have real
+  `traffic-label`, `traffic-split`, `workflow`, and `batch-requests`. These have real
   standalone scenarios, but the pinned test titles show that multiple
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Completed (6):** `brotli`, `cors`, `fault-injection`,
-  `consumer-restriction`, `request-validation`, and `traffic-label`. No other
+- **Task-review-approved (5):** `brotli`, `cors`, `fault-injection`,
+  `oas-validator`, and `request-validation`. No other
   manifest moved to checked status in this recheck.

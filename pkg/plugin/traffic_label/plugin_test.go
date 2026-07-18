@@ -3,6 +3,7 @@ package traffic_label
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -125,6 +126,36 @@ func TestHandlerUsesWeightedActions(t *testing.T) {
 	}
 }
 
+func TestHandlerNeverSelectsZeroWeightAction(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"rules": []any{map[string]any{
+			"match": []any{[]any{"uri", "==", "/anything"}},
+			"actions": []any{
+				map[string]any{"set_headers": map[string]any{"X-Bucket": "zero"}, "weight": 0},
+				map[string]any{"set_headers": map[string]any{"X-Bucket": "hundred"}, "weight": 100},
+			},
+		}},
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	for range 3 {
+		req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("X-Bucket"); got != "hundred" {
+				t.Fatalf("X-Bucket = %q, want hundred", got)
+			}
+		})).ServeHTTP(httptest.NewRecorder(), req)
+	}
+}
+
 func TestMatchSupportsRequestHeaderAndNotEquals(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Rules: []Rule{
@@ -230,6 +261,24 @@ func TestPostInitRejectsInvalidMatchExpression(t *testing.T) {
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want invalid match rejected")
+	}
+}
+
+func TestPostInitRejectsMixedLogicalOperators(t *testing.T) {
+	p := &Plugin{config: Config{Rules: []Rule{{
+		Match: []any{
+			"AND",
+			"OR",
+			[]any{"uri", "==", "/anything"},
+			[]any{"arg_version", "==", "v1"},
+		},
+		Actions: []Action{{SetHeaders: map[string]any{"X-Traffic-Label": "bad"}}},
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "mixed logical operators") {
+		t.Fatalf("PostInit() error = %v, want mixed logical operators rejection", err)
 	}
 }
 

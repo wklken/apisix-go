@@ -5,10 +5,13 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -20,7 +23,8 @@ type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 
-	client *resty.Client
+	client         *resty.Client
+	logFormatExtra map[string]string
 }
 
 const (
@@ -105,8 +109,27 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    },
+    "log_format_extra": {
+      "type": "object"
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
+	LogFormatExtra    map[string]string `json:"log_format_extra"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
 }
 
@@ -148,6 +171,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -206,6 +230,7 @@ func (p *Plugin) PostInit() error {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		p.logFormatExtra = metadata.LogFormatExtra
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -223,6 +248,32 @@ func (p *Plugin) PostInit() error {
 		ServerAddr:        p.ServerAddr,
 	}, p.SendBatch)
 	return nil
+}
+
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logFields := make(map[string]any, len(p.LogFormat)+len(p.logFormatExtra))
+		for key, value := range p.LogFormat {
+			logFields[key] = p.resolveLogFormatValue(r, value)
+		}
+		next.ServeHTTP(w, r)
+
+		for key, value := range p.logFormatExtra {
+			logFields[key] = p.resolveLogFormatValue(r, value)
+		}
+		_ = p.Fire(logFields)
+	})
+}
+
+func (p *Plugin) resolveLogFormatValue(r *http.Request, value string) any {
+	switch value {
+	case "$host":
+		return base.RequestVar(r, value, 0)
+	case "$upstream_unresolved_host":
+		return apisixctx.GetApisixVar(r, "$balancer_ip")
+	default:
+		return apisixlog.GetField(r, value)
+	}
 }
 
 func (p *Plugin) Send(log map[string]any) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -113,6 +114,24 @@ func TestBuildEventUsesSplunkHECShape(t *testing.T) {
 	}
 	if event.Time <= 0 {
 		t.Fatalf("event time = %v, want positive Unix timestamp", event.Time)
+	}
+}
+
+func TestMetadataSchemaAcceptsAdditiveLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	metadata := map[string]any{
+		"log_format_extra":    map[string]any{"upstream_host": "$upstream_unresolved_host"},
+		"max_pending_entries": 1,
+	}
+	if err := util.Validate(metadata, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata schema rejected additive log format: %v", err)
+	}
+	if err := util.Validate(map[string]any{"log_format": "wrong-type"}, p.GetMetadataSchema()); err == nil {
+		t.Fatal("metadata schema accepted string log_format")
 	}
 }
 

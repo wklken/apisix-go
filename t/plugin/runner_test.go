@@ -1420,47 +1420,44 @@ func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
 
 func (f *fixtureServer) assertCount(t *testing.T, spec FixtureSpec) {
 	t.Helper()
-	timeout := spec.Count.Timeout
+	_, err := observeFixtureRequestCount(f.requests, *spec.Count, func(received capturedRequest) {
+		assertUpstreamRequest(t, spec.Expect[0], received)
+	})
+	if err != nil {
+		t.Errorf("fixture %s: %s", spec.Name, err)
+	}
+}
+
+func observeFixtureRequestCount(
+	requests <-chan capturedRequest,
+	assertion FixtureCountAssertion,
+	observe func(capturedRequest),
+) (int, error) {
+	timeout := assertion.Timeout
 	if timeout == 0 {
 		timeout = 2 * time.Second
 	}
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	quiet := time.NewTimer(time.Hour)
-	if !quiet.Stop() {
-		<-quiet.C
-	}
-	defer quiet.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	count := 0
 	for {
-		if count >= spec.Count.AtLeast {
-			quiet.Reset(100 * time.Millisecond)
-		}
 		select {
-		case received := <-f.requests:
-			if count >= spec.Count.AtLeast && !quiet.Stop() {
-				<-quiet.C
-			}
+		case received := <-requests:
 			count++
-			assertUpstreamRequest(t, spec.Expect[0], received)
-			if count > spec.Count.AtMost {
-				t.Errorf("fixture %s request count exceeds %d", spec.Name, spec.Count.AtMost)
-				return
+			if observe != nil {
+				observe(received)
 			}
-		case <-quiet.C:
-			if count < spec.Count.AtLeast || count > spec.Count.AtMost {
-				t.Errorf(
-					"fixture %s request count = %d, want %d..%d",
-					spec.Name, count, spec.Count.AtLeast, spec.Count.AtMost,
+			if count > assertion.AtMost {
+				return count, fmt.Errorf("request count exceeds %d", assertion.AtMost)
+			}
+		case <-timer.C:
+			if count < assertion.AtLeast || count > assertion.AtMost {
+				return count, fmt.Errorf(
+					"request count = %d after %s, want %d..%d",
+					count, timeout, assertion.AtLeast, assertion.AtMost,
 				)
 			}
-			return
-		case <-deadline.C:
-			t.Errorf(
-				"fixture %s request count = %d after %s, want %d..%d",
-				spec.Name, count, timeout, spec.Count.AtLeast, spec.Count.AtMost,
-			)
-			return
+			return count, nil
 		}
 	}
 }

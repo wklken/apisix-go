@@ -169,7 +169,7 @@ func (p *Plugin) mirrorURL(r *http.Request) (string, error) {
 		return "", err
 	}
 
-	mirrorPath, rawQuery := effectiveRequestTarget(r)
+	mirrorPath, rawQuery := r.URL.Path, r.URL.RawQuery
 	if p.config.Path != "" {
 		if p.config.PathConcatMode == "prefix" {
 			mirrorPath = strings.TrimRight(p.config.Path, "/") + "/" + strings.TrimLeft(mirrorPath, "/")
@@ -187,20 +187,6 @@ func (p *Plugin) mirrorURL(r *http.Request) (string, error) {
 		hostURL.Scheme = "https"
 	}
 	return hostURL.String(), nil
-}
-
-func effectiveRequestTarget(r *http.Request) (string, string) {
-	path, rawQuery := r.URL.Path, r.URL.RawQuery
-	rewrite, _ := r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
-	uri, _ := rewrite["uri"].(string)
-	if uri == "" {
-		return path, rawQuery
-	}
-	rewritten, err := url.ParseRequestURI(uri)
-	if err != nil {
-		return path, rawQuery
-	}
-	return rewritten.Path, rewritten.RawQuery
 }
 
 func (p *Plugin) sendMirror(req *http.Request) {

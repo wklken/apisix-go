@@ -140,6 +140,9 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 	if _, ok := server.TLSNextProto["h2"]; !ok {
 		t.Fatal("configured HTTP server does not install an HTTP/2 handler")
 	}
+	if server.Protocols.UnencryptedHTTP2() {
+		t.Fatal("TLS-only HTTP/2 configuration enabled plaintext h2c")
+	}
 
 	tlsConfig := frontendTLSConfig()
 	if !slices.Contains(tlsConfig.NextProtos, "h2") {
@@ -149,6 +152,19 @@ func TestConfiguredHTTPServerAndFrontendTLSAdvertiseHTTP2(t *testing.T) {
 	config.GlobalConfig.Apisix.Ssl.Listen[0].EnableHttp2 = false
 	if protocols := frontendTLSConfig().NextProtos; slices.Contains(protocols, "h2") {
 		t.Fatalf("disabled frontend TLS protocols = %v, must not advertise h2", protocols)
+	}
+}
+
+func TestConfiguredHTTPServerEnablesH2COnlyForPlaintextListener(t *testing.T) {
+	previous := config.GlobalConfig
+	t.Cleanup(func() { config.GlobalConfig = previous })
+	config.GlobalConfig = &config.Config{Apisix: config.Apisix{NodeListen: []config.NodeListen{{
+		Port: 9080, EnableHttp2: true,
+	}}}}
+
+	server := newConfiguredHTTPServer(http.NotFoundHandler())
+	if !server.Protocols.UnencryptedHTTP2() {
+		t.Fatal("explicit plaintext HTTP/2 listener did not enable h2c")
 	}
 }
 

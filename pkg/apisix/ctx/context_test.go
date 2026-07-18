@@ -1,6 +1,7 @@
 package ctx
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -36,6 +37,28 @@ func TestBeforeProxyHooksRunInRegistrationOrder(t *testing.T) {
 
 	if got, want := calls, []string{"first:/final", "second:/final"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("hook calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestFinalizeProxyRewriteUpdatesMethodAndEscapedTarget(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/old?keep=0", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ProxyRewriteKey, map[string]any{
+		"uri":    "/private/%2Fraw?token=redacted",
+		"method": http.MethodPost,
+		"host":   "api.example.com",
+		"scheme": "https",
+	}))
+
+	rewrite := FinalizeProxyRewrite(req)
+
+	if req.Method != http.MethodPost {
+		t.Fatalf("method = %q, want POST", req.Method)
+	}
+	if got := req.URL.RequestURI(); got != "/private/%2Fraw?token=redacted" {
+		t.Fatalf("request URI = %q, want encoded path and query", got)
+	}
+	if rewrite.Host != "api.example.com" || rewrite.Scheme != "https" {
+		t.Fatalf("rewrite target = %#v, want host and scheme", rewrite)
 	}
 }
 

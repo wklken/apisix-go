@@ -598,6 +598,9 @@ func (c *Case) validateScenario() error {
 			if step.Concurrency > 0 && len(step.Config) > 0 {
 				return fmt.Errorf("step %q concurrency must not be combined with config update", step.Name)
 			}
+			if step.Concurrency > 0 && len(step.Output.Captures) > 0 {
+				return fmt.Errorf("step %q concurrency must not be combined with output captures", step.Name)
+			}
 			if step.ConfigTimeout < 0 {
 				return fmt.Errorf("step %q config_timeout must not be negative", step.Name)
 			}

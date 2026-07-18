@@ -41,6 +41,29 @@ func TestManifestAcceptsCompleteSourceCoverage(t *testing.T) {
 	}
 }
 
+func TestManifestRejectsConcurrentStepWithResponseCaptures(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:        "parallel-capture",
+		Repeat:      2,
+		Concurrency: 2,
+		Input:       HTTPInput{Path: "/capture"},
+		Output: HTTPOutput{
+			Status: 200,
+			Captures: map[string]HeaderCapture{
+				"id": {Header: "X-ID", Matches: `^(.+)$`},
+			},
+		},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "concurrency must not be combined with output captures") {
+		t.Fatalf("validate() error = %v, want concurrent capture rejection", err)
+	}
+}
+
 func TestManifestAcceptsNetworkJSONFields(t *testing.T) {
 	const manifestYAML = `source:
   repository: https://github.com/apache/apisix

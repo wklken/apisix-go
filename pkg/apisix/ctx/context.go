@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +56,51 @@ func RunBeforeProxyHooks(r *http.Request) {
 			hook(r)
 		}
 	})
+}
+
+type ProxyRewrite struct {
+	URI    string
+	Method string
+	Host   string
+	Scheme string
+}
+
+func FinalizeProxyRewrite(r *http.Request) ProxyRewrite {
+	values, _ := r.Context().Value(ProxyRewriteKey).(map[string]any)
+	rewrite := ProxyRewrite{
+		URI:    stringValue(values, "uri"),
+		Method: stringValue(values, "method"),
+		Host:   stringValue(values, "host"),
+		Scheme: stringValue(values, "scheme"),
+	}
+	if rewrite.URI != "" {
+		applyProxyRewriteURI(r, rewrite.URI)
+	}
+	if rewrite.Method != "" {
+		r.Method = rewrite.Method
+	}
+	return rewrite
+}
+
+func stringValue(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func applyProxyRewriteURI(r *http.Request, uri string) {
+	if parsed, err := url.ParseRequestURI(uri); err == nil && parsed.Scheme == "" && parsed.Host == "" {
+		r.URL.Path = parsed.Path
+		r.URL.RawPath = parsed.RawPath
+		r.URL.RawQuery = parsed.RawQuery
+		return
+	}
+
+	path, rawQuery, hasQuery := strings.Cut(uri, "?")
+	r.URL.Path = path
+	r.URL.RawPath = ""
+	if hasQuery {
+		r.URL.RawQuery = rawQuery
+	}
 }
 
 type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)

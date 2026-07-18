@@ -343,12 +343,12 @@ cases:
         kind: http
         expect: [{method: GET, path: {equals: "/hello?sample_ratio=0.5"}}]
         respond: [{status: 200, body: "hello world\n"}]
-        count: {at_least: 200, at_most: 200, timeout: 3s}
+        count: {at_least: 200, at_most: 200, timeout: 500ms}
       - name: mirror
         kind: http
         expect: [{method: GET, path: {equals: "/hello?sample_ratio=0.5"}}]
         respond: [{status: 204}]
-        count: {at_least: 75, at_most: 125, timeout: 3s}
+        count: {at_least: 75, at_most: 125, timeout: 500ms}
     steps:
       - name: two-hundred-bounded-concurrent-requests
         repeat: 200
@@ -526,6 +526,7 @@ cases:
             proxy-rewrite:
               _meta: {priority: 1010}
               uri: /hello
+              method: POST
             proxy-mirror:
               _meta: {priority: 1008}
               host: "http://{{FIXTURE.mirror.ADDR}}"
@@ -534,16 +535,16 @@ cases:
       - name: primary
         kind: http
         expect:
-          - {method: GET, path: {equals: /hello}}
-          - {method: GET, path: {equals: "/hello?a=b&b=c&c=d"}}
+          - {method: POST, path: {equals: /hello}}
+          - {method: POST, path: {equals: "/hello?a=b&b=c&c=d"}}
         respond:
           - {status: 200, body: "hello world\n"}
           - {status: 200, body: "hello world\n"}
       - name: mirror
         kind: http
         expect:
-          - {method: GET, path: {equals: /hello}}
-          - {method: GET, path: {equals: "/hello?a=b&b=c&c=d"}}
+          - {method: POST, path: {equals: /hello}}
+          - {method: POST, path: {equals: "/hello?a=b&b=c&c=d"}}
         respond:
           - {status: 204}
           - {status: 204}

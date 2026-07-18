@@ -730,6 +730,24 @@ func TestFixtureServerCountRangeWaitsForEventualRequests(t *testing.T) {
 	fixture.assert(t, spec)
 }
 
+func TestObserveFixtureRequestCountRejectsLateUpperBoundOverflow(t *testing.T) {
+	requests := make(chan capturedRequest, 2)
+	requests <- capturedRequest{method: http.MethodGet, path: "/first"}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		requests <- capturedRequest{method: http.MethodGet, path: "/late"}
+	}()
+
+	_, err := observeFixtureRequestCount(requests, FixtureCountAssertion{
+		AtLeast: 1,
+		AtMost:  1,
+		Timeout: 300 * time.Millisecond,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 1") {
+		t.Fatalf("observeFixtureRequestCount() error = %v, want late upper-bound rejection", err)
+	}
+}
+
 func TestBuildAndMatchUnaryGRPCFrame(t *testing.T) {
 	message := []byte("\x0a\x06apisix")
 	frame := buildUnaryGRPCFrame(message)

@@ -474,6 +474,7 @@ func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Hand
 
 func withBeforeProxyHooks(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.FinalizeProxyRewrite(r)
 		ctx.RunBeforeProxyHooks(r)
 		next.ServeHTTP(w, r)
 	})
@@ -938,27 +939,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// 2. host: use RR/Weighted-RR to select target host
 		// target is like: http://127.0.0.1 => schema + host
 
-		requestCtx := req.Context()
-		rewriteValue := requestCtx.Value(ctx.ProxyRewriteKey)
-		uri := ""
-		method := ""
-		host := ""
-		scheme := ""
-		// FIXME: how to read the headers?
-		if rewriteValue != nil {
-			rewrite := rewriteValue.(map[string]any)
-			uri = rewrite["uri"].(string)
-			method = rewrite["method"].(string)
-			host = rewrite["host"].(string)
-			scheme = rewrite["scheme"].(string)
-		}
-		if uri != "" {
-			fmt.Println("rewrite uri:", uri)
-			applyProxyRewriteURI(req, uri)
-		}
-		if method != "" {
-			req.Method = method
-		}
+		rewrite := ctx.FinalizeProxyRewrite(req)
 
 		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
@@ -980,12 +961,12 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			ctx.RegisterApisixVar(req, "$balancer_ip", req.URL.Hostname())
 			ctx.RegisterApisixVar(req, "$balancer_port", req.URL.Port())
 		}
-		if host != "" {
-			req.Host = host
+		if rewrite.Host != "" {
+			req.Host = rewrite.Host
 		}
 
-		if scheme != "" {
-			req.URL.Scheme = scheme
+		if rewrite.Scheme != "" {
+			req.URL.Scheme = rewrite.Scheme
 		}
 
 		// if u.Scheme == "" || u.Host == "" {
@@ -1348,22 +1329,6 @@ func bufferRequestBodyIfNeeded(r *http.Request) error {
 	}
 	r.ContentLength = int64(len(body))
 	return nil
-}
-
-func applyProxyRewriteURI(req *http.Request, uri string) {
-	if parsed, err := url.ParseRequestURI(uri); err == nil && parsed.Scheme == "" && parsed.Host == "" {
-		req.URL.Path = parsed.Path
-		req.URL.RawPath = parsed.RawPath
-		req.URL.RawQuery = parsed.RawQuery
-		return
-	}
-
-	path, rawQuery, hasQuery := strings.Cut(uri, "?")
-	req.URL.Path = path
-	req.URL.RawPath = ""
-	if hasQuery {
-		req.URL.RawQuery = rawQuery
-	}
 }
 
 func applyTrafficSplitOverride(req *http.Request) bool {

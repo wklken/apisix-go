@@ -804,7 +804,7 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 8 — Routing, Workflow, Batch, and Dubbo
 
-- [ ] `proxy-mirror` — three identical `/probe` deliveries claim 36 blocks while omitting schema and lifecycle cases, exact primary/mirror Host/header/query/body observations, HTTP version, concurrent sampling bounds, DNS failure independence, proxy-rewrite ordering, and real h2c gRPC/grpc-web mirroring.
+- [x] `proxy-mirror` — all 36 pinned blocks across three sources map exactly once to standalone schema, exact primary/mirror traffic, HTTP version, live deletion, bounded concurrent sampling, path/DNS behavior, proxy-rewrite ordering, h2c gRPC, and grpc-web cases. A generic one-shot finalized-request hook applies rewritten URI and method before ordinary or AI terminals; h2c is explicitly configured, bounded counts observe their full window, concurrent captures reject, and DNS diagnostics await the bounded mirror timeout. Affected package/race/harness, full real-process, DNS/sensitive repeats, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `traffic-split` — five header-selected routes replace weighted inline/resource upstreams, fallback/zero weights, chash, pass-host, HTTPS, health/retry, timeout, and reload behavior.
 - [ ] `workflow` — four happy-path actions omit no-case behavior, ordered fallthrough, isolated action state, invalid/no rules, limit-conn/global-rule interactions, and rewrite/log phase interaction.
 - [ ] `batch-requests` — three probes omit most pipeline validation, timeout/partial aggregation, body-file and size limits, header copying, metadata limits, custom URI, and mixed HTTP/gRPC subresponses.
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 16 task-review-approved and 45 remaining.
-- **Behavioral placeholders:** Thirty-two manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 17 task-review-approved and 44 remaining.
+- **Behavioral placeholders:** Thirty-one manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 45 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 44 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,8 +875,8 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **16
-complete and 45 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **17
+complete and 44 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
 The local-credential source audit corrected two complexity assumptions before
@@ -932,7 +932,7 @@ relative-service port handling, process-local fingerprint isolation, and HTTP
 security warnings. It must capture real flow cookies rather than precompute a
 successful callback.
 
-- **Structural source-file stand-ins (32):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (31):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
   `authz-keycloak`, `cas-auth`, `datadog`,
@@ -940,7 +940,7 @@ successful callback.
   `google-cloud-logging`, `graphql-limit-count`,
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
   `loggly`, `multi-auth`, `openid-connect`, `opentelemetry`,
-  `proxy-mirror`, `rocketmq-logger`, `skywalking`,
+  `rocketmq-logger`, `skywalking`,
   `sls-logger`, `syslog`, `tcp-logger`,
   `tencent-cloud-cls`, and `wolf-rbac`. Each maps a whole
   pinned source file to a `*-source-N` case with one broad configuration and
@@ -953,9 +953,9 @@ successful callback.
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (16):** `ai-prompt-decorator`, `authz-casbin`,
+- **Task-review-approved (17):** `ai-prompt-decorator`, `authz-casbin`,
   `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
-  `forward-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
+  `forward-auth`, `jwe-decrypt`, `loki-logger`, `oas-validator`, `proxy-mirror`, `request-validation`, `skywalking-logger`, `splunk-hec-logging`, `traffic-label`, and `udp-logger`. No other
   manifest moved to checked status in this recheck.
 
 ## Complexity and Parallel Execution Replan: 2026-07-18
@@ -965,8 +965,8 @@ The classification audit started with 56 unchecked manifests at commit
 active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
 `clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, `loki-logger`,
-`skywalking-logger`, `udp-logger`, and `forward-auth` have now passed review, so
-**45 remain**.
+`skywalking-logger`, `udp-logger`, `forward-auth`, and `proxy-mirror` have now
+passed review, so **44 remain**.
 `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
@@ -1009,7 +1009,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 28 manifests
+### Medium — 27 manifests
 
 - [ ] `datadog`
 - [ ] `basic-auth`
@@ -1021,7 +1021,7 @@ Execution waves:
 - [ ] `feishu-auth`
 - [ ] `graphql-limit-count`
 - [ ] `graphql-proxy-cache`
-- [ ] `proxy-mirror`
+- [x] `proxy-mirror`
 - [ ] `traffic-split`
 - [ ] `workflow`
 - [ ] `batch-requests`

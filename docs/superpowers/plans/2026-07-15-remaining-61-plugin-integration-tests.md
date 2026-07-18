@@ -911,6 +911,12 @@ it owns concurrent sampling/count assertions, protocol capture, structured h2c
 gRPC fixtures, and the finalized pre-proxy hook needed to observe
 proxy-rewrite/grpc-web transformations. `traffic-split` and `batch-requests`
 must wait for that reviewed foundation instead of starting beside it.
+The subsequent 94-block `traffic-split` audit moved that manifest to Hard:
+`traffic-split4.t` tests 15–16 require background active health probes and
+threshold transitions, tests 17–19 require connection-failure retry and node
+reselection, and `traffic-split5.t` requires body-preserving `post_arg_*`
+resolution. These are cross-cutting proxy-health behaviors, not a safe passive
+health or manifest-only substitution. `batch-requests` remains Medium.
 
 The `wolf-rbac` audit corrected its source surface from 42 blocks in one file
 to 44 blocks across two files: all of `wolf-rbac.t` plus Wolf-specific
@@ -1009,7 +1015,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 21 manifests
+### Medium — 20 manifests
 
 - [ ] `datadog`
 - [x] `basic-auth`
@@ -1022,7 +1028,6 @@ Execution waves:
 - [ ] `graphql-limit-count`
 - [ ] `graphql-proxy-cache`
 - [x] `proxy-mirror`
-- [ ] `traffic-split`
 - [ ] `workflow`
 - [ ] `batch-requests`
 - [ ] `http-logger`
@@ -1057,9 +1062,11 @@ Execution waves:
 3. Run `proxy-mirror` first as the routing/protocol foundation. It exclusively
    owns protocol assertions, bounded parallel repeat/count ranges, structured
    h2c gRPC fixtures, and the finalized pre-proxy mirror hook needed for
-   proxy-rewrite/grpc-web ordering. Only after that reviewed range is integrated
-   may `traffic-split` and `batch-requests` run in parallel through their
-   distinct remaining owners.
+   proxy-rewrite/grpc-web ordering. After that reviewed range is integrated,
+   `batch-requests` may proceed through its distinct public-endpoint owner.
+   `traffic-split` moved to Hard after its exact source audit exposed active
+   health-check and connection-retry owners rather than a bounded manifest-only
+   conversion.
 4. Process HTTP/cloud loggers in groups of three isolated manifests, with one
    serialized `logger_batch` owner. Process `tcp-logger`/`syslog` through one
    network-fixture owner, and `file-logger` before `log-rotate` through one
@@ -1074,7 +1081,7 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 17 manifests
+### Hard — 18 manifests
 
 - [ ] `key-auth`
 - [ ] `jwt-auth`
@@ -1086,6 +1093,7 @@ Execution waves:
 - [ ] `limit-count`
 - [ ] `limit-req`
 - [ ] `proxy-cache`
+- [ ] `traffic-split`
 - [ ] `http-dubbo`
 - [ ] `rocketmq-logger`
 - [ ] `kafka-logger`
@@ -1106,6 +1114,12 @@ Execution waves:
    foundation owners: LDAP bind/search/TLS, Redis state/concurrency beginning
    with `limit-conn`, and one broker/protocol fixture beginning with
    `rocketmq-logger`.
+3. Run `traffic-split` through one serialized proxy-health owner: implement
+   cancellable active HTTP/TCP probes with threshold transitions, request-body
+   safe retry/reselection with default and explicit retry semantics, and
+   `post_arg_*` resolution before converting its 94 pinned blocks. Passive
+   quarantine is not an acceptable substitute for the pinned background active
+   checker case.
 3. Continue owners sequentially within their conflict group while other groups
    run in parallel: `limit-req` then `limit-count`; `http-dubbo` and Kafka only
    after the protocol-fixture owner is free; `proxy-cache` owns cache-zone and

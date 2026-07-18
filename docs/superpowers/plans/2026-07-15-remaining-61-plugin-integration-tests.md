@@ -813,7 +813,7 @@ The original checked state was not supported by the manifests. This audit compar
 #### Task 9 — HTTP and Cloud Loggers
 
 - [ ] `http-logger` — one `/probe` delivery per source does not assert JSON/newline/custom formats, request/response bodies and truncation, batching/retry, metadata, or exact sink payloads.
-- [ ] `clickhouse-logger` — generic POST delivery omits ClickHouse schema/credentials, SQL/body format, batching, retry/status, and metadata behavior.
+- [x] `clickhouse-logger` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates required/default/schema configuration, ClickHouse user/key/database headers, JSONEachRow SQL bodies, single and multiple endpoints, deterministic pending-entry overflow against a cancellable slow sink, request/response body capture and expressions, plugin metadata formats, and child-scoped `$ENV://` user resolution including empty values. Package, race, strict corpus, environment isolation, real-process, scoped lint, diff, build, post-integration, and task-review gates pass.
 - [ ] `google-cloud-logging` — generic delivery omits OAuth/JWT exchange, monitored-resource/log fields, batching, credentials, endpoint, and error handling.
 - [ ] `loggly` — generic delivery omits token/tag endpoint construction, format/body fields, batching, timeout, and failure behavior.
 - [ ] `loki-logger` — generic delivery omits labels, tenant/auth headers, timestamp/value streams, custom format, batching, and failures.
@@ -863,10 +863,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 9 task-review-approved and 52 remaining.
-- **Behavioral placeholders:** Thirty-eight manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 10 task-review-approved and 51 remaining.
+- **Behavioral placeholders:** Thirty-seven manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 52 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 51 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,14 +875,14 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **9
-complete and 52 remaining**; `oas-validator` also passed its task review with
+reviews and post-integration gates. The currently approved scope is **10
+complete and 51 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
-- **Structural source-file stand-ins (38):** `ai-aws-content-moderation`,
+- **Structural source-file stand-ins (37):** `ai-aws-content-moderation`,
   `ai-prompt-guard`, `ai-proxy`, `ai-rag`,
   `ai-rate-limiting`, `ai-request-rewrite`,
-  `authz-keycloak`, `cas-auth`, `clickhouse-logger`, `datadog`,
+  `authz-keycloak`, `cas-auth`, `datadog`,
   `elasticsearch-logger`, `error-log-logger`, `feishu-auth`, `file-logger`,
   `forward-auth`, `google-cloud-logging`, `graphql-limit-count`,
   `http-dubbo`, `http-logger`, `kafka-logger`, `ldap-auth`, `log-rotate`,
@@ -900,8 +900,8 @@ complete and 52 remaining**; `oas-validator` also passed its task review with
   independent schemas, protocols, state transitions, or error branches are
   collapsed into a smaller happy-path set. They remain unchecked until those
   exact behaviors are separately executable and asserted.
-- **Task-review-approved (9):** `ai-prompt-decorator`, `authz-casbin`,
-  `brotli`, `consumer-restriction`, `cors`, `fault-injection`,
+- **Task-review-approved (10):** `ai-prompt-decorator`, `authz-casbin`,
+  `brotli`, `clickhouse-logger`, `consumer-restriction`, `cors`, `fault-injection`,
   `oas-validator`, `request-validation`, and `traffic-label`. No other
   manifest moved to checked status in this recheck.
 
@@ -910,8 +910,8 @@ complete and 52 remaining**; `oas-validator` also passed its task review with
 The classification audit started with 56 unchecked manifests at commit
 `335203d`. Its consumer-restriction review then approved that manifest, so the
 active execution tiers below contained 55 remaining manifests before Easy
-Wave 1. `traffic-label`, `authz-casbin`, and `ai-prompt-decorator` have now
-passed review, so **52 remain**. `datadog` moved from Easy to Medium after its
+Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
+`clickhouse-logger` have now passed review, so **51 remain**. `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
 standalone YAML, `docs/plugins.md` implementation status, package tests, and
@@ -929,11 +929,11 @@ coverage percentage.
   shared cache/broker/telemetry owners, substantial streaming/cancellation, or
   a very large source matrix dominate the work.
 
-### Easy — 6 manifests
+### Easy — 5 remaining (6 at replan)
 
 - [ ] `jwe-decrypt`
 - [ ] `udp-logger`
-- [ ] `clickhouse-logger`
+- [x] `clickhouse-logger`
 - [ ] `loki-logger`
 - [ ] `splunk-hec-logging`
 - [ ] `skywalking-logger`

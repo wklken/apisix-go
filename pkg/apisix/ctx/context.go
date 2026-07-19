@@ -5,22 +5,149 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
+type BeforeProxyHook func(*http.Request)
+
+type beforeProxyHooks struct {
+	once  sync.Once
+	hooks []BeforeProxyHook
+}
+
 // inspired by gin/context.go, but we use context.Context instead of gin.Context
 
 type ContextKey string
 
 const (
-	ProxyRewriteKey ContextKey = "proxy-rewrite"
-	RequestIDKey    ContextKey = "request_id"
-	RemoteAddrKey   ContextKey = "remote_addr"
-	RemotePortKey   ContextKey = "remote_port"
+	ProxyRewriteKey         ContextKey = "proxy-rewrite"
+	RequestIDKey            ContextKey = "request_id"
+	RemoteAddrKey           ContextKey = "remote_addr"
+	RemotePortKey           ContextKey = "remote_port"
+	consumerPluginRunnerKey ContextKey = "consumer_plugin_runner"
+	consumerPluginsRunKey   ContextKey = "consumer_plugins_run"
+	authProbeDiagnosticKey  ContextKey = "auth_probe_diagnostic_recorder"
+	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
+	beforeProxyHooksKey     ContextKey = "before_proxy_hooks"
 )
+
+func WithBeforeProxyHook(r *http.Request, hook BeforeProxyHook) *http.Request {
+	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
+	hooks := make([]BeforeProxyHook, 0, 1)
+	if registered != nil {
+		hooks = append(hooks, registered.hooks...)
+	}
+	hooks = append(hooks, hook)
+	return r.WithContext(context.WithValue(r.Context(), beforeProxyHooksKey, &beforeProxyHooks{hooks: hooks}))
+}
+
+func RunBeforeProxyHooks(r *http.Request) {
+	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)
+	if registered == nil {
+		return
+	}
+	registered.once.Do(func() {
+		for _, hook := range registered.hooks {
+			hook(r)
+		}
+	})
+}
+
+type ProxyRewrite struct {
+	URI    string
+	Method string
+	Host   string
+	Scheme string
+}
+
+func FinalizeProxyRewrite(r *http.Request) ProxyRewrite {
+	values, _ := r.Context().Value(ProxyRewriteKey).(map[string]any)
+	rewrite := ProxyRewrite{
+		URI:    stringValue(values, "uri"),
+		Method: stringValue(values, "method"),
+		Host:   stringValue(values, "host"),
+		Scheme: stringValue(values, "scheme"),
+	}
+	if rewrite.URI != "" {
+		applyProxyRewriteURI(r, rewrite.URI)
+	}
+	if rewrite.Method != "" {
+		r.Method = rewrite.Method
+	}
+	return rewrite
+}
+
+func stringValue(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func applyProxyRewriteURI(r *http.Request, uri string) {
+	if parsed, err := url.ParseRequestURI(uri); err == nil && parsed.Scheme == "" && parsed.Host == "" {
+		r.URL.Path = parsed.Path
+		r.URL.RawPath = parsed.RawPath
+		r.URL.RawQuery = parsed.RawQuery
+		return
+	}
+
+	path, rawQuery, hasQuery := strings.Cut(uri, "?")
+	r.URL.Path = path
+	r.URL.RawPath = ""
+	if hasQuery {
+		r.URL.RawQuery = rawQuery
+	}
+}
+
+type ConsumerPluginRunner func(http.ResponseWriter, *http.Request, http.Handler)
+
+type AuthProbeDiagnosticRecorder func(string)
+
+func WithAuthProbeDiagnosticRecorder(r *http.Request, recorder AuthProbeDiagnosticRecorder) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), authProbeDiagnosticKey, recorder))
+}
+
+func RecordAuthProbeDiagnostic(r *http.Request, message string) bool {
+	recorder, _ := r.Context().Value(authProbeDiagnosticKey).(AuthProbeDiagnosticRecorder)
+	if recorder == nil {
+		return false
+	}
+	recorder(message)
+	return true
+}
+
+func WithConsumerPluginRunner(r *http.Request, runner ConsumerPluginRunner) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), consumerPluginRunnerKey, runner))
+}
+
+func RunConsumerPlugins(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if alreadyRun, _ := r.Context().Value(consumerPluginsRunKey).(bool); alreadyRun {
+		next.ServeHTTP(w, r)
+		return
+	}
+	runner, _ := r.Context().Value(consumerPluginRunnerKey).(ConsumerPluginRunner)
+	if runner == nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), consumerPluginsRunKey, true))
+	runner(w, r, next)
+}
+
+func WithConsumerPluginOverrides(r *http.Request, names map[string]struct{}) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), consumerOverridesKey, names))
+}
+
+func ConsumerPluginOverrides(r *http.Request, name string) bool {
+	names, _ := r.Context().Value(consumerOverridesKey).(map[string]struct{})
+	_, ok := names[name]
+	return ok
+}
 
 func contextValue(c context.Context, key string) any {
 	if value := c.Value(key); value != nil {
@@ -155,6 +282,7 @@ func AttachConsumer(r *http.Request, consumer resource.Consumer) {
 	RegisterApisixVar(r, "$consumer", consumer)
 	RegisterApisixVar(r, "$consumer_name", consumer.Username)
 	RegisterApisixVar(r, "$consumer_group_id", consumer.GroupID)
+	r.Header.Set("X-Consumer-Username", consumer.Username)
 	// reference: https://github.com/apache/apisix/blob/master/apisix/consumer.lua#L84C1-L89C4
 }
 

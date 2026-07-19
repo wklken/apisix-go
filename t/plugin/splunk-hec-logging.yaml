@@ -1,0 +1,229 @@
+cases:
+  - name: schema-variants
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [1]}
+    variants:
+      - name: full-config
+        config:
+          routes:
+            - id: splunk-full
+              uri: /full
+              plugins:
+                splunk-hec-logging:
+                  endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: full-token, channel: channel-full, timeout: 1}
+                  max_retry_count: 0
+                  retry_delay: 1
+                  buffer_duration: 1
+                  inactive_timeout: 1
+                  batch_max_size: 1
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /full}}], respond: [{status: 200, body: full-ok}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk full-token'}, X-Splunk-Request-Channel: {equals: channel-full}, Content-Type: {equals: application/json}}}], respond: [{status: 200, body: ok}]}
+        steps: [{name: full-config-delivers, input: {path: /full}, output: {status: 200, body: {equals: full-ok}}, wait: 1s}]
+      - name: minimal-config
+        config:
+          routes:
+            - id: splunk-minimal
+              uri: /minimal
+              plugins:
+                splunk-hec-logging:
+                  endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: minimal-token}
+                  batch_max_size: 1
+                  inactive_timeout: 1
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /minimal}}], respond: [{status: 200, body: minimal-ok}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk minimal-token'}, Content-Type: {equals: application/json}}}], respond: [{status: 200, body: ok}]}
+        steps: [{name: minimal-config-delivers, input: {path: /minimal}, output: {status: 200, body: {equals: minimal-ok}}, wait: 1s}]
+      - name: missing-uri
+        config: {routes: [{id: splunk-missing-uri, uri: /missing-uri, plugins: {splunk-hec-logging: {endpoint: {token: missing-uri}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {path: /missing-uri}
+        output: {status: 404, logs: {matches: 'endpoint.*missing properties.*uri'}}
+      - name: missing-token
+        config: {routes: [{id: splunk-missing-token, uri: /missing-token, plugins: {splunk-hec-logging: {endpoint: {uri: http://127.0.0.1:18088/services/collector}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {path: /missing-token}
+        output: {status: 404, logs: {matches: 'endpoint.*missing properties.*token'}}
+      - name: invalid-uri
+        config: {routes: [{id: splunk-invalid-uri, uri: /invalid-uri, plugins: {splunk-hec-logging: {endpoint: {uri: 127.0.0.1:18088/services/collector, token: invalid-uri}}}, upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}}]}
+        input: {path: /invalid-uri}
+        output: {status: 404, logs: {matches: "validate plugin splunk-hec-logging config: validate fail: jsonschema: '/endpoint/uri'.*is not valid 'uri'"}}
+
+  - name: failed-hec-auth-retries-without-blocking-upstream
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [2, 3]}
+    config:
+      routes:
+        - id: splunk-failed-auth
+          uri: /failed-auth
+          plugins:
+            splunk-hec-logging:
+              endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: bad-token}
+              batch_max_size: 1
+              inactive_timeout: 1
+              max_retry_count: 0
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /failed-auth}}], respond: [{status: 200, body: upstream-still-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk bad-token'}}}], respond: [{status: 401, body: '{"text":"Invalid authorization"}'}]}
+    steps:
+      - name: upstream-succeeds-and-hec-error-is-reported
+        input: {path: /failed-auth}
+        output: {status: 200, body: {equals: upstream-still-ok}, logs: {matches: '(?s)exceeded max_retry_count.*Invalid authorization'}}
+        wait: 1s
+
+  - name: successful-hec-envelope
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [4, 5]}
+    config:
+      plugin_metadata:
+        - id: splunk-hec-logging
+          log_format: {marker: successful-envelope}
+      routes:
+        - id: splunk-success
+          uri: /success
+          plugins:
+            splunk-hec-logging:
+              endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: good-token, channel: channel-good}
+              batch_max_size: 1
+              inactive_timeout: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /success}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /services/collector}
+            headers: {Authorization: {equals: 'Splunk good-token'}, X-Splunk-Request-Channel: {equals: channel-good}, Content-Type: {equals: application/json}}
+            body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"marker":"successful-envelope"\}\}$'}
+        respond: [{status: 200, body: ok}]
+    steps: [{name: client-upstream-and-hec-envelope-succeed, input: {path: /success}, output: {status: 200, body: {equals: hello world}}, wait: 1s}]
+
+  - name: metadata-log-format-rejects-string
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [6]}
+    config:
+      plugin_metadata: [{id: splunk-hec-logging, log_format: "'$host' '$time_iso8601'"}]
+      routes:
+        - id: splunk-invalid-metadata
+          uri: /invalid-metadata
+          plugins: {splunk-hec-logging: {endpoint: {uri: http://127.0.0.1:18088/services/collector, token: metadata-token}}}
+          upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}
+    input: {path: /invalid-metadata}
+    output: {status: 404, logs: {matches: 'validate plugin splunk-hec-logging metadata.*log_format.*expected object'}}
+
+  - name: metadata-custom-format-message-one
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [7, 8]}
+    config:
+      plugin_metadata:
+        - id: splunk-hec-logging
+          log_format: {'@timestamp': '$time_iso8601', client_ip: '$remote_addr', host: '$host', message_1: test custom log format in plugin, upstream_host: '$upstream_unresolved_host'}
+          log_format_extra: {ignored_extra: must-not-appear-with-custom-format}
+      routes:
+        - id: splunk-message-one
+          uri: /message-one
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: message-one-token}, batch_max_size: 1, inactive_timeout: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /message-one}}], respond: [{delay: 100ms, status: 200, body: message-one-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk message-one-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"@timestamp":".+","client_ip":"127\.0\.0\.1","host":"127\.0\.0\.1","message_1":"test custom log format in plugin","upstream_host":"127\.0\.0\.1"\}\}$'}}], respond: [{status: 200, body: ok}]}
+    steps: [{name: metadata-format-reaches-hec, input: {path: /message-one}, output: {status: 200, body: {equals: message-one-ok}}, wait: 1s}]
+
+  - name: metadata-custom-format-message-two
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [9, 10]}
+    config:
+      plugin_metadata:
+        - id: splunk-hec-logging
+          log_format: {'@timestamp': '$time_iso8601', host: '$host', message_2: logger format in plugin, vip: '$remote_addr'}
+      routes:
+        - id: splunk-message-two
+          uri: /message-two
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: message-two-token}, batch_max_size: 1, inactive_timeout: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /message-two}}], respond: [{status: 200, body: message-two-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk message-two-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"@timestamp":".+","host":"127\.0\.0\.1","message_2":"logger format in plugin","vip":"127\.0\.0\.1"\}\}$'}}], respond: [{status: 200, body: ok}]}
+    steps: [{name: source-owned-format-reaches-hec, input: {path: /message-two}, output: {status: 200, body: {equals: message-two-ok}}, wait: 1s}]
+
+  - name: batch-three-concatenated-events
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [11, 12]}
+    config:
+      plugin_metadata: [{id: splunk-hec-logging, log_format: {message_3: test batched data}}]
+      routes:
+        - id: splunk-batch
+          uri: /batch
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: batch-token}, batch_max_size: 3, inactive_timeout: 5}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /batch}}, {method: GET, path: {equals: /batch}}, {method: GET, path: {equals: /batch}}], respond: [{status: 200, body: batch-ok}, {status: 200, body: batch-ok}, {status: 200, body: batch-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk batch-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data"\}\}\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data"\}\}\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data"\}\}$'}}], respond: [{status: 200, body: ok}]}
+    steps:
+      - {name: first-batch-entry, input: {path: /batch}, output: {status: 200, body: {equals: batch-ok}}}
+      - {name: second-batch-entry, input: {path: /batch}, output: {status: 200, body: {equals: batch-ok}}}
+      - {name: third-entry-flushes-one-concatenated-request, input: {path: /batch}, output: {status: 200, body: {equals: batch-ok}}, wait: 1s}
+
+  - name: keepalive-timeout-delivers
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [13]}
+    config:
+      routes:
+        - id: splunk-keepalive
+          uri: /keepalive
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: keepalive-token, keepalive_timeout: 5000}, batch_max_size: 1, inactive_timeout: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /keepalive}}], respond: [{status: 200, body: keepalive-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk keepalive-token'}}}], respond: [{status: 200, body: ok}]}
+    steps: [{name: keepalive-config-delivers, input: {path: /keepalive}, output: {status: 200, body: {equals: keepalive-ok}}, wait: 1s}]
+
+  - name: encrypted-token-is-decrypted-for-hec
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [14]}
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: splunk-encrypted-token
+          uri: /encrypted
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: BMu7p65WsZVM+5ecebGdLBHUQRdNi3XYmIf1904S5L8=}, batch_max_size: 1, inactive_timeout: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /encrypted}}], respond: [{status: 200, body: encrypted-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk encrypted-splunk-token'}}}], respond: [{status: 200, body: ok}]}
+    steps: [{name: ciphertext-resolves-only-at-plugin-boundary, input: {path: /encrypted}, output: {status: 200, body: {equals: encrypted-ok}}, wait: 1s}]
+
+  - name: default-event-adds-log-format-extra
+    source: {file: t/plugin/splunk-hec-logging.t, tests: [15, 16]}
+    config:
+      plugin_metadata: [{id: splunk-hec-logging, log_format_extra: {upstream_host: '$upstream_unresolved_host'}}]
+      routes:
+        - id: splunk-extra
+          uri: /extra
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: extra-token}, batch_max_size: 1, inactive_timeout: 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /extra}}], respond: [{status: 200, body: extra-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk extra-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"latency":[0-9]+,"request_headers":\{.*\},"request_method":"GET","request_query":\{\},"request_size":0,"request_url":"http://127\.0\.0\.1:[0-9]+/extra","response_headers":\{.*\},"response_size":8,"response_status":200,"upstream":"127\.0\.0\.1:[0-9]+","upstream_host":"127\.0\.0\.1"\}\}$'}}], respond: [{status: 200, body: ok}]}
+    steps: [{name: default-event-preserves-envelope-and-adds-upstream-host, input: {path: /extra}, output: {status: 200, body: {equals: extra-ok}}, wait: 1s}]
+
+  - name: max-pending-entries-drops-overflow
+    source: {file: t/plugin/splunk-hec-logging2.t, tests: [1]}
+    config:
+      plugin_metadata: [{id: splunk-hec-logging, log_format: {case: pending-overflow}, max_pending_entries: 1}]
+      routes:
+        - id: splunk-overflow
+          uri: /overflow
+          plugins: {splunk-hec-logging: {endpoint: {uri: '{{FIXTURE.sink.URL}}/services/collector', token: overflow-token}, batch_max_size: 1, inactive_timeout: 1, timeout: 3, max_retry_count: 0}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}], respond: [{status: 200, body: overflow-ok}, {status: 200, body: overflow-ok}, {status: 200, body: overflow-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk overflow-token'}}}, {method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk overflow-token'}}}], respond: [{delay: 2s, status: 200}, {delay: 2s, status: 200}]}
+    steps:
+      - {name: overflow-while-two-deliveries-are-blocked, repeat: 3, input: {path: /overflow}, output: {status: 200, body: {equals: overflow-ok}, logs: {matches: 'max pending entries limit exceeded for logger batch processor \[splunk-hec-logging\], pending \[2\], max_pending_entries \[1\]'}}}
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/splunk-hec-logging.t
+    tests: 16
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/splunk-hec-logging2.t
+    tests: 1

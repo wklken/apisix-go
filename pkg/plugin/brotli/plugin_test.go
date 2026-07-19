@@ -2,6 +2,7 @@ package brotli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,66 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	}
 
 	return p
+}
+
+func TestPostInitMatchesAPISIXDefaults(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+
+	if len(p.config.Types) != 1 || p.config.Types[0] != "text/html" {
+		t.Fatalf("Types = %#v, want [text/html]", p.config.Types)
+	}
+	if *p.config.MinLength != 20 || *p.config.Mode != 0 || *p.config.CompLevel != 6 {
+		t.Fatalf("minimum/mode/level = %d/%d/%d, want 20/0/6", *p.config.MinLength, *p.config.Mode, *p.config.CompLevel)
+	}
+	if *p.config.LGWin != 19 || *p.config.LGBlock != 0 {
+		t.Fatalf("window/block = %d/%d, want 19/0", *p.config.LGWin, *p.config.LGBlock)
+	}
+	if *p.config.HTTPVersion != 1.1 {
+		t.Fatalf("HTTPVersion = %g, want 1.1", *p.config.HTTPVersion)
+	}
+	if p.config.Vary != nil {
+		t.Fatalf("Vary = %v, want unset", *p.config.Vary)
+	}
+}
+
+func TestPostInitPreservesAPISIXConfigMatrix(t *testing.T) {
+	trueValue := true
+	tests := []struct {
+		name     string
+		config   Config
+		mode     int
+		level    int
+		window   int
+		block    int
+		wantVary *bool
+	}{
+		{name: "defaults", config: Config{}, mode: 0, level: 6, window: 19, block: 0},
+		{name: "mode one", config: Config{Mode: new(1)}, mode: 1, level: 6, window: 19, block: 0},
+		{name: "level five", config: Config{CompLevel: new(5)}, mode: 0, level: 5, window: 19, block: 0},
+		{name: "window twelve", config: Config{CompLevel: new(5), LGWin: new(12)}, mode: 0, level: 5, window: 12, block: 0},
+		{name: "vary", config: Config{CompLevel: new(5), LGWin: new(12), Vary: &trueValue}, mode: 0, level: 5, window: 12, block: 0, wantVary: &trueValue},
+		{name: "block sixteen", config: Config{CompLevel: new(5), LGWin: new(12), LGBlock: new(16), Vary: &trueValue}, mode: 0, level: 5, window: 12, block: 16, wantVary: &trueValue},
+		{name: "mode two", config: Config{Mode: new(2), CompLevel: new(5), LGWin: new(12), LGBlock: new(16), Vary: &trueValue}, mode: 2, level: 5, window: 12, block: 16, wantVary: &trueValue},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, tt.config)
+			if len(p.config.Types) != 1 || p.config.Types[0] != "text/html" || *p.config.MinLength != 20 || *p.config.HTTPVersion != 1.1 {
+				t.Fatalf("shared defaults = types %#v, minimum %d, HTTP %g", p.config.Types, *p.config.MinLength, *p.config.HTTPVersion)
+			}
+			if *p.config.Mode != tt.mode || *p.config.CompLevel != tt.level || *p.config.LGWin != tt.window || *p.config.LGBlock != tt.block {
+				t.Fatalf("mode/level/window/block = %d/%d/%d/%d, want %d/%d/%d/%d", *p.config.Mode, *p.config.CompLevel, *p.config.LGWin, *p.config.LGBlock, tt.mode, tt.level, tt.window, tt.block)
+			}
+			if tt.wantVary == nil {
+				if p.config.Vary != nil {
+					t.Fatalf("Vary = %v, want unset", *p.config.Vary)
+				}
+			} else if p.config.Vary == nil || *p.config.Vary != *tt.wantVary {
+				t.Fatalf("Vary = %v, want %v", p.config.Vary, *tt.wantVary)
+			}
+		})
+	}
 }
 
 func TestHandlerCompressesMatchingResponse(t *testing.T) {
@@ -56,6 +117,66 @@ func TestHandlerCompressesMatchingResponse(t *testing.T) {
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != "hello world" {
 		t.Fatalf("decoded body = %q, want hello world", decoded)
+	}
+}
+
+func TestHandlerDoesNotSynthesizeContentLengthAfterCompression(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	server := httptest.NewServer(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "11")
+		_, _ = w.Write([]byte("hello world"))
+	})))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", "br")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request server: %v", err)
+	}
+	defer res.Body.Close()
+
+	if got := res.Header.Get("Content-Length"); got != "" || res.ContentLength != -1 {
+		t.Fatalf("Content-Length = %q (%d), want absent", got, res.ContentLength)
+	}
+}
+
+func TestHandlerAppendsVaryToExistingResponseValue(t *testing.T) {
+	vary := true
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1), Vary: &vary})
+	req := httptest.NewRequest(http.MethodGet, "/text", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Vary", "upstream")
+		_, _ = w.Write([]byte("hello world"))
+	})).ServeHTTP(res, req)
+
+	if got := res.Header().Get("Vary"); got != "upstream, Accept-Encoding" {
+		t.Fatalf("Vary = %q, want upstream, Accept-Encoding", got)
+	}
+}
+
+func TestHandlerClearsEmbeddedQuoteETag(t *testing.T) {
+	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
+	req := httptest.NewRequest(http.MethodGet, "/text", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Etag", `"12"34"`)
+		_, _ = w.Write([]byte("hello world"))
+	})).ServeHTTP(res, req)
+
+	if got := res.Header().Get("Etag"); got != "" {
+		t.Fatalf("Etag = %q, want embedded-quote ETag cleared", got)
 	}
 }
 
@@ -144,6 +265,17 @@ func TestHandlerSupportsWildcardAcceptEncodingAndType(t *testing.T) {
 	}
 	if decoded := decodeBrotli(t, res.Body.Bytes()); decoded != `{"ok":true}` {
 		t.Fatalf("decoded body = %q, want JSON", decoded)
+	}
+}
+
+func TestConfigDecodesWildcardTypes(t *testing.T) {
+	var config Config
+	if err := json.Unmarshal([]byte(`{"types":"*"}`), &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, want wildcard type accepted", err)
+	}
+	p := newTestPlugin(t, config)
+	if !p.config.wildcardType {
+		t.Fatal("wildcard type was not enabled")
 	}
 }
 

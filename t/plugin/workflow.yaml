@@ -1,0 +1,101 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow-without-case.t
+    tests: 7
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow.t
+    tests: 20
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow2.t
+    tests: 8
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/workflow3.t
+    tests: 7
+cases:
+  - name: workflow-unconditional-return
+    source: {file: t/plugin/workflow-without-case.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+    config:
+      routes:
+        - id: workflow-unconditional
+          uri: /workflow
+          plugins:
+            workflow: {rules: [{actions: [[return, {code: 201}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: upstream should not run}]
+    steps:
+      - name: return-action
+        input: {method: GET, path: /workflow}
+        output:
+          status: 201
+          body: {equals: '{"error_msg":"rejected by workflow"}'}
+  - name: workflow-uri-condition
+    source: {file: t/plugin/workflow.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}
+    config:
+      routes:
+        - id: workflow-condition
+          uri: /workflow
+          plugins:
+            workflow: {rules: [{case: [[uri, ==, /workflow]], actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: conditional upstream}]
+    steps:
+      - name: matching-case
+        input: {method: GET, path: /workflow}
+        output:
+          status: 403
+          body: {equals: '{"error_msg":"rejected by workflow"}'}
+  - name: workflow-multiple-actions
+    source: {file: t/plugin/workflow2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8]}
+    config:
+      routes:
+        - id: workflow-multiple
+          uri: /workflow
+          plugins:
+            workflow: {rules: [{case: [[uri, ==, /workflow]], actions: [[return, {code: 401}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: multiple upstream}]
+    steps:
+      - name: first-case-wins
+        input: {method: GET, path: /workflow}
+        output:
+          status: 401
+          body: {equals: '{"error_msg":"rejected by workflow"}'}
+  - name: workflow-limit-count-action
+    source: {file: t/plugin/workflow3.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+    config:
+      routes:
+        - id: workflow-limit-count
+          uri: /workflow
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, ==, /workflow]]
+                  actions: [[limit-count, {count: 1, time_window: 60, rejected_code: 429, key: remote_addr}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: counted upstream}]
+    steps:
+      - name: count-allowed
+        input: {method: GET, path: /workflow}
+        output:
+          status: 200
+          body: {equals: counted upstream}
+      - name: count-rejected
+        input: {method: GET, path: /workflow}
+        output:
+          status: 429

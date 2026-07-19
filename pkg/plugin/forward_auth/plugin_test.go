@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -201,11 +202,14 @@ func TestHandlerPostForwardsRequestBodyTransportHeaders(t *testing.T) {
 		if got := r.Header.Get("Content-Encoding"); got != "gzip" {
 			t.Fatalf("Content-Encoding = %q, want gzip", got)
 		}
-		if got := r.Header.Get("Expect"); got != "100-continue" {
-			t.Fatalf("Expect = %q, want 100-continue", got)
+		if got := r.Header.Get("Expect"); got != "" {
+			t.Fatalf("Expect = %q, want empty after buffering", got)
 		}
 		if got := r.Header.Get("Content-Length"); got != "7" {
 			t.Fatalf("Content-Length = %q, want 7", got)
+		}
+		if got := r.Header.Get("Transfer-Encoding"); got != "" || len(r.TransferEncoding) != 0 {
+			t.Fatalf("Transfer-Encoding = %q/%v, want absent after buffering", got, r.TransferEncoding)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -220,6 +224,91 @@ func TestHandlerPostForwardsRequestBodyTransportHeaders(t *testing.T) {
 	req.Header.Set("Expect", "100-continue")
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsOversizedPostBeforeCallingAuth(t *testing.T) {
+	called := false
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:            auth.URL,
+		RequestMethod:  http.MethodPost,
+		MaxReqBodySize: 4,
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", strings.NewReader("12345"))
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rr.Code, rr.Body.String())
+	}
+	if called {
+		t.Fatal("authorization service was called for an oversized body")
+	}
+}
+
+func TestHandlerGeneratedHeadersCannotBeSpoofedThroughRequestHeaders(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Forwarded-Host"); got != "example.com" {
+			t.Fatalf("X-Forwarded-Host = %q, want example.com", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:            auth.URL,
+		RequestHeaders: []string{"X-Forwarded-Host"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("X-Forwarded-Host", "attacker.example")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlerResolvesJSONPostArgumentForGETAuth(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Tenant-Id"); got != "123" {
+			t.Fatalf("Tenant-Id = %q, want 123", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(auth.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:          auth.URL,
+		ExtraHeaders: map[string]string{"Tenant-Id": "$post_arg.tenant_id"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", strings.NewReader(`{"tenant_id":123}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read restored body: %v", err)
+		}
+		if got := string(body); got != `{"tenant_id":123}` {
+			t.Fatalf("restored body = %q", got)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 

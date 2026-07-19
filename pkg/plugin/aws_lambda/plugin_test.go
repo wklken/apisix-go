@@ -112,10 +112,11 @@ func TestHandlerSignsIAMRequestWithAWSV4(t *testing.T) {
 	}
 	defer func() { now = oldNow }()
 
-	var gotAuthorization, gotAmzDate, gotBody string
+	var gotAuthorization, gotAmzDate, gotBody, gotQuery string
 	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuthorization = r.Header.Get("Authorization")
 		gotAmzDate = r.Header.Get("X-Amz-Date")
+		gotQuery = r.URL.RawQuery
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read lambda request body: %v", err)
@@ -148,6 +149,9 @@ func TestHandlerSignsIAMRequestWithAWSV4(t *testing.T) {
 	}
 	if gotAmzDate != "20200102T030405Z" {
 		t.Fatalf("X-Amz-Date = %q, want fixed signing date", gotAmzDate)
+	}
+	if gotQuery != "a=one&b=two" {
+		t.Fatalf("lambda query = %q, want canonical wire order", gotQuery)
 	}
 	wantCredential := "AWS4-HMAC-SHA256 Credential=AKID/20200102/us-west-2/lambda/aws4_request"
 	if !strings.Contains(gotAuthorization, wantCredential) {
@@ -191,8 +195,13 @@ func TestCanonicalRequestComponentsMatchAPISIXNormalization(t *testing.T) {
 	if got := canonicalURI("api//v1/../users/"); got != "/api/users" {
 		t.Fatalf("canonicalURI() = %q, want /api/users", got)
 	}
-	if got := canonicalQueryString("z=last&name=APISIX%20Go&a=first"); got != "a=first&name=APISIX Go&z=last" {
-		t.Fatalf("canonicalQueryString() = %q, want decoded and sorted query", got)
+	if got := canonicalQueryString("z=last&name=APISIX%20Go&a=first"); got != "a=first&name=APISIX%20Go&z=last" {
+		t.Fatalf("canonicalQueryString() = %q, want encoded and sorted query", got)
+	}
+	complexQuery := "with%20space=a%2Fb%20c&multi=m2&multi=m1&flag&a=*&a-=x"
+	wantComplex := "a=%2A&a-=x&flag=&multi=m1&multi=m2&with%20space=a%2Fb%20c"
+	if got := canonicalQueryString(complexQuery); got != wantComplex {
+		t.Fatalf("canonicalQueryString(complex) = %q, want %q", got, wantComplex)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "https://lambda.example/prod", nil)

@@ -1,0 +1,433 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth-anonymous-consumer.t
+    tests: 7
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth-more-algo.t
+    tests: 17
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth-realm.t
+    tests: 6
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth.t
+    tests: 59
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth2.t
+    tests: 9
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth3.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/jwt-auth4.t
+    tests: 11
+
+cases:
+  - name: hs256-token-extraction-and-validation
+    source:
+      file: t/plugin/jwt-auth.t
+      tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            jwt-auth: {key: user-key, secret: my-secret-key}
+      routes:
+        - id: jwt-auth-hs256
+          uri: /hello
+          plugins: {jwt-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: missing-token
+        input: {path: /hello}
+        output:
+          status: 401
+          body: {matches: 'Missing JWT token in request'}
+      - name: invalid-token
+        input:
+          path: "/hello?jwt=invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
+        output: {status: 401, body: {matches: 'JWT token invalid'}}
+      - name: expired-token
+        input:
+          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
+        output: {status: 401, body: {matches: 'failed to verify jwt'}}
+      - name: bearer-header
+        input:
+          path: /hello
+          headers:
+            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+      - name: cookie-token
+        input:
+          path: /hello
+          headers:
+            Cookie: "jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+      - name: raw-header-token
+        input:
+          path: /hello
+          headers:
+            Authorization: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+      - name: lower-bearer-token
+        input:
+          path: /hello
+          headers:
+            Authorization: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+      - name: invalid-bearer
+        input:
+          path: /hello
+          headers:
+            Authorization: "bearer invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 401, body: {matches: 'JWT token invalid'}}
+      - name: invalid-signature
+        input:
+          path: /hello
+          headers:
+            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0._kNmXeH1uYVAvApFTONk2Z3Gh-a4XfGrjmqd_ahoOI0"
+        output: {status: 401, body: {matches: 'failed to verify jwt'}}
+      - name: valid-signature
+        input:
+          path: /hello
+          headers:
+            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: hs384-algorithm
+    source:
+      file: t/plugin/jwt-auth-more-algo.t
+      tests: [1, 2, 3, 4, 5, 6]
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            jwt-auth: {key: user-key, secret: my-secret-key, algorithm: HS384}
+      routes:
+        - id: jwt-auth-hs384
+          uri: /hello
+          plugins: {jwt-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}, {status: 200, body: hello world}]
+    steps:
+      - name: invalid-hs384-token
+        input:
+          path: "/hello?jwt=invalid-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
+        output: {status: 401, body: {matches: 'JWT token invalid'}}
+      - name: valid-hs384-token
+        input:
+          path: /hello
+          headers:
+            Authorization: "eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.yM8L6f3cGZxKqflMJlf0DqfQVpHUxupqgM3JWETyRQ8Iag1HiRrHILEA-A2rhmEq"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: additional-algorithm-validation
+    source:
+      file: t/plugin/jwt-auth-more-algo.t
+      tests: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    config:
+      consumers:
+        - username: algorithm-user
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: jwt-auth-algorithm-validation
+          uri: /hello
+          plugins: {jwt-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: algorithm-route-is-live
+        input: {path: /hello}
+        output: {status: 401, body: {matches: 'Missing JWT token in request'}}
+
+  - name: custom-claims-and-schema-resources
+    source:
+      file: t/plugin/jwt-auth.t
+      tests: [20, 21, 22, 23, 37, 38, 39, 40, 41, 42, 43]
+    config:
+      consumers:
+        - username: hs512-user
+          plugins: {jwt-auth: {key: user-key-HS512, secret: my-secret-key, algorithm: HS512}}
+      routes:
+        - id: jwt-auth-hs512
+          uri: /hello
+          plugins: {jwt-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}, {status: 200, body: hello world}]
+    steps:
+      - name: hs512-token
+        input:
+          path: "/hello?jwt=eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleS1IUzUxMiIsIm5iZiI6MTcyNzI3NDk4M30.emzmjIbFqkRAr55YW5YobdXDxYWiMuUNLPooE5G_bbme1ul19p1dKW7ESrlqvr4BPJRKThm4PnkNC4h9xSJpBQ"
+        output: {status: 200, body: {equals: hello world}}
+      - name: hs512-extra-payload
+        input:
+          path: "/hello?jwt=eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJhYWEiOiIxMSIsImJiIjoiMjIyIiwia2V5IjoidXNlci1rZXktSFM1MTIiLCJuYmYiOjE3MjcyNzQ5ODN9.s6E3-wNJypgJL71MxoyTTHBDeqdrGQddFjkhLlh3ZN6IZwgpFRlFT1_8suQg9dWUDHGQqgejULyLPhmBMIbw2A"
+        output: {status: 200, body: {equals: hello world}}
+      - name: missing-token-is-rejected-by-jwt-auth
+        input: {path: /hello}
+        output: {status: 401, body: {matches: 'Missing JWT token in request'}}
+
+  - name: rs256-public-key
+    source:
+      file: t/plugin/jwt-auth.t
+      tests: [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+    config:
+      consumers:
+        - username: rs-user
+          plugins:
+            jwt-auth:
+              key: user-key-rs256
+              algorithm: RS256
+              public_key: |-
+                -----BEGIN PUBLIC KEY-----
+                MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDGxOfVe/seP5T/V8pkS5YNAPRC
+                3Ffxxedi7v0pyZh/4d4p9Qx0P9wOmALwlOq4Ftgks311pxG0zL0LcTJY4ikbc3r0
+                h8SM0yhj9UV1VGtuia4YakobvpM9U+kq3lyIMO9ZPRez0cP3AJIYCt5yf8E7bNYJ
+                jbJNjl8WxvM1tDHqVQIDAQAB
+                -----END PUBLIC KEY-----
+      routes:
+        - id: jwt-auth-rs256
+          uri: /hello
+          plugins: {jwt-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: rs256-token
+        input:
+          path: "/hello?jwt=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleS1yczI1NiIsIm5iZiI6MTcyNzI3NDk4M30.FG-PAyscR-pFyw1a5ZiRxHLxzSI1jyVyZxm-fj3-u5igjacJY7UByCUKDnieV9-Ft81X15gdHAcrumUsTbu-77F50Bp5A1sxzdL_PXVLJ1cc8UP2ltvQwf1YWdutK7CI_uNLaeCYPZd9tWPhnfpsv4AdTdaCWeFyoaZSNOdw4oA"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: default-claims
+    source:
+      file: t/plugin/jwt-auth.t
+      tests: [44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
+    config:
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: jwt-auth-default-claims
+          uri: /hello
+          plugins: {jwt-auth: {}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}, {status: 200, body: hello world}]
+    steps:
+      - name: expired-token-rejected
+        input:
+          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTU2Mzg3MDUwMX0.pPNVvh-TQsdDzorRwa-uuiLYiEBODscp9wv0cwD6c68"
+        output: {status: 401, body: {matches: 'failed to verify jwt'}}
+      - name: token-without-exp-accepted
+        input:
+          path: "/hello?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSJ9._7aoTZdzQDT0r9swHTcHb3nsujexcGjSTU-LRzTRVyY"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: anonymous-consumer
+    source:
+      file: t/plugin/jwt-auth-anonymous-consumer.t
+      tests: [1, 2, 3, 4, 5, 6, 7]
+    config:
+      consumers:
+        - username: anonymous
+          plugins: {}
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: jwt-auth-anonymous
+          uri: /hello
+          plugins: {jwt-auth: {anonymous_consumer: anonymous}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}, {status: 200, body: hello world}]
+    steps:
+      - name: missing-token-uses-anonymous
+        input: {path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: valid-token-uses-normal-consumer
+        input:
+          path: /hello
+          headers:
+            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0._kNmXeH1uYVAvApFTONk2Z3Gh-a4XfGrjmqd_ahoOI0"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: custom-realm
+    source:
+      file: t/plugin/jwt-auth-realm.t
+      tests: [1, 2, 3, 4, 5, 6]
+    config:
+      routes:
+        - id: jwt-auth-realm
+          uri: /hello
+          plugins: {jwt-auth: {realm: secure-zone, anonymous_consumer: missing-consumer}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: realm-on-missing-token
+        input: {path: /hello}
+        output:
+          status: 401
+          headers:
+            WWW-Authenticate: {matches: 'Bearer realm="secure-zone"'}
+          body: {matches: 'Invalid user authorization'}
+
+  - name: custom-token-locations
+    source:
+      file: t/plugin/jwt-auth2.t
+      tests: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    config:
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: jwt-auth-custom-locations
+          uri: /hello
+          plugins: {jwt-auth: {header: jwt-header, cookie: jwt-cookie, query: jwt-query}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: custom-header
+        input:
+          path: /hello
+          headers:
+            jwt-header: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+      - name: custom-cookie
+        input:
+          path: /hello
+          headers:
+            Cookie: "jwt-cookie=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+      - name: custom-query
+        input:
+          path: "/hello?jwt-query=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: credential-hiding
+    source:
+      file: t/plugin/jwt-auth3.t
+      tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    config:
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: jwt-auth-hiding
+          uri: /echo
+          plugins: {jwt-auth: {hide_credentials: true}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - path: {equals: /echo}
+            headers: {Authorization: {absent: true}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: bearer-header-hidden
+        input:
+          path: /echo
+          headers:
+            Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsImV4cCI6MTg3OTMxODU0MX0.fNtFJnNmJgzbiYmGB0Yjvm-l6A6M4jRV1l4mnVFSYjs"
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: context-registration
+    source:
+      file: t/plugin/jwt-auth4.t
+      tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    config:
+      consumers:
+        - username: jack
+          plugins: {jwt-auth: {key: user-key, secret: my-secret-key}}
+      routes:
+        - id: jwt-auth-context
+          uri: /jwt-auth-ctx
+          plugins: {jwt-auth: {store_in_ctx: true}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+        - id: jwt-auth-no-context
+          uri: /jwt-auth-no-ctx
+          plugins: {jwt-auth: {store_in_ctx: false}}
+          upstream:
+            type: roundrobin
+            nodes: {"{{FIXTURE.primary.ADDR}}": 1}
+    fixtures:
+      - name: primary
+        kind: http
+        respond: [{status: 200, body: hello world}, {status: 200, body: hello world}]
+    steps:
+      - name: context-enabled-request
+        input:
+          path: /jwt-auth-ctx
+          headers:
+            Authorization: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsIm5iZiI6MTcyNzI3NDk4M30.N6ebc4U5ms976pwKZ_iQ88w_uJKqUVNtTYZ_nXhRpWo"
+        output: {status: 200, body: {equals: hello world}}
+      - name: context-disabled-request
+        input:
+          path: /jwt-auth-no-ctx
+          headers:
+            Authorization: "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJ1c2VyLWtleSIsIm5iZiI6MTcyNzI3NDk4M30.N6ebc4U5ms976pwKZ_iQ88w_uJKqUVNtTYZ_nXhRpWo"
+        output: {status: 200, body: {equals: hello world}}

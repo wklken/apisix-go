@@ -23,6 +23,16 @@ type captureSender struct {
 	messages []rocketmqMessage
 }
 
+type shutdownSender struct {
+	captureSender
+	shutdown bool
+}
+
+func (s *shutdownSender) Shutdown() error {
+	s.shutdown = true
+	return nil
+}
+
 func (s *captureSender) Send(ctx context.Context, message rocketmqMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,6 +128,15 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	}
 	if payload["status"].(float64) != 200 {
 		t.Fatalf("status = %v, want 200", payload["status"])
+	}
+}
+
+func TestStopShutsDownRocketMQSender(t *testing.T) {
+	sender := &shutdownSender{}
+	p := newTestPlugin(t, Config{}, sender)
+	p.Stop()
+	if !sender.shutdown {
+		t.Fatal("Stop() did not shut down the sender")
 	}
 }
 

@@ -52,6 +52,27 @@ func TestBypassMissingAllowsMissingReferer(t *testing.T) {
 	}
 }
 
+func TestBypassMissingAllowsMalformedReferer(t *testing.T) {
+	bypassMissing := true
+	p := newTestPlugin(t, Config{
+		BypassMissing: &bypassMissing,
+		Whitelist:     []string{"allowed.example.com"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)
+	req.Header.Set("Referer", "www.example.com")
+
+	called := false
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !called || rr.Code != http.StatusNoContent {
+		t.Fatalf("malformed referer called=%v status=%d, want bypassed with 204", called, rr.Code)
+	}
+}
+
 func TestLeadingStarMatchesHostSuffix(t *testing.T) {
 	p := newTestPlugin(t, Config{Whitelist: []string{"*.example.com"}})
 	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)

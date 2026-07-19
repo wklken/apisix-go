@@ -1,0 +1,194 @@
+cases:
+    - config:
+        routes:
+            - id: rocketmq-logger-source-1
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: '"code":105.*"topic":"integration"'
+          network_respond:
+            - payload: ok
+      name: rocketmq-logger-source-1
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: rocketmq-log-format-request
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+    - config:
+        routes:
+            - id: rocketmq-logger-source-2
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: '"code":105.*"topic":"integration"'
+          network_respond:
+            - payload: ok
+      name: rocketmq-logger-source-2
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: rocketmq-log-request
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+    - config:
+        routes:
+            - id: rocketmq-logger-source-3
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: '"code":105.*"topic":"integration"'
+          network_respond:
+            - payload: ok
+      name: rocketmq-logger-source-3
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: rocketmq-log-variant-request
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/rocketmq-logger-log-format.t
+      tests: 5
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/rocketmq-logger.t
+      tests: 19
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/rocketmq-logger2.t
+      tests: 18

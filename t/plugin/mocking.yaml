@@ -1,0 +1,247 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/mocking.t
+  tests: 22
+
+cases:
+  - name: response-example
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - id: mocking-example
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_example: hello world
+    input: &hello_input
+      path: /hello
+    output:
+      status: 200
+      headers:
+        Content-Type:
+          equals: text/plain
+      body:
+        equals: hello world
+
+  - name: string-schema
+    source:
+      tests: [3, 4]
+    config:
+      routes:
+        - id: mocking-string-schema
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_schema:
+                type: object
+                properties:
+                  field1:
+                    type: string
+                    example: hello
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: '{"field1":"hello"}'
+
+  - name: integer-schema
+    source:
+      tests: [5, 6]
+    config:
+      routes:
+        - id: mocking-integer-schema
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_schema:
+                type: object
+                properties:
+                  field1:
+                    type: integer
+                    example: 4
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: '{"field1":4}'
+
+  - name: number-schema
+    source:
+      tests: [7, 8]
+    config:
+      routes:
+        - id: mocking-number-schema
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_schema:
+                type: object
+                properties:
+                  field1:
+                    type: number
+                    example: 5.5
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: '{"field1":5.5}'
+
+  - name: boolean-schema
+    source:
+      tests: [9, 10]
+    config:
+      routes:
+        - id: mocking-boolean-schema
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_schema:
+                type: object
+                properties:
+                  field1:
+                    type: boolean
+                    example: true
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: '{"field1":true}'
+
+  - name: object-schema
+    source:
+      tests: [11, 12]
+    config:
+      routes:
+        - id: mocking-object-schema
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_schema:
+                type: object
+                properties:
+                  field1:
+                    type: object
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: '{"field1":{}}'
+
+  - name: response-content-type
+    source:
+      tests: [13, 14]
+    config:
+      routes:
+        - id: mocking-content-type
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: application/json
+              response_status: 200
+              response_example: '{"field1":{}}'
+    input: *hello_input
+    output:
+      status: 200
+      headers:
+        Content-Type:
+          equals: application/json
+
+  - name: remote-address-variable
+    source:
+      tests: [15, 16]
+    config:
+      routes:
+        - id: mocking-remote-address
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_example: remote_addr:$remote_addr
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: remote_addr:127.0.0.1
+
+  - name: unknown-variable
+    source:
+      tests: [17, 18]
+    config:
+      routes:
+        - id: mocking-unknown-variable
+          uri: /hello
+          plugins:
+            mocking:
+              delay: 1
+              content_type: text/plain
+              response_status: 200
+              response_example: empty_var:$foo
+    input: *hello_input
+    output:
+      status: 200
+      body:
+        equals: 'empty_var:'
+
+  - name: response-headers
+    source:
+      tests: [19, 20]
+    config:
+      routes:
+        - id: mocking-response-headers
+          uri: /hello
+          plugins:
+            mocking:
+              response_example: hello world
+              response_headers:
+                X-Apisix: is, cool
+                X-Really: "yes"
+    input: *hello_input
+    output:
+      status: 200
+      headers:
+        X-Apisix:
+          equals: is, cool
+        X-Really:
+          equals: "yes"
+
+  - name: response-header-route-variable
+    source:
+      tests: [21, 22]
+    config:
+      routes:
+        - id: "1"
+          uri: /hello
+          plugins:
+            mocking:
+              response_example: hello world
+              response_headers:
+                X-Route-Id: $route_id
+    input: *hello_input
+    output:
+      status: 200
+      headers:
+        X-Route-Id:
+          equals: "1"

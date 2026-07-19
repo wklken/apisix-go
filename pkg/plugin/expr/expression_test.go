@@ -66,3 +66,13 @@ func TestEmptyExpressionMatches(t *testing.T) {
 		t.Fatal("Eval() = false, want empty top-level expression to match")
 	}
 }
+
+func TestNegatedNumericComparisonDoesNotMatchMissingValue(t *testing.T) {
+	expression, err := Compile([]any{[]any{"age", "!", "<", 18}})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if expression.Eval(func(string) any { return nil }) {
+		t.Fatal("Eval() = true, want missing numeric value not to match")
+	}
+}

@@ -1,0 +1,218 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/openfunction.t
+  tests: 15
+
+cases:
+  - name: schema
+    source:
+      tests: [1, 2, 3]
+    variants:
+      - name: valid
+        config:
+          routes:
+            - id: openfunction-valid
+              uri: /hello
+              plugins:
+                openfunction:
+                  function_uri: "http://{{UPSTREAM_ADDR}}/default/test-body"
+        input:
+          path: /hello
+        upstream: &done_upstream
+          respond:
+            status: 200
+            body: done
+        output: &done
+          status: 200
+          body:
+            equals: done
+      - name: missing-function-uri
+        config:
+          routes:
+            - id: openfunction-missing-uri
+              uri: /hello
+              plugins:
+                openfunction:
+                  timeout: 60000
+        input: &schema_input
+          path: /hello
+        output: &schema_error
+          status: 404
+          logs:
+            matches: 'build route openfunction-.*fail:.*openfunction'
+      - name: numeric-function-uri
+        config:
+          routes:
+            - id: openfunction-numeric-uri
+              uri: /hello
+              plugins:
+                openfunction:
+                  function_uri: 30858
+        input: *schema_input
+        output: *schema_error
+
+  - name: get-function
+    source:
+      tests: [4, 5]
+    config:
+      routes:
+        - id: openfunction-get
+          uri: /hello
+          plugins:
+            openfunction:
+              function_uri: "http://{{UPSTREAM_ADDR}}/function-sample"
+    input:
+      path: /hello
+    upstream:
+      expect:
+        method: GET
+        path:
+          equals: /function-sample
+      respond:
+        status: 200
+        body: "Hello, function-sample!\n"
+    output:
+      status: 200
+      body:
+        equals: "Hello, function-sample!\n"
+
+  - name: post-body
+    source:
+      tests: [6, 7]
+    config:
+      routes:
+        - id: openfunction-body
+          uri: /hello
+          plugins:
+            openfunction:
+              function_uri: "http://{{UPSTREAM_ADDR}}/default/test-body"
+    input:
+      method: POST
+      path: /hello
+      body: test
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /default/test-body
+        body:
+          equals: test
+      respond:
+        status: 200
+        body: "Hello, test!\n"
+    output:
+      status: 200
+      body:
+        equals: "Hello, test!\n"
+
+  - name: service-token
+    source:
+      tests: [8, 9]
+    config:
+      routes:
+        - id: openfunction-service-token
+          uri: /hello
+          plugins:
+            openfunction:
+              function_uri: "http://{{UPSTREAM_ADDR}}/"
+              authorization:
+                service_token: test:test
+    input:
+      method: POST
+      path: /hello
+    upstream:
+      expect:
+        headers:
+          Authorization:
+            equals: Basic dGVzdDp0ZXN0
+      respond:
+        status: 200
+        body: '[Basic dGVzdDp0ZXN0]'
+    output:
+      status: 200
+      body:
+        equals: '[Basic dGVzdDp0ZXN0]'
+
+  - name: client-authorization
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: openfunction-client-token
+          uri: /hello
+          plugins:
+            openfunction:
+              function_uri: "http://{{UPSTREAM_ADDR}}/"
+    input:
+      method: POST
+      path: /hello
+      headers:
+        Authorization: user-token-xxx
+    upstream:
+      expect:
+        headers:
+          Authorization:
+            equals: user-token-xxx
+      respond:
+        status: 200
+        body: '[user-token-xxx]'
+    output:
+      status: 200
+      body:
+        equals: '[user-token-xxx]'
+
+  - name: function-not-found
+    source:
+      tests: [12, 13]
+    config:
+      routes:
+        - id: openfunction-not-found
+          uri: /hello
+          plugins:
+            openfunction:
+              function_uri: "http://{{UPSTREAM_ADDR}}/default/non-existent"
+    input:
+      method: POST
+      path: /hello
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: test
+    upstream:
+      expect:
+        path:
+          equals: /default/non-existent
+        body:
+          equals: test
+      respond:
+        status: 404
+        body: function not found
+    output:
+      status: 404
+      body:
+        matches: not found
+
+  - name: wildcard-path-forwarding
+    source:
+      tests: [14, 15]
+    config:
+      routes:
+        - id: openfunction-path
+          uri: /hello/*
+          plugins:
+            openfunction:
+              function_uri: "http://{{UPSTREAM_ADDR}}"
+    input:
+      path: /hello/openfunction
+    upstream:
+      expect:
+        method: GET
+        path:
+          equals: /openfunction
+      respond:
+        status: 200
+        body: "Hello, openfunction!\n"
+    output:
+      status: 200
+      body:
+        equals: "Hello, openfunction!\n"

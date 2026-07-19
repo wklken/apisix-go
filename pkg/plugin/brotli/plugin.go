@@ -2,6 +2,7 @@ package brotli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,6 +94,40 @@ type Config struct {
 	contentTypes map[string]struct{}
 	wildcardType bool
 	httpVersion  string
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Types       json.RawMessage `json:"types"`
+		MinLength   *int            `json:"min_length"`
+		Mode        *int            `json:"mode"`
+		CompLevel   *int            `json:"comp_level"`
+		LGWin       *int            `json:"lgwin"`
+		LGBlock     *int            `json:"lgblock"`
+		HTTPVersion *float64        `json:"http_version"`
+		Vary        *bool           `json:"vary"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*c = Config{
+		MinLength:   raw.MinLength,
+		Mode:        raw.Mode,
+		CompLevel:   raw.CompLevel,
+		LGWin:       raw.LGWin,
+		LGBlock:     raw.LGBlock,
+		HTTPVersion: raw.HTTPVersion,
+		Vary:        raw.Vary,
+	}
+	if len(raw.Types) == 0 || string(raw.Types) == "null" {
+		return nil
+	}
+	var wildcard string
+	if err := json.Unmarshal(raw.Types, &wildcard); err == nil {
+		c.Types = []string{wildcard}
+		return nil
+	}
+	return json.Unmarshal(raw.Types, &c.Types)
 }
 
 type responseRecorder struct {
@@ -248,7 +283,11 @@ func (p *Plugin) compressResponse(resp *responseRecorder) {
 	resp.header.Set("Content-Encoding", "br")
 	resp.header.Del("Content-Length")
 	if p.config.Vary != nil && *p.config.Vary {
-		resp.header.Add("Vary", "Accept-Encoding")
+		if vary := resp.header.Get("Vary"); vary != "" {
+			resp.header.Set("Vary", vary+", Accept-Encoding")
+		} else {
+			resp.header.Set("Vary", "Accept-Encoding")
+		}
 	}
 	weakenETag(resp.header)
 }
@@ -266,6 +305,10 @@ func weakenETag(header http.Header) {
 		return
 	}
 	if len(etag) >= 2 && strings.HasPrefix(etag, `"`) && strings.HasSuffix(etag, `"`) {
+		if strings.Contains(etag[1:len(etag)-1], `"`) {
+			header.Del("Etag")
+			return
+		}
 		header.Set("Etag", "W/"+etag)
 		return
 	}
@@ -308,5 +351,10 @@ func (r *responseRecorder) writeTo(w http.ResponseWriter) {
 		}
 	}
 	w.WriteHeader(r.statusCode)
+	if r.header.Get("Content-Encoding") == "br" {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
 	_, _ = io.Copy(w, bytes.NewReader(r.body.Bytes()))
 }

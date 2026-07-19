@@ -538,7 +538,6 @@ func (p *Plugin) newWriter() (*kafka.Writer, error) {
 
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(p.brokerAddresses()...),
-		Topic:        p.config.KafkaTopic,
 		RequiredAcks: kafka.RequiredAcks(p.config.RequiredAcks),
 		Async:        p.config.ProducerType == "async",
 		BatchSize:    p.config.ProducerBatchNum,

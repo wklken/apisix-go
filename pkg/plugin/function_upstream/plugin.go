@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -105,8 +106,12 @@ func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	if extension := chi.URLParam(r, "ext"); extension != "" {
-		target.Path = appendExtensionPath(target.Path, extension)
+	extension := chi.URLParam(r, "ext")
+	if extension == "" {
+		extension = chi.URLParam(r, "*")
+	}
+	if extension != "" {
+		target.Path = path.Clean(appendExtensionPath(target.Path, extension))
 	}
 	target.RawQuery = r.URL.RawQuery
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))

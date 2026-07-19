@@ -1,10 +1,14 @@
 package request_id
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -28,6 +32,90 @@ func TestUUIDv7GeneratesVersionSevenRequestID(t *testing.T) {
 	requestID := generatedRequestID(t, p)
 	if len(requestID) != 36 || requestID[14] != '7' {
 		t.Fatalf("request id = %q, want UUIDv7 format", requestID)
+	}
+}
+
+func TestUUIDv7IsLexicographicallyMonotoneWithinMillisecond(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "uuidv7"})
+	p.uuidv7Now = func() time.Time { return time.UnixMilli(1_700_000_000_000) }
+	p.uuidv7Rand = bytes.NewReader(make([]byte, 64))
+	p.uuidv7Sequence = 0xffe
+	p.uuidv7LastMS = 1_700_000_000_000
+
+	previous := p.uuidv7ID()
+	for range 20 {
+		current := p.uuidv7ID()
+		if current <= previous {
+			t.Fatalf("UUIDv7 is not monotone: previous=%q current=%q", previous, current)
+		}
+		previous = current
+	}
+}
+
+func TestUUIDv7IsUniqueAcrossConcurrentCalls(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "uuidv7"})
+	const count = 180
+	values := make(chan string, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Go(func() {
+			values <- p.uuidv7ID()
+		})
+	}
+	wg.Wait()
+	close(values)
+
+	seen := make(map[string]struct{}, count)
+	for value := range values {
+		if _, ok := seen[value]; ok {
+			t.Fatalf("duplicate UUIDv7 %q", value)
+		}
+		seen[value] = struct{}{}
+	}
+}
+
+func TestUUIDv7KeepsOrderingWhenClockMovesBackwards(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "uuidv7"})
+	times := []time.Time{
+		time.UnixMilli(1_700_000_000_100),
+		time.UnixMilli(1_700_000_000_099),
+	}
+	p.uuidv7Now = func() time.Time {
+		current := times[0]
+		times = times[1:]
+		return current
+	}
+	p.uuidv7Rand = bytes.NewReader(make([]byte, 64))
+
+	first := p.uuidv7ID()
+	second := p.uuidv7ID()
+	if second <= first {
+		t.Fatalf("UUIDv7 after clock rollback = %q, want greater than %q", second, first)
+	}
+}
+
+func TestUUIDv7RefreshesTimeAfterSequenceOverflow(t *testing.T) {
+	p := newTestPlugin(t, Config{Algorithm: "uuidv7"})
+	const milliseconds = int64(1_700_000_000_100)
+	calls := 0
+	p.uuidv7Now = func() time.Time {
+		calls++
+		if calls == 1 {
+			return time.UnixMilli(milliseconds)
+		}
+		return time.UnixMilli(milliseconds + 1)
+	}
+	p.uuidv7Rand = bytes.NewReader(make([]byte, 64))
+	p.uuidv7LastMS = milliseconds
+	p.uuidv7Sequence = 0x3ffff
+
+	requestID := p.uuidv7ID()
+	timestamp := strings.ReplaceAll(requestID[:13], "-", "")
+	if want := fmt.Sprintf("%012x", milliseconds+1); timestamp != want {
+		t.Fatalf("UUIDv7 timestamp = %q, want refreshed timestamp %q", timestamp, want)
+	}
+	if calls < 2 {
+		t.Fatalf("clock calls = %d, want overflow refresh", calls)
 	}
 }
 

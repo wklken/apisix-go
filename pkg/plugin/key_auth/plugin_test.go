@@ -113,6 +113,11 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})
+	runnerCalled := false
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalled = true
+		next.ServeHTTP(w, r)
+	})
 	req.Header.Set("apikey", "header-key")
 	rr := httptest.NewRecorder()
 
@@ -125,6 +130,9 @@ func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+	if !runnerCalled {
+		t.Fatal("consumer plugin runner was not called")
 	}
 }
 
@@ -183,8 +191,14 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if !strings.Contains(rr.Body.String(), "Missing API key found in request") {
+	if !strings.Contains(rr.Body.String(), "Missing API key in request") {
 		t.Fatalf("body = %q, want missing key message", rr.Body.String())
+	}
+	if got := rr.Body.String(); got != `{"message":"Missing API key in request"}` {
+		t.Fatalf("body = %q, want APISIX error JSON", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
 }
 
@@ -208,6 +222,28 @@ func TestHandlerUsesAnonymousConsumerWhenKeyIsMissing(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsMissingAnonymousConsumerProbeDiagnostic(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-key-anonymous"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing key-auth anonymous consumer reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || diagnostics[0] != "failed to get anonymous consumer missing-key-anonymous" {
+		t.Fatalf("probe diagnostics = %v, want missing-anonymous detail", diagnostics)
+	}
+}
+
 func TestHandlerRejectsInvalidKey(t *testing.T) {
 	addKeyAuthConsumer(t, "valid-key-user", "valid-key")
 	p := newTestPlugin(t, Config{})
@@ -226,6 +262,12 @@ func TestHandlerRejectsInvalidKey(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid API key in request") {
 		t.Fatalf("body = %q, want invalid key message", rr.Body.String())
+	}
+	if got := rr.Body.String(); got != `{"message":"Invalid API key in request"}` {
+		t.Fatalf("body = %q, want APISIX error JSON", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
 }
 

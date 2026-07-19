@@ -1,0 +1,389 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/ua-restriction.t
+  tests: 33
+
+cases:
+  - name: reject-invalid-schema
+    source:
+      tests: [1, 2, 3, 4, 5, 18, 19, 27, 28, 29]
+    variants:
+      - name: allowlist-and-denylist
+        config:
+          routes:
+            - id: ua-schema-both-lists
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  allowlist: [my-bot1, my-bot2]
+                  denylist: [my-bot1, my-bot2]
+        output: &schema_error
+          logs:
+            matches: 'build route ua-schema-.*fail:.*ua-restriction'
+      - name: bypass-missing-not-boolean
+        config:
+          routes:
+            - id: ua-schema-bypass-type
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  bypass_missing: foo
+        output: *schema_error
+      - name: allowlist-not-array
+        config:
+          routes:
+            - id: ua-schema-allowlist-type
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  allowlist: my-bot1
+        output: *schema_error
+      - name: denylist-not-array
+        config:
+          routes:
+            - id: ua-schema-denylist-type
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  denylist: 100
+        output: *schema_error
+      - name: message-not-string
+        config:
+          routes:
+            - id: ua-schema-message-type
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  denylist: [my-bot1]
+                  message: 100
+        output: *schema_error
+      - name: message-empty
+        config:
+          routes:
+            - id: ua-schema-message-empty
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  denylist: [my-bot1]
+                  message: ""
+        output: *schema_error
+      - name: message-too-long
+        config:
+          routes:
+            - id: ua-schema-message-long
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  denylist: [my-bot1]
+                  message: "-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#"
+        output: *schema_error
+      - name: allowlist-null-element
+        config:
+          routes:
+            - id: ua-schema-allowlist-null
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  allowlist: ["userdata: NULL", null, ""]
+        output: *schema_error
+      - name: denylist-null-element
+        config:
+          routes:
+            - id: ua-schema-denylist-null
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  denylist: ["userdata: NULL", null, ""]
+        output: *schema_error
+      - name: no-list
+        config:
+          routes:
+            - id: ua-schema-no-list
+              uri: /hello
+              plugins:
+                ua-restriction: {}
+        output: *schema_error
+
+  - name: denylist
+    source:
+      tests: [6, 7, 8, 9, 10, 11]
+    config:
+      routes:
+        - id: ua-denylist
+          uri: /hello
+          plugins:
+            ua-restriction:
+              denylist:
+                - my-bot1
+                - '(Baiduspider)/(\d+)\.(\d+)'
+          upstream: &fixture_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - &hello_expect
+            path:
+              equals: /hello
+        respond:
+          - &hello_response
+            status: 200
+            body: hello world
+    steps:
+      - name: exact-denied
+        input:
+          path: /hello
+          headers:
+            User-Agent: my-bot1
+        output: &denied
+          status: 403
+          headers:
+            Content-Type:
+              equals: application/json
+          body:
+            equals: '{"message":"Not allowed"}'
+      - name: multiple-first-denied
+        input:
+          version: "1.0"
+          path: /hello
+          header_values:
+            User-Agent: [my-bot1, my-bot2]
+        output: *denied
+      - name: multiple-second-denied
+        input:
+          version: "1.0"
+          path: /hello
+          header_values:
+            User-Agent: [my-bot2, my-bot1]
+        output: *denied
+      - name: regex-denied
+        input:
+          path: /hello
+          headers:
+            User-Agent: Baiduspider/3.0
+        output: *denied
+      - name: other-allowed
+        input:
+          path: /hello
+          headers:
+            User-Agent: foo/bar
+        output: &allowed
+          status: 200
+          body:
+            equals: hello world
+
+  - name: allowlist
+    source:
+      tests: [12, 13, 14, 15, 16, 17]
+    config:
+      routes:
+        - id: ua-allowlist
+          uri: /hello
+          plugins:
+            ua-restriction:
+              allowlist:
+                - my-bot1
+                - '(Baiduspider)/(\d+)\.(\d+)'
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - *hello_expect
+          - *hello_expect
+          - *hello_expect
+          - *hello_expect
+        respond:
+          - *hello_response
+    steps:
+      - name: exact-allowed
+        input:
+          path: /hello
+          headers:
+            User-Agent: my-bot1
+        output: *allowed
+      - name: regex-allowed
+        input:
+          path: /hello
+          headers:
+            User-Agent: Baiduspider/3.0
+        output: *allowed
+      - name: other-denied
+        input:
+          path: /hello
+          headers:
+            User-Agent: foo/bar
+        output: *denied
+      - name: one-of-multiple-allowed
+        input:
+          version: "1.0"
+          path: /hello
+          header_values:
+            User-Agent: [foo/bar, my-bot1]
+        output: *allowed
+      - name: first-of-multiple-allowed
+        input:
+          version: "1.0"
+          path: /hello
+          header_values:
+            User-Agent: [my-bot1, foo/bar]
+        output: *allowed
+
+  - name: custom-message
+    source:
+      tests: [20, 21]
+    config:
+      routes:
+        - id: ua-custom-message
+          uri: /hello
+          plugins:
+            ua-restriction:
+              denylist:
+                - '(Baiduspider)/(\d+)\.(\d+)'
+              message: Do you want to do something bad?
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *hello_response
+    steps:
+      - name: custom-message-denied
+        input:
+          path: /hello
+          headers:
+            User-Agent: Baiduspider/1.0
+        output:
+          status: 403
+          body:
+            equals: '{"message":"Do you want to do something bad?"}'
+
+  - name: remove-plugin
+    source:
+      tests: [22, 23, 24, 25]
+    variants:
+      - name: enabled-denylist
+        config:
+          routes:
+            - id: ua-removal-enabled
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  denylist:
+                    - '(Baiduspider)/(\d+)\.(\d+)'
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - *hello_response
+        steps:
+          - name: denied-while-enabled
+            input: &spider_input
+              path: /hello
+              headers:
+                User-Agent: Baiduspider/1.0
+            output: *denied
+      - name: removed
+        config:
+          routes:
+            - id: ua-removal-removed
+              uri: /hello
+              plugins:
+                ua-restriction:
+                  _meta:
+                    disable: true
+              upstream: *fixture_upstream
+        fixtures:
+          - name: primary
+            kind: http
+            expect:
+              - *hello_expect
+            respond:
+              - *hello_response
+        steps:
+          - name: allowed-after-removal
+            input: *spider_input
+            output: *allowed
+
+  - name: disabled-plugin
+    source:
+      tests: [26]
+    config:
+      routes:
+        - id: ua-disabled
+          uri: /hello
+          plugins:
+            ua-restriction:
+              denylist: [foo]
+              _meta:
+                disable: true
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - *hello_expect
+        respond:
+          - *hello_response
+    steps:
+      - name: disabled-allows
+        input:
+          path: /hello
+          headers:
+            User-Agent: foo
+        output: *allowed
+
+  - name: missing-user-agent-denied
+    source:
+      tests: [30, 31]
+    config:
+      routes:
+        - id: ua-missing-denied
+          uri: /hello
+          plugins:
+            ua-restriction:
+              allowlist: [my-bot1]
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *hello_response
+    steps:
+      - name: missing-denied
+        input:
+          path: /hello
+          headers:
+            User-Agent: ""
+        output: *denied
+
+  - name: missing-user-agent-bypassed
+    source:
+      tests: [32, 33]
+    config:
+      routes:
+        - id: ua-missing-bypassed
+          uri: /hello
+          plugins:
+            ua-restriction:
+              bypass_missing: true
+              denylist: [my-bot1]
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - *hello_expect
+        respond:
+          - *hello_response
+    steps:
+      - name: missing-bypassed
+        input:
+          path: /hello
+          headers:
+            User-Agent: ""
+        output: *allowed

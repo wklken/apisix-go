@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/resource"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -14,8 +15,8 @@ import (
 type EventUpdateHook func(event *Event)
 
 type Store struct {
-	events chan *Event
-	flush  chan chan struct{}
+	events  chan *Event
+	runDone chan struct{}
 	// Add other fields for kv storage in memory
 	db *bolt.DB
 
@@ -27,7 +28,13 @@ type Store struct {
 	consumerKV map[string][]byte
 	// store consumer_id -> keys, like foo->[key-auth:123456], for update and delete
 	consumerToKeys map[string][]string
-	consumerMu     sync.RWMutex
+	// store validated consumers with environment and managed secret references unresolved
+	consumerValues map[string]resource.Consumer
+	// store plugin name -> consumer IDs whose lookup key is a secret reference
+	consumerReferenceKV map[string]map[string][]byte
+	// store consumer ID -> plugin names registered in consumerReferenceKV
+	consumerToReferences map[string][]string
+	consumerMu           sync.RWMutex
 }
 
 // should it be global store?
@@ -46,12 +53,14 @@ func NewStore(dbPath string, events chan *Event) *Store {
 
 		s = &Store{
 			events: events,
-			flush:  make(chan chan struct{}),
 			// Initialize other fields for kv storage in memory
 			db: db,
 
-			consumerKV:     map[string][]byte{},
-			consumerToKeys: map[string][]string{},
+			consumerKV:           map[string][]byte{},
+			consumerToKeys:       map[string][]string{},
+			consumerValues:       map[string]resource.Consumer{},
+			consumerReferenceKV:  map[string]map[string][]byte{},
+			consumerToReferences: map[string][]string{},
 		}
 
 		s.InitBuckets()
@@ -61,6 +70,21 @@ func NewStore(dbPath string, events chan *Event) *Store {
 
 func (s *Store) AddEventUpdateHook(hook EventUpdateHook) {
 	s.eventUpdateHooks = append(s.eventUpdateHooks, hook)
+}
+
+// IsHTTPRouteReloadBucket reports whether a resource change affects the built HTTP route handler.
+func IsHTTPRouteReloadBucket(bucket string) bool {
+	switch bucket {
+	case "routes", "services", "upstreams", "global_rules", "plugin_configs":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsStreamReloadBucket reports whether a resource change affects stream routing.
+func IsStreamReloadBucket(bucket string) bool {
+	return bucket == "upstreams" || bucket == "stream_routes"
 }
 
 var builtInBuckets = [][]byte{
@@ -78,6 +102,7 @@ var builtInBuckets = [][]byte{
 	[]byte("protos"),
 	[]byte("ssls"),
 	[]byte("stream_routes"),
+	[]byte("secrets"),
 }
 
 func (s *Store) InitBuckets() {
@@ -130,19 +155,26 @@ func (s *Store) GetFromBucket(bucketName string, id []byte) []byte {
 
 func (s *Store) Start() {
 	// Start goroutine to receive and process events
-	go s.processEvents()
+	s.runDone = make(chan struct{})
+	go func() {
+		defer close(s.runDone)
+		s.processEvents()
+	}()
 }
 
 // Sync waits until all events sent before the call have been processed.
 func (s *Store) Sync() {
 	done := make(chan struct{})
-	s.flush <- done
+	s.events <- &Event{done: done}
 	<-done
 }
 
 func (s *Store) Stop() {
 	// Close events channel
 	close(s.events)
+	if s.runDone != nil {
+		<-s.runDone
+	}
 	_ = s.db.Close()
 }
 
@@ -151,47 +183,51 @@ func (s *Store) Stop() {
 // /apisix/routes/505192286146003655
 func getTypeAndIDFromKey(key []byte) ([]byte, []byte) {
 	parts := bytes.Split(key, []byte("/"))
+	if len(parts) >= 5 && bytes.Equal(parts[len(parts)-3], []byte("secrets")) {
+		return parts[len(parts)-3], bytes.Join(parts[len(parts)-2:], []byte("/"))
+	}
 
 	return parts[len(parts)-2], parts[len(parts)-1]
 }
 
 func (s *Store) processEvents() {
-	for {
-		var event *Event
-		select {
-		case done := <-s.flush:
-			close(done)
+	for event := range s.events {
+		if event.done != nil {
+			close(event.done)
 			continue
-		case next, ok := <-s.events:
-			if !ok {
-				return
-			}
-			event = next
 		}
 
 		bucketName, id := getTypeAndIDFromKey(event.Key)
 		switch event.Type {
 		case EventTypePut:
-			_ = s.db.Update(func(tx *bolt.Tx) error {
+			var snapshot consumerSnapshot
+			isConsumer := bytes.Equal(bucketName, []byte("consumers"))
+			if isConsumer {
+				var err error
+				snapshot, err = s.prepareConsumerSnapshot(id, event.Value)
+				if err != nil {
+					logger.Errorf("store process the consumer fail, err=%s", err)
+					PutBack(event)
+					continue
+				}
+			}
+
+			err := s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
 					return errBucketNotFound
 				}
-
-				err := b.Put(id, event.Value)
-				if err != nil {
+				if err := b.Put(id, event.Value); err != nil {
 					return fmt.Errorf("put key-value fail: %s", err)
 				}
-
-				err = s.consumerKVAdd(id, event.Value)
-				if err != nil {
-					logger.Errorf("store process the consumer fail, err=%w", err)
-				}
-
 				return nil
 			})
+			if err == nil && isConsumer {
+				s.applyConsumerSnapshot(snapshot)
+			}
 		case EventTypeDelete:
-			_ = s.db.Update(func(tx *bolt.Tx) error {
+			isConsumer := bytes.Equal(bucketName, []byte("consumers"))
+			err := s.db.Update(func(tx *bolt.Tx) error {
 				b := tx.Bucket(bucketName)
 				if b == nil {
 					return errBucketNotFound
@@ -202,18 +238,18 @@ func (s *Store) processEvents() {
 					return fmt.Errorf("delete key-value fail: %s", err)
 				}
 
-				err = s.consumerKVDelete(id)
-				if err != nil {
-					logger.Errorf("store process the consumer fail, err=%w", err)
-				}
-
 				return nil
 			})
+			if err == nil && isConsumer {
+				if err := s.consumerKVDelete(id); err != nil {
+					logger.Errorf("store process the consumer fail, err=%s", err)
+				}
+			}
 		}
 
 		// FIXME: what type of event should trigger the hooks?
-		if bytes.Equal(bucketName, []byte("routes")) || bytes.Equal(bucketName, []byte("services")) ||
-			bytes.Equal(bucketName, []byte("upstreams")) || bytes.Equal(bucketName, []byte("stream_routes")) {
+		bucket := string(bucketName)
+		if IsHTTPRouteReloadBucket(bucket) || IsStreamReloadBucket(bucket) {
 			s.triggerEventUpdateHooks(event)
 		}
 		PutBack(event)

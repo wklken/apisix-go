@@ -65,6 +65,31 @@ func TestCaseInsensitiveMatch(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsInvalidRegularExpression(t *testing.T) {
+	p := &Plugin{config: Config{BlockRules: []string{`.+(`}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid regular expression rejected")
+	}
+}
+
+func TestNormalizedPathCannotBypassAnchoredRule(t *testing.T) {
+	p := newTestPlugin(t, Config{BlockRules: []string{`^/internal/`}})
+	req := httptest.NewRequest(http.MethodGet, "/./internal/x?aa=1", nil)
+	req.URL.Path = "/internal/x"
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("uri-blocker should not call the next handler")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
 func TestAllowedURIFallsThrough(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BlockRules: []string{`^/blocked`},

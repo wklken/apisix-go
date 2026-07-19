@@ -91,6 +91,7 @@ type Plugin struct {
 	config Config
 
 	logger *zap.Logger
+	syncer *zapcore.BufferedWriteSyncer
 
 	logFormat map[string]string
 }
@@ -145,6 +146,7 @@ func (p *Plugin) PostInit() error {
 		Size:          4096,
 		FlushInterval: 5 * time.Second,
 	}
+	p.syncer = syncWriter
 
 	p.logger = zap.New(
 		zapcore.NewCore(enc, syncWriter, cfg.Level),
@@ -157,6 +159,15 @@ func (p *Plugin) PostInit() error {
 	}
 
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	if p.syncer != nil {
+		_ = p.syncer.Sync()
+	}
+	if p.logger != nil {
+		_ = p.logger.Sync()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

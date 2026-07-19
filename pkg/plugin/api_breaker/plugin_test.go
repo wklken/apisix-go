@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/sony/gobreaker"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -26,6 +24,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 func TestHandlerResolvesBreakResponseHeaders(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BreakResponseCode: http.StatusTooManyRequests,
+		BreakResponseBody: new("blocked"),
 		BreakResponseHeaders: []Header{
 			{Key: "X-Break-Method", Value: "$request_method"},
 			{Key: "X-Break-URI", Value: "$request_uri"},
@@ -74,23 +73,28 @@ func TestHandlerResolvesBreakResponseHeaders(t *testing.T) {
 	}
 }
 
-func TestHandlerUsesConfiguredHealthyStatusesForRecovery(t *testing.T) {
+func TestHandlerHealthySuccessesClearAccumulatedFailures(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		BreakResponseCode: http.StatusServiceUnavailable,
-		MaxBreakerSec:     1,
+		MaxBreakerSec:     10,
 		Unhealthy: UnHealthCheck{
 			HTTPStatuses: []int{http.StatusInternalServerError},
-			Failures:     new(1),
+			Failures:     new(3),
 		},
 		Healthy: HealthCheck{
 			HTTPStatuses: []int{http.StatusNoContent},
-			Successes:    new(1),
+			Successes:    new(3),
 		},
 	})
 
 	statuses := []int{
 		http.StatusInternalServerError,
-		http.StatusCreated,
+		http.StatusInternalServerError,
+		http.StatusNoContent,
+		http.StatusNoContent,
+		http.StatusNoContent,
+		http.StatusInternalServerError,
+		http.StatusInternalServerError,
 		http.StatusNoContent,
 	}
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,31 +103,53 @@ func TestHandlerUsesConfiguredHealthyStatusesForRecovery(t *testing.T) {
 		w.WriteHeader(status)
 	}))
 
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api", nil))
-	if first.Code != http.StatusInternalServerError {
-		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusInternalServerError)
+	wants := []int{500, 500, 204, 204, 204, 500, 500, 204}
+	for i, want := range wants {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api", nil))
+		if response.Code != want {
+			t.Fatalf("response %d code = %d, want %d", i+1, response.Code, want)
+		}
 	}
-	if state := p.cb.State(); state != gobreaker.StateOpen {
-		t.Fatalf("state after unhealthy response = %s, want open", state)
-	}
+}
 
-	time.Sleep(1100 * time.Millisecond)
-	neutral := httptest.NewRecorder()
-	handler.ServeHTTP(neutral, httptest.NewRequest(http.MethodGet, "/api", nil))
-	if neutral.Code != http.StatusCreated {
-		t.Fatalf("neutral response code = %d, want %d", neutral.Code, http.StatusCreated)
-	}
-	if state := p.cb.State(); state != gobreaker.StateHalfOpen {
-		t.Fatalf("state after neutral response = %s, want half-open", state)
-	}
+func TestHandlerUsesExponentialBreakerWindowCappedByConfiguration(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	p := newTestPlugin(t, Config{
+		BreakResponseCode: http.StatusBadGateway,
+		MaxBreakerSec:     10,
+		Unhealthy: UnHealthCheck{
+			HTTPStatuses: []int{http.StatusInternalServerError},
+			Failures:     new(1),
+		},
+	})
+	p.now = func() time.Time { return now }
+	upstreamCalls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
 
-	healthy := httptest.NewRecorder()
-	handler.ServeHTTP(healthy, httptest.NewRequest(http.MethodGet, "/api", nil))
-	if healthy.Code != http.StatusNoContent {
-		t.Fatalf("healthy response code = %d, want %d", healthy.Code, http.StatusNoContent)
+	request := func(want int) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api", nil))
+		if response.Code != want {
+			t.Fatalf("response code = %d, want %d at %s", response.Code, want, now)
+		}
 	}
-	if state := p.cb.State(); state != gobreaker.StateClosed {
-		t.Fatalf("state after configured healthy response = %s, want closed", state)
+	request(500)
+	now = now.Add(time.Second)
+	request(502)
+	now = now.Add(1100 * time.Millisecond)
+	request(500)
+	now = now.Add(3 * time.Second)
+	request(502)
+	now = now.Add(1100 * time.Millisecond)
+	request(500)
+	now = now.Add(8100 * time.Millisecond)
+	request(500)
+	if upstreamCalls != 4 {
+		t.Fatalf("upstream calls = %d, want 4", upstreamCalls)
 	}
 }

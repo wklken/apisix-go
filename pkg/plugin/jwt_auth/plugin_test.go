@@ -133,16 +133,29 @@ func TestHandlerAcceptsBearerTokenAndAttachesConsumer(t *testing.T) {
 		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "jwt-user" {
 			t.Fatalf("consumer_name = %v, want jwt-user", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}))
+	})
+	handler := p.Handler(next)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	runnerCalled := false
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalled = true
+		next.ServeHTTP(w, r)
+	})
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
 
-	res := performRequest(handler, token)
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", res.Code, http.StatusNoContent, res.Body.String())
+	}
+	if !runnerCalled {
+		t.Fatal("consumer plugin runner was not called")
 	}
 }
 
@@ -183,6 +196,28 @@ func TestHandlerUsesAnonymousConsumerWhenTokenIsMissing(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
+func TestHandlerRecordsMissingAnonymousConsumerProbeDiagnostic(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{AnonymousConsumer: "missing-jwt-anonymous"})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing jwt-auth anonymous consumer reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || diagnostics[0] != "failed to get anonymous consumer missing-jwt-anonymous" {
+		t.Fatalf("probe diagnostics = %v, want missing-anonymous detail", diagnostics)
 	}
 }
 

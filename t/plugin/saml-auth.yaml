@@ -1,0 +1,227 @@
+cases:
+    - name: saml-auth-post-schema-and-login
+      source:
+        file: t/plugin/saml-auth-post.t
+        tests: [1, 2]
+      config:
+        routes:
+            - id: saml-auth-post-schema-and-login
+              uri: /*
+              plugins:
+                  saml-auth:
+                      sp_issuer: integration-sp
+                      idp_uri: https://idp.example.test/sso
+                      idp_cert: &saml_cert |
+                          -----BEGIN CERTIFICATE-----
+                          MIICIDCCAYmgAwIBAgIUYCXLeJPz69bdMDcfhEklovNXoHQwDQYJKoZIhvcNAQEL
+                          BQAwIjEgMB4GA1UEAwwXaW50ZWdyYXRpb24uZXhhbXBsZS5jb20wHhcNMjYwNzE1
+                          MDM1MzU4WhcNMzYwNzEyMDM1MzU4WjAiMSAwHgYDVQQDDBdpbnRlZ3JhdGlvbi5l
+                          eGFtcGxlLmNvbTCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEAp6XDmwyYoSKr
+                          y19mRcVywDB9gBK202bWQMNEF/YuUzoX4Cqi+AJu2AMIbYJHp3plJzZUjYrAapWb
+                          PTjFMPkbzKc+nSdqe28bzAEhs80UnFXGpMB009w8c3uJ1DZjzCJ+Pp4OWOk/IgOF
+                          3eRuUAG9ztmo/0T0K/89bJ9U9bkixlMCAwEAAaNTMFEwHQYDVR0OBBYEFGdllZXf
+                          2uPPyvGM4lfumvybA6NSMB8GA1UdIwQYMBaAFGdllZXf2uPPyvGM4lfumvybA6NS
+                          MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADgYEAcxEi38GG2eqfl2Ps
+                          2D+k56X08tgMdXLFKNI9AI+SIPogsDFjVRbNKEA5a2iWEI78Q5qz1brqQ3KWKjHE
+                          gWuujK4lQkYhGY2342j6jiqVjv8YVBMImBKoo0sGJj5ACY4a0jho8t47PBIwzc7U
+                          D+khHyKxVHAgTMNrLOgK7+FyEGQ=
+                          -----END CERTIFICATE-----
+                      login_callback_uri: /login/callback
+                      logout_uri: /logout
+                      logout_callback_uri: /logout/callback
+                      logout_redirect_uri: /logged-out
+                      sp_cert: *saml_cert
+                      sp_private_key: &saml_key |
+                          -----BEGIN PRIVATE KEY-----
+                          MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8wggJbAgEAAoGBAKelw5sMmKEiq8tf
+                          ZkXFcsAwfYASttNm1kDDRBf2LlM6F+AqovgCbtgDCG2CR6d6ZSc2VI2KwGqVmz04
+                          xTD5G8ynPp0nantvG8wBIbPNFJxVxqTAdNPcPHN7idQ2Y8wifj6eDljpPyIDhd3k
+                          blABvc7ZqP9E9Cv/PWyfVPW5IsZTAgMBAAECgYAu2SnCSFDWpqOvX2drE/QvNN29
+                          Tn18sf4pdueucoMbit5lLEUCXVuwTZirUX7IlHFz9cDHFQEUR95ry1N/jf1wTXF0
+                          q9dMK1sOxeIxD5u87IT/YUFOGR37PpfzBqr4lXBqSFHOr3pnMyboyYzl/hsR5QkC
+                          ytxBICCR17uQAU1z0QJBANSScivNYrzQA+jLrnUUMerY3VJUy7OelC7aOvM+w0Wg
+                          g2y7wLWcG0vQpJEeLh6xXPxu/98Q57gDkUjEu4G8c30CQQDJ5cHY63WIHr3SX+6s
+                          cqO5tklJKB7TYBxZXJKLRewW6xkzcjMXlLsZzn9oFtr5e6ggcyvvViQmjH9UBxNC
+                          s6oPAkApUp6nLTH4imd4JcAwOlDJ2oaLrrg6nqUnxnyXNKg5LM7foFAB/erAfjq/
+                          iyJkDQ6Kc/mBn4OsHeVsQ/I/cibxAkBfHMf3guU5nRHbu6nav5717DQWLLpo5cw1
+                          JPE8f1I7ccHLhK8hGsYR4EARL0M1aNXJg7hc5f3d0y5gzXx7XdxtAkATXODoxB8h
+                          KbxxbtNMlYkGCrYKfZgiZWstfYYAOliciGSqmHE2eqED/424yuTO9m4PIyKXKWwS
+                          JKuSmg0k5oxG
+                          -----END PRIVATE KEY-----
+                      auth_protocol_binding_method: HTTP-POST
+                      secret: integration-secret
+              upstream:
+                  type: roundrobin
+                  nodes:
+                      '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            respond:
+                - status: 200
+                  headers: {}
+                  body: saml upstream
+      steps:
+          - name: HTTP-POST binding emits an auto-submit SAML form
+            input:
+                method: GET
+                path: /probe
+            output:
+                status: 200
+                headers:
+                    Content-Type:
+                        matches: text/html; charset=utf-8
+                body:
+                    matches: 'SAMLRequest'
+
+    - name: saml-auth-post-invalid-callback
+      source:
+          file: t/plugin/saml-auth-post.t
+          tests: [3, 4, 5, 6]
+      config:
+          routes:
+              - id: saml-auth-post-invalid-callback
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: integration-sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /login/callback
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logged-out
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        auth_protocol_binding_method: HTTP-POST
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            respond:
+                - status: 200
+                  headers: {}
+                  body: saml upstream
+      steps:
+          - name: invalid callback state is rejected
+            input:
+                method: POST
+                path: /login/callback
+                headers:
+                    Content-Type: application/x-www-form-urlencoded
+                body: SAMLResponse=bad
+            output:
+                status: 401
+                body:
+                    matches: invalid callback state
+
+    - name: saml-auth-redirect-login
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [1, 2, 3, 4, 5, 6, 7]
+      config:
+          routes:
+              - id: saml-auth-redirect-login
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: integration-sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /login/callback
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logged-out
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            respond:
+                - status: 200
+                  headers: {}
+                  body: saml upstream
+      steps:
+          - name: redirect binding starts IdP login
+            input:
+                method: GET
+                path: /probe
+            output:
+                status: 302
+                headers:
+                    Location:
+                        matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*RelayState=.*'
+                body:
+                    matches: 'Found'
+
+    - name: saml-auth-logout-and-callback
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [8, 9, 10, 11, 12, 13, 14, 15]
+      config:
+          routes:
+              - id: saml-auth-logout-and-callback
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: integration-sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /login/callback
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logged-out
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            respond:
+                - status: 200
+                  headers: {}
+                  body: saml upstream
+      steps:
+          - name: logout without session redirects to configured target
+            input:
+                method: GET
+                path: /logout
+            output:
+                status: 302
+                headers:
+                    Location:
+                        equals: /logged-out
+          - name: callback without signed state is rejected
+            input:
+                method: POST
+                path: /login/callback
+                headers:
+                    Content-Type: application/x-www-form-urlencoded
+                body: SAMLResponse=bad
+            output:
+                status: 401
+                body:
+                    matches: invalid callback state
+
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/saml-auth-post.t
+      tests: 6
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/saml-auth.t
+      tests: 15

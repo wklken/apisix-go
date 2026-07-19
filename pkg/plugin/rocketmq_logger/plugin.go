@@ -190,6 +190,25 @@ type rocketmqClientSender struct {
 	producer rocketmq.Producer
 }
 
+func (p *Plugin) Stop() {
+	if sender, ok := p.sender.(interface{ Shutdown() error }); ok {
+		done := make(chan struct{})
+		go func() {
+			_ = sender.Shutdown()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}
+	p.BaseLoggerPlugin.Stop()
+}
+
+func (s *rocketmqClientSender) Shutdown() error {
+	return s.producer.Shutdown()
+}
+
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -439,6 +458,15 @@ func (s *rocketmqClientSender) Send(ctx context.Context, message rocketmqMessage
 		msg.WithKeys([]string{message.Key})
 	}
 
-	_, err := s.producer.SendSync(ctx, msg)
-	return err
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.producer.SendSync(ctx, msg)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

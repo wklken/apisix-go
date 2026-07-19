@@ -25,11 +25,28 @@ func TestMissingConsumerReturnsOfficialMessage(t *testing.T) {
 	}
 	if got := strings.TrimSpace(
 		rr.Body.String(),
-	); got != `{"message":"Missing authentication or identity verification."}` {
+	); got != `{"message":"The request is rejected, please check the consumer_name for this request"}` {
 		t.Fatalf("body = %q", got)
 	}
 	if got := rr.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+}
+
+func TestMissingIdentityNamesTheRestrictionTargetLikeAPISIX(t *testing.T) {
+	whitelist := []string{"service-1"}
+	p := newTestPlugin(t, Config{Type: "service_id", Whitelist: &whitelist})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("consumer-restriction should not call the next handler")
+	})).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/restricted", nil))
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"The request is rejected, please check the service_id for this request"}` {
+		t.Fatalf("body = %q", got)
 	}
 }
 

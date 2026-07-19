@@ -96,6 +96,11 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 	})
 
 	req := ldapRequest("alice", "secret")
+	runnerCalled := false
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalled = true
+		next.ServeHTTP(w, r)
+	})
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +112,9 @@ func TestHandlerAuthenticatesLDAPUserAndAttachesConsumer(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if !runnerCalled {
+		t.Fatal("consumer plugin runner was not called")
 	}
 }
 

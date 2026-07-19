@@ -96,6 +96,45 @@ func TestHandlerUsesRealRequestURIUnsafeAsRewriteSource(t *testing.T) {
 	}
 }
 
+func TestHandlerPreservesAndMergesQueryForConfiguredURI(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{name: "preserve incoming query", uri: "/rewritten", want: "/rewritten?a=1"},
+		{name: "merge configured query", uri: "/rewritten?fixed=1", want: "/rewritten?fixed=1&a=1"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{Uri: test.uri})
+			var rewrite map[string]any
+			handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+			}))
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/source?a=1", nil))
+			if got := rewrite["uri"].(string); got != test.want {
+				t.Fatalf("rewrite uri = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerExpandsConfiguredURIVariables(t *testing.T) {
+	p := newTestPlugin(t, Config{Uri: "/$arg_target"})
+	var rewrite map[string]any
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/source?target=hello", nil))
+	if got := rewrite["uri"].(string); got != "/hello?target=hello" {
+		t.Fatalf("rewrite uri = %q, want /hello?target=hello", got)
+	}
+}
+
 func TestHandlerRegexURIMatchesRealRequestURIUnsafe(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		UseRealRequestURIUnsafe: true,
@@ -203,6 +242,41 @@ func TestHeadersUnmarshalLegacySet(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 }
 
+func TestLegacyHeadersRemoveResolvedEmptyValues(t *testing.T) {
+	p := newTestPlugin(t, Config{Headers: Headers{LegacySet: HeaderValues{
+		"X-Explicit-Empty": "",
+		"X-Missing-Var":    "$arg_missing",
+	}}})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Header["X-Explicit-Empty"]; ok {
+			t.Fatal("X-Explicit-Empty is present, want removed")
+		}
+		if _, ok := r.Header["X-Missing-Var"]; ok {
+			t.Fatal("X-Missing-Var is present, want removed")
+		}
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Explicit-Empty", "old")
+	req.Header.Set("X-Missing-Var", "old")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+func TestHandlerExpandsAdjacentRegexCaptures(t *testing.T) {
+	p := newTestPlugin(t, Config{RegexURI: []string{
+		`^/test/(.*)/(.*)/(.*)$`, `/$1_$2_$3`,
+	}})
+	var rewrite map[string]any
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/test/plugin/proxy/rewrite", nil))
+	if got := rewrite["uri"].(string); got != "/plugin_proxy_rewrite" {
+		t.Fatalf("rewrite uri = %q, want /plugin_proxy_rewrite", got)
+	}
+}
+
 func TestPostInitRejectsOddRegexURI(t *testing.T) {
 	p := &Plugin{config: Config{RegexURI: []string{`^/users/(\d+)$`}}}
 	if err := p.Init(); err != nil {
@@ -210,5 +284,29 @@ func TestPostInitRejectsOddRegexURI(t *testing.T) {
 	}
 	if err := p.PostInit(); err == nil {
 		t.Fatal("PostInit() error = nil, want odd regex_uri error")
+	}
+}
+
+func TestPostInitRejectsInvalidOfficialFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+	}{
+		{name: "relative uri", config: Config{Uri: "hello"}},
+		{name: "invalid regex replacement", config: Config{RegexURI: []string{`^/test/(.*)`, `/$` + "`1"}}},
+		{name: "invalid header name", config: Config{Headers: Headers{LegacySet: HeaderValues{"X-Bad:Name": "v"}}}},
+		{name: "invalid header value", config: Config{Headers: Headers{LegacySet: HeaderValues{"X-Test": "v\r\n"}}}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: test.config}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err == nil {
+				t.Fatal("PostInit() error = nil, want invalid field rejected")
+			}
+		})
 	}
 }

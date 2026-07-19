@@ -1,0 +1,60 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/proxy-control.t
+  tests: 4
+
+cases:
+  - name: request-buffering-disabled
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - id: proxy-control-disabled
+          uri: /hello
+          plugins:
+            proxy-control:
+              request_buffering: false
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /hello
+      body: "123451234512345"
+    upstream:
+      expect:
+        method: POST
+        body:
+          equals: "123451234512345"
+      respond: &fixture_response
+        status: 200
+        body: hello world
+    output: &success
+      status: 200
+      body:
+        equals: hello world
+
+  - name: request-buffering-enabled
+    source:
+      tests: [3, 4]
+    config:
+      routes:
+        - id: proxy-control-enabled
+          uri: /hello
+          plugins:
+            proxy-control:
+              request_buffering: true
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      body: "123451234512345"
+    upstream:
+      expect:
+        method: POST
+        body:
+          equals: "123451234512345"
+      respond: *fixture_response
+    output: *success

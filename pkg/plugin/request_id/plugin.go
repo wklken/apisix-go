@@ -4,10 +4,12 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
+	"io"
 	"math/big"
 	"math/rand"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -67,6 +69,13 @@ type Plugin struct {
 	config Config
 
 	bytePool *bpool.BytePool
+
+	uuidv7Mu       sync.Mutex
+	uuidv7LastMS   int64
+	uuidv7Sequence uint32
+	uuidv7Random   [7]byte
+	uuidv7Now      func() time.Time
+	uuidv7Rand     io.Reader
 }
 
 type Config struct {
@@ -94,6 +103,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.uuidv7Now == nil {
+		p.uuidv7Now = time.Now
+	}
+	if p.uuidv7Rand == nil {
+		p.uuidv7Rand = crand.Reader
+	}
 	if p.config.HeaderName == "" {
 		p.config.HeaderName = "X-Request-Id"
 	}
@@ -167,11 +182,48 @@ func (p *Plugin) rangeID(charSet string, length int) string {
 }
 
 func (p *Plugin) uuidv7ID() string {
-	value, err := uuid.NewV7()
-	if err != nil {
-		return uuid.Must(uuid.NewV4()).String()
+	p.uuidv7Mu.Lock()
+	defer p.uuidv7Mu.Unlock()
+
+	milliseconds := p.uuidv7Now().UnixMilli()
+	if milliseconds > p.uuidv7LastMS {
+		p.resetUUIDv7(milliseconds)
+	} else {
+		if milliseconds < p.uuidv7LastMS {
+			milliseconds = p.uuidv7LastMS
+		}
+		p.uuidv7Sequence++
+		if p.uuidv7Sequence > 0x3ffff {
+			for milliseconds <= p.uuidv7LastMS {
+				time.Sleep(time.Millisecond)
+				milliseconds = p.uuidv7Now().UnixMilli()
+			}
+			p.resetUUIDv7(milliseconds)
+		}
 	}
+
+	var value uuid.UUID
+	value[0] = byte(milliseconds >> 40)
+	value[1] = byte(milliseconds >> 32)
+	value[2] = byte(milliseconds >> 24)
+	value[3] = byte(milliseconds >> 16)
+	value[4] = byte(milliseconds >> 8)
+	value[5] = byte(milliseconds)
+	binary.BigEndian.PutUint16(value[6:8], 0x7000|uint16(p.uuidv7Sequence>>6))
+	value[8] = 0x80 | byte(p.uuidv7Sequence&0x3f)
+	copy(value[9:], p.uuidv7Random[:])
 	return value.String()
+}
+
+func (p *Plugin) resetUUIDv7(milliseconds int64) {
+	p.uuidv7LastMS = milliseconds
+	p.uuidv7Sequence = 0
+	if _, err := io.ReadFull(p.uuidv7Rand, p.uuidv7Random[:]); err != nil {
+		fallback, fallbackErr := uuid.NewV4()
+		if fallbackErr == nil {
+			copy(p.uuidv7Random[:], fallback[:7])
+		}
+	}
 }
 
 const (

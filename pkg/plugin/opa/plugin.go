@@ -122,7 +122,7 @@ type opaHTTPRequest struct {
 	Port    int               `json:"port"`
 	Path    string            `json:"path"`
 	Headers map[string]string `json:"headers"`
-	Query   url.Values        `json:"query"`
+	Query   map[string]any    `json:"query"`
 }
 
 type opaResponse struct {
@@ -247,8 +247,8 @@ func (p *Plugin) buildOPARequest(r *http.Request) opaRequest {
 			Host:    host,
 			Port:    port,
 			Path:    r.URL.Path,
-			Headers: headers(r.Header),
-			Query:   r.URL.Query(),
+			Headers: headers(r),
+			Query:   queryArgs(r.URL.Query()),
 		},
 		Vars: map[string]any{
 			"server_addr": "",
@@ -383,12 +383,25 @@ func scheme(r *http.Request) string {
 	return "http"
 }
 
-func headers(src http.Header) map[string]string {
-	dst := make(map[string]string, len(src))
-	for key := range src {
-		dst[key] = src.Get(key)
+func headers(r *http.Request) map[string]string {
+	dst := make(map[string]string, len(r.Header)+1)
+	for key := range r.Header {
+		dst[strings.ToLower(key)] = r.Header.Get(key)
 	}
+	dst["host"] = r.Host
 	return dst
+}
+
+func queryArgs(values url.Values) map[string]any {
+	query := make(map[string]any, len(values))
+	for key, current := range values {
+		if len(current) == 1 {
+			query[key] = current[0]
+			continue
+		}
+		query[key] = current
+	}
+	return query
 }
 
 func remoteAddr(r *http.Request) string {

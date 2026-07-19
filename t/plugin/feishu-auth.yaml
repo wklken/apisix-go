@@ -1,0 +1,737 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/feishu-auth.t
+  tests: 14
+
+cases:
+  - name: configure-and-redirect-without-code
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - &default_route
+          id: feishu-auth-default
+          uri: /hello
+          plugins:
+            feishu-auth: &default_auth
+              app_id: "123"
+              app_secret: "456"
+              secret: my-secret
+              auth_redirect_uri: https://example.com
+              access_token_url: "{{FIXTURE.feishu.URL}}/token"
+              userinfo_url: "{{FIXTURE.feishu.URL}}/userinfo"
+              cookie_expires_in: 2
+              redirect_uri: /echo
+          upstream: &primary_upstream
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - &unused_feishu
+        name: feishu
+        kind: http
+        expect_requests: 0
+        respond:
+          - status: 200
+            body: '{}'
+      - &unused_primary
+        name: primary
+        kind: http
+        expect_requests: 0
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: missing-code-redirects
+        input:
+          path: /hello
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /echo
+
+  - name: invalid-query-code
+    source:
+      tests: [3]
+    config:
+      routes:
+        - *default_route
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - &invalid_token_request
+            method: POST
+            path:
+              equals: /token
+            headers:
+              Content-Type:
+                matches: '^application/json'
+            body:
+              json_equals: '{"code":"invalid","client_id":"123","client_secret":"456","grant_type":"authorization_code","redirect_uri":"https://example.com"}'
+        respond:
+          - status: 400
+            body: '{"code":20051,"error_description":"Unauthorized"}'
+      - *unused_primary
+    steps:
+      - name: reject-invalid-query-code
+        input:
+          path: /hello?code=invalid
+        output:
+          status: 401
+          body:
+            json_equals: '{"message":"Invalid authorization code"}'
+
+  - name: valid-query-code
+    source:
+      tests: [4]
+    config:
+      routes:
+        - *default_route
+    fixtures: &valid_fixtures
+      - name: feishu
+        kind: http
+        expect:
+          - &valid_token_request
+            method: POST
+            path:
+              equals: /token
+            headers:
+              Content-Type:
+                matches: '^application/json'
+            body:
+              json_equals: '{"code":"passed","client_id":"123","client_secret":"456","grant_type":"authorization_code","redirect_uri":"https://example.com"}'
+          - &userinfo_request
+            method: GET
+            path:
+              equals: /userinfo
+            headers:
+              Authorization:
+                equals: Bearer 85b8b7665c4c3bc5bd91d8e6cb6594b7
+              Content-Type:
+                matches: '^application/json'
+        respond:
+          - &token_response
+            status: 200
+            body: '{"code":0,"expires_in":7200,"access_token":"85b8b7665c4c3bc5bd91d8e6cb6594b7","token_type":"Bearer"}'
+          - &userinfo_response
+            status: 200
+            body: '{"code":0,"data":{"avatar_big":"https://example.test/big","avatar_middle":"https://example.test/middle","avatar_thumb":"https://example.test/thumb","avatar_url":"https://example.test/avatar","en_name":"jack","name":"jack","open_id":"ou_8fc70d9ea27111749a71eb","tenant_key":"1224d18e8d","union_id":"on_c249ec29c9d6"},"msg":"success"}'
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?code=passed
+            headers:
+              X-Userinfo:
+                matches: '.+'
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate-from-query
+        input:
+          path: /hello?code=passed
+        output:
+          status: 200
+          body:
+            equals: hello world
+          headers:
+            Set-Cookie:
+              matches: '^feishu_session='
+
+  - name: invalid-default-header-code
+    source:
+      tests: [5]
+    config:
+      routes:
+        - *default_route
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *invalid_token_request
+        respond:
+          - status: 400
+            body: '{"code":20051,"error_description":"Unauthorized"}'
+      - *unused_primary
+    steps:
+      - name: reject-invalid-header-code
+        input:
+          path: /hello
+          headers:
+            X-Feishu-Code: invalid
+        output:
+          status: 401
+          body:
+            json_equals: '{"message":"Invalid authorization code"}'
+
+  - name: valid-default-header-code
+    source:
+      tests: [6]
+    config:
+      routes:
+        - *default_route
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate-from-default-header
+        input:
+          path: /hello
+          headers:
+            X-Feishu-Code: passed
+        output:
+          status: 200
+          body:
+            equals: hello world
+
+  - name: signed-session-cookie-reuse
+    source:
+      tests: [7]
+    config:
+      routes:
+        - *default_route
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate-and-capture-session
+        input:
+          path: /hello?code=passed
+          without_cookies: true
+        output:
+          status: 200
+          captures:
+            session:
+              header: Set-Cookie
+              matches: '^(feishu_session=[^;]+);'
+      - name: reuse-signed-session
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.session}}"
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: hello world
+      - name: missing-session-still-redirects
+        input:
+          path: /hello
+          without_cookies: true
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /echo
+
+  - name: signed-session-cookie-expiry
+    source:
+      tests: [8]
+    config:
+      routes:
+        - *default_route
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+    steps:
+      - name: authenticate-and-capture-expiring-session
+        input:
+          path: /hello?code=passed
+          without_cookies: true
+        output:
+          status: 200
+          captures:
+            expiring_session:
+              header: Set-Cookie
+              matches: '^(feishu_session=[^;]+);'
+      - name: session-valid-before-expiry
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.expiring_session}}"
+          without_cookies: true
+        output:
+          status: 200
+        wait: 3s
+      - name: session-rejected-after-expiry
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.expiring_session}}"
+          without_cookies: true
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /echo
+
+  - name: custom-code-locations
+    source:
+      tests: [9, 10, 11]
+    config:
+      routes:
+        - id: feishu-auth-custom-code
+          uri: /hello
+          plugins:
+            feishu-auth:
+              <<: *default_auth
+              code_query: custom_code
+              code_header: Custom-Feishu-Code
+          upstream: *primary_upstream
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect:
+          - path:
+              equals: /hello?custom_code=passed
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+    steps:
+      - name: default-query-is-rejected
+        input:
+          path: /hello?code=passed
+          without_cookies: true
+        output:
+          status: 302
+      - name: custom-query-is-accepted
+        input:
+          path: /hello?custom_code=passed
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: hello world
+      - name: default-header-is-rejected
+        input:
+          path: /hello
+          headers:
+            X-Feishu-Code: passed
+          without_cookies: true
+        output:
+          status: 302
+      - name: custom-header-is-accepted
+        input:
+          path: /hello
+          headers:
+            Custom-Feishu-Code: passed
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: hello world
+
+  - name: session-secret-rotation
+    source:
+      tests: [12]
+    config:
+      routes:
+        - id: feishu-auth-secret-v1
+          uri: /hello
+          plugins:
+            feishu-auth:
+              <<: *default_auth
+              secret: secret-v1
+              cookie_expires_in: 60
+          upstream: *primary_upstream
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+      - name: readiness
+        kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /ready-v2-fallback
+          - path:
+              equals: /ready-v2-only
+        respond:
+          - status: 200
+            body: v2 fallback ready
+          - status: 200
+            body: v2 only ready
+    steps:
+      - name: create-v1-session
+        input:
+          path: /hello?code=passed
+          without_cookies: true
+        output:
+          status: 200
+          captures:
+            old_session:
+              header: Set-Cookie
+              matches: '^(feishu_session=[^;]+);'
+      - name: rotate-to-v2-with-v1-fallback
+        config:
+          routes:
+            - id: feishu-auth-secret-v2-fallback
+              uri: /hello
+              plugins:
+                feishu-auth:
+                  <<: *default_auth
+                  secret: secret-v2
+                  secret_fallbacks: [secret-v1]
+                  cookie_expires_in: 60
+              upstream: *primary_upstream
+            - id: feishu-auth-secret-v2-fallback-ready
+              uri: /ready-v2-fallback
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.readiness.ADDR}}": 1
+        config_probe:
+          input:
+            path: /ready-v2-fallback
+          output:
+            status: 200
+            body:
+              equals: v2 fallback ready
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.old_session}}"
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: hello world
+      - name: remove-v1-fallback
+        config:
+          routes:
+            - id: feishu-auth-secret-v2-only
+              uri: /hello
+              plugins:
+                feishu-auth:
+                  <<: *default_auth
+                  secret: secret-v2
+                  cookie_expires_in: 60
+              upstream: *primary_upstream
+            - id: feishu-auth-secret-v2-only-ready
+              uri: /ready-v2-only
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.readiness.ADDR}}": 1
+        config_probe:
+          input:
+            path: /ready-v2-only
+          output:
+            status: 200
+            body:
+              equals: v2 only ready
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.old_session}}"
+          without_cookies: true
+        output:
+          status: 302
+          headers:
+            Location:
+              equals: /echo
+
+  - name: forged-userinfo-is-cleared
+    source:
+      tests: [13]
+    config:
+      routes:
+        - id: feishu-auth-userinfo-on
+          uri: /hello
+          plugins:
+            feishu-auth:
+              <<: *default_auth
+              secret: my-secret-xyz
+              cookie_expires_in: 60
+          upstream: *primary_upstream
+        - id: feishu-auth-userinfo-off
+          uri: /hello-echo
+          plugins:
+            feishu-auth:
+              <<: *default_auth
+              secret: my-secret-xyz
+              cookie_expires_in: 60
+              set_userinfo_header: false
+          upstream: *primary_upstream
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect_requests: 3
+        expect:
+          - path:
+              equals: /hello?code=passed
+            headers:
+              X-Userinfo:
+                equals: eyJhdmF0YXJfYmlnIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvYmlnIiwiYXZhdGFyX21pZGRsZSI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L21pZGRsZSIsImF2YXRhcl90aHVtYiI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L3RodW1iIiwiYXZhdGFyX3VybCI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L2F2YXRhciIsImVuX25hbWUiOiJqYWNrIiwibmFtZSI6ImphY2siLCJvcGVuX2lkIjoib3VfOGZjNzBkOWVhMjcxMTE3NDlhNzFlYiIsInRlbmFudF9rZXkiOiIxMjI0ZDE4ZThkIiwidW5pb25faWQiOiJvbl9jMjQ5ZWMyOWM5ZDYifQ==
+          - path:
+              equals: /hello
+            headers:
+              X-Userinfo:
+                equals: eyJhdmF0YXJfYmlnIjoiaHR0cHM6Ly9leGFtcGxlLnRlc3QvYmlnIiwiYXZhdGFyX21pZGRsZSI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L21pZGRsZSIsImF2YXRhcl90aHVtYiI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L3RodW1iIiwiYXZhdGFyX3VybCI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L2F2YXRhciIsImVuX25hbWUiOiJqYWNrIiwibmFtZSI6ImphY2siLCJvcGVuX2lkIjoib3VfOGZjNzBkOWVhMjcxMTE3NDlhNzFlYiIsInRlbmFudF9rZXkiOiIxMjI0ZDE4ZThkIiwidW5pb25faWQiOiJvbl9jMjQ5ZWMyOWM5ZDYifQ==
+          - path:
+              equals: /hello-echo
+            headers:
+              X-Userinfo:
+                absent: true
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+          - status: 200
+            body: none
+    steps:
+      - name: forged-header-without-session-does-not-authenticate
+        input:
+          path: /hello
+          headers:
+            X-Userinfo: eyJvcGVuX2lkIjoiZm9yZ2VkIiwibmFtZSI6ImhhY2tlciJ9
+          without_cookies: true
+        output:
+          status: 302
+      - name: obtain-legitimate-session
+        input:
+          path: /hello?code=passed
+          without_cookies: true
+        output:
+          status: 200
+          captures:
+            legitimate_session:
+              header: Set-Cookie
+              matches: '^(feishu_session=[^;]+);'
+      - name: valid-session-overwrites-forged-header
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.legitimate_session}}"
+            X-Userinfo: eyJvcGVuX2lkIjoiZm9yZ2VkIiwibmFtZSI6ImhhY2tlciJ9
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: hello world
+      - name: disabled-userinfo-header-removes-forgery
+        input:
+          path: /hello-echo
+          headers:
+            Cookie: "{{CAPTURE.legitimate_session}}"
+            X-Userinfo: eyJvcGVuX2lkIjoiZm9yZ2VkIiwibmFtZSI6ImhhY2tlciJ9
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: none
+
+  - name: encrypted-secret-fallback-standalone-runtime
+    source:
+      tests: [14]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: feishu-auth-encrypted-v1
+          uri: /hello
+          plugins:
+            feishu-auth:
+              app_id: "123"
+              app_secret: v4h4Y9wGygE5KgQl2LqB0A==
+              secret: c1ElaJjP0tvbFd/NPoqVHp2aAyWHc9iiq0MQrMuHxM0=
+              auth_redirect_uri: https://example.com
+              access_token_url: "{{FIXTURE.feishu.URL}}/token"
+              userinfo_url: "{{FIXTURE.feishu.URL}}/userinfo"
+              cookie_expires_in: 60
+              redirect_uri: /echo
+          upstream: *primary_upstream
+    fixtures:
+      - name: feishu
+        kind: http
+        expect:
+          - *valid_token_request
+          - *userinfo_request
+        respond:
+          - *token_response
+          - *userinfo_response
+      - name: primary
+        kind: http
+        expect_requests: 2
+        expect:
+          - path:
+              equals: /hello?code=passed
+          - path:
+              equals: /hello
+        respond:
+          - status: 200
+            body: hello world
+          - status: 200
+            body: hello world
+      - name: readiness
+        kind: http
+        expect_requests: 1
+        expect:
+          - path:
+              equals: /ready-encrypted-v2-fallback
+        respond:
+          - status: 200
+            body: encrypted v2 fallback ready
+    steps:
+      - name: create-session-with-encrypted-v1-secret
+        input:
+          path: /hello?code=passed
+          without_cookies: true
+        output:
+          status: 200
+          captures:
+            encrypted_old_session:
+              header: Set-Cookie
+              matches: '^(feishu_session=[^;]+);'
+      - name: decrypt-encrypted-fallback-after-rotation
+        config:
+          routes:
+            - id: feishu-auth-encrypted-v2-fallback
+              uri: /hello
+              plugins:
+                feishu-auth:
+                  app_id: "123"
+                  app_secret: v4h4Y9wGygE5KgQl2LqB0A==
+                  secret: VBzPrEUYJ4aCiMen6pWeTTuzPkVclGfhgCeZ2mQweHA=
+                  secret_fallbacks:
+                    - c1ElaJjP0tvbFd/NPoqVHp2aAyWHc9iiq0MQrMuHxM0=
+                  auth_redirect_uri: https://example.com
+                  access_token_url: "{{FIXTURE.feishu.URL}}/token"
+                  userinfo_url: "{{FIXTURE.feishu.URL}}/userinfo"
+                  cookie_expires_in: 60
+                  redirect_uri: /echo
+              upstream: *primary_upstream
+            - id: feishu-auth-encrypted-v2-fallback-ready
+              uri: /ready-encrypted-v2-fallback
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{FIXTURE.readiness.ADDR}}": 1
+        config_probe:
+          input:
+            path: /ready-encrypted-v2-fallback
+          output:
+            status: 200
+            body:
+              equals: encrypted v2 fallback ready
+        input:
+          path: /hello
+          headers:
+            Cookie: "{{CAPTURE.encrypted_old_session}}"
+          without_cookies: true
+        output:
+          status: 200
+          body:
+            equals: hello world
+          logs:
+            not_matches: 'my-secret-key-v1|my-secret-key-v2'
+    after_shutdown:
+      - path:
+          equals: "{{WORK_DIR}}/conf/apisix.yaml"
+        body:
+          not_matches: 'my-secret-key-v1|my-secret-key-v2'
+      - path:
+          equals: "{{WORK_DIR}}/conf/config.yaml"
+        body:
+          not_matches: 'my-secret-key-v1|my-secret-key-v2'

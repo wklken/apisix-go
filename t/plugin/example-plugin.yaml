@@ -1,0 +1,163 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 13
+
+cases:
+  - name: valid-schema
+    source:
+      tests: [1, 10, 11]
+    config:
+      routes:
+        - id: example-valid-schema
+          uri: /example
+          plugins:
+            example-plugin:
+              i: 1
+              s: value
+              t: [1]
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /example
+    upstream: &fixture
+      respond:
+        status: 200
+        body: done
+    output: &success
+      status: 200
+      body:
+        equals: done
+
+  - name: missing-required-property
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: example-missing-i
+          uri: /example
+          plugins:
+            example-plugin:
+              s: value
+              t: [1]
+          upstream: *fixture_route
+    input:
+      path: /example
+    upstream: *fixture
+    output:
+      status: 404
+      logs:
+        matches: "build route example-missing-i fail:.*missing properties: 'i'"
+
+  - name: reject-number-below-minimum
+    source:
+      tests: [3]
+    config:
+      routes:
+        - id: example-negative-i
+          uri: /example
+          plugins:
+            example-plugin:
+              i: -1
+              s: value
+              t: [1, 2]
+          upstream: *fixture_route
+    input:
+      path: /example
+    upstream: *fixture
+    output:
+      status: 404
+      logs:
+        matches: 'build route example-negative-i fail:.*must be >= 0 but found -1'
+
+  - name: reject-wrong-string-type
+    source:
+      tests: [4]
+    config:
+      routes:
+        - id: example-wrong-string
+          uri: /example
+          plugins:
+            example-plugin:
+              i: 1
+              s: 123
+              t: [1]
+          upstream: *fixture_route
+    input:
+      path: /example
+    upstream: *fixture
+    output:
+      status: 404
+      logs:
+        matches: 'build route example-wrong-string fail:.*expected string'
+
+  - name: reject-empty-array
+    source:
+      tests: [5]
+    config:
+      routes:
+        - id: example-empty-array
+          uri: /example
+          plugins:
+            example-plugin:
+              i: 1
+              s: value
+              t: []
+          upstream: *fixture_route
+    input:
+      path: /example
+    upstream: *fixture
+    output:
+      status: 404
+      logs:
+        matches: 'build route example-empty-array fail:.*minimum 1 items required'
+
+  - name: load-and-filter-configured-plugin
+    source:
+      tests: [6, 7]
+    runtime:
+      plugins: [example-plugin]
+    config:
+      routes:
+        - id: example-loaded
+          uri: /example
+          plugins:
+            example-plugin:
+              i: 1
+              s: value
+              t: [1, 2]
+          upstream: *fixture_route
+    input:
+      path: /example
+    upstream: *fixture
+    output: *success
+
+  - name: route-and-body-filter-phases
+    source:
+      tests: [8, 9, 12, 13]
+    runtime:
+      plugins: [example-plugin]
+    config:
+      routes:
+        - id: example-route
+          uri: /server_port
+          plugins:
+            example-plugin:
+              i: 11
+          upstream: *fixture_route
+    input:
+      path: /server_port
+    upstream:
+      expect:
+        path:
+          equals: /server_port
+      respond:
+        status: 200
+        body: "1981"
+    output:
+      status: 200
+      body:
+        equals: "1981"

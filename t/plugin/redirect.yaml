@@ -1,0 +1,716 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/redirect.t
+  tests: 48
+
+cases:
+  - name: schema-sanity
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: redirect-schema-sanity
+          uri: /hello
+          plugins:
+            redirect:
+              ret_code: 302
+              uri: /foo
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello
+    upstream: &hello_fixture
+      respond:
+        status: 200
+        body: hello world
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: /foo
+
+  - name: default-ret-code
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: redirect-default-ret-code
+          uri: /hello
+          plugins:
+            redirect:
+              uri: /foo
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: /foo
+
+  - name: fixed-uri
+    source:
+      tests: [3, 4]
+    config:
+      routes:
+        - id: redirect-fixed-uri
+          uri: /hello
+          plugins:
+            redirect:
+              uri: /test/add
+              ret_code: 301
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: /test/add
+
+  - name: uri-variable
+    source:
+      tests: [5, 6]
+    config:
+      routes:
+        - id: redirect-uri-variable
+          uri: /hello
+          plugins:
+            redirect:
+              uri: $uri/test/add
+              ret_code: 301
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: /hello/test/add
+
+  - name: argument-variable
+    source:
+      tests: [7, 8]
+    config:
+      routes:
+        - id: redirect-argument-variable
+          uri: /hello
+          plugins:
+            redirect:
+              uri: $uri/test/a${arg_name}c
+              ret_code: 302
+          upstream: *fixture_route
+    input:
+      path: /hello?name=json
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: /hello/test/ajsonc
+
+  - name: literal-dollar
+    source:
+      tests: [9, 10]
+    config:
+      routes:
+        - id: redirect-literal-dollar
+          uri: /hello
+          plugins:
+            redirect:
+              uri: /foo$$uri
+              ret_code: 302
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: /foo$/hello
+
+  - name: escaped-uri-variables
+    source:
+      tests: [11, 12]
+    config:
+      routes:
+        - id: redirect-escaped-uri-variables
+          uri: /hello
+          plugins:
+            redirect:
+              uri: '\$uri/foo$uri\$uri/bar'
+              ret_code: 302
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: '\$uri/foo/hello\$uri/bar'
+
+  - name: missing-variable
+    source:
+      tests: [13, 14]
+    config:
+      routes:
+        - id: redirect-missing-variable
+          uri: /hello
+          plugins:
+            redirect:
+              uri: $uri/$bad_var/bar
+              ret_code: 301
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: /hello//bar
+
+  - name: absolute-https-uri
+    source:
+      tests: [15, 16]
+    config:
+      routes:
+        - id: redirect-absolute-https-uri
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              uri: https://$host$request_uri
+              ret_code: 301
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com/hello
+
+  - name: plugin-attr-https-port
+    source:
+      tests: [17, 18]
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 8443
+    config:
+      routes:
+        - id: redirect-plugin-attr-https-port
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com:8443/hello
+
+  - name: ssl-listen-port
+    source:
+      tests: [19]
+    runtime: &ssl_9445
+      apisix:
+        ssl:
+          enable: true
+          listen:
+            - port: 9445
+    config:
+      routes:
+        - id: redirect-ssl-listen-port
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com:9445/hello
+
+  - name: single-ssl-listen-port
+    source:
+      tests: [20]
+    runtime: &ssl_9443
+      apisix:
+        ssl:
+          enable: true
+          listen:
+            - port: 9443
+    config:
+      routes:
+        - id: redirect-single-ssl-listen-port
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com:9443/hello
+
+  - name: multiple-ssl-listen-ports
+    source:
+      tests: [21]
+    runtime:
+      apisix:
+        ssl:
+          enable: true
+          listen:
+            - port: 6443
+            - port: 7443
+            - port: 8443
+            - port: 9443
+    config:
+      routes:
+        - id: redirect-multiple-ssl-listen-ports
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          matches: '^https://foo.com:[6-9]443/hello$'
+
+  - name: default-https-port
+    source:
+      tests: [22]
+    config:
+      routes:
+        - id: redirect-default-https-port
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com/hello
+
+  - name: http-to-https-ignores-ret-code
+    source:
+      tests: [23, 24]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-http-to-https-ignores-ret-code
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+              ret_code: 302
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com:9443/hello
+
+  - name: reject-http-to-https-with-uri
+    source:
+      tests: [25]
+    config:
+      routes:
+        - id: redirect-reject-http-to-https-with-uri
+          uri: /hello
+          plugins:
+            redirect:
+              http_to_https: true
+              uri: /foo
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output:
+      logs:
+        matches: 'build route redirect-reject-http-to-https-with-uri fail:.*redirect'
+
+  - name: http-to-https-with-upstream
+    source:
+      tests: [26, 27]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-http-to-https-with-upstream
+          uri: /hello
+          hosts: [test.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: test.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://test.com:9443/hello
+
+  - name: frontend-tls-handshake
+    source:
+      tests: [28, 29]
+    frontend_tls:
+      sni: test.com
+    config:
+      routes:
+        - id: redirect-frontend-tls-handshake
+          uri: /hello
+          hosts: [test.com]
+          plugins:
+            redirect:
+              uri: /disabled
+              _meta:
+                disable: true
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      scheme: https
+      path: /hello
+      headers:
+        Host: test.com
+    upstream: *hello_fixture
+    output:
+      status: 200
+      body:
+        equals: hello world
+
+  - name: post-http-to-https
+    source:
+      tests: [30, 31]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-post-http-to-https
+          uri: /hello-https
+          methods: [POST, GET, HEAD]
+          hosts: [test.com]
+          plugins:
+            redirect:
+              http_to_https: true
+              ret_code: 307
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello-https
+      headers:
+        Host: test.com
+    upstream: *hello_fixture
+    output:
+      status: 308
+      headers:
+        Location:
+          equals: https://test.com:9443/hello-https
+
+  - name: get-http-to-https
+    source:
+      tests: [32]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-get-http-to-https
+          uri: /hello-https
+          methods: [POST, GET, HEAD]
+          hosts: [test.com]
+          plugins:
+            redirect:
+              http_to_https: true
+              ret_code: 307
+          upstream: *fixture_route
+    input:
+      method: GET
+      path: /hello-https
+      headers:
+        Host: test.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://test.com:9443/hello-https
+
+  - name: head-http-to-https
+    source:
+      tests: [33]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-head-http-to-https
+          uri: /hello-https
+          methods: [POST, GET, HEAD]
+          hosts: [test.com]
+          plugins:
+            redirect:
+              http_to_https: true
+              ret_code: 307
+          upstream: *fixture_route
+    input:
+      method: HEAD
+      path: /hello-https
+      headers:
+        Host: test.com
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://test.com:9443/hello-https
+
+  - name: regex-uri-match
+    source:
+      tests: [34, 35]
+    config:
+      routes:
+        - id: redirect-regex-uri-match
+          uris: [/test/*, /hello]
+          plugins:
+            redirect:
+              regex_uri: ['^/test/(.*)', 'http://test.com/${1}']
+              ret_code: 301
+          upstream: *fixture_route
+    input:
+      path: /test/1
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: http://test.com/1
+
+  - name: regex-uri-fallthrough
+    source:
+      tests: [36]
+    config:
+      routes:
+        - id: redirect-regex-uri-fallthrough
+          uris: [/test/*, /hello]
+          plugins:
+            redirect:
+              regex_uri: ['^/test/(.*)', 'http://test.com/${1}']
+              ret_code: 301
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      body:
+        equals: hello world
+
+  - name: encoded-regex-uri
+    source:
+      tests: [37, 38]
+    config:
+      routes:
+        - id: redirect-encoded-regex-uri
+          uri: /test/*
+          plugins:
+            redirect:
+              regex_uri: ['^/test/(.*)', 'http://test.com/${1}']
+              ret_code: 301
+              encode_uri: true
+          upstream: *fixture_route
+    input:
+      path: /test/with%20space
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: http://test.com/with%20space
+
+  - name: encoded-uri
+    source:
+      tests: [39, 40]
+    config:
+      routes:
+        - id: redirect-encoded-uri
+          uri: /hello*
+          plugins:
+            redirect:
+              uri: $uri
+              ret_code: 301
+              encode_uri: true
+          upstream: *fixture_route
+    input:
+      path: /hello/with%20space
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: /hello/with%20space
+
+  - name: append-query-string
+    source:
+      tests: [41, 42]
+    config:
+      routes:
+        - id: redirect-append-query-string
+          uri: /hello
+          plugins:
+            redirect:
+              uri: $uri
+              ret_code: 302
+              append_query_string: true
+          upstream: *fixture_route
+    input:
+      path: /hello?name=json
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: /hello?name=json
+
+  - name: append-existing-query-string
+    source:
+      tests: [43, 44]
+    config:
+      routes:
+        - id: redirect-append-existing-query-string
+          uri: /hello
+          plugins:
+            redirect:
+              uri: $uri?type=string
+              ret_code: 302
+              append_query_string: true
+          upstream: *fixture_route
+    input:
+      path: /hello?name=json
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: /hello?type=string&name=json
+
+  - name: forwarded-http
+    source:
+      tests: [45, 46]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-forwarded-http
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+        X-Forwarded-Proto: http
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com:9443/hello
+
+  - name: forwarded-nonstandard-scheme
+    source:
+      tests: [47]
+    runtime: *ssl_9443
+    config:
+      routes:
+        - id: redirect-forwarded-nonstandard-scheme
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+        X-Forwarded-Proto: any
+    upstream: *hello_fixture
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com:9443/hello
+
+  - name: reject-http-to-https-with-query-append
+    source:
+      tests: [48]
+    config:
+      routes:
+        - id: redirect-reject-http-to-https-with-query-append
+          uri: /hello
+          plugins:
+            redirect:
+              http_to_https: true
+              append_query_string: true
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output:
+      logs:
+        matches: 'build route redirect-reject-http-to-https-with-query-append fail:.*redirect'

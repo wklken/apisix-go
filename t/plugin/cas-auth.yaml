@@ -1,0 +1,561 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/cas-auth.t
+    tests: 22
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/security-warning.t
+    tests: 2
+    test_numbers: [5, 6]
+
+cases:
+  - name: login-session-and-local-logout
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: cas-sp1
+          methods: [GET, POST]
+          uri: /*
+          plugins:
+            cas-auth: &cas_sp1
+              idp_uri: '{{FIXTURE.cas.URL}}'
+              cas_callback_uri: /cas_callback
+              logout_uri: /logout
+              cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: cas
+        kind: http
+        expect:
+          - method: GET
+            path: {matches: '^/serviceValidate\?service=http%3A%2F%2Fsp1\.local%3A[0-9]+%2Fcas_callback&ticket=ST-1$'}
+        respond:
+          - status: 200
+            body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: '/uri?from=cas'}}
+        respond:
+          - {status: 200, body: 'uri: /uri?from=cas'}
+    steps:
+      - name: original-uri-is-captured-before-login
+        input: {path: '/uri?from=cas', headers: {Host: sp1.local}}
+        output:
+          status: 302
+          headers:
+            Location: {matches: '^http://127\.0\.0\.1:[0-9]+/login\?service=http%3A%2F%2Fsp1\.local%3A[0-9]+%2Fcas_callback$'}
+            Set-Cookie: {matches: '^CAS_REQUEST_URI=[^;]+; Path=/; HttpOnly; SameSite=Lax$'}
+      - name: real-ticket-is-validated-and-redirects-to-original-uri
+        input: {path: '/cas_callback?ticket=ST-1', headers: {Host: sp1.local}}
+        output:
+          status: 302
+          headers:
+            Location: {equals: '/uri?from=cas'}
+            Set-Cookie: {matches: '^CAS_SESSION_[0-9a-f]{64}=ST-1; Path=/; HttpOnly; SameSite=Lax$'}
+      - name: captured-session-reaches-upstream
+        input: {path: '/uri?from=cas', headers: {Host: sp1.local}}
+        output: {status: 200, body: {equals: 'uri: /uri?from=cas'}}
+      - name: local-logout-deletes-session-and-redirects-to-idp
+        input: {path: /logout, headers: {Host: sp1.local}}
+        output:
+          status: 302
+          headers:
+            Location: {matches: '^http://127\.0\.0\.1:[0-9]+/logout$'}
+            Set-Cookie: {matches: '^CAS_SESSION_[0-9a-f]{64}=deleted; Path=/; Max-Age=0; HttpOnly; SameSite=Lax$'}
+      - name: logged-out-session-must-reauthenticate
+        input: {path: /uri, headers: {Host: sp1.local}}
+        output: {status: 302, headers: {Location: {matches: '^http://127\.0\.0\.1:[0-9]+/login\?'}}}
+
+  - name: two-service-providers-and-single-logout
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [3, 4]
+    config:
+      routes:
+        - id: cas-sp1-multi
+          methods: [GET, POST]
+          uri: /sp1/*
+          plugins:
+            cas-auth:
+              idp_uri: '{{FIXTURE.cas.URL}}'
+              cas_callback_uri: /sp1/cas_callback
+              logout_uri: /sp1/logout
+              cookie: {secret: 0123457890abcdef0123456789abcdef, secure: false}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: cas-sp2-multi
+          methods: [GET, POST]
+          uri: /sp2/*
+          plugins:
+            cas-auth:
+              idp_uri: '{{FIXTURE.cas.URL}}'
+              cas_callback_uri: /sp2/cas_callback
+              logout_uri: /sp2/logout
+              cookie: {secret: 0123457890abcdef0123456789abcdef, secure: false}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: cas
+        kind: http
+        expect:
+          - {method: GET, path: {matches: '^/serviceValidate\?service=http%3A%2F%2Fsp1\.local%3A[0-9]+%2Fsp1%2Fcas_callback&ticket=ST-SP1$'}}
+          - {method: GET, path: {matches: '^/serviceValidate\?service=http%3A%2F%2Fsp2\.local%3A[0-9]+%2Fsp2%2Fcas_callback&ticket=ST-SP2$'}}
+          - {method: GET, path: {matches: '^/serviceValidate\?service=http%3A%2F%2Fsp2\.local%3A[0-9]+%2Fsp2%2Fcas_callback&ticket=ST-SP2-NEW$'}}
+        respond:
+          - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
+          - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
+          - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /sp1/uri}}
+          - {method: GET, path: {equals: /sp2/uri}}
+          - {method: GET, path: {equals: /sp2/uri}}
+        respond:
+          - {status: 200, body: sp1-ok}
+          - {status: 200, body: sp2-ok}
+          - {status: 200, body: sp2-new-ok}
+    steps:
+      - {name: sp1-login-start, input: {path: /sp1/uri, headers: {Host: sp1.local}}, output: {status: 302}}
+      - name: sp1-callback
+        input: {path: '/sp1/cas_callback?ticket=ST-SP1', headers: {Host: sp1.local}}
+        output:
+          status: 302
+          headers: {Location: {equals: /sp1/uri}}
+          captures: {sp1_session: {header: Set-Cookie, matches: '^(CAS_SESSION_[^;]+=ST-SP1);'}}
+      - name: sp1-session
+        input: {path: /sp1/uri, headers: {Host: sp1.local, Cookie: '{{CAPTURE.sp1_session}}'}, without_cookies: true}
+        output: {status: 200, body: {equals: sp1-ok}}
+      - {name: sp2-login-start, input: {path: /sp2/uri, headers: {Host: sp2.local}, without_cookies: true}, output: {status: 302}}
+      - name: sp2-callback
+        input: {path: '/sp2/cas_callback?ticket=ST-SP2', headers: {Host: sp2.local, Cookie: 'CAS_REQUEST_URI={{COOKIE.CAS_REQUEST_URI}}'}, without_cookies: true}
+        output:
+          status: 302
+          headers: {Location: {equals: /sp2/uri}}
+          captures: {sp2_session: {header: Set-Cookie, matches: '^(CAS_SESSION_[^;]+=ST-SP2);'}}
+      - name: sp2-session
+        input: {path: /sp2/uri, headers: {Host: sp2.local, Cookie: '{{CAPTURE.sp2_session}}'}, without_cookies: true}
+        output: {status: 200, body: {equals: sp2-ok}}
+      - name: idp-slo-terminates-sp2-session
+        input:
+          method: POST
+          path: /sp2/cas_callback
+          headers: {Host: sp2.local}
+          body: '<samlp:LogoutRequest><samlp:SessionIndex>ST-SP2</samlp:SessionIndex></samlp:LogoutRequest>'
+        output: {status: 200}
+      - name: sp2-must-reauthenticate
+        input: {path: /sp2/uri, headers: {Host: sp2.local, Cookie: '{{CAPTURE.sp2_session}}'}, without_cookies: true}
+        output: {status: 302}
+      - name: sp2-new-callback
+        input: {path: '/sp2/cas_callback?ticket=ST-SP2-NEW', headers: {Host: sp2.local, Cookie: 'CAS_REQUEST_URI={{COOKIE.CAS_REQUEST_URI}}'}, without_cookies: true}
+        output:
+          status: 302
+          captures: {sp2_new_session: {header: Set-Cookie, matches: '^(CAS_SESSION_[^;]+=ST-SP2-NEW);'}}
+      - name: sp2-new-session
+        input: {path: /sp2/uri, headers: {Host: sp2.local, Cookie: '{{CAPTURE.sp2_new_session}}'}, without_cookies: true}
+        output: {status: 200, body: {equals: sp2-new-ok}}
+      - name: final-sp2-local-logout
+        input: {path: /sp2/logout, headers: {Host: sp2.local, Cookie: '{{CAPTURE.sp2_new_session}}'}, without_cookies: true}
+        output:
+          status: 302
+          headers:
+            Location: {matches: '^http://127\.0\.0\.1:[0-9]+/logout$'}
+            Set-Cookie: {matches: '^CAS_SESSION_[0-9a-f]{64}=deleted; Path=/; Max-Age=0; HttpOnly; SameSite=Lax$'}
+      - name: final-sp2-session-is-gone
+        input: {path: /sp2/uri, headers: {Host: sp2.local, Cookie: '{{CAPTURE.sp2_new_session}}'}, without_cookies: true}
+        output: {status: 302, headers: {Location: {matches: '/login\?service=.*%2Fsp2%2Fcas_callback$'}}}
+
+  - name: schema-contract
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [5, 6, 7, 8]
+    variants:
+      - name: missing-secret
+        config:
+          routes:
+            - id: cas-missing-secret
+              uri: /schema
+              plugins:
+                cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {}}
+        input: {path: /schema}
+        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*secret.*required'}}
+      - name: short-secret
+        config:
+          routes:
+            - id: cas-short-secret
+              uri: /schema
+              plugins:
+                cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: tooshort}}
+        input: {path: /schema}
+        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*secret.*length'}}
+      - name: strict-samesite
+        config:
+          routes:
+            - id: cas-strict-samesite
+              uri: /schema
+              plugins:
+                cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: Strict}}
+        input: {path: /schema}
+        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*samesite.*enum'}}
+      - name: none-requires-secure
+        config:
+          routes:
+            - id: cas-none-insecure
+              uri: /schema
+              plugins:
+                cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: None, secure: false}}
+        input: {path: /schema}
+        output: {status: 404, logs: {matches: 'validate plugin cas-auth config:.*not'}}
+      - name: none-with-secure-is-valid
+        config:
+          routes:
+            - id: cas-none-secure
+              uri: /schema
+              plugins:
+                cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: None, secure: true}}
+        input: {path: /schema}
+        output:
+          status: 302
+          headers: {Set-Cookie: {matches: '^CAS_REQUEST_URI=.*; Secure; SameSite=None$'}}
+
+  - name: signed-state-safety-and-tamper-detection
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [9, 10]
+    config:
+      routes:
+        - id: cas-signed-state
+          methods: [GET, POST]
+          uri: /*
+          plugins:
+            cas-auth:
+              idp_uri: '{{FIXTURE.cas.URL}}'
+              cas_callback_uri: /cas_callback
+              logout_uri: /logout
+              cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: cas
+        kind: http
+        expect: [{method: GET, path: {matches: 'ticket=ST-SAFE$'}}]
+        respond: [{status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}]
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: '/foo?bar=baz'}}]
+        respond: [{status: 200, body: safe-ok}]
+    steps:
+      - {name: capture-real-signed-state, input: {path: '/foo?bar=baz'}, output: {status: 302}}
+      - name: tampered-signature-is-rejected-before-provider
+        input:
+          path: '/cas_callback?ticket=ST-TAMPERED'
+          headers: {Cookie: 'CAS_REQUEST_URI={{COOKIE.CAS_REQUEST_URI}}A'}
+          without_cookies: true
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}, body: {json_equals: '{"message":"invalid callback state"}'}}
+      - name: malformed-cookie-is-rejected-before-provider
+        input:
+          path: '/cas_callback?ticket=ST-MALFORMED'
+          headers: {Cookie: 'CAS_REQUEST_URI=abc.def'}
+          without_cookies: true
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}}
+      - name: signed-external-url-is-unsafe
+        input:
+          path: '/cas_callback?ticket=ST-EXTERNAL'
+          headers: {Cookie: 'CAS_REQUEST_URI=aHR0cHM6Ly9ldmlsLmNvbS94.AMEm1ma_60nk_BDYbIshsg5j061M_O8rMXLJb-CL_6w'}
+          without_cookies: true
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}}
+      - name: signed-protocol-relative-url-is-unsafe
+        input:
+          path: '/cas_callback?ticket=ST-PROTOCOL-RELATIVE'
+          headers: {Cookie: 'CAS_REQUEST_URI=Ly9ldmlsLmNvbS94.4eo5FLIUlMh87p3VBCfwQjn7mva44tKmKU3BgkTcHGw'}
+          without_cookies: true
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}}
+      - name: signed-backslash-authority-is-unsafe
+        input:
+          path: '/cas_callback?ticket=ST-BACKSLASH'
+          headers: {Cookie: 'CAS_REQUEST_URI=XFxldmlsLmNvbQ.FOwpvFtRdRs28lSiqoELS-I2p5Amz9ZTxKVIkTXSd4g'}
+          without_cookies: true
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}}
+      - name: signed-header-injection-is-unsafe
+        input:
+          path: '/cas_callback?ticket=ST-CRLF'
+          headers: {Cookie: 'CAS_REQUEST_URI=L2Zvbw0KTG9jYXRpb246IHg.SCSy4ioVfbchQqBN5_bvrEULNmBvGBhXMGdMI5Hw1Uw'}
+          without_cookies: true
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}}
+      - name: captured-state-roundtrip-succeeds
+        input: {path: '/cas_callback?ticket=ST-SAFE'}
+        output: {status: 302, headers: {Location: {equals: '/foo?bar=baz'}}}
+      - {name: safe-relative-target-reaches-upstream, input: {path: '/foo?bar=baz'}, output: {status: 200, body: {equals: safe-ok}}}
+
+  - name: callback-path-and-service-derivation
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [11, 12, 13]
+    variants:
+      - name: relative-callback-uses-listener-port-not-forged-host-port
+        config:
+          routes:
+            - id: cas-relative-callback
+              uri: /*
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+        fixtures:
+          - {name: cas, kind: http, expect_requests: 0, respond: [{status: 500}]}
+        steps:
+          - name: forged-port-is-not-used-as-service-port
+            input: {path: /uri, headers: {Host: 'attacker.example.net:9443'}}
+            output:
+              status: 302
+              headers: {Location: {not_matches: 'service=http%3A%2F%2Fattacker\.example\.net%3A9443%2Fcb'}}
+              captures:
+                listener_service_port:
+                  header: Location
+                  matches: '^http://127\.0\.0\.1:[0-9]+/login\?service=http%3A%2F%2Fattacker\.example\.net%3A([0-9]+)%2Fcb$'
+      - name: absolute-callback-ignores-forged-host
+        config:
+          routes:
+            - id: cas-absolute-callback
+              uri: /*
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: 'https://app.example.com/cas_callback', logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+        fixtures:
+          - {name: cas, kind: http, expect_requests: 0, respond: [{status: 500}]}
+        steps:
+          - name: fixed-absolute-service
+            input: {path: /uri, headers: {Host: attacker.example.net}}
+            output:
+              status: 302
+              headers: {Location: {matches: 'service=https%3A%2F%2Fapp\.example\.com%2Fcas_callback$'}}
+      - name: absolute-callback-query-still-matches-path
+        config:
+          routes:
+            - id: cas-absolute-query-callback
+              uri: /*
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: 'https://app.example.com/cb?from=cas', logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: cas
+            kind: http
+            expect: [{method: GET, path: {matches: '^/serviceValidate\?service=https%3A%2F%2Fapp\.example\.com%2Fcb%3Ffrom%3Dcas&ticket=ST-ABS$'}}]
+            respond: [{status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}]
+          - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+        steps:
+          - {name: capture-initiation, input: {path: /start}, output: {status: 302}}
+          - name: query-and-fragment-are-not-part-of-callback-path
+            input: {path: '/cb?ticket=ST-ABS'}
+            output: {status: 302, headers: {Location: {equals: /start}}}
+
+  - name: callback-initiation-cookie-gate
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [14, 15, 16]
+    config:
+      routes:
+        - id: cas-callback-gate
+          methods: [GET, POST]
+          uri: /*
+          plugins:
+            cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /cas_callback, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: cas
+        kind: http
+        expect:
+          - {method: GET, path: {matches: '^/serviceValidate\?service=http%3A%2F%2F127\.0\.0\.1%3A[0-9]+%2Fcas_callback&ticket=ST-GATE-VALID$'}}
+        respond:
+          - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+    steps:
+      - name: obtain-real-cookie-name
+        input: {path: /protected}
+        output: {status: 302}
+      - name: establish-valid-session-for-cookie-name
+        input: {path: '/cas_callback?ticket=ST-GATE-VALID'}
+        output:
+          status: 302
+          captures:
+            gate_session_cookie_name:
+              header: Set-Cookie
+              matches: '^(CAS_SESSION_[0-9a-f]{64})=ST-GATE-VALID;'
+      - name: no-initiation-cookie
+        input: {path: '/cas_callback?ticket=ST-NONE', without_cookies: true}
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}, body: {json_equals: '{"message":"invalid callback state"}'}}
+      - name: rejected-missing-state-ticket-created-no-session
+        input:
+          path: /protected
+          headers: {Cookie: '{{CAPTURE.gate_session_cookie_name}}=ST-NONE'}
+          without_cookies: true
+        output: {status: 302, headers: {Location: {matches: '/login\?service='}}}
+      - name: invalid-initiation-cookie
+        input: {path: '/cas_callback?ticket=ST-BAD', headers: {Cookie: 'CAS_REQUEST_URI=not-a-valid-signed-value'}, without_cookies: true}
+        output: {status: 401, headers: {Set-Cookie: {absent: true}}, body: {json_equals: '{"message":"invalid callback state"}'}}
+      - name: rejected-invalid-state-ticket-created-no-session
+        input:
+          path: /protected
+          headers: {Cookie: '{{CAPTURE.gate_session_cookie_name}}=ST-BAD'}
+          without_cookies: true
+        output: {status: 302, headers: {Location: {matches: '/login\?service='}}}
+
+  - name: process-local-session-and-config-isolation
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [17, 18]
+    config:
+      routes:
+        - id: cas-scope-a
+          methods: [GET, POST]
+          uri: /scope-a/*
+          plugins:
+            cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /scope-a/cas_callback, logout_uri: /scope-a/logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: cas-scope-b
+          methods: [GET, POST]
+          uri: /scope-b/*
+          plugins:
+            cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /scope-b/cas_callback_alt, logout_uri: /scope-b/logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: cas
+        kind: http
+        expect:
+          - {method: GET, path: {matches: '^/serviceValidate\?service=http%3A%2F%2Fscope-a\.local%3A[0-9]+%2Fscope-a%2Fcas_callback&ticket=ST-SCOPE$'}}
+          - {method: GET, path: {matches: '^/serviceValidate\?service=http%3A%2F%2Fscope-b\.local%3A[0-9]+%2Fscope-b%2Fcas_callback_alt&ticket=ST-SCOPE-B$'}}
+        respond:
+          - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>alice</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
+          - {status: 200, body: '<cas:serviceResponse><cas:authenticationSuccess><cas:user>bob</cas:user></cas:authenticationSuccess></cas:serviceResponse>'}
+      - name: primary
+        kind: http
+        expect:
+          - {method: GET, path: {equals: /scope-a/uri}}
+          - {method: GET, path: {equals: /scope-a/uri}}
+        respond:
+          - {status: 200, body: before-reload}
+          - {status: 200, body: after-reload}
+      - name: ready
+        kind: http
+        expect: [{method: GET, path: {equals: /reload-v2}}]
+        respond: [{status: 200, body: reload-v2}]
+    steps:
+      - name: new-reload-resource-is-absent-before-update
+        input: {path: /reload-v2, without_cookies: true}
+        output: {status: 404}
+      - {name: scope-a-initiation, input: {path: /scope-a/uri, headers: {Host: scope-a.local}}, output: {status: 302}}
+      - name: scope-a-callback
+        input: {path: '/scope-a/cas_callback?ticket=ST-SCOPE', headers: {Host: scope-a.local}}
+        output:
+          status: 302
+          captures: {scope_a_session: {header: Set-Cookie, matches: '^(CAS_SESSION_[^;]+=ST-SCOPE);'}}
+      - name: scope-a-own-session
+        input: {path: /scope-a/uri, headers: {Host: scope-a.local, Cookie: '{{CAPTURE.scope_a_session}}'}, without_cookies: true}
+        output: {status: 200, body: {equals: before-reload}}
+      - name: scope-b-does-not-honour-scope-a-cookie
+        input: {path: /scope-b/uri, headers: {Host: scope-b.local}}
+        output:
+          status: 302
+          headers: {Location: {matches: '/login\?service=.*%2Fscope-b%2Fcas_callback_alt$'}}
+          captures:
+            scope_b_request_state: {header: Set-Cookie, matches: '^CAS_REQUEST_URI=([^;]+);'}
+      - name: establish-scope-b-cookie-name
+        input:
+          path: '/scope-b/cas_callback_alt?ticket=ST-SCOPE-B'
+          headers:
+            Host: scope-b.local
+            Cookie: 'CAS_REQUEST_URI={{CAPTURE.scope_b_request_state}}'
+          without_cookies: true
+        output:
+          status: 302
+          captures:
+            scope_b_session: {header: Set-Cookie, matches: '^(CAS_SESSION_[^;]+=ST-SCOPE-B);'}
+            scope_b_session_cookie_name: {header: Set-Cookie, matches: '^(CAS_SESSION_[0-9a-f]{64})=ST-SCOPE-B;'}
+      - name: remove-scope-b-valid-session
+        input: {path: /scope-b/logout, headers: {Host: scope-b.local, Cookie: '{{CAPTURE.scope_b_session}}'}, without_cookies: true}
+        output: {status: 302}
+      - name: scope-b-cookie-name-cannot-address-scope-a-ticket
+        input:
+          path: /scope-b/uri
+          headers: {Host: scope-b.local, Cookie: '{{CAPTURE.scope_b_session_cookie_name}}=ST-SCOPE'}
+          without_cookies: true
+        output: {status: 302, headers: {Location: {matches: '/login\?service=.*%2Fscope-b%2Fcas_callback_alt$'}}}
+      - name: same-config-reload-keeps-process-local-session
+        config:
+          routes:
+            - {id: cas-reload-v2, uri: /reload-v2, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+            - id: cas-scope-a
+              methods: [GET, POST]
+              uri: /scope-a/*
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /scope-a/cas_callback, logout_uri: /scope-a/logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: cas-scope-b
+              methods: [GET, POST]
+              uri: /scope-b/*
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.cas.URL}}', cas_callback_uri: /scope-b/cas_callback_alt, logout_uri: /scope-b/logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe:
+          input: {path: /reload-v2}
+          output: {status: 200, body: {equals: reload-v2}}
+        input: {path: /scope-a/uri, headers: {Host: scope-a.local, Cookie: '{{CAPTURE.scope_a_session}}'}, without_cookies: true}
+        output: {status: 200, body: {equals: after-reload}}
+
+  - name: malformed-and-valid-single-logout
+    source:
+      file: t/plugin/cas-auth.t
+      tests: [19, 20, 21, 22]
+    config:
+      routes:
+        - id: cas-slo
+          methods: [GET, POST]
+          uri: /*
+          plugins:
+            cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cas_callback, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 502}]}
+    steps:
+      - name: empty-body-is-400-not-500
+        input: {method: POST, path: /cas_callback}
+        output: {status: 400, body: {json_equals: '{"message":"invalid logout request from IdP, no ticket"}'}}
+      - name: empty-session-index-is-400
+        input: {method: POST, path: /cas_callback, body: '<samlp:SessionIndex></samlp:SessionIndex>'}
+        output: {status: 400, body: {json_equals: '{"message":"invalid logout request from IdP, no ticket"}'}}
+      - name: malformed-xml-is-400
+        input: {method: POST, path: /cas_callback, body: '<samlp:SessionIndex>ST-broken'}
+        output: {status: 400}
+      - name: well-formed-slo-terminates-without-upstream
+        input: {method: POST, path: /cas_callback, body: '<samlp:SessionIndex>ST-no-such-session</samlp:SessionIndex>'}
+        output: {status: 200}
+
+  - name: idp-uri-security-warning
+    source:
+      file: t/plugin/security-warning.t
+      tests: [5, 6]
+    variants:
+      - name: http-idp-warns
+        config:
+          routes:
+            - id: cas-http-warning
+              uri: /warning
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.idp.URL}}', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+        fixtures:
+          - {name: idp, kind: http, expect_requests: 0, respond: [{status: 500}]}
+        steps:
+          - name: insecure-idp-warning-is-logged
+            input: {path: /warning}
+            output: {status: 302, logs: {matches: 'Using cas-auth idp_uri with no TLS is a security risk'}}
+      - name: https-idp-does-not-warn
+        config:
+          routes:
+            - id: cas-https-warning
+              uri: /warning
+              plugins:
+                cas-auth: {idp_uri: '{{FIXTURE.idp.URL}}', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, secure: false}}
+        fixtures:
+          - {name: idp, kind: https, expect_requests: 0, respond: [{status: 500}]}
+        steps:
+          - name: secure-idp-has-no-warning
+            input: {path: /warning}
+            output: {status: 302, logs: {not_matches: 'Using cas-auth idp_uri with no TLS is a security risk'}}

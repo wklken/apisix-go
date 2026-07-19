@@ -75,6 +75,72 @@ func TestHandlerAllowsRequestAndSendsOPAInput(t *testing.T) {
 	}
 }
 
+func TestBuildOPARequestUsesAPISIXHTTPShape(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://opa.test", Policy: "authz"})
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.test:9080/get?one=1&many=b&many=a",
+		nil,
+	)
+	req.Header.Set("X-Test", "yes")
+
+	body, err := json.Marshal(p.buildOPARequest(req))
+	if err != nil {
+		t.Fatalf("marshal OPA request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal OPA request: %v", err)
+	}
+	request := decoded["input"].(map[string]any)["request"].(map[string]any)
+	headers := request["headers"].(map[string]any)
+	if got := headers["host"]; got != "gateway.test:9080" {
+		t.Fatalf("headers.host = %#v, want gateway.test:9080", got)
+	}
+	if got := headers["x-test"]; got != "yes" {
+		t.Fatalf("headers.x-test = %#v, want yes", got)
+	}
+	if _, ok := headers["X-Test"]; ok {
+		t.Fatalf("headers contains canonicalized X-Test key: %#v", headers)
+	}
+	query := request["query"].(map[string]any)
+	if got := query["one"]; got != "1" {
+		t.Fatalf("query.one = %#v, want scalar 1", got)
+	}
+	many, ok := query["many"].([]any)
+	if !ok || len(many) != 2 || many[0] != "b" || many[1] != "a" {
+		t.Fatalf("query.many = %#v, want [b a]", query["many"])
+	}
+}
+
+func TestBuildOPARequestUsesLowercaseConsumerPluginsField(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "http://opa.test", Policy: "authz", WithConsumer: true})
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/get", nil)
+	req = apisixctx.WithApisixVars(req, nil)
+	apisixctx.AttachConsumer(req, resource.Consumer{
+		Username: "test",
+		Plugins: map[string]resource.PluginConfig{
+			"key-auth": map[string]any{"key": "test-key"},
+		},
+	})
+
+	body, err := json.Marshal(p.buildOPARequest(req))
+	if err != nil {
+		t.Fatalf("marshal OPA request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal OPA request: %v", err)
+	}
+	consumer := decoded["input"].(map[string]any)["consumer"].(map[string]any)
+	if _, ok := consumer["plugins"]; !ok {
+		t.Fatalf("consumer = %#v, want lowercase plugins field", consumer)
+	}
+	if _, ok := consumer["Plugins"]; ok {
+		t.Fatalf("consumer = %#v, must not expose Go field name Plugins", consumer)
+	}
+}
+
 func TestHandlerRejectsWithOPAStatusReasonAndHeaders(t *testing.T) {
 	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

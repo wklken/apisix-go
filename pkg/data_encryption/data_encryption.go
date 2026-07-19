@@ -54,7 +54,7 @@ var pluginFields = map[string][]string{
 	"basic-auth":           {"password"},
 	"cas-auth":             {"cookie.secret"},
 	"dingtalk-auth":        {"app_secret", "secret"},
-	"feishu-auth":          {"app_secret", "secret"},
+	"feishu-auth":          {"app_secret", "secret", "secret_fallbacks"},
 	"hmac-auth":            {"secret"},
 	"http-logger":          {"auth_header"},
 	"jwe-decrypt":          {"key", "secret"},

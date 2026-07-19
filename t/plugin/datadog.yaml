@@ -1,0 +1,77 @@
+cases:
+    - config:
+        plugin_attr:
+            datadog:
+                host: '{{FIXTURE.sink.HOST}}'
+                port: '{{FIXTURE.sink.PORT}}'
+                namespace: integration
+                constant_tags:
+                    - source:integration
+        routes:
+            - id: datadog-source-1
+              plugins:
+                datadog:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    include_path: true
+                    inactive_timeout: 1
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: udp
+          name: sink
+          network_expect:
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+            - payload: {matches: '.*path:/probe.*'}
+          network_respond:
+            - payload: ''
+            - payload: ''
+            - payload: ''
+            - payload: ''
+            - payload: ''
+            - payload: ''
+      name: datadog-source-1
+      source:
+        file: t/plugin/datadog.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: datadog-metrics-delivered
+          output:
+            body:
+                equals: hello world
+            status: 200
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/datadog.t
+      tests: 13

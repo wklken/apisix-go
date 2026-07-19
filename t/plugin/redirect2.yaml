@@ -1,0 +1,51 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/redirect2.t
+  tests: 3
+
+cases:
+  - name: regex-uri-append-query-string
+    source:
+      tests: [1, 2]
+    config:
+      routes:
+        - id: redirect2-regex-uri-append-query-string
+          uri: /test/*
+          plugins:
+            redirect:
+              regex_uri: ['^/test/(.*)', 'http://test.com/${1}?q=apisix']
+              append_query_string: true
+    input:
+      path: /test/hello?o=apache
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: http://test.com/hello?q=apisix&o=apache
+
+  - name: old-append-query-string-configuration
+    source:
+      tests: [3]
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 443
+    config:
+      routes:
+        - id: redirect2-old-append-query-string-configuration
+          uri: /hello
+          hosts: [foo.com]
+          plugins:
+            redirect:
+              http_to_https: true
+              append_query_string: false
+    input:
+      path: /hello
+      headers:
+        Host: foo.com
+    output:
+      status: 301
+      headers:
+        Location:
+          equals: https://foo.com/hello

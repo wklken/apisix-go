@@ -101,7 +101,8 @@ func NewTransport(t TransportOption) *http.Transport {
 
 	// reference: https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/
 	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy:              http.ProxyFromEnvironment,
+		DisableCompression: true,
 		DialContext: (&net.Dialer{
 			Timeout:   t.dialTimeout,
 			KeepAlive: 30 * time.Second,

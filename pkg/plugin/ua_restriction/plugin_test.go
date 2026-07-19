@@ -72,23 +72,21 @@ func TestDenylistRejectsWithJSONMessage(t *testing.T) {
 	}
 }
 
-func TestAllowlistMissFallsThrough(t *testing.T) {
+func TestAllowlistMissIsRejected(t *testing.T) {
 	p := newTestPlugin(t, Config{AllowList: []string{"allowed-bot"}})
 	req := httptest.NewRequest(http.MethodGet, "/ua", nil)
 	req.Header.Set("User-Agent", "other-bot")
 
 	rr := httptest.NewRecorder()
-	called := false
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusNoContent)
+		t.Fatal("ua-restriction should not call the next handler for an allowlist miss")
 	})).ServeHTTP(rr, req)
 
-	if !called {
-		t.Fatal("next handler was not called")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"Not allowed"}` {
+		t.Fatalf("body = %q", got)
 	}
 }
 

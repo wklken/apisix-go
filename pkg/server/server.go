@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/route"
 	"github.com/wklken/apisix-go/pkg/store"
 	streamruntime "github.com/wklken/apisix-go/pkg/stream"
+	"golang.org/x/net/http2"
 )
 
 var ErrMissingStreamUpstream = errors.New("missing stream upstream")
@@ -57,6 +60,12 @@ func NewServer() (*Server, error) {
 	storage := store.NewStore("apisix-go-store.db", events)
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	var handler http.Handler = routes
+	if config.GlobalConfig != nil && len(config.GlobalConfig.Apisix.TrustedAddresses) > 0 {
+		handler = stripUntrustedForwardedFor(handler, config.GlobalConfig.Apisix.TrustedAddresses)
+	}
+	if config.GlobalConfig != nil && config.GlobalConfig.Apisix.NormalizeURILikeServlet {
+		handler = normalizeRequestPath(handler)
+	}
 	if pluginConfigured("node-status") {
 		handler = node_status.Track(handler)
 	}
@@ -72,6 +81,68 @@ func NewServer() (*Server, error) {
 	}, nil
 }
 
+func stripUntrustedForwardedFor(next http.Handler, addresses []string) http.Handler {
+	trustedNetworks := make([]*net.IPNet, 0, len(addresses))
+	for _, address := range addresses {
+		if _, network, err := net.ParseCIDR(address); err == nil {
+			trustedNetworks = append(trustedNetworks, network)
+			continue
+		}
+		ip := net.ParseIP(address)
+		if ip == nil {
+			continue
+		}
+		bits := 128
+		if ip.To4() != nil {
+			ip = ip.To4()
+			bits = 32
+		}
+		trustedNetworks = append(trustedNetworks, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	if len(trustedNetworks) == 0 {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		remoteIP := net.ParseIP(strings.Trim(host, "[]"))
+		trusted := false
+		for _, network := range trustedNetworks {
+			if network.Contains(remoteIP) {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			r.Header.Del("X-Forwarded-For")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func normalizeRequestPath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cleaned := path.Clean(r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/") && cleaned != "/" {
+			cleaned += "/"
+		}
+		if cleaned == r.URL.Path {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		request := r.Clone(r.Context())
+		requestURL := *r.URL
+		requestURL.Path = cleaned
+		requestURL.RawPath = ""
+		request.URL = &requestURL
+		next.ServeHTTP(w, request)
+	})
+}
+
 func configuredListenAddresses() []string {
 	if config.GlobalConfig == nil {
 		return []string{":8080"}
@@ -79,8 +150,40 @@ func configuredListenAddresses() []string {
 	return config.GlobalConfig.Apisix.ListenAddresses()
 }
 
+func configuredTLSListenAddresses() []string {
+	if config.GlobalConfig == nil || !config.GlobalConfig.Apisix.Ssl.Enable {
+		return nil
+	}
+	listeners := config.GlobalConfig.Apisix.Ssl.Listen
+	addresses := make([]string, 0, len(listeners))
+	for _, listener := range listeners {
+		if listener.Port < 1 || listener.Port > 65535 {
+			continue
+		}
+		host := strings.TrimSpace(listener.Ip)
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		addresses = append(addresses, net.JoinHostPort(host, fmt.Sprintf("%d", listener.Port)))
+	}
+	return addresses
+}
+
 func newConfiguredHTTPServer(handler http.Handler) *http.Server {
-	server := &http.Server{Handler: handler}
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	if frontendHTTP2Enabled() {
+		protocols.SetHTTP2(true)
+	}
+	if frontendPlainHTTP2Enabled() {
+		protocols.SetUnencryptedHTTP2(true)
+	}
+	server := &http.Server{Handler: handler, Protocols: protocols}
+	if frontendHTTP2Enabled() {
+		if err := http2.ConfigureServer(server, nil); err != nil {
+			logger.Errorf("configure HTTP/2 server: %s", err)
+		}
+	}
 	if config.GlobalConfig == nil {
 		return server
 	}
@@ -103,16 +206,28 @@ func pluginConfigured(name string) bool {
 }
 
 func (s *Server) Start() {
-	s.storage.AddEventUpdateHook(
-		func(event *store.Event) {
-			s.SendReloadEvent()
-			if s.streamRuntime != nil && isStreamRouteEvent(event) {
-				if err := s.reloadStreamRoutes(); err != nil {
-					logger.Errorf("reload stream routes fail: %s", err)
-				}
-			}
-		},
-	)
+	var reloadGeneration atomic.Uint64
+	if standaloneConfigProvider(config.GlobalConfig) == "" {
+		s.storage.AddEventUpdateHook(
+			func(event *store.Event) {
+				handleStoreEventUpdate(
+					event,
+					func() {
+						reloadGeneration.Add(1)
+						s.SendReloadEvent()
+					},
+					func() {
+						if s.streamRuntime == nil {
+							return
+						}
+						if err := s.reloadStreamRoutes(); err != nil {
+							logger.Errorf("reload stream routes fail: %s", err)
+						}
+					},
+				)
+			},
+		)
+	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	s.registerSignalHandler(ctx, cancelFunc)
@@ -122,13 +237,19 @@ func (s *Server) Start() {
 	s.startConfigProvider(ctx)
 
 	logger.Info("build the routes")
+	initialReloadGeneration := reloadGeneration.Load()
 	builder := route.NewBuilderWithServerAddr(s.storage, s.addr)
-	s.routes.Replace(builder.Build(), builder.Stop)
+	s.routes.Replace(initialRouteHandler(builder.Build()), builder.Stop)
+	reconcileInitialReloadEvent(s.reloadEventChan, initialReloadGeneration, reloadGeneration.Load)
 	s.startStreamProxy(ctx)
+	if s.standaloneWatcher != nil {
+		s.standaloneWatcher.Watch()
+		provider := standaloneConfigProvider(config.GlobalConfig)
+		logger.Infof("watch standalone config %s", config.StandaloneConfigFile(provider))
+	}
 
 	// start the reloader
-	reloadCheckInterval := 60 * time.Second
-	go s.listenReloadEvent(ctx, reloadCheckInterval)
+	go s.listenReloadEvent(ctx)
 
 	// start prometheus at another port
 	for _, plugin := range config.GlobalConfig.Plugins {
@@ -152,6 +273,13 @@ func (s *Server) Start() {
 	}
 
 	s.startServer(ctx)
+}
+
+func initialRouteHandler(handler *chi.Mux) http.Handler {
+	if handler == nil {
+		return http.NotFoundHandler()
+	}
+	return handler
 }
 
 func (s *Server) registerSignalHandler(ctx context.Context, cancelFunc context.CancelFunc) {
@@ -274,15 +402,33 @@ func streamProxyModeEnabled(cfg *config.Config) bool {
 }
 
 func isStreamRouteEvent(event *store.Event) bool {
+	bucket, ok := routeEventBucket(event)
+	return ok && store.IsStreamReloadBucket(bucket)
+}
+
+func isHTTPRouteEvent(event *store.Event) bool {
+	bucket, ok := routeEventBucket(event)
+	return ok && store.IsHTTPRouteReloadBucket(bucket)
+}
+
+func handleStoreEventUpdate(event *store.Event, reloadHTTP func(), reloadStream func()) {
+	if isHTTPRouteEvent(event) && reloadHTTP != nil {
+		reloadHTTP()
+	}
+	if isStreamRouteEvent(event) && reloadStream != nil {
+		reloadStream()
+	}
+}
+
+func routeEventBucket(event *store.Event) (string, bool) {
 	if event == nil {
-		return false
+		return "", false
 	}
 	parts := bytes.Split(event.Key, []byte("/"))
 	if len(parts) < 2 {
-		return false
+		return "", false
 	}
-	bucket := parts[len(parts)-2]
-	return bytes.Equal(bucket, []byte("stream_routes")) || bytes.Equal(bucket, []byte("upstreams"))
+	return string(parts[len(parts)-2]), true
 }
 
 func logStreamResult(result streamruntime.Result) {
@@ -314,12 +460,45 @@ func (s *Server) startConfigProvider(ctx context.Context) {
 			panic(fmt.Errorf("load standalone config: %w", err))
 		}
 		s.storage.Sync()
-		watcher.Watch()
+		watcher.SetReloadCallback(func(result config.StandaloneReloadResult, err error) {
+			applyStandaloneSnapshot(
+				result,
+				err,
+				s.storage.Sync,
+				func() { s.reload(ctx) },
+				func() {
+					if s.streamRuntime == nil {
+						return
+					}
+					if err := s.reloadStreamRoutes(); err != nil {
+						logger.Errorf("reload stream routes fail: %s", err)
+					}
+				},
+			)
+		})
 		s.standaloneWatcher = watcher
-		logger.Infof("watch standalone config %s", path)
 		return
 	}
 	s.startEtcdWatcher(ctx)
+}
+
+func applyStandaloneSnapshot(
+	result config.StandaloneReloadResult,
+	err error,
+	syncStore func(),
+	reloadRoutes func(),
+	reloadStreams func(),
+) {
+	if err != nil {
+		return
+	}
+	syncStore()
+	if result.AffectsHTTPRoutes() {
+		reloadRoutes()
+	}
+	if result.AffectsStreams() {
+		reloadStreams()
+	}
 }
 
 func standaloneConfigProvider(cfg *config.Config) string {
@@ -378,7 +557,7 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 	}
 	s.etcdClient = etcdClient
 	logger.Info("fetch full data from etcd")
-	err = etcdClient.FetchAll()
+	err = fetchAndSyncInitialEtcdConfig(etcdClient.FetchAll, s.storage.Sync)
 	if err != nil {
 		panic(err)
 	}
@@ -398,6 +577,14 @@ func (s *Server) startEtcdWatcher(ctx context.Context) {
 	}
 	logger.Info("watch etcd")
 	go etcdClient.Watch(ctx)
+}
+
+func fetchAndSyncInitialEtcdConfig(fetch func() error, syncStore func()) error {
+	if err := fetch(); err != nil {
+		return err
+	}
+	syncStore()
+	return nil
 }
 
 func etcdTLSRequired(endpoints []string, tlsConfig config.EtcdTLS) bool {
@@ -439,8 +626,96 @@ func (s *Server) startServer(ctx context.Context) {
 			}
 		}(listener)
 	}
+	for _, addr := range configuredTLSListenAddresses() {
+		logger.Infof("listening with TLS on %s", addr)
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			logger.Fatalf("error opening TLS listener: %w", err)
+		}
+		tlsListener := tls.NewListener(listener, frontendTLSConfig())
+		go func(listener net.Listener) {
+			if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				logger.Errorf("error serve TLS: %s", err)
+			}
+		}(tlsListener)
+	}
 
 	<-ctx.Done()
+}
+
+func frontendTLSConfig() *tls.Config {
+	protocols := []string{"http/1.1"}
+	if frontendHTTP2Enabled() {
+		protocols = append([]string{"h2"}, protocols...)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: protocols,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			serverName := strings.TrimSpace(hello.ServerName)
+			if serverName == "" && config.GlobalConfig != nil {
+				serverName = strings.TrimSpace(config.GlobalConfig.Apisix.Ssl.FallbackSNI)
+			}
+			ssls, err := store.ListSSLs()
+			if err != nil {
+				return nil, err
+			}
+			for _, sslResource := range ssls {
+				if sslResource.Status == 0 || !matchesSNI(sslResource.Snis, serverName) {
+					continue
+				}
+				certificate, err := tls.X509KeyPair([]byte(sslResource.Cert), []byte(sslResource.Key))
+				if err != nil {
+					return nil, fmt.Errorf("load SSL resource %q: %w", sslResource.ID, err)
+				}
+				return &certificate, nil
+			}
+			return nil, fmt.Errorf("no SSL certificate for SNI %q", serverName)
+		},
+	}
+}
+
+func frontendHTTP2Enabled() bool {
+	if config.GlobalConfig == nil {
+		return false
+	}
+	if config.GlobalConfig.Apisix.EnableHttp2 {
+		return true
+	}
+	for _, listener := range config.GlobalConfig.Apisix.Ssl.Listen {
+		if listener.EnableHttp2 {
+			return true
+		}
+	}
+	return false
+}
+
+func frontendPlainHTTP2Enabled() bool {
+	if config.GlobalConfig == nil {
+		return false
+	}
+	if config.GlobalConfig.Apisix.EnableHttp2 {
+		return true
+	}
+	for _, listener := range config.GlobalConfig.Apisix.NodeListen {
+		if listener.EnableHttp2 {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesSNI(snis []string, serverName string) bool {
+	for _, sni := range snis {
+		sni = strings.TrimSpace(sni)
+		if strings.EqualFold(sni, serverName) {
+			return true
+		}
+		if strings.HasPrefix(sni, "*.") && strings.HasSuffix(strings.ToLower(serverName), strings.ToLower(sni[1:])) {
+			return true
+		}
+	}
+	return false
 }
 
 type prometheusExportServerConfig struct {

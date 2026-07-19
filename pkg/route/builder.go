@@ -24,6 +24,7 @@ import (
 	"github.com/justinas/alice"
 	"github.com/unrolled/render"
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
+	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -39,6 +40,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -98,9 +100,18 @@ func convertURI(uri string) (string, error) {
 }
 
 type Builder struct {
-	serverAddr string
-	stoppers   []pluginStopper
-	stopOnce   sync.Once
+	serverAddr            string
+	stoppers              []pluginStopper
+	stopperMu             sync.Mutex
+	consumerPluginChains  map[consumerPluginChainKey]alice.Chain
+	consumerPluginChainMu sync.Mutex
+	stopOnce              sync.Once
+}
+
+type consumerPluginChainKey struct {
+	plugins   string
+	routeID   string
+	serviceID string
 }
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -108,12 +119,18 @@ func NewBuilder(storage *store.Store) *Builder {
 }
 
 func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder {
-	return &Builder{serverAddr: normalizeServerAddr(serverAddr)}
+	return &Builder{
+		serverAddr:           normalizeServerAddr(serverAddr),
+		consumerPluginChains: make(map[consumerPluginChainKey]alice.Chain),
+	}
 }
 
 func (b *Builder) Stop() {
 	b.stopOnce.Do(func() {
-		for _, stopper := range b.stoppers {
+		b.stopperMu.Lock()
+		stoppers := append([]pluginStopper(nil), b.stoppers...)
+		b.stopperMu.Unlock()
+		for _, stopper := range stoppers {
 			stopper.Stop()
 		}
 	})
@@ -130,8 +147,6 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Errorf("list routes fail: %s", err)
 		return nil
 	}
-	fmt.Printf("routes: %+v\n", routes)
-
 	mux := chi.NewRouter()
 
 	for _, r := range routes {
@@ -180,6 +195,17 @@ func (b *Builder) Build() *chi.Mux {
 		}
 		fmt.Println("===============================")
 	}
+	globalRules, err := store.ListGlobalRules()
+	if err != nil {
+		logger.Errorf("list global rules for not found handler fail: %s", err)
+		return nil
+	}
+	notFoundHandler, err := b.buildGlobalNotFoundHandler(globalRules)
+	if err != nil {
+		logger.Errorf("build global not found handler fail: %s", err)
+		return nil
+	}
+	mux.NotFound(notFoundHandler.ServeHTTP)
 
 	// add extra route
 	registerExtraRoutes(mux)
@@ -187,10 +213,36 @@ func (b *Builder) Build() *chi.Mux {
 	return mux
 }
 
+func (b *Builder) buildGlobalNotFoundHandler(globalRules []resource.GlobalRule) (http.Handler, error) {
+	globalPlugins, err := b.initGlobalPluginsStrict(globalRules, pluginRouteContext{})
+	if err != nil {
+		return nil, err
+	}
+	chain := assembleRoutePluginChain(nil, globalPlugins)
+	return withAIExecutionTerminal(chain, http.NotFoundHandler()), nil
+}
+
 func clonePluginConfigs(source map[string]resource.PluginConfig) map[string]resource.PluginConfig {
 	cloned := make(map[string]resource.PluginConfig, len(source))
 	maps.Copy(cloned, source)
 	return cloned
+}
+
+func normalizePluginResourceContext(
+	context pluginRouteContext,
+	name string,
+	config resource.PluginConfig,
+) pluginRouteContext {
+	if _, ok := context.route.Plugins[name]; ok {
+		context.route.Plugins = clonePluginConfigs(context.route.Plugins)
+		context.route.Plugins[name] = config
+		return context
+	}
+	if _, ok := context.service.Plugins[name]; ok {
+		context.service.Plugins = clonePluginConfigs(context.service.Plugins)
+		context.service.Plugins[name] = config
+	}
+	return context
 }
 
 func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
@@ -235,9 +287,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	}
 
 	// add a context plugin, set the default vars
-	systemPlugins := map[string]resource.PluginConfig{
-		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
-	}
+	systemPlugins := buildSystemPluginConfigs(r, service, resourcePlugins)
 
 	var chain alice.Chain
 
@@ -248,14 +298,14 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	localPlugins = append(localPlugins, initialized...)
+	for _, initializedPlugin := range initialized {
+		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+	}
 	initialized, err = b.initPluginsStrict(systemPlugins, routeContext)
 	if err != nil {
 		return nil, err
 	}
 	localPlugins = append(localPlugins, initialized...)
-	localChain := plugin.BuildPluginChain(localPlugins...)
-
 	globalRules, err := store.ListGlobalRules()
 	if err != nil {
 		logger.Errorf("list global rules fail: %s", err)
@@ -265,13 +315,7 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(globalPlugins) > 0 {
-		globalChain := plugin.BuildPluginChain(globalPlugins...)
-
-		chain = globalChain.Extend(localChain)
-	} else {
-		chain = localChain
-	}
+	chain = assembleRoutePluginChain(localPlugins, globalPlugins)
 
 	handler, err := b.buildReverseHandler(r, service)
 	if err != nil {
@@ -279,11 +323,159 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		return nil, err
 	}
 
-	return withAIExecutionTerminal(chain, handler), nil
+	return b.withConsumerPluginRunner(withAIExecutionTerminal(chain, handler), routeContext), nil
+}
+
+func (b *Builder) withConsumerPluginRunner(
+	handler http.Handler,
+	routeContext pluginRouteContext,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = ctx.WithConsumerPluginRunner(r, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			b.runConsumerPlugins(w, r, next, routeContext)
+		})
+		handler.ServeHTTP(w, r)
+	})
+}
+
+type routeConsumerOverridePlugin struct {
+	plugin.Plugin
+}
+
+func (p routeConsumerOverridePlugin) Handler(next http.Handler) http.Handler {
+	handler := p.Plugin.Handler(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ctx.ConsumerPluginOverrides(r, p.GetName()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (b *Builder) runConsumerPlugins(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	routeContext pluginRouteContext,
+) {
+	consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
+	if !ok {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	pluginConfigs := consumerPluginConfigs(consumer)
+	if len(pluginConfigs) == 0 {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	chain, err := b.consumerPluginChain(pluginConfigs, routeContext)
+	if err != nil {
+		logger.Errorf("initialize consumer plugins for %s: %s", consumer.Username, err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	overrides := make(map[string]struct{}, len(pluginConfigs))
+	for name := range pluginConfigs {
+		overrides[name] = struct{}{}
+	}
+	r = ctx.WithConsumerPluginOverrides(r, overrides)
+	chain.Then(next).ServeHTTP(w, r)
+}
+
+func consumerPluginConfigs(consumer resource.Consumer) map[string]resource.PluginConfig {
+	pluginConfigs := make(map[string]resource.PluginConfig)
+	if consumer.GroupID != "" {
+		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
+			maps.Copy(pluginConfigs, group.Plugins)
+		}
+	}
+	maps.Copy(pluginConfigs, consumer.Plugins)
+
+	for name := range pluginConfigs {
+		if isConsumerAuthenticationPlugin(name) {
+			delete(pluginConfigs, name)
+		}
+	}
+	return pluginConfigs
+}
+
+func isConsumerAuthenticationPlugin(name string) bool {
+	switch name {
+	case "basic-auth", "hmac-auth", "jwe-decrypt", "jwt-auth", "key-auth", "ldap-auth", "multi-auth", "wolf-rbac":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *Builder) consumerPluginChain(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) (alice.Chain, error) {
+	encoded, err := stdjson.Marshal(pluginConfigs)
+	if err != nil {
+		return alice.New(), fmt.Errorf("marshal consumer plugin configs: %w", err)
+	}
+	key := consumerPluginChainKey{
+		plugins:   string(encoded),
+		routeID:   routeContext.routeID,
+		serviceID: routeContext.service.ID,
+	}
+
+	b.consumerPluginChainMu.Lock()
+	defer b.consumerPluginChainMu.Unlock()
+	if chain, ok := b.consumerPluginChains[key]; ok {
+		return chain, nil
+	}
+	plugins, err := b.initPluginsStrict(pluginConfigs, routeContext)
+	if err != nil {
+		return alice.New(), err
+	}
+	chain := plugin.BuildPluginChain(plugins...)
+	b.consumerPluginChains[key] = chain
+	return chain, nil
+}
+
+func assembleRoutePluginChain(localPlugins, globalPlugins []plugin.Plugin) alice.Chain {
+	plugins := make([]plugin.Plugin, 0, len(localPlugins)+len(globalPlugins))
+	plugins = append(plugins, localPlugins...)
+	plugins = append(plugins, globalPlugins...)
+	return plugin.BuildPluginChain(plugins...)
+}
+
+func buildSystemPluginConfigs(
+	r resource.Route,
+	service resource.Service,
+	resourcePlugins map[string]resource.PluginConfig,
+) map[string]resource.PluginConfig {
+	plugins := map[string]resource.PluginConfig{
+		"request-context": buildRequestContextConfig(r, service, resourcePlugins),
+	}
+	if appconfig.GlobalConfig == nil || appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize <= 0 {
+		return plugins
+	}
+	if _, configured := resourcePlugins["client-control"]; configured {
+		return plugins
+	}
+	plugins["client-control"] = map[string]any{
+		"max_body_size": appconfig.GlobalConfig.NginxConfig.HTTP.ClientMaxBodySize,
+	}
+	return plugins
 }
 
 func withAIExecutionTerminal(chain alice.Chain, fallback http.Handler) http.Handler {
-	return ai_runtime.EnableTerminal(chain.Then(ai_runtime.TerminalHandler(fallback)))
+	return ai_runtime.EnableTerminal(chain.Then(withBeforeProxyHooks(ai_runtime.TerminalHandler(fallback))))
+}
+
+func withBeforeProxyHooks(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.FinalizeProxyRewrite(r)
+		ctx.RunBeforeProxyHooks(r)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func buildRequestContextConfig(
@@ -580,6 +772,8 @@ func (b *Builder) initPluginsStrict(
 	routeContext pluginRouteContext,
 ) ([]plugin.Plugin, error) {
 	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	normalizedRouteContext := routeContext
+	resourceContextSetters := make([]pluginResourceContextSetter, 0, len(pluginConfigs))
 	for name, config := range pluginConfigs {
 		p := plugin.New(name)
 		if p == nil {
@@ -595,6 +789,14 @@ func (b *Builder) initPluginsStrict(
 
 		if err := p.Init(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
+		}
+		if metadataSchema := p.GetMetadataSchema(); metadataSchema != "" {
+			var metadata map[string]any
+			if err := store.GetPluginMetadata(name, &metadata); err == nil {
+				if err := util.Validate(metadata, metadataSchema); err != nil {
+					return nil, fmt.Errorf("validate plugin %s metadata: %w", name, err)
+				}
+			}
 		}
 
 		err = util.Validate(config, p.GetSchema())
@@ -612,6 +814,7 @@ func (b *Builder) initPluginsStrict(
 		}
 		if setter, ok := p.(pluginResourceContextSetter); ok {
 			setter.SetResourceContext(routeContext.route, routeContext.service)
+			resourceContextSetters = append(resourceContextSetters, setter)
 		}
 		if metadata.priority != nil {
 			setter, ok := p.(pluginPrioritySetter)
@@ -624,8 +827,9 @@ func (b *Builder) initPluginsStrict(
 		if err := p.PostInit(); err != nil {
 			return nil, fmt.Errorf("initialize plugin %s: %w", name, err)
 		}
+		normalizedRouteContext = normalizePluginResourceContext(normalizedRouteContext, name, p.Config())
 		if stopper, ok := p.(pluginStopper); ok {
-			b.stoppers = append(b.stoppers, stopper)
+			b.addStopper(stopper)
 		}
 
 		initialized := plugin.Plugin(p)
@@ -638,7 +842,16 @@ func (b *Builder) initPluginsStrict(
 		}
 		plugins = append(plugins, initialized)
 	}
+	for _, setter := range resourceContextSetters {
+		setter.SetResourceContext(normalizedRouteContext.route, normalizedRouteContext.service)
+	}
 	return plugins, nil
+}
+
+func (b *Builder) addStopper(stopper pluginStopper) {
+	b.stopperMu.Lock()
+	b.stoppers = append(b.stoppers, stopper)
+	b.stopperMu.Unlock()
 }
 
 func (b *Builder) initGlobalPlugins(
@@ -688,12 +901,18 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	servers := make(map[string]int, len(upstream.Nodes))
 	// fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
 	scheme := upstream.Scheme
+	targetScheme := scheme
+	if strings.EqualFold(targetScheme, "grpc") {
+		targetScheme = "http"
+	} else if strings.EqualFold(targetScheme, "grpcs") {
+		targetScheme = "https"
+	}
 	for _, node := range upstream.Nodes {
 		host := node.Host
 		port := node.Port
 		weight := node.Weight
 
-		uri := fmt.Sprintf("%s://%s:%d", scheme, host, port)
+		uri := fmt.Sprintf("%s://%s:%d", targetScheme, host, port)
 		servers[uri] = weight
 	}
 
@@ -718,32 +937,9 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// 2. host: use RR/Weighted-RR to select target host
 		// target is like: http://127.0.0.1 => schema + host
 
-		requestCtx := req.Context()
-		rewriteValue := requestCtx.Value(ctx.ProxyRewriteKey)
-		uri := ""
-		method := ""
-		host := ""
-		scheme := ""
-		// FIXME: how to read the headers?
-		if rewriteValue != nil {
-			rewrite := rewriteValue.(map[string]any)
-			uri = rewrite["uri"].(string)
-			method = rewrite["method"].(string)
-			host = rewrite["host"].(string)
-			scheme = rewrite["scheme"].(string)
-		}
-		if uri != "" {
-			fmt.Println("rewrite uri:", uri)
-			applyProxyRewriteURI(req, uri)
-		}
-		if method != "" {
-			req.Method = method
-		}
+		rewrite := ctx.FinalizeProxyRewrite(req)
 
-		if host != "" {
-			req.URL.Host = host
-			req.Host = host
-		} else if applyTrafficSplitOverride(req) {
+		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
 		} else {
 			target := lb.Next()
@@ -759,9 +955,16 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			req.URL.Host = u.Host
 			req.Host = u.Host
 		}
+		if ctx.GetApisixVars(req) != nil {
+			ctx.RegisterApisixVar(req, "$balancer_ip", req.URL.Hostname())
+			ctx.RegisterApisixVar(req, "$balancer_port", req.URL.Port())
+		}
+		if rewrite.Host != "" {
+			req.Host = rewrite.Host
+		}
 
-		if scheme != "" {
-			req.URL.Scheme = scheme
+		if rewrite.Scheme != "" {
+			req.URL.Scheme = rewrite.Scheme
 		}
 
 		// if u.Scheme == "" || u.Host == "" {
@@ -808,7 +1011,15 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 
 	// responseHeaderTimeout := time.Duration(timeout) * time.Second
 
-	transport := pxy.NewTransport(opt.Build())
+	var transport http.RoundTripper = pxy.NewTransport(opt.Build())
+	if strings.EqualFold(scheme, "grpc") {
+		transport = &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, network, address string, _ *tls.Config) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, address)
+			},
+		}
+	}
 
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()
@@ -1116,22 +1327,6 @@ func bufferRequestBodyIfNeeded(r *http.Request) error {
 	}
 	r.ContentLength = int64(len(body))
 	return nil
-}
-
-func applyProxyRewriteURI(req *http.Request, uri string) {
-	if parsed, err := url.ParseRequestURI(uri); err == nil && parsed.Scheme == "" && parsed.Host == "" {
-		req.URL.Path = parsed.Path
-		req.URL.RawPath = parsed.RawPath
-		req.URL.RawQuery = parsed.RawQuery
-		return
-	}
-
-	path, rawQuery, hasQuery := strings.Cut(uri, "?")
-	req.URL.Path = path
-	req.URL.RawPath = ""
-	if hasQuery {
-		req.URL.RawQuery = rawQuery
-	}
 }
 
 func applyTrafficSplitOverride(req *http.Request) bool {

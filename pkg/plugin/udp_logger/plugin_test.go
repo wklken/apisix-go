@@ -6,10 +6,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -104,6 +106,199 @@ func TestHandlerBatchesUDPLogs(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for UDP batch message")
+	}
+}
+
+func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), BatchMaxSize: 1})
+	p.SetRouteContext("route-default", "127.0.0.1:9080")
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders?ID=1", nil)
+	req.Host = "gateway.example"
+	req.RemoteAddr = "192.0.2.10:54321"
+	req.Header.Set("X-Request", "request-value")
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$balancer_ip", "198.51.100.20")
+		apisixctx.RegisterApisixVar(r, "$balancer_port", "1980")
+		apisixctx.RegisterApisixVar(r, "$service_id", "service-default")
+		apisixctx.RegisterApisixVar(r, "$consumer_name", "alice")
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
+		apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(7))
+		w.Header().Set("X-Upstream", "response-value")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForUDPPayload(t, received)
+	assertNestedField(t, payload, "request", "url", "http://gateway.example:9080/orders?ID=1")
+	assertNestedField(t, payload, "request", "method", http.MethodGet)
+	assertNestedField(t, payload, "request", "uri", "/orders?ID=1")
+	assertNestedNonnegativeNumber(t, payload, "request", "size")
+	assertNestedField(t, payload, "response", "status", float64(http.StatusCreated))
+	assertNestedNonnegativeNumber(t, payload, "response", "size")
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("os.Hostname() error = %v", err)
+	}
+	assertNestedField(t, payload, "server", "hostname", hostname)
+	assertNestedField(t, payload, "server", "version", "apisix-go")
+	if payload["service_id"] != "service-default" {
+		t.Fatalf("service_id = %#v, want service-default", payload["service_id"])
+	}
+	if payload["route_id"] != "route-default" {
+		t.Fatalf("route_id = %#v, want route-default", payload["route_id"])
+	}
+	assertNestedField(t, payload, "consumer", "username", "alice")
+	if payload["client_ip"] != "192.0.2.10" {
+		t.Fatalf("client_ip = %#v, want port-free address", payload["client_ip"])
+	}
+	if payload["upstream"] != "198.51.100.20:1980" {
+		t.Fatalf("upstream = %#v, want selected upstream", payload["upstream"])
+	}
+	if payload["upstream_latency"] != float64(7) {
+		t.Fatalf("upstream_latency = %#v, want 7", payload["upstream_latency"])
+	}
+	for _, field := range []string{"start_time", "latency", "apisix_latency"} {
+		if _, ok := payload[field].(float64); !ok {
+			t.Fatalf("%s = %#v, want numeric milliseconds", field, payload[field])
+		}
+	}
+	requestLog := payload["request"].(map[string]any)
+	requestHeaders := requestLog["headers"].(map[string]any)
+	if requestHeaders["host"] != "gateway.example" {
+		t.Errorf("request.headers.host = %#v, want original request host", requestHeaders["host"])
+	}
+	if requestHeaders["x-request"] != "request-value" {
+		t.Fatalf("request.headers.x-request = %#v, want scalar request-value", requestHeaders["x-request"])
+	}
+	queryString := requestLog["querystring"].(map[string]any)
+	if queryString["ID"] != "1" {
+		t.Errorf("request.querystring.ID = %#v, want case-preserved scalar 1", queryString["ID"])
+	}
+	if _, ok := queryString["id"]; ok {
+		t.Errorf("request.querystring.id = %#v, want uppercase key preserved", queryString["id"])
+	}
+	responseLog := payload["response"].(map[string]any)
+	responseHeaders := responseLog["headers"].(map[string]any)
+	if responseHeaders["x-upstream"] != "response-value" {
+		t.Fatalf("response.headers.x-upstream = %#v, want scalar response-value", responseHeaders["x-upstream"])
+	}
+	for _, field := range []string{"route", "client", "timing"} {
+		if _, ok := payload[field]; ok {
+			t.Fatalf("%s = %#v, want APISIX flat full-log contract", field, payload[field])
+		}
+	}
+}
+
+func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		BatchMaxSize: 1,
+		LogFormat: map[string]string{
+			"status":     "$status",
+			"consumer":   "$consumer_name",
+			"route_id":   "configured-route",
+			"service_id": "configured-service",
+		},
+	})
+	p.SetRouteContext("resolved-route", "127.0.0.1:9080")
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$consumer_name", "downstream-consumer")
+		apisixctx.RegisterApisixVar(r, "$service_id", "resolved-service")
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForUDPPayload(t, received)
+	if payload["status"] != float64(http.StatusCreated) {
+		t.Fatalf("status = %#v, want downstream status", payload["status"])
+	}
+	if payload["consumer"] != "downstream-consumer" {
+		t.Fatalf("consumer = %#v, want downstream-populated value", payload["consumer"])
+	}
+	if payload["route_id"] != "resolved-route" {
+		t.Fatalf("route_id = %#v, want appended route context", payload["route_id"])
+	}
+	if payload["service_id"] != "resolved-service" {
+		t.Fatalf("service_id = %#v, want appended service context", payload["service_id"])
+	}
+}
+
+func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		BatchMaxSize: 1,
+		LogFormat: map[string]string{
+			"host":       "$host",
+			"client_ip":  "$remote_addr",
+			"@timestamp": "$time_iso8601",
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req.Host = "logs.example:9080"
+	req.RemoteAddr = "192.0.2.10:54321"
+	before := time.Now()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Host = "upstream.internal:1980"
+		r.RemoteAddr = "198.51.100.30:12345"
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+	after := time.Now()
+
+	payload := waitForUDPPayload(t, received)
+	if payload["host"] != "logs.example" {
+		t.Fatalf("host = %#v, want logs.example", payload["host"])
+	}
+	if payload["client_ip"] != "192.0.2.10" {
+		t.Fatalf("client_ip = %#v, want port-free address", payload["client_ip"])
+	}
+	timestamp, ok := payload["@timestamp"].(string)
+	if !ok {
+		t.Fatalf("@timestamp = %#v, want string", payload["@timestamp"])
+	}
+	parsed, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		t.Fatalf("parse @timestamp %q: %v", timestamp, err)
+	}
+	if parsed.Before(before.Add(-time.Second)) || parsed.After(after.Add(time.Second)) {
+		t.Fatalf("@timestamp = %s, want current request time", parsed)
+	}
+}
+
+func TestSendBodyConnectionErrorIncludesDestination(t *testing.T) {
+	p := newTestPlugin(t, Config{Host: "312.0.0.1", Port: 2000, Timeout: 1})
+
+	err := p.sendBody([]byte("log"))
+	if err == nil {
+		t.Fatal("sendBody() error = nil, want invalid destination error")
+	}
+	if !strings.Contains(err.Error(), "host[312.0.0.1] port[2000]") {
+		t.Fatalf("sendBody() error = %v, want host and port diagnostic", err)
 	}
 }
 
@@ -276,11 +471,19 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 		if err := json.Unmarshal([]byte(message), &payload); err != nil {
 			t.Fatalf("unmarshal UDP log payload: %v", err)
 		}
-		if _, ok := payload["request"]; ok {
-			t.Fatalf("request = %#v, want no logged request body", payload["request"])
+		requestLog, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("request = %#v, want request metadata", payload["request"])
 		}
-		if _, ok := payload["response"]; ok {
-			t.Fatalf("response = %#v, want no logged response body", payload["response"])
+		if _, ok := requestLog["body"]; ok {
+			t.Fatalf("request.body = %#v, want no logged request body", requestLog["body"])
+		}
+		responseLog, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("response = %#v, want response metadata", payload["response"])
+		}
+		if _, ok := responseLog["body"]; ok {
+			t.Fatalf("response.body = %#v, want no logged response body", responseLog["body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for UDP log message")
@@ -325,6 +528,23 @@ func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	}
 }
 
+func TestMetadataSchemaRejectsStringLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{
+		"log_format": "'$host' '$time_iso8601'",
+	}, p.GetMetadataSchema())
+	if err == nil {
+		t.Fatal("metadata schema accepted string log_format, want object validation error")
+	}
+	if !strings.Contains(err.Error(), "log_format") || !strings.Contains(err.Error(), "object") {
+		t.Fatalf("metadata schema error = %v, want log_format object validation error", err)
+	}
+}
+
 func startUDPServer(t *testing.T) (string, <-chan string) {
 	t.Helper()
 
@@ -361,4 +581,42 @@ func mustAtoi(t *testing.T, value string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+func waitForUDPPayload(t *testing.T, received <-chan string) map[string]any {
+	t.Helper()
+	select {
+	case message := <-received:
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(message), &payload); err != nil {
+			t.Fatalf("unmarshal UDP payload: %v", err)
+		}
+		return payload
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UDP payload")
+		return nil
+	}
+}
+
+func assertNestedField(t *testing.T, payload map[string]any, object, field string, want any) {
+	t.Helper()
+	nested, ok := payload[object].(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want object", object, payload[object])
+	}
+	if got := nested[field]; got != want {
+		t.Fatalf("%s.%s = %#v, want %#v", object, field, got, want)
+	}
+}
+
+func assertNestedNonnegativeNumber(t *testing.T, payload map[string]any, object, field string) {
+	t.Helper()
+	nested, ok := payload[object].(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want object", object, payload[object])
+	}
+	value, ok := nested[field].(float64)
+	if !ok || value < 0 {
+		t.Fatalf("%s.%s = %#v, want nonnegative number", object, field, nested[field])
+	}
 }

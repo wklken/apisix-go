@@ -1,7 +1,11 @@
 package multi_auth
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,6 +112,123 @@ func TestHandlerAllowsRequestWhenAnyAuthPluginSucceeds(t *testing.T) {
 	}
 }
 
+func TestHandlerPreservesRejectingConsumerPluginResponse(t *testing.T) {
+	addAuthConsumer(t, "rejecting-consumer-user", map[string]any{
+		"key-auth": map[string]any{"key": "rejecting-consumer-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "rejecting-consumer-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey"}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "rejecting-consumer-key")
+	runnerCalls := 0
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, _ http.Handler) {
+		runnerCalls++
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "rejecting-consumer-user" {
+			t.Fatalf("consumer_name = %v, want rejecting-consumer-user", got)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("consumer rejected"))
+	})
+	res := httptest.NewRecorder()
+	downstreamCalls := 0
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		downstreamCalls++
+	})).ServeHTTP(res, req)
+
+	if runnerCalls != 1 {
+		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
+	}
+	if downstreamCalls != 0 {
+		t.Fatalf("downstream calls = %d, want 0", downstreamCalls)
+	}
+	if res.Code != http.StatusForbidden || res.Body.String() != "consumer rejected" {
+		t.Fatalf("response = %d %q, want 403 consumer rejected", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRunsAcceptingConsumerPluginsAndDownstreamOnce(t *testing.T) {
+	addAuthConsumer(t, "accepting-consumer-user", map[string]any{
+		"key-auth": map[string]any{"key": "accepting-consumer-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "accepting-consumer-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey"}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "accepting-consumer-key")
+	runnerCalls := 0
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalls++
+		next.ServeHTTP(w, r)
+	})
+	res := httptest.NewRecorder()
+	downstreamCalls := 0
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if runnerCalls != 1 {
+		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
+	}
+	if downstreamCalls != 1 {
+		t.Fatalf("downstream calls = %d, want 1", downstreamCalls)
+	}
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", res.Code)
+	}
+}
+
+func TestHandlerPassesConsumerRunnerRequestContextToDownstream(t *testing.T) {
+	type runnerContextKey struct{}
+
+	addAuthConsumer(t, "context-consumer-user", map[string]any{
+		"key-auth": map[string]any{"key": "context-consumer-key"},
+	})
+	waitForConsumerKey(t, "key-auth", "context-consumer-key")
+
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"key-auth": {"header": "apikey"}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("apikey", "context-consumer-key")
+	req = ctx.WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		r = ctx.WithConsumerPluginOverrides(r, map[string]struct{}{"consumer-restriction": {}})
+		r = r.WithContext(context.WithValue(r.Context(), runnerContextKey{}, "from-runner"))
+		next.ServeHTTP(w, r)
+	})
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ctx.ConsumerPluginOverrides(r, "consumer-restriction") {
+			t.Fatal("consumer plugin override did not reach downstream")
+		}
+		if got := r.Context().Value(runnerContextKey{}); got != "from-runner" {
+			t.Fatalf("runner context = %v, want from-runner", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", res.Code)
+	}
+}
+
 func TestHandlerAllowsBasicAuthWhenLaterPluginWouldFail(t *testing.T) {
 	addAuthConsumer(t, "basic-user", map[string]any{
 		"basic-auth": map[string]any{"username": "basic-user", "password": "secret"},
@@ -134,6 +255,231 @@ func TestHandlerAllowsBasicAuthWhenLaterPluginWouldFail(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
 	}
+}
+
+func TestHandlerDoesNotLetFailedAuthMutateLaterAlternative(t *testing.T) {
+	addAuthConsumer(t, "basic-after-jwt-user", map[string]any{
+		"basic-auth": map[string]any{"username": "basic-after-jwt-user", "password": "secret"},
+	})
+	waitForConsumerKey(t, "basic-auth", "basic-after-jwt-user")
+
+	hideCredentials := true
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"jwt-auth": {"hide_credentials": hideCredentials}},
+			{"basic-auth": {}},
+		},
+	})
+	req := newMultiAuthRequest()
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("basic-after-jwt-user:secret")))
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "basic-after-jwt-user" {
+			t.Fatalf("consumer_name = %v, want basic-after-jwt-user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerRestoresBodyAfterFailedHMACAlternative(t *testing.T) {
+	addAuthConsumer(t, "body-fallback-user", map[string]any{
+		"hmac-auth": map[string]any{"key_id": "body-hmac-key", "secret_key": "body-hmac-secret"},
+		"key-auth":  map[string]any{"key": "body-api-key"},
+	})
+	waitForConsumerKey(t, "hmac-auth", "body-hmac-key")
+	waitForConsumerKey(t, "key-auth", "body-api-key")
+
+	p := newTestPlugin(t, Config{AuthPlugins: []AuthPluginConfig{
+		{"hmac-auth": {"validate_request_body": true, "max_req_body_size": 10}},
+		{"key-auth": {"header": "apikey"}},
+	}})
+	body := "body that is longer than ten bytes"
+	source := &countingReadCloser{Reader: strings.NewReader(body)}
+	req := httptest.NewRequest(http.MethodPost, "/body", strings.NewReader(body))
+	req.Body = source
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req = ctx.WithRequestVars(req)
+	req.Header.Set("apikey", "body-api-key")
+	req.Header.Set("Digest", "SHA-256=unused")
+	setTestHMACSignature(req, "body-hmac-key", "body-hmac-secret")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read downstream body: %v", err)
+		}
+		if string(got) != body {
+			t.Fatalf("downstream body = %q, want %q", got, body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+	if source.closeCalls != 0 {
+		t.Fatalf("source body close calls before server ownership ends = %d, want 0", source.closeCalls)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close final request body: %v", err)
+	}
+	if source.closeCalls != 1 {
+		t.Fatalf("source body close calls after final close = %d, want 1", source.closeCalls)
+	}
+}
+
+func TestHandlerLeavesSuccessfulHMACBodyOwnedByServer(t *testing.T) {
+	addAuthConsumer(t, "body-hmac-success-user", map[string]any{
+		"hmac-auth": map[string]any{"key_id": "success-hmac-key", "secret_key": "success-hmac-secret"},
+	})
+	waitForConsumerKey(t, "hmac-auth", "success-hmac-key")
+
+	p := newTestPlugin(t, Config{AuthPlugins: []AuthPluginConfig{
+		{"hmac-auth": {"validate_request_body": true, "max_req_body_size": 10}},
+		{"key-auth": {}},
+	}})
+	body := "small"
+	source := &countingReadCloser{Reader: strings.NewReader(body)}
+	req := httptest.NewRequest(http.MethodPost, "/body", strings.NewReader(body))
+	req.Body = source
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req = ctx.WithRequestVars(req)
+	digest := sha256.Sum256([]byte(body))
+	req.Header.Set("Digest", "SHA-256="+base64.StdEncoding.EncodeToString(digest[:]))
+	setTestHMACSignature(req, "success-hmac-key", "success-hmac-secret")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil || string(got) != body {
+			t.Fatalf("downstream body = %q, err=%v; want %q", got, err, body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+	if source.closeCalls != 0 {
+		t.Fatalf("source body close calls before server ownership ends = %d, want 0", source.closeCalls)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close server-owned request body: %v", err)
+	}
+	if source.closeCalls != 1 {
+		t.Fatalf("source body close calls after final close = %d, want 1", source.closeCalls)
+	}
+}
+
+func TestPostInitRejectsAuthPluginEntryWithMultiplePlugins(t *testing.T) {
+	p := &Plugin{config: Config{AuthPlugins: []AuthPluginConfig{
+		{"basic-auth": {}, "key-auth": {}},
+		{"jwt-auth": {}},
+	}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "exactly one auth plugin") {
+		t.Fatalf("PostInit() error = %v, want exactly-one-plugin diagnostic", err)
+	}
+}
+
+func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
+	req := newMultiAuthRequest()
+	authenticated, failure := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(req)
+	if authenticated != nil || failure.status != http.StatusUnauthorized || failure.message != "" {
+		t.Fatalf(
+			"status-only auth result = (%v, %+v), want nil request with 401 empty-message failure",
+			authenticated,
+			failure,
+		)
+	}
+}
+
+func TestSuccessfulDirectAuthDoesNotLeakProbeRecorderContext(t *testing.T) {
+	req := newMultiAuthRequest()
+	authenticated, failure := (configuredAuth{name: "direct-success-auth", plugin: directSuccessAuth{}}).succeeds(req)
+	if authenticated == nil || failure.name != "" {
+		t.Fatalf(
+			"direct success result = (%v, %+v), want authenticated request without failure",
+			authenticated,
+			failure,
+		)
+	}
+	if authenticated.Header.Get("X-Direct-Auth") != "authenticated" {
+		t.Fatalf("authenticated header = %q, want preserved mutation", authenticated.Header.Get("X-Direct-Auth"))
+	}
+	if ctx.RecordAuthProbeDiagnostic(authenticated, "must not be captured") {
+		t.Fatal("successful request leaked the auth-probe diagnostic recorder")
+	}
+}
+
+func TestProbeResponseWriterBoundsFailureDiagnostic(t *testing.T) {
+	writer := &probeResponseWriter{header: http.Header{}}
+	body := make([]byte, maxFailureDiagnosticBytes+1024)
+	written, err := writer.Write(body)
+	if err != nil || written != len(body) {
+		t.Fatalf("Write() = (%d, %v), want (%d, nil)", written, err, len(body))
+	}
+	if writer.body.Len() != maxFailureDiagnosticBytes {
+		t.Fatalf("captured diagnostic bytes = %d, want %d", writer.body.Len(), maxFailureDiagnosticBytes)
+	}
+}
+
+type statusOnlyAuth struct{}
+
+type directSuccessAuth struct{}
+
+type countingReadCloser struct {
+	io.Reader
+	closeCalls int
+}
+
+func (r *countingReadCloser) Close() error {
+	r.closeCalls++
+	return nil
+}
+
+func setTestHMACSignature(req *http.Request, keyID string, secret string) {
+	date := time.Now().UTC().Format(http.TimeFormat)
+	req.Header.Set("Date", date)
+	signing := keyID + "\n" + req.Method + " " + req.URL.RequestURI() + "\ndate: " + date + "\n"
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(signing))
+	req.Header.Set(
+		"Authorization",
+		`Signature keyId="`+keyID+`",algorithm="hmac-sha256",headers="@request-target date",signature="`+
+			base64.StdEncoding.EncodeToString(mac.Sum(nil))+`"`,
+	)
+}
+
+func (statusOnlyAuth) Init() error       { return nil }
+func (statusOnlyAuth) PostInit() error   { return nil }
+func (statusOnlyAuth) Config() any       { return &struct{}{} }
+func (statusOnlyAuth) GetSchema() string { return `{}` }
+func (statusOnlyAuth) Handler(http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+}
+
+func (directSuccessAuth) Init() error       { return nil }
+func (directSuccessAuth) PostInit() error   { return nil }
+func (directSuccessAuth) Config() any       { return &struct{}{} }
+func (directSuccessAuth) GetSchema() string { return `{}` }
+func (directSuccessAuth) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Direct-Auth", "authenticated")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func TestHandlerAllowsKeyAuthAfterLDAPAuthMissingCredentials(t *testing.T) {

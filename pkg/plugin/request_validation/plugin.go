@@ -86,6 +86,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.config.HeaderSchema != nil {
+		p.config.HeaderSchema = normalizeAPISIXSchema(p.config.HeaderSchema)
 		headerSchemaStr, err := json.Marshal(p.config.HeaderSchema)
 		if err != nil {
 			return fmt.Errorf("failed to marshal header schema: %w", err)
@@ -97,6 +98,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	if p.config.BodySchema != nil {
+		p.config.BodySchema = normalizeAPISIXSchema(p.config.BodySchema)
 		bodySchemaStr, err := json.Marshal(p.config.BodySchema)
 		if err != nil {
 			return fmt.Errorf("failed to marshal body schema: %w", err)
@@ -256,28 +258,72 @@ func parseURLEncodedForm(data []byte) (map[string]any, error) {
 // FIXME: if this func show in another plugin, should be refactor, only do it once
 func parseJSON(data []byte) (any, error) {
 	trimmedData := strings.TrimSpace(string(data))
-	// Check the first character of the JSON data to determine its type
-	if len(trimmedData) > 0 {
-		switch trimmedData[0] {
-		case '{':
-			var resultMap map[string]any
-			err := json.Unmarshal(data, &resultMap)
-			if err != nil {
-				return nil, err
-			}
-			return resultMap, nil
+	if len(trimmedData) == 0 {
+		return nil, fmt.Errorf("empty JSON data")
+	}
 
-		case '[':
-			var resultList []any
-			err := json.Unmarshal(data, &resultList)
-			if err != nil {
-				return nil, err
-			}
-			return resultList, nil
+	var result any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
 
-		default:
-			return nil, fmt.Errorf("invalid JSON data")
+func normalizeAPISIXSchema(schema map[string]any) map[string]any {
+	normalized := make(map[string]any, len(schema))
+	for key, value := range schema {
+		normalized[key] = value
+	}
+	if schemaType, ok := normalized["type"].(string); ok {
+		switch schemaType {
+		case "table":
+			normalized["type"] = []any{"object", "array"}
+		case "function":
+			delete(normalized, "type")
+			normalized["not"] = map[string]any{}
 		}
 	}
-	return nil, fmt.Errorf("empty JSON data")
+
+	for _, keyword := range []string{
+		"additionalItems", "additionalProperties", "contains", "contentSchema",
+		"else", "if", "items", "not", "propertyNames", "then",
+		"unevaluatedItems", "unevaluatedProperties",
+	} {
+		if value, ok := normalized[keyword]; ok {
+			normalized[keyword] = normalizeAPISIXSubschema(value)
+		}
+	}
+	for _, keyword := range []string{"allOf", "anyOf", "oneOf", "prefixItems"} {
+		if values, ok := normalized[keyword].([]any); ok {
+			items := make([]any, len(values))
+			for index, value := range values {
+				items[index] = normalizeAPISIXSubschema(value)
+			}
+			normalized[keyword] = items
+		}
+	}
+	for _, keyword := range []string{"$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties", "properties"} {
+		if values, ok := normalized[keyword].(map[string]any); ok {
+			items := make(map[string]any, len(values))
+			for name, value := range values {
+				items[name] = normalizeAPISIXSubschema(value)
+			}
+			normalized[keyword] = items
+		}
+	}
+	return normalized
+}
+
+func normalizeAPISIXSubschema(value any) any {
+	if schema, ok := value.(map[string]any); ok {
+		return normalizeAPISIXSchema(schema)
+	}
+	if schemas, ok := value.([]any); ok {
+		normalized := make([]any, len(schemas))
+		for index, schema := range schemas {
+			normalized[index] = normalizeAPISIXSubschema(schema)
+		}
+		return normalized
+	}
+	return value
 }

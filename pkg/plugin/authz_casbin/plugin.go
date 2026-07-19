@@ -46,12 +46,23 @@ const schema = `
       "type": "string"
     }
   },
+  "required": ["username"],
   "oneOf": [
     {
-      "required": ["model_path", "policy_path", "username"]
+      "required": ["model_path", "policy_path"]
     },
     {
-      "required": ["model", "policy", "username"]
+      "required": ["model", "policy"]
+    },
+    {
+      "not": {
+        "anyOf": [
+          {"required": ["model_path"]},
+          {"required": ["policy_path"]},
+          {"required": ["model"]},
+          {"required": ["policy"]}
+        ]
+      }
     }
   ]
 }

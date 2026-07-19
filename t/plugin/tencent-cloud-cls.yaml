@@ -1,0 +1,75 @@
+cases:
+    - config:
+        routes:
+            - id: tencent-cloud-cls-source-1
+              plugins:
+                tencent-cloud-cls:
+                    batch_max_size: 1
+                    inactive_timeout: 1
+                    cls_host: '{{FIXTURE.sink.HOST}}:{{FIXTURE.sink.PORT}}'
+                    cls_topic: integration
+                    scheme: http
+                    secret_id: integration
+                    secret_key: integration
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: http
+          name: sink
+          expect:
+            - method: POST
+              path: {matches: '^/structuredlog\?topic_id=integration$'}
+          respond:
+            - body: ok
+              headers: {}
+              status: 200
+      name: tencent-cloud-cls-source-1
+      source:
+        file: t/plugin/tencent-cloud-cls.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+            - 22
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: log-delivered-to-sink
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/tencent-cloud-cls.t
+      tests: 22

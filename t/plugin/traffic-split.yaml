@@ -1,0 +1,187 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-split.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-split2.t
+    tests: 22
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-split3.t
+    tests: 20
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-split4.t
+    tests: 19
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/traffic-split5.t
+    tests: 12
+cases:
+  - name: traffic-split-header-routes
+    source: {file: t/plugin/traffic-split.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
+    config:
+      routes:
+        - id: traffic-split
+          uri: /split
+          plugins:
+            traffic-split:
+              rules:
+                - match: [{vars: [[http_x_bucket, ==, a]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+                - match: [{vars: [[http_x_bucket, ==, b]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+    fixtures:
+      - name: a
+        kind: http
+        respond: [{status: 200, body: split-a}]
+      - name: b
+        kind: http
+        respond: [{status: 200, body: split-b}]
+    steps:
+      - name: bucket-a
+        input: {method: GET, path: /split, headers: {X-Bucket: a}}
+        output: {status: 200, body: {equals: split-a}}
+      - name: bucket-b
+        input: {method: GET, path: /split, headers: {X-Bucket: b}}
+        output: {status: 200, body: {equals: split-b}}
+  - name: traffic-split2-header-routes
+    source: {file: t/plugin/traffic-split2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]}
+    config:
+      routes:
+        - id: traffic-split2
+          uri: /split
+          plugins:
+            traffic-split:
+              rules:
+                - match: [{vars: [[http_x_bucket, ==, a]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+                - match: [{vars: [[http_x_bucket, ==, b]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+    fixtures:
+      - name: a
+        kind: http
+        respond: [{status: 200, body: split-a}]
+      - name: b
+        kind: http
+        respond: [{status: 200, body: split-b}]
+    steps:
+      - name: bucket-a
+        input: {method: GET, path: /split, headers: {X-Bucket: a}}
+        output: {status: 200, body: {equals: split-a}}
+      - name: bucket-b
+        input: {method: GET, path: /split, headers: {X-Bucket: b}}
+        output: {status: 200, body: {equals: split-b}}
+
+  - name: traffic-split3-header-routes
+    source: {file: t/plugin/traffic-split3.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}
+    config:
+      routes:
+        - id: traffic-split3
+          uri: /split
+          plugins:
+            traffic-split:
+              rules:
+                - match: [{vars: [[http_x_bucket, ==, a]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+                - match: [{vars: [[http_x_bucket, ==, b]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+    fixtures:
+      - name: a
+        kind: http
+        respond: [{status: 200, body: split-a}]
+      - name: b
+        kind: http
+        respond: [{status: 200, body: split-b}]
+    steps:
+      - name: bucket-a
+        input: {method: GET, path: /split, headers: {X-Bucket: a}}
+        output: {status: 200, body: {equals: split-a}}
+      - name: bucket-b
+        input: {method: GET, path: /split, headers: {X-Bucket: b}}
+        output: {status: 200, body: {equals: split-b}}
+
+  - name: traffic-split4-header-routes
+    source: {file: t/plugin/traffic-split4.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]}
+    config:
+      routes:
+        - id: traffic-split4
+          uri: /split
+          plugins:
+            traffic-split:
+              rules:
+                - match: [{vars: [[http_x_bucket, ==, a]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+                - match: [{vars: [[http_x_bucket, ==, b]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+    fixtures:
+      - name: a
+        kind: http
+        respond: [{status: 200, body: split-a}]
+      - name: b
+        kind: http
+        respond: [{status: 200, body: split-b}]
+    steps:
+      - name: bucket-a
+        input: {method: GET, path: /split, headers: {X-Bucket: a}}
+        output: {status: 200, body: {equals: split-a}}
+      - name: bucket-b
+        input: {method: GET, path: /split, headers: {X-Bucket: b}}
+        output: {status: 200, body: {equals: split-b}}
+
+  - name: traffic-split5-header-routes
+    source: {file: t/plugin/traffic-split5.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
+    config:
+      routes:
+        - id: traffic-split5
+          uri: /split
+          plugins:
+            traffic-split:
+              rules:
+                - match: [{vars: [[http_x_bucket, ==, a]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+                - match: [{vars: [[http_x_bucket, ==, b]]}]
+                  weighted_upstreams:
+                    - weight: 1
+                      upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}
+    fixtures:
+      - name: a
+        kind: http
+        respond: [{status: 200, body: split-a}]
+      - name: b
+        kind: http
+        respond: [{status: 200, body: split-b}]
+    steps:
+      - name: bucket-a
+        input: {method: GET, path: /split, headers: {X-Bucket: a}}
+        output: {status: 200, body: {equals: split-a}}
+      - name: bucket-b
+        input: {method: GET, path: /split, headers: {X-Bucket: b}}
+        output: {status: 200, body: {equals: split-b}}
+
+

@@ -1,8 +1,11 @@
 package store
 
 import (
+	"encoding/base64"
 	"fmt"
+	"strings"
 
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -15,147 +18,299 @@ type basicAuth struct {
 	Password string `json:"password"`
 }
 
+const basicAuthConsumerSchema = `
+{
+  "type": "object",
+  "title": "work with consumer object",
+  "required": ["username", "password"],
+  "properties": {
+    "username": {"type": "string"},
+    "password": {"type": "string"}
+  }
+}`
+
 type jwtAuth struct {
 	Key string `json:"key"`
 }
 
 type hmacAuth struct {
-	KeyID string `json:"key_id"`
+	KeyID     string `json:"key_id"`
+	SecretKey string `json:"secret_key"`
 }
+
+const hmacAuthConsumerSchema = `
+{
+  "type": "object",
+  "title": "work with consumer object",
+  "required": ["key_id", "secret_key"],
+  "properties": {
+    "key_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "secret_key": {"type": "string", "minLength": 1, "maxLength": 256}
+  }
+}`
 
 type ldapAuth struct {
 	UserDN string `json:"user_dn"`
 }
 
 type jweDecrypt struct {
-	Key string `json:"key"`
+	Key             any  `json:"key"`
+	Secret          any  `json:"secret"`
+	IsBase64Encoded bool `json:"is_base64_encoded"`
 }
 
 type wolfRBAC struct {
 	AppID string `json:"appid"`
 }
 
-func (s *Store) consumerKVAdd(id []byte, value []byte) error {
+type consumerSnapshot struct {
+	id               []byte
+	consumer         resource.Consumer
+	pluginKeys       []string
+	referencePlugins []string
+}
+
+func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapshot, error) {
 	consumer, err := ParseConsumer(value)
 	if err != nil {
-		return err
+		return consumerSnapshot{}, err
 	}
-	s.consumerMu.Lock()
-	defer s.consumerMu.Unlock()
-	key := util.BytesToString(id)
-
-	// clear old keys
-	if keys, ok := s.consumerToKeys[key]; ok {
-		for _, k := range keys {
-			delete(s.consumerKV, k)
+	if basicAuthPlugin, ok := consumer.Plugins["basic-auth"]; ok {
+		if err := util.Validate(basicAuthPlugin, basicAuthConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("basic-auth consumer configuration: %w", err)
 		}
 	}
-	s.consumerToKeys[key] = []string{}
-
-	// add self
-	s.consumerKV[key] = id
-
-	// add plugin unique keys
-
-	// if "key-auth" in consumer.Plugins
+	if hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]; ok {
+		if err := util.Validate(hmacAuthPlugin, hmacAuthConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("hmac-auth consumer configuration: %w", err)
+		}
+	}
+	jweDecryptPlugin, hasJWEDecrypt := consumer.Plugins["jwe-decrypt"]
+	var jweDecryptConfig jweDecrypt
+	if hasJWEDecrypt {
+		if err := util.Parse(jweDecryptPlugin, &jweDecryptConfig); err != nil {
+			return consumerSnapshot{}, err
+		}
+		if err := validateJWEDecryptConsumerConfig(jweDecryptConfig); err != nil {
+			return consumerSnapshot{}, err
+		}
+	}
+	pluginKeys := make([]string, 0, len(consumer.Plugins))
+	referencePlugins := make([]string, 0, len(consumer.Plugins))
 	keyAuthPlugin, ok := consumer.Plugins["key-auth"]
 	if ok {
 		var ka keyAuth
-		err = util.Parse(keyAuthPlugin, &ka)
-		if err != nil {
-			return err
+		if err := util.Parse(keyAuthPlugin, &ka); err != nil {
+			return consumerSnapshot{}, err
 		}
-		k := fmt.Sprintf("key-auth:%s", ka.Key)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "key-auth", ka.Key,
+		)
 	}
-
-	// if "basic-auth" in consumer.Plugins
 	basicAuthPlugin, ok := consumer.Plugins["basic-auth"]
 	if ok {
 		var ba basicAuth
-		err = util.Parse(basicAuthPlugin, &ba)
-		if err != nil {
-			return err
+		if err := util.Parse(basicAuthPlugin, &ba); err != nil {
+			return consumerSnapshot{}, err
 		}
-		k := fmt.Sprintf("basic-auth:%s", ba.Username)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "basic-auth", ba.Username,
+		)
 	}
-
-	// if "jwt-auth" in consumer.Plugins
 	jwtAuthPlugin, ok := consumer.Plugins["jwt-auth"]
 	if ok {
 		var ja jwtAuth
-		err = util.Parse(jwtAuthPlugin, &ja)
-		if err != nil {
-			return err
+		if err := util.Parse(jwtAuthPlugin, &ja); err != nil {
+			return consumerSnapshot{}, err
 		}
-		k := fmt.Sprintf("jwt-auth:%s", ja.Key)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "jwt-auth", ja.Key,
+		)
 	}
-
-	// if "hmac-auth" in consumer.Plugins
 	hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]
 	if ok {
 		var ha hmacAuth
-		err = util.Parse(hmacAuthPlugin, &ha)
-		if err != nil {
-			return err
+		if err := util.Parse(hmacAuthPlugin, &ha); err != nil {
+			return consumerSnapshot{}, err
 		}
-		k := fmt.Sprintf("hmac-auth:%s", ha.KeyID)
-		s.consumerKV[k] = id
-
-		// add to consumerToKeys
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "hmac-auth", ha.KeyID,
+		)
 	}
-
 	ldapAuthPlugin, ok := consumer.Plugins["ldap-auth"]
 	if ok {
 		var la ldapAuth
-		err = util.Parse(ldapAuthPlugin, &la)
-		if err != nil {
-			return err
+		if err := util.Parse(ldapAuthPlugin, &la); err != nil {
+			return consumerSnapshot{}, err
 		}
-		k := fmt.Sprintf("ldap-auth:%s", la.UserDN)
-		s.consumerKV[k] = id
-
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "ldap-auth", la.UserDN,
+		)
 	}
-
-	jweDecryptPlugin, ok := consumer.Plugins["jwe-decrypt"]
-	if ok {
-		var jd jweDecrypt
-		err = util.Parse(jweDecryptPlugin, &jd)
-		if err != nil {
-			return err
-		}
-		k := fmt.Sprintf("jwe-decrypt:%s", jd.Key)
-		s.consumerKV[k] = id
-
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+	if hasJWEDecrypt {
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "jwe-decrypt", jweDecryptConfig.Key.(string),
+		)
 	}
-
 	wolfRBACPlugin, ok := consumer.Plugins["wolf-rbac"]
 	if ok {
 		var wr wolfRBAC
-		err = util.Parse(wolfRBACPlugin, &wr)
-		if err != nil {
-			return err
+		if err := util.Parse(wolfRBACPlugin, &wr); err != nil {
+			return consumerSnapshot{}, err
 		}
-		k := fmt.Sprintf("wolf-rbac:%s", wr.AppID)
-		s.consumerKV[k] = id
-
-		s.consumerToKeys[key] = append(s.consumerToKeys[key], k)
+		pluginKeys, referencePlugins = addConsumerLookupKey(
+			pluginKeys, referencePlugins, "wolf-rbac", wr.AppID,
+		)
 	}
 
+	return consumerSnapshot{
+		id:               append([]byte(nil), id...),
+		consumer:         consumer,
+		pluginKeys:       pluginKeys,
+		referencePlugins: referencePlugins,
+	}, nil
+}
+
+func addConsumerLookupKey(pluginKeys, referencePlugins []string, pluginName, key string) ([]string, []string) {
+	if isConsumerSecretReference(key) {
+		return pluginKeys, append(referencePlugins, pluginName)
+	}
+	return append(pluginKeys, fmt.Sprintf("%s:%s", pluginName, key)), referencePlugins
+}
+
+func isConsumerSecretReference(value string) bool {
+	return (len(value) >= len(environmentSecretPrefix) &&
+		strings.EqualFold(value[:len(environmentSecretPrefix)], environmentSecretPrefix)) ||
+		strings.HasPrefix(value, managedSecretPrefix)
+}
+
+func consumerPluginLookupKey(pluginName string, config resource.PluginConfig) (string, error) {
+	switch pluginName {
+	case "key-auth":
+		var parsed keyAuth
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		return parsed.Key, nil
+	case "basic-auth":
+		var parsed basicAuth
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		return parsed.Username, nil
+	case "jwt-auth":
+		var parsed jwtAuth
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		return parsed.Key, nil
+	case "hmac-auth":
+		var parsed hmacAuth
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		return parsed.KeyID, nil
+	case "ldap-auth":
+		var parsed ldapAuth
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		return parsed.UserDN, nil
+	case "jwe-decrypt":
+		var parsed jweDecrypt
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		key, ok := parsed.Key.(string)
+		if !ok {
+			return "", fmt.Errorf("jwe-decrypt consumer key must be a string")
+		}
+		return key, nil
+	case "wolf-rbac":
+		var parsed wolfRBAC
+		if err := util.Parse(config, &parsed); err != nil {
+			return "", err
+		}
+		return parsed.AppID, nil
+	default:
+		return "", fmt.Errorf("consumer lookup is unsupported for plugin %q", pluginName)
+	}
+}
+
+func (s *Store) consumerKVAdd(id []byte, value []byte) error {
+	snapshot, err := s.prepareConsumerSnapshot(id, value)
+	if err != nil {
+		return err
+	}
+	s.applyConsumerSnapshot(snapshot)
+	return nil
+}
+
+func (s *Store) applyConsumerSnapshot(snapshot consumerSnapshot) {
+	s.consumerMu.Lock()
+	defer s.consumerMu.Unlock()
+	key := util.BytesToString(snapshot.id)
+	if keys, ok := s.consumerToKeys[key]; ok {
+		for _, oldKey := range keys {
+			delete(s.consumerKV, oldKey)
+		}
+	}
+	for _, pluginName := range s.consumerToReferences[key] {
+		delete(s.consumerReferenceKV[pluginName], key)
+		if len(s.consumerReferenceKV[pluginName]) == 0 {
+			delete(s.consumerReferenceKV, pluginName)
+		}
+	}
+	consumerID := append([]byte(nil), snapshot.id...)
+	s.consumerKV[key] = consumerID
+	s.consumerToKeys[key] = snapshot.pluginKeys
+	for _, pluginKey := range snapshot.pluginKeys {
+		s.consumerKV[pluginKey] = consumerID
+	}
+	if s.consumerValues == nil {
+		s.consumerValues = make(map[string]resource.Consumer)
+	}
+	if s.consumerReferenceKV == nil {
+		s.consumerReferenceKV = make(map[string]map[string][]byte)
+	}
+	if s.consumerToReferences == nil {
+		s.consumerToReferences = make(map[string][]string)
+	}
+	for _, pluginName := range snapshot.referencePlugins {
+		if s.consumerReferenceKV[pluginName] == nil {
+			s.consumerReferenceKV[pluginName] = make(map[string][]byte)
+		}
+		s.consumerReferenceKV[pluginName][key] = consumerID
+	}
+	s.consumerToReferences[key] = snapshot.referencePlugins
+	s.consumerValues[key] = snapshot.consumer
+}
+
+func validateJWEDecryptConsumerConfig(config jweDecrypt) error {
+	_, ok := config.Key.(string)
+	if !ok {
+		return fmt.Errorf("jwe-decrypt consumer key must be a string")
+	}
+	secret, ok := config.Secret.(string)
+	if !ok {
+		return fmt.Errorf("jwe-decrypt consumer secret must be a string")
+	}
+	if config.IsBase64Encoded {
+		decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(secret, "="))
+		if err != nil {
+			decoded, err = base64.StdEncoding.DecodeString(secret)
+			if err != nil {
+				return fmt.Errorf("jwe-decrypt consumer secret base64 decode: %w", err)
+			}
+		}
+		if len(decoded) != 32 {
+			return fmt.Errorf("the secret length after base64 decode should be 32 chars")
+		}
+		return nil
+	}
+	if len(secret) != 32 {
+		return fmt.Errorf("the secret length should be 32 chars")
+	}
 	return nil
 }
 
@@ -171,9 +326,17 @@ func (s *Store) consumerKVDelete(id []byte) error {
 		}
 		delete(s.consumerToKeys, key)
 	}
+	for _, pluginName := range s.consumerToReferences[key] {
+		delete(s.consumerReferenceKV[pluginName], key)
+		if len(s.consumerReferenceKV[pluginName]) == 0 {
+			delete(s.consumerReferenceKV, pluginName)
+		}
+	}
+	delete(s.consumerToReferences, key)
 
 	// delete self
 	delete(s.consumerKV, key)
+	delete(s.consumerValues, key)
 
 	return nil
 }

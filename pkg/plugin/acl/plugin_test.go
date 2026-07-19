@@ -196,6 +196,79 @@ func TestHandlerAllowsExternalUserRecursiveNestedJSONPathLabel(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsExternalUserPrefixedRecursiveJSONPathLabel(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ExternalUserLabelField:       "$.orgs..team",
+		ExternalUserLabelFieldKey:    "team",
+		ExternalUserLabelFieldParser: "table",
+		AllowLabels: map[string][]string{
+			"team": {"infra"},
+		},
+	})
+
+	res := performExternalUserRequest(p, map[string]any{
+		"orgs": map[string]any{
+			"api7": map[string]any{"team": []any{"cloud", "infra"}},
+		},
+	})
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerChecksEveryRecursiveJSONPathMatch(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ExternalUserLabelField:          "$..name",
+		ExternalUserLabelFieldKey:       "name",
+		ExternalUserLabelFieldParser:    "segmented_text",
+		ExternalUserLabelFieldSeparator: ",",
+		DenyLabels: map[string][]string{
+			"name": {"infra"},
+		},
+	})
+
+	res := performExternalUserRequest(p, map[string]any{
+		"teams": []any{
+			map[string]any{"name": "cloud"},
+			map[string]any{"name": "infra,qa"},
+		},
+	})
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("response code = %d, want 403; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHandlerTableParserRejectsStringValue(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ExternalUserLabelField:       "$..team",
+		ExternalUserLabelFieldKey:    "team",
+		ExternalUserLabelFieldParser: "table",
+		AllowLabels: map[string][]string{
+			"team": {"cloud"},
+		},
+	})
+
+	res := performExternalUserRequest(p, map[string]any{
+		"orgs": map[string]any{"api7": map[string]any{"team": "cloud"}},
+	})
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("response code = %d, want 403; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestPostInitRejectsInvalidExternalUserJSONPath(t *testing.T) {
+	p := &Plugin{config: Config{
+		ExternalUserLabelField: "$..([invalid",
+		AllowLabels:            map[string][]string{"team": {"cloud"}},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want invalid JSONPath rejected")
+	}
+}
+
 func TestHandlerAllowsExternalUserSegmentedLabelWithCustomKey(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		ExternalUserLabelField:          "profile.roles",
@@ -263,6 +336,18 @@ func performRequest(p *Plugin, labels map[string]any) *httptest.ResponseRecorder
 			Labels:   labels,
 		})
 	}
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+	return rr
+}
+
+func performExternalUserRequest(p *Plugin, externalUser map[string]any) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	ctx.RegisterApisixVar(req, "$external_user", externalUser)
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

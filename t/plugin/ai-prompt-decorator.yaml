@@ -1,0 +1,317 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/ai-prompt-decorator.t
+    tests: 17
+
+cases:
+  - name: prepend-only-chat
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [1, 2]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-prepend-only
+          uri: /echo
+          plugins:
+            ai-prompt-decorator:
+              prepend:
+                - role: system
+                  content: some content
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"messages":[{"role":"system","content":"some content"},{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: prepend-preserves-chat-message-order
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: append-only-chat
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [3, 4]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-append-only
+          uri: /echo
+          plugins:
+            ai-prompt-decorator:
+              append:
+                - role: system
+                  content: some content
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"},{"role":"system","content":"some content"}]}'
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: append-preserves-chat-message-order
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: prepend-and-append-chat
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [5, 6]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-both-chat
+          uri: /echo
+          plugins:
+            ai-prompt-decorator:
+              prepend: [{role: system, content: some prepend}]
+              append: [{role: system, content: some append}]
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"messages":[{"role":"system","content":"some prepend"},{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"},{"role":"system","content":"some append"}]}'
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: prepend-and-append-preserve-original-chat-messages
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: prepend-does-not-accumulate
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [7]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-no-accumulation
+          uri: /echo
+          plugins:
+            ai-prompt-decorator:
+              prepend: [{role: system, content: system prompt}]
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"messages":[{"role":"system","content":"system prompt"},{"role":"user","content":"first message"}]}'
+          - method: POST
+            path: {equals: /echo}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"messages":[{"role":"system","content":"system prompt"},{"role":"user","content":"second message"}]}'
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: first-request
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"first message"}]}'
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-request-has-no-history
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"second message"}]}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: reject-empty-decoration
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [8]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-empty
+          uri: /echo
+          plugins: {ai-prompt-decorator: {}}
+          upstream:
+            type: roundrobin
+            nodes: {'127.0.0.1:1980': 1}
+    input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hello"}]}' }
+    output:
+      status: 404
+      logs: {matches: 'build route ai-prompt-decorator-empty fail:.*ai-prompt-decorator'}
+
+  - name: responses-prepend
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [9, 10, 11]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-responses-prepend
+          uris: [/echo, /v1/responses]
+          plugins:
+            ai-prompt-decorator:
+              prepend: [{role: system, content: Be helpful}]
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"model":"gpt-4o","input":"What is 1+1?","instructions":"Be helpful"}'
+          - method: POST
+            path: {equals: /v1/responses}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"model":"gpt-4o","input":"What is 1+1?","instructions":"Be helpful\nYou are a math tutor"}'
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: prepend-creates-instructions
+        input:
+          method: POST
+          path: /v1/responses
+          headers: {Content-Type: application/json}
+          body: '{"model":"gpt-4o","input":"What is 1+1?"}'
+        output: {status: 200, body: {equals: hello world}}
+      - name: prepend-keeps-existing-instructions
+        input:
+          method: POST
+          path: /v1/responses
+          headers: {Content-Type: application/json}
+          body: '{"model":"gpt-4o","input":"What is 1+1?","instructions":"You are a math tutor"}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: responses-append
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [12, 13, 14]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-responses-append
+          uris: [/echo, /v1/responses]
+          plugins:
+            ai-prompt-decorator:
+              append: [{role: user, content: Please be concise}]
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"model":"gpt-4o","input":"What is 1+1?\nPlease be concise"}'
+          - method: POST
+            path: {equals: /v1/responses}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"What is 1+1?"},{"type":"message","role":"user","content":"Please be concise"}]}'
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: append-to-string-input
+        input:
+          method: POST
+          path: /v1/responses
+          headers: {Content-Type: application/json}
+          body: '{"model":"gpt-4o","input":"What is 1+1?"}'
+        output: {status: 200, body: {equals: hello world}}
+      - name: append-to-array-input
+        input:
+          method: POST
+          path: /v1/responses
+          headers: {Content-Type: application/json}
+          body: '{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"What is 1+1?"}]}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: responses-prepend-and-append
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [15, 16]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-responses-both
+          uris: [/echo, /v1/responses]
+          plugins:
+            ai-prompt-decorator:
+              prepend: [{role: system, content: Be helpful}]
+              append: [{role: user, content: Please be concise}]
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /v1/responses}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"model":"gpt-4o","input":"What is 1+1?\nPlease be concise","instructions":"Be helpful"}'
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: prepend-and-append-responses-request
+        input:
+          method: POST
+          path: /v1/responses
+          headers: {Content-Type: application/json}
+          body: '{"model":"gpt-4o","input":"What is 1+1?"}'
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: chat-regression-after-responses
+    source: {file: t/plugin/ai-prompt-decorator.t, tests: [17]}
+    config:
+      routes:
+        - id: ai-prompt-decorator-chat-regression
+          uri: /echo
+          plugins:
+            ai-prompt-decorator:
+              prepend: [{role: system, content: some content}]
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /echo}
+            headers: {Content-Type: {equals: application/json}}
+            body:
+              json_equals: '{"messages":[{"role":"system","content":"some content"},{"role":"user","content":"hello"}]}'
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: chat-body-remains-chat-format
+        input:
+          method: POST
+          path: /echo
+          headers: {Content-Type: application/json}
+          body: '{"messages":[{"role":"user","content":"hello"}]}'
+        output: {status: 200, body: {equals: hello world}}

@@ -12,7 +12,6 @@ import (
 
 	apisixv1 "github.com/apache/apisix-ingress-controller/pkg/types/apisix/v1"
 	"github.com/fsnotify/fsnotify"
-	"github.com/spf13/viper"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -34,6 +33,7 @@ var standaloneBuckets = []string{
 	"plugin_metadata",
 	"ssls",
 	"stream_routes",
+	"secrets",
 	"consumers",
 	"consumer_groups",
 	"global_rules",
@@ -43,6 +43,21 @@ var standaloneBuckets = []string{
 
 type standaloneSnapshot map[string]map[string][]byte
 
+// StandaloneReloadResult describes the route-relevant resources changed by one
+// successfully applied standalone snapshot.
+type StandaloneReloadResult struct {
+	ChangedHTTPRouteBuckets []string
+	ChangedStreamBuckets    []string
+}
+
+func (r StandaloneReloadResult) AffectsHTTPRoutes() bool {
+	return len(r.ChangedHTTPRouteBuckets) > 0
+}
+
+func (r StandaloneReloadResult) AffectsStreams() bool {
+	return len(r.ChangedStreamBuckets) > 0
+}
+
 // StandaloneFileWatcher loads the APISIX file-driven configuration and emits
 // store events for added, updated, and removed resources.
 type StandaloneFileWatcher struct {
@@ -50,8 +65,9 @@ type StandaloneFileWatcher struct {
 	provider string
 	events   chan *store.Event
 
-	mu      sync.Mutex
-	current standaloneSnapshot
+	mu       sync.Mutex
+	current  standaloneSnapshot
+	onReload func(StandaloneReloadResult, error)
 }
 
 func StandaloneConfigFile(provider string) string {
@@ -75,20 +91,29 @@ func NewStandaloneFileWatcher(path, provider string, events chan *store.Event) *
 }
 
 func (w *StandaloneFileWatcher) Reload() error {
+	_, err := w.ReloadSnapshot()
+	return err
+}
+
+// ReloadSnapshot emits the complete resource diff before returning its result.
+func (w *StandaloneFileWatcher) ReloadSnapshot() (StandaloneReloadResult, error) {
 	next, err := readStandaloneSnapshot(w.path, w.provider)
 	if err != nil {
-		return err
+		return StandaloneReloadResult{}, err
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	result := StandaloneReloadResult{}
 	for _, bucket := range standaloneBuckets {
 		previous := w.current[bucket]
 		updated := next[bucket]
+		changed := false
 
 		for _, id := range sortedSnapshotIDs(previous) {
 			if _, ok := updated[id]; !ok {
 				w.emit(store.EventTypeDelete, bucket, id, nil)
+				changed = true
 			}
 		}
 		for _, id := range sortedSnapshotIDs(updated) {
@@ -96,21 +121,79 @@ func (w *StandaloneFileWatcher) Reload() error {
 				continue
 			}
 			w.emit(store.EventTypePut, bucket, id, updated[id])
+			changed = true
+		}
+		if changed && store.IsHTTPRouteReloadBucket(bucket) {
+			result.ChangedHTTPRouteBuckets = append(result.ChangedHTTPRouteBuckets, bucket)
+		}
+		if changed && store.IsStreamReloadBucket(bucket) {
+			result.ChangedStreamBuckets = append(result.ChangedStreamBuckets, bucket)
 		}
 	}
 	w.current = next
-	return nil
+	return result, nil
+}
+
+func (w *StandaloneFileWatcher) SetReloadCallback(callback func(StandaloneReloadResult, error)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.onReload = callback
 }
 
 func (w *StandaloneFileWatcher) Watch() {
-	v := viper.New()
-	v.SetConfigFile(w.path)
-	v.OnConfigChange(func(event fsnotify.Event) {
-		if err := w.Reload(); err != nil {
-			fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+		return
+	}
+	if err := watcher.Add(filepath.Dir(w.path)); err != nil {
+		_ = watcher.Close()
+		fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+		return
+	}
+	result, err := w.ReloadSnapshot()
+	if err != nil {
+		fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+	}
+	w.notifyReload(result, err)
+
+	configuredBase := filepath.Base(w.path)
+	go func() {
+		defer func() {
+			_ = watcher.Close()
+		}()
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if filepath.Base(event.Name) != configuredBase ||
+					!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
+					continue
+				}
+				result, err := w.ReloadSnapshot()
+				if err != nil {
+					fmt.Printf("reload standalone config %q failed: %s\n", w.path, err)
+				}
+				w.notifyReload(result, err)
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				fmt.Printf("watch standalone config %q failed: %s\n", w.path, err)
+			}
 		}
-	})
-	v.WatchConfig()
+	}()
+}
+
+func (w *StandaloneFileWatcher) notifyReload(result StandaloneReloadResult, err error) {
+	w.mu.Lock()
+	callback := w.onReload
+	w.mu.Unlock()
+	if callback != nil {
+		callback(result, err)
+	}
 }
 
 func (w *StandaloneFileWatcher) emit(eventType store.EventType, bucket, id string, value []byte) {

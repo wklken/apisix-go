@@ -174,8 +174,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			ctx.RegisterApisixVar(r, "$jwt_auth_payload", token.payload)
 		}
 		ctx.AttachConsumer(r, consumer)
-
-		next.ServeHTTP(w, r)
+		ctx.RunConsumerPlugins(w, r, next)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -187,13 +186,14 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
+		ctx.RecordAuthProbeDiagnostic(r, fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer))
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s"`, p.config.Realm))
 		http.Error(w, util.BuildMessageResponse("Invalid user authorization"), http.StatusUnauthorized)
 		return true
 	}
 
 	ctx.AttachConsumer(r, consumer)
-	next.ServeHTTP(w, r)
+	ctx.RunConsumerPlugins(w, r, next)
 	return true
 }
 

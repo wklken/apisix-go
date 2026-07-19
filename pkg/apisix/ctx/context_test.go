@@ -1,0 +1,145 @@
+package ctx
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	"github.com/wklken/apisix-go/pkg/resource"
+)
+
+func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = WithApisixVars(req, map[string]string{})
+
+	AttachConsumer(req, resource.Consumer{Username: "bob"})
+
+	if got := req.Header.Get("X-Consumer-Username"); got != "bob" {
+		t.Fatalf("X-Consumer-Username = %q, want bob", got)
+	}
+}
+
+func TestBeforeProxyHooksRunInRegistrationOrder(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
+	var calls []string
+	req = WithBeforeProxyHook(req, func(r *http.Request) {
+		calls = append(calls, "first:"+r.URL.Path)
+	})
+	req = WithBeforeProxyHook(req, func(r *http.Request) {
+		calls = append(calls, "second:"+r.URL.Path)
+	})
+	req.URL.Path = "/final"
+
+	RunBeforeProxyHooks(req)
+	RunBeforeProxyHooks(req)
+
+	if got, want := calls, []string{"first:/final", "second:/final"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("hook calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestFinalizeProxyRewriteUpdatesMethodAndEscapedTarget(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/old?keep=0", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ProxyRewriteKey, map[string]any{
+		"uri":    "/private/%2Fraw?token=redacted",
+		"method": http.MethodPost,
+		"host":   "api.example.com",
+		"scheme": "https",
+	}))
+
+	rewrite := FinalizeProxyRewrite(req)
+
+	if req.Method != http.MethodPost {
+		t.Fatalf("method = %q, want POST", req.Method)
+	}
+	if got := req.URL.RequestURI(); got != "/private/%2Fraw?token=redacted" {
+		t.Fatalf("request URI = %q, want encoded path and query", got)
+	}
+	if rewrite.Host != "api.example.com" || rewrite.Scheme != "https" {
+		t.Fatalf("rewrite target = %#v, want host and scheme", rewrite)
+	}
+}
+
+func TestRunConsumerPluginsUsesRegisteredRunner(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	called := false
+	req = WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		called = true
+		next.ServeHTTP(w, r)
+	})
+	response := httptest.NewRecorder()
+
+	RunConsumerPlugins(response, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	if !called {
+		t.Fatal("consumer plugin runner was not called")
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestRunConsumerPluginsFallsBackToNextHandler(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	response := httptest.NewRecorder()
+
+	RunConsumerPlugins(response, req, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestRunConsumerPluginsRunsRunnerOnceAcrossStackedAuthCalls(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	runnerCalls := 0
+	req = WithConsumerPluginRunner(req, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		runnerCalls++
+		next.ServeHTTP(w, r)
+	})
+	downstreamCalls := 0
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	secondAuth := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		RunConsumerPlugins(w, r, downstream)
+	})
+	response := httptest.NewRecorder()
+
+	RunConsumerPlugins(response, req, secondAuth)
+
+	if runnerCalls != 1 {
+		t.Fatalf("consumer runner calls = %d, want 1", runnerCalls)
+	}
+	if downstreamCalls != 1 {
+		t.Fatalf("downstream calls = %d, want 1", downstreamCalls)
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestAuthProbeDiagnosticRecorderIsRequestScoped(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	var diagnostics []string
+	if RecordAuthProbeDiagnostic(req, "outside") {
+		t.Fatal("RecordAuthProbeDiagnostic() recorded without a request recorder")
+	}
+
+	req = WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	if !RecordAuthProbeDiagnostic(req, "first") || !RecordAuthProbeDiagnostic(req, "second") {
+		t.Fatal("RecordAuthProbeDiagnostic() did not use the installed recorder")
+	}
+	if !reflect.DeepEqual(diagnostics, []string{"first", "second"}) {
+		t.Fatalf("diagnostics = %v, want [first second]", diagnostics)
+	}
+}

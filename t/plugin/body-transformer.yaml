@@ -1,0 +1,767 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/body-transformer.t
+  tests: 20
+
+cases:
+  - name: soap-json-proxy
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: body-transformer-soap
+          uri: /ws
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+            body-transformer:
+              request:
+                template: |-
+                  <?xml version="1.0"?>
+                  <soap-env:Envelope xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/">
+                   <soap-env:Body>
+                    <ns0:getCountryRequest xmlns:ns0="http://spring.io/guides/gs-producing-web-service">
+                     <ns0:name>{{_escape_xml(name)}}</ns0:name>
+                    </ns0:getCountryRequest>
+                   </soap-env:Body>
+                  </soap-env:Envelope>
+              response:
+                input_format: xml
+                template: |-
+                  {% if Envelope.Body.Fault == nil then %}{"status":"{{_ctx.var.status}}","currency":"{{Envelope.Body.getCountryResponse.country.currency}}","population":{{Envelope.Body.getCountryResponse.country.population}},"capital":"{{Envelope.Body.getCountryResponse.country.capital}}","name":"{{Envelope.Body.getCountryResponse.country.name}}"}{% else %}{"message":{*_escape_json(Envelope.Body.Fault.faultstring.0)*},"code":"{{Envelope.Body.Fault.faultcode}}"}{% end %}
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /ws
+      headers:
+        Content-Type: application/json
+      body: '{"name":"Spain"}'
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /demo
+        body:
+          matches: '<ns0:name>Spain</ns0:name>'
+      respond:
+        status: 200
+        headers:
+          Content-Type: text/xml
+        body: |-
+          <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+            <SOAP-ENV:Header/>
+            <SOAP-ENV:Body>
+              <ns2:getCountryResponse xmlns:ns2="http://spring.io/guides/gs-producing-web-service">
+                <ns2:country>
+                  <ns2:name>Spain</ns2:name>
+                  <ns2:population>46704314</ns2:population>
+                  <ns2:capital>Madrid</ns2:capital>
+                  <ns2:currency>EUR</ns2:currency>
+                </ns2:country>
+              </ns2:getCountryResponse>
+            </SOAP-ENV:Body>
+          </SOAP-ENV:Envelope>
+    output:
+      status: 200
+      body:
+        equals: '{"status":"200","currency":"EUR","population":46704314,"capital":"Madrid","name":"Spain"}'
+
+  - name: json-to-json
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: body-transformer-json
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+            body-transformer:
+              request:
+                template: '{"foo":"{{name .. " world"}}","bar":{{age+10}}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      headers:
+        Content-Type: application/json
+      body: '{"name":"hello","age":20}'
+    upstream: &json_upstream
+      expect:
+        path:
+          equals: /demo
+        body:
+          equals: '{"foo":"hello world","bar":30}'
+      respond:
+        status: 200
+        body: ok
+    output: &ok_output
+      status: 200
+      body:
+        equals: ok
+
+  - name: wrong-xml-input-format
+    source:
+      tests: [3]
+    config:
+      routes:
+        - id: body-transformer-wrong-xml
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+            body-transformer:
+              request:
+                input_format: xml
+                template: '{"foo":"{{name .. " world"}}","bar":{{age+10}}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      headers:
+        Content-Type: application/json
+      body: '{"name":"hello","age":20}'
+    upstream:
+      respond:
+        status: 200
+    output:
+      status: 400
+      logs:
+        matches: 'Error Parsing XML'
+
+  - name: invalid-template-reference
+    source:
+      tests: [4]
+    config:
+      routes:
+        - id: body-transformer-invalid-reference
+          uri: /foobar
+          plugins:
+            body-transformer:
+              request:
+                template: '{"foo":"{{name() .. " world"}}","bar":{{age+10}}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      headers:
+        Content-Type: application/json
+      body: '{"name":"hello","age":20}'
+    upstream:
+      respond:
+        status: 200
+    output:
+      status: 503
+      logs:
+        matches: "transform\\(\\): request template rendering:.*attempt to call global 'name' \\(a string value\\)"
+
+  - name: request-from-query
+    source:
+      tests: [5]
+    config:
+      routes:
+        - id: body-transformer-query
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+              method: POST
+            body-transformer:
+              request:
+                template: '{"foo":"{{_ctx.var.arg_name .. " world"}}"}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /foobar?name=hello
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /demo?name=hello
+        body:
+          equals: '{"foo":"hello world"}'
+      respond:
+        status: 200
+        body: ok
+    output: *ok_output
+
+  - name: html-escape
+    source:
+      tests: [6]
+    variants:
+      - name: escaped-expression
+        config:
+          routes:
+            - id: body-transformer-html-escaped
+              uri: /foobar
+              plugins:
+                proxy-rewrite:
+                  uri: /demo
+                  method: POST
+                body-transformer:
+                  request:
+                    template: '{"agent":"{{_ctx.var.http_user_agent}}"}'
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{UPSTREAM_ADDR}}": 1
+        input:
+          path: /foobar
+          headers:
+            User-Agent: lua-resty-http/0.16.1 (Lua) ngx_lua/10021
+        upstream:
+          expect:
+            body:
+              equals: '{"agent":"lua-resty-http&#47;0.16.1 (Lua) ngx_lua&#47;10021"}'
+          respond:
+            status: 400
+        output:
+          status: 400
+      - name: raw-expression
+        config:
+          routes:
+            - id: body-transformer-html-raw
+              uri: /foobar
+              plugins:
+                proxy-rewrite:
+                  uri: /demo
+                  method: POST
+                body-transformer:
+                  request:
+                    template: '{"agent":"{*_ctx.var.http_user_agent*}"}'
+              upstream:
+                type: roundrobin
+                nodes:
+                  "{{UPSTREAM_ADDR}}": 1
+        input:
+          path: /foobar
+          headers:
+            User-Agent: lua-resty-http/0.16.1 (Lua) ngx_lua/10021
+        upstream:
+          expect:
+            body:
+              equals: '{"agent":"lua-resty-http/0.16.1 (Lua) ngx_lua/10021"}'
+          respond:
+            status: 200
+        output:
+          status: 200
+
+  - name: yaml-body
+    source:
+      tests: [7]
+    config:
+      routes:
+        - id: body-transformer-yaml
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+              method: POST
+            body-transformer:
+              request:
+                input_format: yaml
+                template: '{"foobar":"{{foobar.foo .. " " .. foobar.bar}}"}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      body: |-
+        foobar:
+          foo: hello
+          bar: world
+    upstream:
+      expect:
+        body:
+          equals: '{"foobar":"hello world"}'
+      respond:
+        status: 200
+        body: ok
+    output: *ok_output
+
+  - name: escape-json
+    source:
+      tests: [8]
+    config:
+      routes:
+        - id: body-transformer-escape-json
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+              method: POST
+            body-transformer:
+              request:
+                input_format: json
+                template: '{"foobar":{*_escape_json(name)*}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      body: '{"name":"hello \"world\""}'
+    upstream:
+      expect:
+        body:
+          equals: '{"foobar":"hello \"world\""}'
+      respond:
+        status: 200
+        body: ok
+    output: *ok_output
+
+  - name: escape-xml
+    source:
+      tests: [9]
+    config:
+      routes:
+        - id: body-transformer-escape-xml
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+              method: POST
+            body-transformer:
+              request:
+                input_format: json
+                template: '<foobar>{*_escape_xml(name)*}</foobar>'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      body: '{"name":"<nil>"}'
+    upstream:
+      expect:
+        body:
+          equals: '<foobar>&lt;nil&gt;</foobar>'
+      respond:
+        status: 200
+        body: ok
+    output: *ok_output
+
+  - name: proxy-cache-cooperation
+    source:
+      tests: [10]
+    config:
+      routes:
+        - id: body-transformer-cache
+          uri: /capital
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+              headers:
+                set:
+                  Accept-Encoding: identity
+                  Content-Type: text/xml
+            proxy-cache:
+              cache_strategy: memory
+              cache_bypass: [$arg_bypass]
+              cache_http_status: [200]
+              cache_key: [$uri, -cache-id]
+              cache_method: [POST]
+              hide_cache_headers: true
+              no_cache: [$arg_test]
+              cache_zone: memory_cache
+            body-transformer:
+              request:
+                input_format: json
+                template: '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><web:CapitalCity xmlns:web="http://www.oorsprong.org/websamples.countryinfo"><web:sCountryISOCode>{{_escape_xml(country)}}</web:sCountryISOCode></web:CapitalCity></soapenv:Body></soapenv:Envelope>'
+              response:
+                input_format: xml
+                template: '{"result": {*_escape_json(Envelope.Body.CapitalCityResponse.CapitalCityResult)*}}'
+            response-rewrite:
+              headers:
+                set:
+                  Content-Type: application/json
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.soap.ADDR}}": 1
+    fixtures:
+      - name: soap
+        kind: http
+        expect:
+          - method: POST
+            path:
+              equals: /demo
+            body:
+              matches: '<web:sCountryISOCode>foo</web:sCountryISOCode>'
+        respond:
+          - status: 200
+            headers:
+              Content-Type: text/xml
+            body: '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><ns2:CapitalCityResponse xmlns:ns2="http://spring.io/guides/gs-producing-web-service"><ns2:CapitalCityResult>hello</ns2:CapitalCityResult></ns2:CapitalCityResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+    steps:
+      - name: miss
+        input: &cache_input
+          method: POST
+          path: /capital
+          body: '{"country":"foo"}'
+        output:
+          status: 200
+          headers:
+            Apisix-Cache-Status:
+              equals: MISS
+          body:
+            equals: '{"result": "hello"}'
+      - name: hit
+        input: *cache_input
+        output:
+          status: 200
+          headers:
+            Apisix-Cache-Status:
+              equals: HIT
+          body:
+            equals: '{"result": "hello"}'
+
+  - name: raw-response-body
+    source:
+      tests: [11]
+    config:
+      routes:
+        - id: body-transformer-raw-response
+          uri: /capital
+          plugins:
+            body-transformer:
+              response:
+                template: '{"raw_body": {*_escape_json(_body)*}, "result": {*_escape_json(result)*}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /capital
+      headers:
+        Content-Type: application/json
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Type: application/json
+        body: '{"result": "hello world"}'
+    output:
+      status: 200
+      body:
+        equals: '{"raw_body": "{\"result\": \"hello world\"}", "result": "hello world"}'
+
+  - name: empty-xml-value
+    source:
+      tests: [12]
+    config:
+      routes:
+        - id: body-transformer-empty-xml
+          uri: /ws
+          plugins:
+            body-transformer:
+              response:
+                input_format: xml
+                template: '{"KOVKood":"{{Envelope.Body.RR58isikEpiletResponse.response.KOVKood}}"}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /ws
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Type: text/xml
+        body: '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><prod:RR58isikEpiletResponse xmlns:prod="http://rr.x-road.eu/producer"><response><Isikukood>33333333333</Isikukood><KOVKood></KOVKood></response></prod:RR58isikEpiletResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+    output:
+      status: 200
+      body:
+        equals: '{"KOVKood":""}'
+
+  - name: form-to-json
+    source:
+      tests: [13]
+    config: &expression_config
+      routes:
+        - id: body-transformer-expression
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+            body-transformer:
+              request:
+                template: '{"foo":"{{name .. " world"}}","bar":{{age+10}}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: name=hello&age=20
+    upstream: *json_upstream
+    output: *ok_output
+
+  - name: query-to-json
+    source:
+      tests: [14]
+    config: *expression_config
+    input:
+      path: /foobar?name=hello&age=20
+    upstream:
+      expect:
+        path:
+          equals: /demo?name=hello&age=20
+        body:
+          equals: '{"foo":"hello world","bar":30}'
+      respond:
+        status: 200
+        body: ok
+    output: *ok_output
+
+  - name: base64-url-encoded-template
+    source:
+      tests: [15]
+    config:
+      routes:
+        - id: body-transformer-base64
+          uri: /foobar
+          plugins:
+            body-transformer:
+              request:
+                template_is_base64: true
+                template: Zm9vPXt7bmFtZSAuLiAiIHdvcmxkIn19JmJhcj17e2FnZSsxMH19
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      headers:
+        Content-Type: application/x-www-form-urlencoded
+      body: name=hello&age=20
+    upstream:
+      expect:
+        body:
+          equals: foo=hello world&bar=30
+      respond:
+        status: 200
+        body: ok
+    output: *ok_output
+
+  - name: plain-body-expression
+    source:
+      tests: [16]
+    config:
+      routes:
+        - id: body-transformer-plain
+          uri: /foobar
+          plugins:
+            body-transformer:
+              request:
+                input_format: plain
+                template: '{"message": "{* string.gsub(_body, ''not '', '''') *}"}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      body: not actually json
+    upstream:
+      expect:
+        body:
+          equals: '{"message": "actually json"}'
+      respond:
+        status: 200
+        body: ok
+    output:
+      status: 200
+      body:
+        equals: ok
+      logs:
+        not_matches: no input format to parse
+
+  - name: malformed-multipart
+    source:
+      tests: [17]
+    config:
+      routes:
+        - id: body-transformer-malformed-multipart
+          uri: /foobar
+          plugins:
+            body-transformer:
+              request:
+                input_format: multipart
+                template: '{"foo":"{{foo}}"}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      headers:
+        Content-Type: multipart/form-data; boundary=----WrongBoundary
+      body: this is not a valid multipart body
+    upstream:
+      respond:
+        status: 200
+        body: should not reach upstream
+    output:
+      status: 400
+      logs:
+        not_matches: '"level":"error"'
+
+  - name: reserved-template-helpers
+    source:
+      tests: [18]
+    config:
+      routes:
+        - id: body-transformer-reserved-helpers
+          uri: /foobar
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+              method: POST
+            body-transformer:
+              request:
+                input_format: json
+                template: '{"foobar":{*_escape_json(name)*}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /foobar
+      body: '{"name":"safe","_ctx":"evil","_body":"evil","_escape_xml":"evil","_escape_json":"evil","_multipart":"evil"}'
+    upstream:
+      expect:
+        body:
+          equals: '{"foobar":"safe"}'
+      respond:
+        status: 200
+        body: ok
+    output:
+      status: 200
+      body:
+        equals: ok
+      logs:
+        not_matches: '"level":"error"'
+
+  - name: namespaced-xml-tree
+    source:
+      tests: [19]
+    config:
+      routes:
+        - id: body-transformer-namespaced-tree
+          uri: /ws
+          plugins:
+            body-transformer:
+              response:
+                input_format: xml
+                template: '{*_escape_json(Envelope.Body)*}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.xml.ADDR}}": 1
+    fixtures:
+      - name: xml
+        kind: http
+        respond:
+          - status: 200
+            headers:
+              Content-Type: text/xml
+            body: '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns2="http://example.com/order"><soapenv:Body><ns2:getOrderResponse><ns2:orderId>v1</ns2:orderId><ns2:customerName>v2</ns2:customerName><ns2:customerEmail>v3</ns2:customerEmail><ns2:shippingAddress>v4</ns2:shippingAddress><ns2:billingAddress>v5</ns2:billingAddress><ns2:paymentMethod>v6</ns2:paymentMethod><ns2:totalAmount>v7</ns2:totalAmount><ns2:currencyCode>v8</ns2:currencyCode><ns2:orderDate>v9</ns2:orderDate><ns2:deliveryDate>v10</ns2:deliveryDate><ns2:trackingNumber>v11</ns2:trackingNumber><ns2:carrierName>v12</ns2:carrierName><ns2:productCount>v13</ns2:productCount><ns2:discountCode>v14</ns2:discountCode><ns2:taxAmount>v15</ns2:taxAmount><ns2:shippingFee>v16</ns2:shippingFee><ns2:orderStatus>v17</ns2:orderStatus><ns2:lastModified>v18</ns2:lastModified><ns2:createdBy>v19</ns2:createdBy><ns2:approvedBy>v20</ns2:approvedBy><ns2:departmentCode>v21</ns2:departmentCode><ns2:warehouseId>v22</ns2:warehouseId><ns2:priorityLevel>v23</ns2:priorityLevel><ns2:remarks>v24</ns2:remarks><ns2:items><ns2:item><ns2:sku>first</ns2:sku></ns2:item><ns2:item><ns2:sku>second</ns2:sku></ns2:item></ns2:items><ns2:tags><ns2:tag>red</ns2:tag><ns2:tag>green</ns2:tag><ns2:tag>blue</ns2:tag></ns2:tags></ns2:getOrderResponse></soapenv:Body></soapenv:Envelope>'
+    steps:
+      - name: fields-and-arrays
+        input:
+          path: /ws
+        output:
+          status: 200
+          body:
+            matches: '"approvedBy":"v20".*"items":\{"item":\[\{"sku":"first"\},\{"sku":"second"\}\]\}.*"orderId":"v1".*"tags":\{"tag":\["red","green","blue"\]\}'
+      - name: no-namespace-prefixes
+        input:
+          path: /ws
+        output:
+          status: 200
+          body:
+            not_matches: '"(soapenv|ns2):'
+
+  - name: namespace-layout-sweep
+    source:
+      tests: [20]
+    config:
+      routes:
+        - id: body-transformer-namespace-sweep
+          uri: /ws
+          plugins:
+            body-transformer:
+              response:
+                input_format: xml
+                template: '{*_escape_json(Envelope.Body.Resp)*}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.echo.ADDR}}": 1
+    fixtures:
+      - name: echo
+        kind: http
+        respond:
+          - status: 200
+            headers:
+              Content-Type: text/xml
+            echo_request_body: true
+    steps:
+      - name: short-key-layouts
+        repeat: 31
+        input:
+          method: POST
+          path: /ws
+          body: '<env:Envelope xmlns:env="http://e" xmlns:ns="http://n"><env:Body><ns:Resp><ns:k1x{{ITERATION}}>v1</ns:k1x{{ITERATION}}><ns:k2x{{ITERATION}}>v2</ns:k2x{{ITERATION}}><ns:k3x{{ITERATION}}>v3</ns:k3x{{ITERATION}}><ns:k4x{{ITERATION}}>v4</ns:k4x{{ITERATION}}></ns:Resp></env:Body></env:Envelope>'
+        output:
+          status: 200
+          body:
+            matches: '"k1x{{ITERATION}}":"v1".*"k4x{{ITERATION}}":"v4"'
+      - name: long-key-layouts
+        repeat: 31
+        input:
+          method: POST
+          path: /ws
+          body: '<env:Envelope xmlns:env="http://e" xmlns:ns="http://n"><env:Body><ns:Resp><ns:longFieldName1x{{ITERATION}}>v1</ns:longFieldName1x{{ITERATION}}><ns:longFieldName2x{{ITERATION}}>v2</ns:longFieldName2x{{ITERATION}}><ns:longFieldName3x{{ITERATION}}>v3</ns:longFieldName3x{{ITERATION}}><ns:longFieldName4x{{ITERATION}}>v4</ns:longFieldName4x{{ITERATION}}><ns:longFieldName5x{{ITERATION}}>v5</ns:longFieldName5x{{ITERATION}}><ns:longFieldName6x{{ITERATION}}>v6</ns:longFieldName6x{{ITERATION}}><ns:longFieldName7x{{ITERATION}}>v7</ns:longFieldName7x{{ITERATION}}><ns:longFieldName8x{{ITERATION}}>v8</ns:longFieldName8x{{ITERATION}}><ns:longFieldName9x{{ITERATION}}>v9</ns:longFieldName9x{{ITERATION}}><ns:longFieldName10x{{ITERATION}}>v10</ns:longFieldName10x{{ITERATION}}><ns:longFieldName11x{{ITERATION}}>v11</ns:longFieldName11x{{ITERATION}}><ns:longFieldName12x{{ITERATION}}>v12</ns:longFieldName12x{{ITERATION}}><ns:longFieldName13x{{ITERATION}}>v13</ns:longFieldName13x{{ITERATION}}><ns:longFieldName14x{{ITERATION}}>v14</ns:longFieldName14x{{ITERATION}}><ns:longFieldName15x{{ITERATION}}>v15</ns:longFieldName15x{{ITERATION}}><ns:longFieldName16x{{ITERATION}}>v16</ns:longFieldName16x{{ITERATION}}></ns:Resp></env:Body></env:Envelope>'
+        output:
+          status: 200
+          body:
+            matches: '"longFieldName16x{{ITERATION}}":"v16".*"longFieldName1x{{ITERATION}}":"v1"'
+      - name: varied-key-layouts
+        repeat: 31
+        input:
+          method: POST
+          path: /ws
+          body: '<env:Envelope xmlns:env="http://e" xmlns:ns="http://n"><env:Body><ns:Resp><ns:f1z{{ITERATION}}>v1</ns:f1z{{ITERATION}}><ns:f2zz{{ITERATION}}>v2</ns:f2zz{{ITERATION}}><ns:f3zzz{{ITERATION}}>v3</ns:f3zzz{{ITERATION}}><ns:f4zzzz{{ITERATION}}>v4</ns:f4zzzz{{ITERATION}}><ns:f5zzzzz{{ITERATION}}>v5</ns:f5zzzzz{{ITERATION}}><ns:f6zzzzzz{{ITERATION}}>v6</ns:f6zzzzzz{{ITERATION}}><ns:f7{{ITERATION}}>v7</ns:f7{{ITERATION}}><ns:f8z{{ITERATION}}>v8</ns:f8z{{ITERATION}}><ns:f9zz{{ITERATION}}>v9</ns:f9zz{{ITERATION}}><ns:f10zzz{{ITERATION}}>v10</ns:f10zzz{{ITERATION}}><ns:f11zzzz{{ITERATION}}>v11</ns:f11zzzz{{ITERATION}}><ns:f12zzzzz{{ITERATION}}>v12</ns:f12zzzzz{{ITERATION}}><ns:f13zzzzzz{{ITERATION}}>v13</ns:f13zzzzzz{{ITERATION}}><ns:f14{{ITERATION}}>v14</ns:f14{{ITERATION}}><ns:f15z{{ITERATION}}>v15</ns:f15z{{ITERATION}}><ns:f16zz{{ITERATION}}>v16</ns:f16zz{{ITERATION}}><ns:f17zzz{{ITERATION}}>v17</ns:f17zzz{{ITERATION}}><ns:f18zzzz{{ITERATION}}>v18</ns:f18zzzz{{ITERATION}}><ns:f19zzzzz{{ITERATION}}>v19</ns:f19zzzzz{{ITERATION}}><ns:f20zzzzzz{{ITERATION}}>v20</ns:f20zzzzzz{{ITERATION}}><ns:f21{{ITERATION}}>v21</ns:f21{{ITERATION}}><ns:f22z{{ITERATION}}>v22</ns:f22z{{ITERATION}}><ns:f23zz{{ITERATION}}>v23</ns:f23zz{{ITERATION}}><ns:f24zzz{{ITERATION}}>v24</ns:f24zzz{{ITERATION}}><ns:f25zzzz{{ITERATION}}>v25</ns:f25zzzz{{ITERATION}}><ns:f26zzzzz{{ITERATION}}>v26</ns:f26zzzzz{{ITERATION}}><ns:f27zzzzzz{{ITERATION}}>v27</ns:f27zzzzzz{{ITERATION}}><ns:f28{{ITERATION}}>v28</ns:f28{{ITERATION}}><ns:f29z{{ITERATION}}>v29</ns:f29z{{ITERATION}}><ns:f30zz{{ITERATION}}>v30</ns:f30zz{{ITERATION}}><ns:f31zzz{{ITERATION}}>v31</ns:f31zzz{{ITERATION}}><ns:f32zzzz{{ITERATION}}>v32</ns:f32zzzz{{ITERATION}}></ns:Resp></env:Body></env:Envelope>'
+        output:
+          status: 200
+          body:
+            matches: '"f1z{{ITERATION}}":"v1".*"f32zzzz{{ITERATION}}":"v32"'

@@ -27,6 +27,8 @@ type Event struct {
 	Key []byte
 	// Value is the value of the event
 	Value []byte
+	// done marks an in-order processing barrier. Barrier events are internal to Store.
+	done chan struct{}
 }
 
 func (e *Event) String() string {
@@ -49,6 +51,7 @@ func PutBack(event *Event) {
 	event.Type = 0
 	event.Key = []byte{}
 	event.Value = []byte{}
+	event.done = nil
 
 	// Save event to storage or perform other operations
 	// ...

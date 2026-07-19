@@ -6,17 +6,24 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/sony/gobreaker"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
 type Plugin struct {
 	base.BasePlugin
 	config Config
-	cb     *gobreaker.CircuitBreaker
+
+	// APISIX shares breaker counters by host and URI; this Go implementation keeps route-local state.
+	mu                sync.Mutex
+	unhealthyCount    int
+	healthyCount      int
+	lastUnhealthyTime time.Time
+	now               func() time.Time
 }
 
 const (
@@ -146,6 +153,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.now == nil {
+		p.now = time.Now
+	}
 	if p.config.MaxBreakerSec == 0 {
 		p.config.MaxBreakerSec = 300
 	}
@@ -165,30 +175,6 @@ func (p *Plugin) PostInit() error {
 		p.config.Healthy.Successes = &defaultSuccesses
 	}
 
-	fmt.Println("the maxRequests: ", *p.config.Healthy.Successes)
-	fmt.Println("the interval: ", p.config.MaxBreakerSec)
-
-	// FIXME: the same upstream host should share the same circuit breaker
-	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        "api-breaker",
-		MaxRequests: uint32(*p.config.Healthy.Successes),
-		// Interval:    time.Duration(p.config.MaxBreakerSec) * time.Second,
-		Interval: 0,
-		// reach timeout, open -> half-open
-		Timeout: time.Duration(p.config.MaxBreakerSec) * time.Second,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.TotalFailures >= uint32(*p.config.Unhealthy.Failures)
-		},
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			// log.Printf("circuit breaker %s state change: %s -> %s\n", name, from, to)
-			fmt.Printf("circuit breaker %s state change: %s -> %s\n", name, from, to)
-		},
-		// IsSuccessful: func(err error) bool {
-		// 	return err == nil
-		// },
-	})
-	p.cb = cb
-
 	return nil
 }
 
@@ -200,10 +186,10 @@ func (p *Plugin) Config() any {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.cb.State() == gobreaker.StateOpen {
-			if p.config.BreakResponseHeaders != nil {
-				for _, h := range p.config.BreakResponseHeaders {
-					w.Header().Set(h.Key, resolveHeaderValue(r, h.Value))
+		if p.shouldBreak() {
+			if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
+				for _, header := range p.config.BreakResponseHeaders {
+					w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
 				}
 			}
 			w.WriteHeader(p.config.BreakResponseCode)
@@ -212,26 +198,62 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 			return
 		}
-		// FIXME: when the breaker is half-open, should not block the request?
 
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
 		next.ServeHTTP(ww, r)
-
-		status := ww.Status()
-		// stats the status code
-		switch {
-		case containsStatus(p.config.Unhealthy.HTTPStatuses, status):
-			_, _ = p.cb.Execute(func() (any, error) {
-				return nil, fmt.Errorf("unhealthy status")
-			})
-		case containsStatus(p.config.Healthy.HTTPStatuses, status):
-			_, _ = p.cb.Execute(func() (any, error) {
-				return nil, nil
-			})
-		}
+		p.observeStatus(ww.Status())
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) shouldBreak() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.unhealthyCount == 0 || p.lastUnhealthyTime.IsZero() {
+		return false
+	}
+	seconds := breakerSeconds(p.unhealthyCount, *p.config.Unhealthy.Failures, p.config.MaxBreakerSec)
+	logger.Info(fmt.Sprintf("breaker_time: %d", seconds))
+	return !p.now().After(p.lastUnhealthyTime.Add(time.Duration(seconds) * time.Second))
+}
+
+func (p *Plugin) observeStatus(status int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case containsStatus(p.config.Unhealthy.HTTPStatuses, status):
+		p.unhealthyCount++
+		p.healthyCount = 0
+		if p.unhealthyCount%*p.config.Unhealthy.Failures == 0 {
+			p.lastUnhealthyTime = p.now()
+		}
+	case containsStatus(p.config.Healthy.HTTPStatuses, status):
+		if p.unhealthyCount == 0 {
+			return
+		}
+		p.healthyCount++
+		if p.healthyCount >= *p.config.Healthy.Successes {
+			p.unhealthyCount = 0
+			p.healthyCount = 0
+			p.lastUnhealthyTime = time.Time{}
+		}
+	}
+}
+
+func breakerSeconds(unhealthyCount, failures, maximum int) int {
+	failureTimes := max(unhealthyCount/failures, 1)
+	seconds := 2
+	for range failureTimes - 1 {
+		if seconds >= maximum || seconds > maximum/2 {
+			return maximum
+		}
+		seconds *= 2
+	}
+	if seconds > maximum {
+		return maximum
+	}
+	return seconds
 }
 
 func containsStatus(statuses []int, status int) bool {

@@ -1,0 +1,448 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/response-rewrite.t
+  tests: 27
+
+cases:
+  - name: schema-sanity
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: response-rewrite-schema-sanity
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: Hello world
+              headers:
+                X-Server-id: 3
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello
+    upstream: &hello_fixture
+      respond:
+        status: 200
+        body: upstream
+    output:
+      status: 200
+      headers:
+        X-Server-id:
+          equals: "3"
+      body:
+        equals: Hello world
+
+  - name: reject-invalid-status
+    source:
+      tests: [2]
+    config:
+      routes:
+        - id: response-rewrite-reject-invalid-status
+          uri: /hello
+          plugins:
+            response-rewrite:
+              status_code: 599
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: &response_rewrite_error
+      logs:
+        matches: 'build route response-rewrite-reject-.* fail:.*response-rewrite'
+
+  - name: reject-invalid-config
+    source:
+      tests: [3]
+    config:
+      routes:
+        - id: response-rewrite-reject-invalid-config
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: 2
+              headers:
+                X-Server-id: "3"
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: rewrite-headers-and-body
+    source:
+      tests: [4, 5]
+    config:
+      routes:
+        - id: response-rewrite-headers-and-body
+          uri: /with_header
+          plugins:
+            response-rewrite:
+              headers:
+                X-Server-id: 3
+                X-Server-status: "on"
+                Content-Type: ""
+              body: "new body\n"
+          upstream: *fixture_route
+    input:
+      path: /with_header
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Type: application/json
+        body: upstream
+    output:
+      status: 200
+      headers:
+        X-Server-id:
+          equals: "3"
+        X-Server-status:
+          equals: "on"
+        Content-Type:
+          absent: true
+      body:
+        equals: "new body\n"
+
+  - name: rewrite-body-preserve-headers
+    source:
+      tests: [6, 7]
+    config:
+      routes:
+        - id: response-rewrite-body-preserve-headers
+          uri: /with_header
+          plugins:
+            response-rewrite:
+              body: "new body2\n"
+          upstream: *fixture_route
+    input:
+      path: /with_header
+    upstream:
+      respond:
+        status: 200
+        headers:
+          X-Server-id: "100"
+          Content-Type: application/xml
+          Content-Encoding: gzip
+          Content-Length: "4"
+          Last-Modified: Wed, 21 Oct 2015 07:28:00 GMT
+          ETag: '"33a64df551425fcc55e4d42a148795d9f25f89d4"'
+        body: "old\n"
+    output:
+      status: 200
+      headers:
+        X-Server-id:
+          equals: "100"
+        Content-Type:
+          equals: application/xml
+        Content-Length:
+          absent: true
+        Content-Encoding:
+          absent: true
+        Last-Modified:
+          absent: true
+        ETag:
+          absent: true
+      body:
+        equals: "new body2\n"
+
+  - name: rewrite-location-and-status
+    source:
+      tests: [8, 9]
+    config:
+      routes:
+        - id: response-rewrite-location-and-status
+          uri: /hello
+          plugins:
+            response-rewrite:
+              headers:
+                Location: https://www.iresty.com
+              status_code: 302
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 302
+      headers:
+        Location:
+          equals: https://www.iresty.com
+
+  - name: empty-header-value
+    source:
+      tests: [10]
+    config:
+      routes:
+        - id: response-rewrite-reject-empty-header-field
+          uri: /hello
+          plugins:
+            response-rewrite:
+              status_code: 200
+              headers:
+                "": 2
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: reject-array-header-value
+    source:
+      tests: [11]
+    config:
+      routes:
+        - id: response-rewrite-reject-array-header-value
+          uri: /hello
+          plugins:
+            response-rewrite:
+              status_code: 200
+              headers:
+                X-Name: []
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: base64-body
+    source:
+      tests: [12, 13]
+    config:
+      routes:
+        - id: response-rewrite-base64-body
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: SGVsbG8K
+              body_base64: true
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      body:
+        equals: "Hello\n"
+
+  - name: reject-invalid-base64
+    source:
+      tests: [14]
+    config:
+      routes:
+        - id: response-rewrite-reject-invalid-base64
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: "1"
+              body_base64: true
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: admin-etcd-clean-serialization
+    source:
+      tests: [15]
+    config:
+      routes:
+        - id: response-rewrite-clean-standalone-config
+          uri: /with_header
+          plugins:
+            response-rewrite:
+              headers:
+                X-Server-id: 3
+                X-Server-status: "on"
+                Content-Type: ""
+              body: "new body\n"
+          upstream: *fixture_route
+    input:
+      path: /with_header
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        X-Server-id:
+          equals: "3"
+        X-Server-status:
+          equals: "on"
+        Content-Type:
+          equals: ""
+      body:
+        equals: "new body\n"
+
+  - name: valid-status-expression
+    source:
+      tests: [16]
+    config:
+      routes:
+        - id: response-rewrite-valid-status-expression
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: matched
+              vars:
+                - [status, "==", 200]
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      body:
+        equals: matched
+
+  - name: reject-invalid-expression
+    source:
+      tests: [17]
+    config:
+      routes:
+        - id: response-rewrite-reject-invalid-expression
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - []
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: matching-status-expression
+    source:
+      tests: [18, 19]
+    config:
+      routes:
+        - id: response-rewrite-matching-status-expression
+          uri: /server_error
+          plugins:
+            response-rewrite:
+              body: "new body3\n"
+              status_code: 403
+              vars:
+                - [status, "==", 500]
+          upstream: *fixture_route
+    input:
+      path: /server_error
+    upstream:
+      respond:
+        status: 500
+        body: server error
+    output:
+      status: 403
+      body:
+        equals: "new body3\n"
+
+  - name: nonmatching-status-expression
+    source:
+      tests: [20]
+    config:
+      routes:
+        - id: response-rewrite-nonmatching-status-expression
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: "new body3\n"
+              status_code: 403
+              vars:
+                - [status, "==", 500]
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output:
+      status: 200
+      body:
+        equals: hello world
+
+  - name: empty-base64-body
+    source:
+      tests: [21]
+    config:
+      routes:
+        - id: response-rewrite-reject-empty-base64-body
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: ""
+              body_base64: true
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: nil-base64-body
+    source:
+      tests: [22]
+    config:
+      routes:
+        - id: response-rewrite-reject-nil-base64-body
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body_base64: true
+          upstream: *fixture_route
+    upstream: *hello_fixture
+    output: *response_rewrite_error
+
+  - name: response-header-variables
+    source:
+      tests: [23, 24]
+    config:
+      routes:
+        - id: response-rewrite-header-variables
+          uri: /with_header
+          plugins:
+            response-rewrite:
+              headers:
+                X-A: $remote_addr
+                X-B: from $remote_addr to $balancer_ip:$balancer_port
+          upstream: *fixture_route
+    input:
+      path: /with_header
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        X-A:
+          equals: 127.0.0.1
+        X-B:
+          matches: '^from 127\.0\.0\.1 to 127\.0\.0\.1:[0-9]+$'
+      body:
+        equals: upstream
+
+  - name: empty-body
+    source:
+      tests: [25, 26]
+    config:
+      routes:
+        - id: response-rewrite-empty-body
+          uri: /hello
+          plugins:
+            response-rewrite:
+              body: ""
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      body:
+        equals: ""
+
+  - name: add-header-without-colon
+    source:
+      tests: [27]
+    config:
+      routes:
+        - id: response-rewrite-add-header
+          uri: /hello
+          plugins:
+            response-rewrite:
+              headers:
+                add:
+                  - X-Server-test:a
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *hello_fixture
+    output:
+      status: 200
+      headers:
+        X-Server-test:
+          equals: a
+      body:
+        equals: upstream

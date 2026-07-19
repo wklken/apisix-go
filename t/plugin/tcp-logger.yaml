@@ -1,0 +1,67 @@
+cases:
+    - config:
+        routes:
+            - id: tcp-logger-source-1
+              plugins:
+                tcp-logger:
+                    batch_max_size: 1
+                    host: '{{FIXTURE.sink.HOST}}'
+                    inactive_timeout: 1
+                    log_format:
+                        path: '$uri'
+                    port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /probe
+      fixtures:
+        - kind: http
+          name: primary
+          respond:
+            - body: hello world
+              headers: {}
+              status: 200
+        - kind: tcp
+          name: sink
+          network_expect:
+            - payload:
+                matches: '.*"path":"/probe".*'
+          network_respond:
+            - payload: ok
+      name: tcp-logger-source-1
+      source:
+        file: t/plugin/tcp-logger.t
+        tests:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+            - 7
+            - 8
+            - 9
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+      steps:
+        - input:
+            method: GET
+            path: /probe
+          name: tcp-log-delivered
+          output:
+            body:
+                equals: hello world
+            status: 200
+          wait: 2s
+sources:
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/tcp-logger.t
+      tests: 17

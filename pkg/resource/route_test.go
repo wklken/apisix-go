@@ -40,6 +40,25 @@ func TestUpstreamUnmarshalPreservesKafkaTLSClientCertID(t *testing.T) {
 	}
 }
 
+func TestUpstreamUnmarshalDefaultsHTTPAndSplitsNodeAddress(t *testing.T) {
+	var upstream Upstream
+	if err := json.Unmarshal([]byte(`{
+		"nodes": {"127.0.0.1:8080": 1},
+		"type": "roundrobin"
+	}`), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if upstream.Scheme != "http" {
+		t.Fatalf("upstream.Scheme = %q, want http", upstream.Scheme)
+	}
+	if len(upstream.Nodes) != 1 {
+		t.Fatalf("upstream.Nodes = %#v, want one node", upstream.Nodes)
+	}
+	if upstream.Nodes[0].Host != "127.0.0.1" || upstream.Nodes[0].Port != 8080 {
+		t.Fatalf("upstream node = %#v, want host 127.0.0.1 and port 8080", upstream.Nodes[0])
+	}
+}
+
 func TestUpstreamUnmarshalParsesBracketedIPv6Node(t *testing.T) {
 	var upstream Upstream
 	if err := json.Unmarshal([]byte(`{
@@ -50,7 +69,7 @@ func TestUpstreamUnmarshalParsesBracketedIPv6Node(t *testing.T) {
 	if len(upstream.Nodes) != 1 {
 		t.Fatalf("upstream.Nodes = %#v, want one node", upstream.Nodes)
 	}
-	if upstream.Nodes[0].Host != "[2001:db8::1]:8080" || upstream.Nodes[0].Port != 8080 {
-		t.Fatalf("upstream node = %#v, want original bracketed host and port 8080", upstream.Nodes[0])
+	if upstream.Nodes[0].Host != "2001:db8::1" || upstream.Nodes[0].Port != 8080 {
+		t.Fatalf("upstream node = %#v, want IPv6 host and port 8080", upstream.Nodes[0])
 	}
 }

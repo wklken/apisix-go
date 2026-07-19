@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -113,6 +115,171 @@ func TestBuildEventUsesSplunkHECShape(t *testing.T) {
 	}
 	if event.Time <= 0 {
 		t.Fatalf("event time = %v, want positive Unix timestamp", event.Time)
+	}
+}
+
+func TestMetadataSchemaAcceptsAdditiveLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	metadata := map[string]any{
+		"log_format_extra":    map[string]any{"upstream_host": "$upstream_unresolved_host"},
+		"max_pending_entries": 1,
+	}
+	if err := util.Validate(metadata, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata schema rejected additive log format: %v", err)
+	}
+	if err := util.Validate(map[string]any{"log_format": "wrong-type"}, p.GetMetadataSchema()); err == nil {
+		t.Fatal("metadata schema accepted string log_format")
+	}
+}
+
+func TestHandlerBuildsDefaultEventAndDoesNotClobberFieldsWithExtraFormat(t *testing.T) {
+	p := &Plugin{
+		logFormatExtra: map[string]string{
+			"response_status": "extra-must-not-clobber",
+			"upstream_host":   "$upstream_unresolved_host",
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://gateway.example:9443/orders?sku=one",
+		strings.NewReader("payload"),
+	)
+	req.RemoteAddr = "192.0.2.44:4567"
+	req.Header.Set("X-Request-Marker", "request-value")
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+
+	entry := captureHandlerEntry(t, p, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$balancer_ip", "10.0.0.8")
+		apisixctx.RegisterApisixVar(r, "$balancer_port", "9080")
+		w.Header().Set("X-Upstream-Marker", "response-value")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	if got := entry["request_url"]; got != "http://gateway.example:9443/orders?sku=one" {
+		t.Fatalf("request_url = %#v", got)
+	}
+	if got := entry["request_method"]; got != http.MethodPost {
+		t.Fatalf("request_method = %#v", got)
+	}
+	requestHeaders, ok := entry["request_headers"].(http.Header)
+	if !ok || requestHeaders.Get("X-Request-Marker") != "request-value" {
+		t.Fatalf("request_headers = %#v", entry["request_headers"])
+	}
+	requestQuery, ok := entry["request_query"].(map[string][]string)
+	if !ok || len(requestQuery["sku"]) != 1 || requestQuery["sku"][0] != "one" {
+		t.Fatalf("request_query = %#v", entry["request_query"])
+	}
+	if got := entry["request_size"]; got != int64(len("payload")) {
+		t.Fatalf("request_size = %#v", got)
+	}
+	responseHeaders, ok := entry["response_headers"].(http.Header)
+	if !ok || responseHeaders.Get("X-Upstream-Marker") != "response-value" {
+		t.Fatalf("response_headers = %#v", entry["response_headers"])
+	}
+	if got := entry["response_status"]; got != http.StatusCreated {
+		t.Fatalf("response_status = %#v, want %d", got, http.StatusCreated)
+	}
+	if got := entry["response_size"]; got != int64(len("ok")) {
+		t.Fatalf("response_size = %#v", got)
+	}
+	if got := entry["upstream"]; got != "10.0.0.8:9080" {
+		t.Fatalf("upstream = %#v", got)
+	}
+	if got := entry["upstream_host"]; got != "10.0.0.8" {
+		t.Fatalf("upstream_host = %#v", got)
+	}
+	if latency, ok := entry["latency"].(int64); !ok || latency < 0 {
+		t.Fatalf("latency = %#v", entry["latency"])
+	}
+}
+
+func TestHandlerTreatsExplicitEmptyLogFormatAsCustomAndSuppressesExtras(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Endpoint: Endpoint{
+			URI:   "http://127.0.0.1:8088/services/collector/event",
+			Token: "token",
+		},
+		LogFormat:      map[string]string{},
+		LogFormatExtra: map[string]string{"upstream_host": "$upstream_unresolved_host"},
+	})
+	p.BatchProcessor.Stop()
+	p.BatchProcessor = nil
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example:9443/empty", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	entry := captureHandlerEntry(t, p, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$balancer_ip", "10.0.0.8")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	if len(entry) != 0 {
+		t.Fatalf("entry = %#v, want explicit empty custom event", entry)
+	}
+}
+
+func TestHandlerResolvesCustomVariablesAfterUpstreamWithoutPorts(t *testing.T) {
+	p := &Plugin{
+		logFormatExtra: map[string]string{"ignored_extra": "must-not-appear"},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	p.LogFormat = map[string]string{
+		"client_ip":     "$remote_addr",
+		"host":          "$host",
+		"upstream_host": "$upstream_unresolved_host",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example:9443/delayed", nil)
+	req.RemoteAddr = "192.0.2.44:4567"
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	entry := captureHandlerEntry(t, p, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		apisixctx.RegisterApisixVar(r, "$balancer_ip", "10.0.0.8")
+		r.Host = "upstream.internal:9080"
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	want := map[string]any{
+		"client_ip":     "192.0.2.44",
+		"host":          "gateway.example",
+		"upstream_host": "10.0.0.8",
+	}
+	if len(entry) != len(want) {
+		t.Fatalf("entry = %#v, want %#v", entry, want)
+	}
+	for key, expected := range want {
+		if got := entry[key]; got != expected {
+			t.Fatalf("entry[%q] = %#v, want %#v", key, got, expected)
+		}
+	}
+}
+
+func captureHandlerEntry(
+	t *testing.T,
+	p *Plugin,
+	req *http.Request,
+	next http.Handler,
+) map[string]any {
+	t.Helper()
+
+	p.Handler(next).ServeHTTP(httptest.NewRecorder(), req)
+	select {
+	case entry := <-p.FireChan:
+		return entry
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Splunk handler entry")
+		return nil
 	}
 }
 

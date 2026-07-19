@@ -1,6 +1,7 @@
 package traffic_label
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -67,7 +68,7 @@ const schema = `
                 "weight": {
                   "type": "integer",
                   "default": 1,
-                  "minimum": 1
+                  "minimum": 0
                 }
               },
               "additionalProperties": false
@@ -95,6 +96,24 @@ type Rule struct {
 type Action struct {
 	SetHeaders map[string]any `json:"set_headers,omitempty"`
 	Weight     int            `json:"weight,omitempty"`
+	weightSet  bool
+}
+
+func (a *Action) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		SetHeaders map[string]any `json:"set_headers"`
+		Weight     *int           `json:"weight"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	a.SetHeaders = raw.SetHeaders
+	a.weightSet = raw.Weight != nil
+	if raw.Weight != nil {
+		a.Weight = *raw.Weight
+	}
+	return nil
 }
 
 var variablePattern = regexp.MustCompile(`\$[A-Za-z0-9_]+`)
@@ -115,6 +134,9 @@ func (p *Plugin) PostInit() error {
 	p.actionCursors = make([]int, len(p.config.Rules))
 
 	for ruleIndex, rule := range p.config.Rules {
+		if hasMixedLogicalOperators(rule.Match) {
+			return fmt.Errorf("traffic-label rule %d contains mixed logical operators", ruleIndex)
+		}
 		expr, err := pluginexpr.Compile(rule.Match)
 		if err != nil {
 			return fmt.Errorf("traffic-label rule %d match validation failed: %w", ruleIndex, err)
@@ -122,7 +144,7 @@ func (p *Plugin) PostInit() error {
 		p.config.Rules[ruleIndex].expr = expr
 		for actionIndex, action := range rule.Actions {
 			weight := action.Weight
-			if weight == 0 {
+			if weight == 0 && !action.weightSet {
 				weight = 1
 				p.config.Rules[ruleIndex].Actions[actionIndex].Weight = weight
 			}
@@ -132,6 +154,27 @@ func (p *Plugin) PostInit() error {
 		}
 	}
 	return nil
+}
+
+func hasMixedLogicalOperators(match []any) bool {
+	operator := ""
+	for _, item := range match {
+		value, ok := item.(string)
+		if !ok {
+			continue
+		}
+		value = strings.ToUpper(value)
+		switch value {
+		case "AND", "OR", "!AND", "!OR":
+		default:
+			continue
+		}
+		if operator != "" && operator != value {
+			return true
+		}
+		operator = value
+	}
+	return false
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {

@@ -104,6 +104,22 @@ func TestBuildRequestAppendsMatchedExtPath(t *testing.T) {
 	}
 }
 
+func TestBuildRequestUsesChiWildcardAndNormalizesRepeatedSlashes(t *testing.T) {
+	p := newTestPlugin(t, Config{FunctionURI: "https://function.example/api"})
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("*", "//http////trigger")
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/azure///http////trigger", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+
+	upstream, err := p.buildRequest(req)
+	if err != nil {
+		t.Fatalf("buildRequest() error = %v", err)
+	}
+	if upstream.URL.Path != "/api/http/trigger" {
+		t.Fatalf("upstream path = %q, want /api/http/trigger", upstream.URL.Path)
+	}
+}
+
 func TestWriteResponseDropsConnectionHeadersForHTTP2(t *testing.T) {
 	response := &http.Response{
 		StatusCode: http.StatusOK,

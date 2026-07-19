@@ -2,6 +2,7 @@ package key_auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -92,7 +93,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if p.attachAnonymousConsumer(w, r, next) {
 				return
 			}
-			http.Error(w, `{"message": "Missing API key found in request"}`, http.StatusUnauthorized)
+			writeAuthError(w, http.StatusUnauthorized, `{"message":"Missing API key in request"}`)
 			return
 		}
 
@@ -105,7 +106,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 					return
 				}
 			}
-			http.Error(w, `{"message": "Invalid API key in request"}`, http.StatusUnauthorized)
+			writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid API key in request"}`)
 			return
 		}
 
@@ -120,8 +121,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		ctx.AttachConsumer(r, consumer)
-
-		next.ServeHTTP(w, r)
+		ctx.RunConsumerPlugins(w, r, next)
 	}
 	return http.HandlerFunc(fn)
 }
@@ -133,13 +133,20 @@ func (p *Plugin) attachAnonymousConsumer(w http.ResponseWriter, r *http.Request,
 
 	consumer, err := store.GetConsumer(p.config.AnonymousConsumer)
 	if err != nil {
-		http.Error(w, `{"message": "Invalid user authorization"}`, http.StatusUnauthorized)
+		ctx.RecordAuthProbeDiagnostic(r, fmt.Sprintf("failed to get anonymous consumer %s", p.config.AnonymousConsumer))
+		writeAuthError(w, http.StatusUnauthorized, `{"message":"Invalid user authorization"}`)
 		return true
 	}
 
 	ctx.AttachConsumer(r, consumer)
-	next.ServeHTTP(w, r)
+	ctx.RunConsumerPlugins(w, r, next)
 	return true
+}
+
+func writeAuthError(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
 }
 
 func (p *Plugin) hideAllCredentials(r *http.Request) {

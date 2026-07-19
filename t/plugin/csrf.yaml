@@ -1,0 +1,299 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/csrf.t
+  tests: 15
+
+cases:
+  - name: valid-schema-and-cookie
+    source:
+      tests: [1, 2, 3]
+    config:
+      routes:
+        - id: csrf-valid
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 1000000000
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello
+    upstream: &fixture
+      respond:
+        status: 200
+        body: hello world
+    output: &success_with_cookie
+      status: 200
+      headers:
+        Set-Cookie:
+          matches: 'apisix-csrf-token=[^;]+; Path=/; Expires=.*; SameSite=Lax'
+      body:
+        equals: hello world
+
+  - name: missing-header-and-cookie
+    source:
+      tests: [4]
+    config:
+      routes:
+        - id: csrf-missing-token
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 1000000000
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+    upstream: *fixture
+    output:
+      status: 401
+      body:
+        matches: '"error_msg":"no csrf token in headers"'
+
+  - name: header-without-cookie
+    source:
+      tests: [5]
+    config:
+      routes:
+        - id: csrf-header-only
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      headers:
+        apisix-csrf-token: wrongtoken
+    upstream: *fixture
+    output:
+      status: 401
+      body:
+        matches: '"error_msg":"no csrf cookie"'
+
+  - name: cookie-without-header
+    source:
+      tests: [6]
+    config:
+      routes:
+        - id: csrf-cookie-only
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      headers:
+        Cookie: apisix-csrf-token=testcookie
+    upstream: *fixture
+    output:
+      status: 401
+      body:
+        matches: '"error_msg":"no csrf token in headers"'
+
+  - name: header-cookie-mismatch
+    source:
+      tests: [7]
+    config:
+      routes:
+        - id: csrf-mismatch
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      headers:
+        apisix-csrf-token: wrongtoken
+        Cookie: apisix-csrf-token=testcookie
+    upstream: *fixture
+    output:
+      status: 401
+      body:
+        matches: '"error_msg":"csrf token mismatch"'
+
+  - name: invalid-signature
+    source:
+      tests: [8]
+    config:
+      routes:
+        - id: csrf-invalid-signature
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 1000000000
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      headers:
+        apisix-csrf-token: &invalid_token eyJyYW5kb20iOjAuMTYwOTgzMDYwMTg0NDksInNpZ24iOiI2YTEyYmViYTI4MzAyNDg4MDRmNGU0N2VkZDY5MWFmNjg5N2IyNzQ4YTY1YWMwMDJiMGFjMzFlN2NlMDdlZTViIiwiZXhwaXJlcyI6MTc0MzExOTkxMX0=
+        Cookie: "apisix-csrf-token=eyJyYW5kb20iOjAuMTYwOTgzMDYwMTg0NDksInNpZ24iOiI2YTEyYmViYTI4MzAyNDg4MDRmNGU0N2VkZDY5MWFmNjg5N2IyNzQ4YTY1YWMwMDJiMGFjMzFlN2NlMDdlZTViIiwiZXhwaXJlcyI6MTc0MzExOTkxMX0="
+    upstream: *fixture
+    output:
+      status: 401
+      body:
+        matches: '"error_msg":"Failed to verify the csrf token signature"'
+      logs:
+        matches: Invalid signatures
+
+  - name: valid-signed-token
+    source:
+      tests: [9]
+    config:
+      routes:
+        - id: csrf-valid-token
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 1000000000
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      headers:
+        apisix-csrf-token: &valid_token eyJyYW5kb20iOjAuNDI5ODYzMTk3MTYxMzksInNpZ24iOiI0ODRlMDY4NTkxMWQ5NmJhMDc5YzQ1ZGI0OTE2NmZkYjQ0ODhjODVkNWQ0NmE1Y2FhM2UwMmFhZDliNjE5OTQ2IiwiZXhwaXJlcyI6MjY0MzExOTYyNH0=
+        Cookie: "apisix-csrf-token=eyJyYW5kb20iOjAuNDI5ODYzMTk3MTYxMzksInNpZ24iOiI0ODRlMDY4NTkxMWQ5NmJhMDc5YzQ1ZGI0OTE2NmZkYjQ0ODhjODVkNWQ0NmE1Y2FhM2UwMmFhZDliNjE5OTQ2IiwiZXhwaXJlcyI6MjY0MzExOTYyNH0="
+    upstream: *fixture
+    output: *success_with_cookie
+
+  - name: reject-expired-static-token
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: csrf-expired-static
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 1
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /hello
+      headers:
+        apisix-csrf-token: &expired_token eyJyYW5kb20iOjAuMDY3NjAxMDQwMDM5MzI4LCJzaWduIjoiOTE1Yjg2MjBhNTg1N2FjZmIzNjIxOTNhYWVlN2RkYjY5NmM0NWYwZjE5YjY5Zjg3NjM4ZTllNGNjNjYxYjQwNiIsImV4cGlyZXMiOjE2NDMxMjAxOTN9
+        Cookie: "apisix-csrf-token=eyJyYW5kb20iOjAuMDY3NjAxMDQwMDM5MzI4LCJzaWduIjoiOTE1Yjg2MjBhNTg1N2FjZmIzNjIxOTNhYWVlN2RkYjY5NmM0NWYwZjE5YjY5Zjg3NjM4ZTllNGNjNjYxYjQwNiIsImV4cGlyZXMiOjE2NDMxMjAxOTN9"
+    upstream: *fixture
+    output:
+      status: 401
+      logs:
+        matches: token has expired
+
+  - name: dynamically-issued-token-expires
+    source:
+      tests: [12]
+    config:
+      routes:
+        - id: csrf-dynamic-expiry
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 1
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: issue-token
+        wait: 2s
+        input:
+          path: /hello
+        output:
+          status: 200
+          headers:
+            Set-Cookie:
+              matches: 'apisix-csrf-token=[^;]+'
+      - name: reject-expired-token
+        input:
+          method: POST
+          path: /hello
+          headers:
+            apisix-csrf-token: "{{COOKIE.apisix-csrf-token}}"
+            Cookie: "apisix-csrf-token={{COOKIE.apisix-csrf-token}}"
+        output:
+          status: 401
+          logs:
+            matches: token has expired
+
+  - name: zero-expiry-never-expires
+    source:
+      tests: [13, 14]
+    config:
+      routes:
+        - id: csrf-zero-expiry
+          uri: /hello
+          plugins:
+            csrf:
+              key: userkey
+              expires: 0
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: hello world}
+          - {status: 200, body: hello world}
+    steps:
+      - name: issue-token
+        wait: 1s
+        input:
+          path: /hello
+        output:
+          status: 200
+      - name: accept-token
+        input:
+          method: POST
+          path: /hello
+          headers:
+            apisix-csrf-token: "{{COOKIE.apisix-csrf-token}}"
+            Cookie: "apisix-csrf-token={{COOKIE.apisix-csrf-token}}"
+        output:
+          status: 200
+          body:
+            equals: hello world
+
+  - name: encrypted-key
+    source:
+      tests: [15]
+    runtime:
+      apisix:
+        data_encryption:
+          enable_encrypt_fields: true
+          keyring: [edd1c9f0985e76a2]
+    config:
+      routes:
+        - id: csrf-encrypted-key
+          uri: /hello
+          plugins:
+            csrf:
+              key: mt39FazQccyMqt4ctoRV7w==
+              expires: 1000000000
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream: *fixture
+    output: *success_with_cookie

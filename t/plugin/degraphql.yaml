@@ -1,0 +1,322 @@
+source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/degraphql.t
+  tests: 15
+
+cases:
+  - name: post-query-without-variables
+    source:
+      tests: [1]
+    config:
+      routes:
+        - id: degraphql-query-list
+          uri: /graphql
+          plugins:
+            degraphql:
+              query: &list_query |
+                {
+                  persons {
+                    id
+                    name
+                  }
+                }
+          upstream: &fixture_route
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /graphql
+    upstream:
+      expect:
+        method: POST
+        headers:
+          Content-Type:
+            equals: application/json
+        body:
+          matches: '"query":"\{\\n  persons'
+      respond:
+        status: 200
+        headers:
+          Content-Type: application/json
+        body: &list_response '{"data":{"persons":[{"id":"7","name":"Niek"},{"id":"8","name":"Josh"},{"id":"9","name":"Simon"},{"id":"10","name":"Audun"},{"id":"11","name":"Truls"},{"id":"12","name":"Maria"},{"id":"13","name":"Zahin"},{"id":"14","name":"Roberto"},{"id":"15","name":"Susanne"},{"id":"16","name":"Live JS"},{"id":"17","name":"Dave"},{"id":"18","name":"Matt"}]}}'
+    output:
+      status: 200
+      body:
+        equals: *list_response
+
+  - name: post-one-variable
+    source:
+      tests: [2, 3]
+    config:
+      routes:
+        - id: degraphql-one-variable
+          uri: /graphql
+          plugins:
+            degraphql:
+              query: |
+                query($name: String!) {
+                  persons(filter: { name: $name }) {
+                    id
+                    name
+                    blog
+                    githubAccount
+                    talks { id title }
+                  }
+                }
+              variables: [name]
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /graphql
+      headers:
+        Content-Type: application/json
+      body: '{"name":"Josh","githubAccount":"npalm"}'
+    upstream:
+      expect:
+        method: POST
+        headers:
+          Content-Type:
+            equals: application/json
+        body:
+          matches: '"variables":\{"name":"Josh"\}'
+      respond:
+        status: 200
+        body: &josh_response '{"data":{"persons":[{"id":"8","name":"Josh","blog":"","githubAccount":"joshlong","talks":[]}]}}'
+    output:
+      status: 200
+      body:
+        equals: *josh_response
+
+  - name: post-multiple-variables-and-errors
+    source:
+      tests: [4, 5, 6, 7, 8]
+    config:
+      routes:
+        - id: degraphql-multiple-variables
+          uri: /graphql
+          plugins:
+            degraphql:
+              query: &multiple_query |
+                query($name: String!, $githubAccount: String!) {
+                  persons(filter: { name: $name, githubAccount: $githubAccount }) {
+                    id
+                    name
+                    blog
+                    githubAccount
+                    talks { id title }
+                  }
+                }
+              variables: [name, githubAccount]
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.graphql.ADDR}}": 1
+    fixtures:
+      - name: graphql
+        kind: http
+        expect:
+          - method: POST
+            headers:
+              Content-Type:
+                equals: application/json
+            body:
+              matches: '"variables":\{"githubAccount":"npalm","name":"Niek"\}'
+          - method: POST
+            headers:
+              Content-Type:
+                equals: application/json
+            body:
+              matches: '"variables":\{"githubAccount":"npalm","name":"Niek"\}'
+        respond:
+          - status: 200
+            body: &niek_response '{"data":{"persons":[{"id":"7","name":"Niek","blog":"https://040code.github.io","githubAccount":"npalm","talks":[{"id":"19","title":"GraphQL - The Next API Language"},{"id":"20","title":"Immutable Infrastructure"}]}]}}'
+          - status: 200
+            body: *niek_response
+    steps:
+      - name: valid-json-body
+        input:
+          method: POST
+          path: /graphql
+          headers:
+            Content-Type: application/json
+          body: '{"name":"Niek","githubAccount":"npalm"}'
+        output:
+          status: 200
+          body:
+            equals: *niek_response
+      - name: missing-body
+        input:
+          method: POST
+          path: /graphql
+        output:
+          status: 400
+          body:
+            matches: missing request body
+      - name: invalid-json-body
+        input:
+          method: POST
+          path: /graphql
+          headers:
+            Content-Type: application/json
+          body: '"AA"'
+        output:
+          status: 400
+          body:
+            matches: invalid request body
+      - name: content-type-is-forced
+        input:
+          method: POST
+          path: /graphql
+          body: '{"name":"Niek","githubAccount":"npalm"}'
+        output:
+          status: 200
+          body:
+            equals: *niek_response
+
+  - name: reject-invalid-schema
+    source:
+      tests: [9]
+    variants:
+      - name: missing-query
+        config:
+          routes:
+            - id: degraphql-missing-query
+              uri: /graphql
+              plugins:
+                degraphql: {}
+        input:
+          path: /graphql
+        output:
+          status: 404
+          logs:
+            matches: 'build route degraphql-missing-query fail:.*missing properties.*query'
+      - name: invalid-query-syntax
+        config:
+          routes:
+            - id: degraphql-invalid-query
+              uri: /graphql
+              plugins:
+                degraphql:
+                  query: 'uery {}'
+        input:
+          path: /graphql
+        output:
+          status: 404
+          logs:
+            matches: 'build route degraphql-invalid-query fail:.*invalid GraphQL query'
+      - name: empty-variables
+        config:
+          routes:
+            - id: degraphql-empty-variables
+              uri: /graphql
+              plugins:
+                degraphql:
+                  query: 'query { persons { id } }'
+                  variables: []
+        input:
+          path: /graphql
+        output:
+          status: 404
+          logs:
+            matches: 'build route degraphql-empty-variables fail:.*minimum 1 items required'
+      - name: multiple-operations-without-name
+        config:
+          routes:
+            - id: degraphql-multiple-operations
+              uri: /graphql
+              plugins:
+                degraphql:
+                  query: 'query persons { persons { id } } query githubAccount { persons { githubAccount } }'
+        input:
+          path: /graphql
+        output:
+          status: 404
+          logs:
+            matches: 'build route degraphql-multiple-operations fail:.*operation_name is required'
+
+  - name: named-operation
+    source:
+      tests: [10, 11]
+    config:
+      routes:
+        - id: degraphql-named-operation
+          uri: /graphql
+          plugins:
+            degraphql:
+              query: |
+                query persons($name: String!) { persons(filter: {name: $name}) { id name } }
+                query githubAccount($name: String!, $githubAccount: String!) { persons(filter: {name: $name, githubAccount: $githubAccount}) { id githubAccount } }
+              operation_name: persons
+              variables: [name]
+          upstream: *fixture_route
+    input:
+      method: POST
+      path: /graphql
+      body: '{"name":"Josh","githubAccount":"npalm"}'
+    upstream:
+      expect:
+        method: POST
+        body:
+          matches: '"operationName":"persons".*"variables":\{"name":"Josh"\}'
+      respond:
+        status: 200
+        body: *josh_response
+    output:
+      status: 200
+      body:
+        equals: *josh_response
+
+  - name: get-with-variables
+    source:
+      tests: [12, 13]
+    config:
+      routes:
+        - id: degraphql-get-variables
+          uri: /graphql
+          plugins:
+            degraphql:
+              query: *multiple_query
+              variables: [name, githubAccount]
+          upstream: *fixture_route
+    input:
+      path: /graphql?name=Niek&githubAccount=npalm
+    upstream:
+      expect:
+        method: GET
+        path:
+          matches: '^/graphql\?query=.*persons.*&variables=%7B%22githubAccount%22%3A%22npalm%22%2C%22name%22%3A%22Niek%22%7D$'
+      respond:
+        status: 200
+        body: *niek_response
+    output:
+      status: 200
+      body:
+        equals: *niek_response
+
+  - name: get-without-variables
+    source:
+      tests: [14, 15]
+    config:
+      routes:
+        - id: degraphql-get-list
+          uri: /graphql
+          plugins:
+            degraphql:
+              query: *list_query
+          upstream: *fixture_route
+    input:
+      path: /graphql
+    upstream:
+      expect:
+        method: GET
+        path:
+          matches: '^/graphql\?query=.*persons.*$'
+      respond:
+        status: 200
+        body: *list_response
+    output:
+      status: 200
+      body:
+        equals: *list_response

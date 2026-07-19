@@ -1,0 +1,324 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/loki-logger.t
+    tests: 21
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/loki-logger2.t
+    tests: 1
+cases:
+  - name: schema-contract
+    source: {file: t/plugin/loki-logger.t, tests: [1]}
+    variants:
+      - name: valid-endpoint-array
+        config:
+          routes:
+            - id: loki-schema-array
+              uri: /schema-array
+              plugins:
+                loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], batch_max_size: 1, inactive_timeout: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /schema-array}}], respond: [{status: 200, body: schema-ok}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /loki/api/v1/push}}], respond: [{status: 204}]}
+        steps:
+          - {name: endpoint-array-is-accepted, input: {path: /schema-array}, output: {status: 200, body: {equals: schema-ok}}, wait: 1s}
+      - name: explicit-endpoint-uri-and-object-labels
+        config:
+          routes:
+            - id: loki-schema-uri
+              uri: /schema-uri
+              plugins:
+                loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], endpoint_uri: /custom-push, log_labels: {job: apisix6}, batch_max_size: 1, inactive_timeout: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /schema-uri}}], respond: [{status: 200, body: schema-uri-ok}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /custom-push}}], respond: [{status: 204}]}
+        steps:
+          - {name: endpoint-uri-and-label-object-are-accepted, input: {path: /schema-uri}, output: {status: 200, body: {equals: schema-uri-ok}}, wait: 1s}
+      - name: string-endpoints-rejected
+        config: {routes: [{id: loki-schema-string-endpoints, uri: /schema-string-endpoints, plugins: {loki-logger: {endpoint_addrs: 'http://127.0.0.1:3100'}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-string-endpoints}
+        output: {status: 404, logs: {matches: 'endpoint_addrs|validate plugin loki-logger config'}}
+      - name: empty-endpoints-rejected
+        config: {routes: [{id: loki-schema-empty-endpoints, uri: /schema-empty-endpoints, plugins: {loki-logger: {endpoint_addrs: []}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-empty-endpoints}
+        output: {status: 404, logs: {matches: 'endpoint_addrs|validate plugin loki-logger config'}}
+      - name: required-endpoints-rejected
+        config: {routes: [{id: loki-schema-required-endpoints, uri: /schema-required-endpoints, plugins: {loki-logger: {}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-required-endpoints}
+        output: {status: 404, logs: {matches: 'endpoint_addrs|validate plugin loki-logger config'}}
+      - name: numeric-endpoint-uri-rejected
+        config: {routes: [{id: loki-schema-number-uri, uri: /schema-number-uri, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], endpoint_uri: 1234}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-number-uri}
+        output: {status: 404, logs: {matches: 'endpoint_uri|validate plugin loki-logger config'}}
+      - name: numeric-tenant-rejected
+        config: {routes: [{id: loki-schema-number-tenant, uri: /schema-number-tenant, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], tenant_id: 1234}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-number-tenant}
+        output: {status: 404, logs: {matches: 'tenant_id|validate plugin loki-logger config'}}
+      - name: numeric-headers-rejected
+        config: {routes: [{id: loki-schema-number-headers, uri: /schema-number-headers, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], headers: 1234}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-number-headers}
+        output: {status: 404, logs: {matches: 'headers|validate plugin loki-logger config'}}
+      - name: string-labels-rejected
+        config: {routes: [{id: loki-schema-string-labels, uri: /schema-string-labels, plugins: {loki-logger: {endpoint_addrs: ['http://127.0.0.1:3100'], log_labels: '1234'}}, upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}}]}
+        input: {path: /schema-string-labels}
+        output: {status: 404, logs: {matches: 'log_labels|validate plugin loki-logger config'}}
+  - name: default-delivery-and-default-record
+    source: {file: t/plugin/loki-logger.t, tests: [2, 3, 4]}
+    config:
+      routes:
+        - id: loki-default
+          uri: /default
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /default}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_1}, Content-Type: {equals: application/json}}
+            loki_push:
+              streams:
+                - stream: {job: apisix}
+                  values:
+                    - entry:
+                        request: {method: GET, headers: {test-header: only-for-test#1}}
+                        route_id: loki-default
+        respond: [{status: 204}]
+    steps:
+      - {name: real-upstream-and-loki-delivery, input: {path: /default, headers: {Test-Header: only-for-test#1}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+  - name: static-label-delivery
+    source: {file: t/plugin/loki-logger.t, tests: [5, 6, 7]}
+    config:
+      routes:
+        - id: loki-static-label
+          uri: /static-label
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, log_labels: {custom_label: custom_label_value}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /static-label}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_1}}
+            loki_push:
+              streams:
+                - stream: {custom_label: custom_label_value}
+                  values:
+                    - entry:
+                        request: {headers: {test-header: only-for-test#2}}
+                        route_id: loki-static-label
+        respond: [{status: 204}]
+    steps:
+      - {name: labelled-request-reaches-real-upstream, input: {path: /static-label, headers: {Test-Header: only-for-test#2}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+  - name: tenant-isolation
+    source: {file: t/plugin/loki-logger.t, tests: [8, 9, 10, 11]}
+    config:
+      routes:
+        - id: loki-tenant-one
+          uri: /tenant-one
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: loki-tenant-two
+          uri: /tenant-two
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_2, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /tenant-one}}, {method: GET, path: {equals: /tenant-two}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_1}}
+            loki_push:
+              streams:
+                - stream: {job: apisix}
+                  values:
+                    - entry:
+                        request: {headers: {test-header: only-for-test#1}}
+                        route_id: loki-tenant-one
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            headers: {X-Scope-OrgID: {equals: tenant_2}}
+            loki_push:
+              streams:
+                - stream: {job: apisix}
+                  values:
+                    - entry:
+                        request: {headers: {test-header: only-for-test#3}}
+                        route_id: loki-tenant-two
+        respond: [{status: 204}]
+    steps:
+      - {name: tenant-one-never-reaches-tenant-two-sink, input: {path: /tenant-one, headers: {Test-Header: only-for-test#1}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+      - {name: tenant-two-is-exactly-delivered, input: {path: /tenant-two, headers: {Test-Header: only-for-test#3}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+  - name: remote-address-label
+    source: {file: t/plugin/loki-logger.t, tests: [12, 13, 14]}
+    config:
+      routes:
+        - id: loki-remote-label
+          uri: /remote-label
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, log_labels: {custom_label: '$remote_addr'}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /remote-label}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect: [{method: POST, path: {equals: /loki/api/v1/push}, body: {matches: '"stream":\{"custom_label":"127\.0\.0\.1"\}'}}]
+        respond: [{status: 204}]
+    steps:
+      - {name: remote-address-is-resolved-per-request, input: {path: /remote-label}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+  - name: custom-endpoint-and-authorization
+    source: {file: t/plugin/loki-logger.t, tests: [15, 16]}
+    config:
+      routes:
+        - id: loki-custom-endpoint
+          uri: /custom-endpoint
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], endpoint_uri: /log_request, headers: {Authorization: test1234}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /custom-endpoint}}], respond: [{status: 200, body: hello world}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /log_request}, headers: {Authorization: {equals: test1234}, Content-Type: {equals: application/json}}}], respond: [{status: 204}]}
+    steps:
+      - {name: logger-delivery-does-not-change-upstream-response, input: {path: /custom-endpoint}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+  - name: per-request-label-isolation
+    source: {file: t/plugin/loki-logger.t, tests: [17, 18]}
+    variants:
+      - name: pinned-three-request-isolation
+        config:
+          routes:
+            - id: loki-label-isolation
+              uri: /label-isolation
+              plugins:
+                loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, log_labels: {service: '$http_x_service_name'}, batch_max_size: 2, inactive_timeout: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: GET, path: {equals: /label-isolation}}, {method: GET, path: {equals: /label-isolation}}, {method: GET, path: {equals: /label-isolation}}], respond: [{status: 200, body: hello world}]}
+          - name: sink
+            kind: http
+            expect:
+              - method: POST
+                path: {equals: /loki/api/v1/push}
+                loki_push:
+                  streams:
+                    - stream: {service: svc-alpha}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-alpha}}
+                            route_id: loki-label-isolation
+                    - stream: {service: svc-beta}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /label-isolation, headers: {x-service-name: svc-beta}}
+                            route_id: loki-label-isolation
+              - method: POST
+                path: {equals: /loki/api/v1/push}
+                loki_push:
+                  streams:
+                    - stream: {service: ''}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /label-isolation}
+                            route_id: loki-label-isolation
+                          absent: [request.headers.x-service-name]
+            respond: [{status: 204}, {status: 204}]
+        steps:
+          - {name: alpha-entry, input: {path: /label-isolation, headers: {X-Service-Name: svc-alpha}}, output: {status: 200, body: {equals: hello world}}}
+          - {name: beta-entry-in-same-process, input: {path: /label-isolation, headers: {X-Service-Name: svc-beta}}, output: {status: 200, body: {equals: hello world}}}
+          - {name: empty-header-does-not-inherit-label, input: {path: /label-isolation}, output: {status: 200, body: {equals: hello world}}, wait: 2s}
+      - name: post-upstream-label-resolution
+        config:
+          routes:
+            - id: loki-post-upstream-labels
+              uri: /post-upstream-labels
+              plugins:
+                loki-logger:
+                  endpoint_addrs: ['{{FIXTURE.sink.URL}}']
+                  log_labels: {status: '$status', upstream: '$balancer_ip'}
+                  batch_max_size: 1
+                  inactive_timeout: 1
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: primary
+            kind: http
+            expect: [{method: GET, path: {equals: /post-upstream-labels}}]
+            respond: [{status: 201, body: created}]
+          - name: sink
+            kind: http
+            expect:
+              - method: POST
+                path: {equals: /loki/api/v1/push}
+                loki_push:
+                  streams:
+                    - stream: {status: '201', upstream: 127.0.0.1}
+                      values:
+                        - entry:
+                            request: {method: GET, uri: /post-upstream-labels}
+                            response: {status: 201}
+                            route_id: loki-post-upstream-labels
+            respond: [{status: 204}]
+        steps:
+          - name: final-status-and-upstream-are-labelled
+            input: {path: /post-upstream-labels}
+            output: {status: 201, body: {equals: created}}
+            wait: 1s
+  - name: metadata-enriches-default-log
+    source: {file: t/plugin/loki-logger.t, tests: [19, 20, 21]}
+    config:
+      plugin_metadata:
+        - id: loki-logger
+          log_format_extra: {upstream_host: '$upstream_unresolved_host'}
+      routes:
+        - id: loki-enrich
+          uri: /enrich
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], tenant_id: tenant_1, log_labels: {enrich_label: enrich_value}, batch_max_size: 1, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /enrich}}], respond: [{status: 200, body: hello world}]}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /loki/api/v1/push}
+            loki_push:
+              streams:
+                - stream: {enrich_label: enrich_value}
+                  values:
+                    - entry:
+                        request: {method: GET}
+                        route_id: loki-enrich
+                        upstream_host: 127.0.0.1
+        respond: [{status: 204}]
+    steps:
+      - {name: extra-metadata-keeps-default-log-fields, input: {path: /enrich}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
+  - name: metadata-pending-entry-overflow
+    source: {file: t/plugin/loki-logger2.t, tests: [1]}
+    config:
+      plugin_metadata:
+        - id: loki-logger
+          log_format: {case: pending-overflow}
+          max_pending_entries: 1
+      routes:
+        - id: loki-overflow
+          uri: /overflow
+          plugins:
+            loki-logger: {endpoint_addrs: ['{{FIXTURE.sink.URL}}'], batch_max_size: 1, timeout: 3000, max_retry_count: 0, inactive_timeout: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}, {method: GET, path: {equals: /overflow}}], respond: [{status: 200, body: hello world}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /loki/api/v1/push}, body: {matches: 'pending-overflow'}}, {method: POST, path: {equals: /loki/api/v1/push}, body: {matches: 'pending-overflow'}}], respond: [{delay: 2s, status: 204}, {delay: 2s, status: 204}]}
+    steps:
+      - {name: overflow-is-bounded-and-diagnostic-is-exact, repeat: 3, input: {path: /overflow}, output: {status: 200, body: {equals: hello world}, logs: {matches: 'max pending entries limit exceeded for logger batch processor \[loki logger\], pending \[2\], max_pending_entries \[1\]'}}}

@@ -29,8 +29,9 @@ type Plugin struct {
 }
 
 const (
-	priority = 495
-	name     = "datadog"
+	priority        = 495
+	name            = "datadog"
+	maxDatagramSize = 8192
 )
 
 const schema = `
@@ -54,13 +55,22 @@ const schema = `
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 200
+        "maxLength": 200,
+        "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
       },
       "default": []
     },
     "name": {
       "type": "string",
       "default": "datadog"
+    },
+    "host": {
+      "type": "string"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
     },
     "batch_max_size": {
       "type": "integer",
@@ -91,11 +101,44 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "host": {
+      "type": "string",
+      "default": "127.0.0.1"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 8125
+    },
+    "namespace": {
+      "type": "string",
+      "default": "apisix"
+    },
+    "constant_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[\\p{L}](?:[\\p{L}\\p{N}_.:/-]*[\\p{L}\\p{N}_./-])?$"
+      },
+      "default": ["source:apisix"]
+    }
+  }
+}
+`
+
 type Config struct {
 	PreferName      bool     `json:"prefer_name,omitempty"`
 	IncludePath     bool     `json:"include_path,omitempty"`
 	IncludeMethod   bool     `json:"include_method,omitempty"`
 	ConstantTags    []string `json:"constant_tags,omitempty"`
+	Host            string   `json:"host,omitempty"`
+	Port            int      `json:"port,omitempty"`
 	BatchName       string   `json:"name,omitempty"`
 	BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 	MaxRetryCount   int      `json:"max_retry_count,omitempty"`
@@ -111,6 +154,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		IncludePath     bool     `json:"include_path,omitempty"`
 		IncludeMethod   bool     `json:"include_method,omitempty"`
 		ConstantTags    []string `json:"constant_tags,omitempty"`
+		Host            string   `json:"host,omitempty"`
+		Port            int      `json:"port,omitempty"`
 		BatchName       string   `json:"name,omitempty"`
 		BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 		MaxRetryCount   int      `json:"max_retry_count,omitempty"`
@@ -131,6 +176,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.IncludePath = decoded.IncludePath
 	c.IncludeMethod = decoded.IncludeMethod
 	c.ConstantTags = decoded.ConstantTags
+	c.Host = decoded.Host
+	c.Port = decoded.Port
 	c.BatchName = decoded.BatchName
 	c.BatchMaxSize = decoded.BatchMaxSize
 	c.MaxRetryCount = decoded.MaxRetryCount
@@ -173,6 +220,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	return nil
 }
 
@@ -196,6 +244,12 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 	p.metadata = loadMetadata()
+	if p.config.Host != "" {
+		p.metadata.Host = p.config.Host
+	}
+	if p.config.Port != 0 {
+		p.metadata.Port = p.config.Port
+	}
 	p.BatchProcessor = logger_batch.New(logger_batch.Config{
 		Name:            p.config.BatchName,
 		BatchMaxSize:    p.config.BatchMaxSize,
@@ -260,7 +314,16 @@ func (p *Plugin) send(entry metricEntry) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	for _, line := range p.metricLines(entry) {
+	lines := p.metricLines(entry)
+	payload := strings.Join(lines, "\n")
+	if len(payload) <= maxDatagramSize {
+		if _, err := conn.Write([]byte(payload)); err != nil {
+			return fmt.Errorf("send DogStatsD metrics: %w", err)
+		}
+		return nil
+	}
+
+	for _, line := range lines {
 		if _, err := conn.Write([]byte(line)); err != nil {
 			return fmt.Errorf("send DogStatsD metric %q: %w", line, err)
 		}
@@ -312,14 +375,14 @@ func (p *Plugin) generateTags(entry metricEntry) []string {
 	tags := make([]string, 0, len(p.metadata.ConstantTags)+len(p.config.ConstantTags)+6)
 	tags = append(tags, p.metadata.ConstantTags...)
 	tags = append(tags, p.config.ConstantTags...)
+	if route := resourceTag(entry.RouteID, entry.RouteName, p.config.PreferName); route != "" {
+		tags = append(tags, "route_name:"+route)
+	}
 	if p.config.IncludePath && entry.Path != "" {
 		tags = append(tags, "path:"+entry.Path)
 	}
 	if p.config.IncludeMethod && entry.Method != "" {
 		tags = append(tags, "method:"+entry.Method)
-	}
-	if route := resourceTag(entry.RouteID, entry.RouteName, p.config.PreferName); route != "" {
-		tags = append(tags, "route_name:"+route)
 	}
 	if service := resourceTag(entry.ServiceID, entry.ServiceName, p.config.PreferName); service != "" {
 		tags = append(tags, "service_name:"+service)

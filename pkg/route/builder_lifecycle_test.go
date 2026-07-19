@@ -9,12 +9,127 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_cache"
 	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
 )
+
+type recordingPlugin struct {
+	name     string
+	priority int
+	order    *[]string
+}
+
+func (p *recordingPlugin) Init() error               { return nil }
+func (p *recordingPlugin) PostInit() error           { return nil }
+func (p *recordingPlugin) Config() any               { return nil }
+func (p *recordingPlugin) GetSchema() string         { return "" }
+func (p *recordingPlugin) GetMetadataSchema() string { return "" }
+func (p *recordingPlugin) GetPriority() int          { return p.priority }
+func (p *recordingPlugin) GetName() string           { return p.name }
+func (p *recordingPlugin) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*p.order = append(*p.order, p.name)
+		next.ServeHTTP(w, r)
+	})
+}
+
+var _ pluginpkg.Plugin = (*recordingPlugin)(nil)
+
+func TestBeforeProxyHookRunsOnceAfterTransformsAndBeforeFallback(t *testing.T) {
+	var order []string
+	fallback := withBeforeProxyHooks(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, "fallback:"+r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = apisixctx.WithBeforeProxyHook(r, func(r *http.Request) {
+			order = append(order, "hook:"+r.URL.Path)
+		})
+		r.URL.Path = "/final"
+		fallback.ServeHTTP(w, r)
+		apisixctx.RunBeforeProxyHooks(r)
+	})
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/original", nil))
+
+	if got, want := strings.Join(order, ","), "hook:/final,fallback:/final"; got != want {
+		t.Fatalf("execution order = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRoutePluginChainOrdersGlobalAndLocalPluginsByPriority(t *testing.T) {
+	order := []string{}
+	local := []pluginpkg.Plugin{&recordingPlugin{name: "local-auth", priority: 2500, order: &order}}
+	global := []pluginpkg.Plugin{&recordingPlugin{name: "global-label", priority: 2399, order: &order}}
+	handler := assembleRoutePluginChain(local, global).Then(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			order = append(order, "upstream")
+			w.WriteHeader(http.StatusNoContent)
+		},
+	))
+
+	response := performRouteTestRequest(t, handler, "/priority")
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if got := strings.Join(order, ","); got != "local-auth,global-label,upstream" {
+		t.Fatalf("execution order = %q, want local-auth,global-label,upstream", got)
+	}
+}
+
+func TestBuildGlobalNotFoundHandlerRunsGlobalPlugins(t *testing.T) {
+	builder := NewBuilder(nil)
+	handler, err := builder.buildGlobalNotFoundHandler([]resource.GlobalRule{{
+		Plugins: map[string]resource.PluginConfig{
+			"exit-transformer": map[string]any{
+				"functions": []any{
+					"return (function(code, body, header) if code == 404 then return 405 end return code, body, header end)(...)",
+				},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("buildGlobalNotFoundHandler() error = %v", err)
+	}
+
+	response := performRouteTestRequest(t, handler, "/missing")
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestBuildSystemPluginConfigsUsesGlobalBodyLimitUnlessRouteOverridesIt(t *testing.T) {
+	previous := appconfig.GlobalConfig
+	t.Cleanup(func() { appconfig.GlobalConfig = previous })
+	appconfig.GlobalConfig = &appconfig.Config{NginxConfig: appconfig.NginxConfig{
+		HTTP: appconfig.NginxHTTP{ClientMaxBodySize: 30},
+	}}
+
+	plugins := buildSystemPluginConfigs(resource.Route{ID: "global-limit"}, resource.Service{}, nil)
+	clientControl, ok := plugins["client-control"].(map[string]any)
+	if !ok {
+		t.Fatalf("client-control config = %#v, want generated config", plugins["client-control"])
+	}
+	if got := clientControl["max_body_size"]; got != int64(30) {
+		t.Fatalf("client-control max_body_size = %#v, want 30", got)
+	}
+
+	plugins = buildSystemPluginConfigs(
+		resource.Route{ID: "route-limit"},
+		resource.Service{},
+		map[string]resource.PluginConfig{"client-control": map[string]any{"max_body_size": 50}},
+	)
+	if _, ok := plugins["client-control"]; ok {
+		t.Fatalf("system client-control = %#v, want route override only", plugins["client-control"])
+	}
+}
 
 func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
 	delivered := make(chan struct{}, 1)
@@ -255,6 +370,52 @@ func TestInitPluginsStrictRejectsInvalidProxyControlConfig(t *testing.T) {
 	}
 }
 
+func TestInitPluginsStrictRejectsInvalidPluginMetadata(t *testing.T) {
+	ensureRouteStore(t)
+
+	metadata := map[string]any{"allow_origins": map[string]any{"key": "*a"}}
+	body, err := apisixjson.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	routeStoreEvents <- &store.Event{
+		Type:  store.EventTypePut,
+		Key:   []byte("/apisix/plugin_metadata/cors"),
+		Value: body,
+	}
+
+	deadline := time.Now().Add(time.Second)
+	storedMetadata := false
+	for time.Now().Before(deadline) {
+		var stored map[string]any
+		if err := store.GetPluginMetadata("cors", &stored); err == nil {
+			origins, ok := stored["allow_origins"].(map[string]any)
+			if ok && origins["key"] == "*a" {
+				storedMetadata = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !storedMetadata {
+		t.Fatal("timed out waiting for CORS metadata")
+	}
+
+	builder := NewBuilder(nil)
+	plugins, err := builder.initPluginsStrict(
+		map[string]resource.PluginConfig{
+			"cors": map[string]any{"allow_origins_by_metadata": []any{"key"}},
+		},
+		builder.pluginRouteContext(resource.Route{ID: "invalid-cors-metadata"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "validate plugin cors metadata") {
+		t.Fatalf("initPluginsStrict() error = %v, want invalid CORS metadata rejection", err)
+	}
+	if len(plugins) != 0 {
+		t.Fatalf("plugins len = %d, want no partially initialized plugins", len(plugins))
+	}
+}
+
 func TestClonePluginConfigsAllocatesForInheritedOnlyRoute(t *testing.T) {
 	cloned := clonePluginConfigs(nil)
 	if cloned == nil {
@@ -467,4 +628,83 @@ func TestBuilderRejectsInvalidUnusedProxyCacheZoneBeforeRefresh(t *testing.T) {
 		t.Fatal("Build() returned a handler, want nil for invalid static proxy-cache zone registry")
 	}
 	builder.Stop()
+}
+
+func TestBuilderRejectsSnapshotContainingUndecodableRoute(t *testing.T) {
+	ensureRouteStore(t)
+
+	put := func(id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/routes/" + id)
+		event.Value = value
+		routeStoreEvents <- event
+	}
+	remove := func(id string) {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/routes/" + id)
+		routeStoreEvents <- event
+	}
+
+	put("strict-valid", []byte(`{"id":"strict-valid","uri":"/strict-valid"}`))
+	put("strict-invalid", []byte(`{"id":"strict-invalid","uri":"/strict-invalid","plugins":[]}`))
+	routeStore.Sync()
+	t.Cleanup(func() {
+		remove("strict-valid")
+		remove("strict-invalid")
+		routeStore.Sync()
+	})
+
+	builder := NewBuilder(nil)
+	defer builder.Stop()
+	if handler := builder.Build(); handler != nil {
+		t.Fatal("Build() returned a partial handler, want nil for an undecodable route snapshot")
+	}
+}
+
+func TestBuilderRejectsSnapshotContainingUndecodableGlobalRule(t *testing.T) {
+	ensureRouteStore(t)
+
+	put := func(bucket string, id string, value []byte) {
+		event := store.NewEvent()
+		event.Type = store.EventTypePut
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		event.Value = value
+		routeStoreEvents <- event
+	}
+	remove := func(bucket string, id string) {
+		event := store.NewEvent()
+		event.Type = store.EventTypeDelete
+		event.Key = []byte("/apisix/" + bucket + "/" + id)
+		routeStoreEvents <- event
+	}
+
+	put("routes", "strict-global-route", []byte(`{"id":"strict-global-route","uri":"/strict-global"}`))
+	put("global_rules", "strict-valid-global", []byte(`{"id":"strict-valid-global","plugins":{}}`))
+	put("global_rules", "strict-invalid-global", []byte(`{"id":"strict-invalid-global","plugins":[]}`))
+	routeStore.Sync()
+	t.Cleanup(func() {
+		remove("routes", "strict-global-route")
+		remove("global_rules", "strict-valid-global")
+		remove("global_rules", "strict-invalid-global")
+		routeStore.Sync()
+	})
+
+	rules, err := store.ListGlobalRules()
+	if err == nil {
+		t.Fatal("ListGlobalRules() error = nil, want malformed global-rule error")
+	}
+	if rules != nil {
+		t.Fatalf("ListGlobalRules() rules = %#v, want no partial snapshot", rules)
+	}
+	if !strings.Contains(err.Error(), "strict-invalid-global") {
+		t.Fatalf("ListGlobalRules() error = %q, want global-rule ID", err)
+	}
+
+	builder := NewBuilder(nil)
+	defer builder.Stop()
+	if handler := builder.Build(); handler != nil {
+		t.Fatal("Build() returned a partial handler, want nil for an undecodable global-rule snapshot")
+	}
 }

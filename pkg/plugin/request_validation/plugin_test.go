@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -46,6 +47,113 @@ func TestHandlerRejectsInvalidHeaders(t *testing.T) {
 	}
 	if got := strings.TrimSpace(res.Body.String()); got != "invalid header" {
 		t.Fatalf("response body = %q, want invalid header", got)
+	}
+}
+
+func TestHandlerAcceptsScalarJSONBody(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		BodySchema: map[string]any{"type": "string"},
+	})
+
+	var upstreamBody string
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/get", strings.NewReader(`"hello"`))
+	req = apisixctx.WithRequestVars(req)
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body = %q", res.Code, http.StatusNoContent, res.Body.String())
+	}
+	if upstreamBody != `"hello"` {
+		t.Fatalf("upstream body = %q, want unchanged scalar JSON", upstreamBody)
+	}
+}
+
+func TestPostInitAcceptsAPISIXLegacyTableAndFunctionSchemaTypes(t *testing.T) {
+	for _, schemaType := range []string{"table", "function"} {
+		t.Run(schemaType, func(t *testing.T) {
+			p := &Plugin{config: Config{BodySchema: map[string]any{"type": schemaType}}}
+			if err := p.Init(); err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if err := p.PostInit(); err != nil {
+				t.Fatalf("PostInit() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestHandlerAcceptsObjectAndArrayForAPISIXLegacyTableType(t *testing.T) {
+	p := newTestPlugin(t, Config{BodySchema: map[string]any{"type": "table"}})
+
+	for _, body := range []string{`{"key":"value"}`, `["value"]`} {
+		res := performRequest(p, http.MethodPost, "http://example.com/get", body, map[string]string{
+			"Content-Type": "application/json",
+		})
+		if res.Code != http.StatusNoContent {
+			t.Fatalf("body %s: response code = %d, want %d; response = %q", body, res.Code, http.StatusNoContent, res.Body.String())
+		}
+	}
+}
+
+func TestNormalizeAPISIXSchemaDoesNotRewriteLiteralValues(t *testing.T) {
+	literal := map[string]any{"type": "table"}
+	schema := map[string]any{
+		"enum":    []any{literal},
+		"const":   literal,
+		"default": literal,
+		"properties": map[string]any{
+			"nested": map[string]any{"type": "table"},
+		},
+	}
+
+	normalized := normalizeAPISIXSchema(schema)
+	for _, keyword := range []string{"enum", "const", "default"} {
+		if got := normalized[keyword]; !reflect.DeepEqual(got, schema[keyword]) {
+			t.Fatalf("%s = %#v, want literal value %#v", keyword, got, schema[keyword])
+		}
+	}
+	nested := normalized["properties"].(map[string]any)["nested"].(map[string]any)
+	if got := nested["type"]; !reflect.DeepEqual(got, []any{"object", "array"}) {
+		t.Fatalf("nested type = %#v, want object-or-array union", got)
+	}
+}
+
+func TestNormalizeAPISIXSchemaHandlesLegacyNestedSchemaLocations(t *testing.T) {
+	schema := map[string]any{
+		"items": []any{
+			map[string]any{"type": "table"},
+			map[string]any{"type": "function"},
+		},
+		"dependencies": map[string]any{
+			"schema": map[string]any{"type": "table"},
+			"names":  []any{"first", "second"},
+		},
+	}
+
+	normalized := normalizeAPISIXSchema(schema)
+	items := normalized["items"].([]any)
+	if got := items[0].(map[string]any)["type"]; !reflect.DeepEqual(got, []any{"object", "array"}) {
+		t.Fatalf("tuple table type = %#v, want object-or-array union", got)
+	}
+	if got := items[1].(map[string]any)["not"]; !reflect.DeepEqual(got, map[string]any{}) {
+		t.Fatalf("tuple function rejection = %#v, want empty not schema", got)
+	}
+	dependencies := normalized["dependencies"].(map[string]any)
+	if got := dependencies["schema"].(map[string]any)["type"]; !reflect.DeepEqual(got, []any{"object", "array"}) {
+		t.Fatalf("dependency table type = %#v, want object-or-array union", got)
+	}
+	if got := dependencies["names"]; !reflect.DeepEqual(got, []any{"first", "second"}) {
+		t.Fatalf("property dependency = %#v, want literal property names", got)
 	}
 }
 

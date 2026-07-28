@@ -774,7 +774,14 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 5 — Local-Credential Authentication
 
-- [ ] `key-auth` — header/query hiding cases are real, but environment/Vault source cases are replaced with literal credentials, so secret resolution is not tested.
+- [x] `key-auth` — all 58 pinned blocks across four sources map exactly once to
+  real standalone cases. Header/query credentials, hiding, consumer schema
+  failures, environment and Vault resolution, unresolved-reference fail-closed
+  behavior, anonymous limiter chains, service inheritance, domain nodes, and
+  default/custom realms are asserted. The child explicitly removes the
+  unresolved environment variable, realm validation matches the pinned
+  printable-ASCII contract, and package/Store, race, real-process, corpus,
+  scoped lint, build, post-integration, and independent review gates pass.
 - [x] `basic-auth` — all 44 pinned blocks across three sources map exactly once to standalone consumer/route schema, parsing/credential, last-good reload, hide/preserve, Vault/env, scheme, anonymous limiter, missing-consumer, and realm behavior. Raw validated consumer snapshots persist without secret I/O; only the selected auth plugin resolves a deep copy lazily per request, unresolved references fail closed across Basic/Key/JWT/HMAC, and late Vault provisioning retries without reload. Package/race/cross-auth/store stress, full real-process, sensitive repeats, confidentiality assertions, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `jwt-auth` — a small token matrix replaces the pinned signing endpoint, HS/RS/ES/EdDSA algorithms, `nbf`/grace claims, base64 and Vault keys, schema failures, and context behavior.
 - [x] `hmac-auth` — all 70 pinned blocks across six sources map exactly once to 32 isolated standalone groups and 61 real requests. The cases cover strict consumer/route schemas and last-good behavior, parsing and lookup, Date/GMT/skew/replay, SHA-1/SHA-256/SHA-512 plus allowlists, signed-header defaults/cardinality, body digest/413/restoration, hidden credentials, normal and anonymous limiter chains, realms, real Vault lazy retry, and environment resolution. Package/store and race tests, full real-process coverage, sensitive repeats, independent OpenSSL vectors, confidentiality checks, scoped lint, build, post-integration gates, and task review pass.
@@ -1082,7 +1089,9 @@ active execution tiers below contained 55 remaining manifests before Easy
 Wave 1. `traffic-label`, `authz-casbin`, `ai-prompt-decorator`, and
 `clickhouse-logger`, `splunk-hec-logging`, `jwe-decrypt`, `loki-logger`,
 `skywalking-logger`, `udp-logger`, `forward-auth`, `proxy-mirror`, and
-`basic-auth`, `cas-auth`, `feishu-auth`, `hmac-auth`, `multi-auth`, and `wolf-rbac` have now passed review, so **38 remain**.
+`basic-auth`, `cas-auth`, `feishu-auth`, `hmac-auth`, `multi-auth`, and
+`wolf-rbac` had passed review at that checkpoint, leaving **38**. The live
+`Current Remaining-Work Analysis` ledger below supersedes that checkpoint.
 `datadog` moved from Easy to Medium after its
 pinned embedded-wildcard case exposed the shared route prerequisite above.
 Each manifest was checked against its pinned Apache source matrix, current
@@ -1193,7 +1202,7 @@ Execution waves:
 
 ### Hard — 17 remaining (18 listed)
 
-- [ ] `key-auth`
+- [x] `key-auth`
 - [ ] `jwt-auth`
 - [ ] `ldap-auth`
 - [ ] `openid-connect`
@@ -1277,8 +1286,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 29 manifests
-are task-review-approved and 32 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 30 manifests
+are task-review-approved and 31 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1307,11 +1316,14 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 19 manifests
+### Medium — 18 remaining (19 at replan)
 
-- [ ] `key-auth` — the Basic/HMAC consumer-secret foundations now exist; own
-  only the missing 24 blocks, realm, limiter chain, service inheritance, and
-  DNS/domain-node behavior.
+- [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
+  adds strict consumer snapshots, exact realm and auth diagnostics, real
+  environment/Vault resolution, anonymous limiter and service inheritance,
+  domain-node behavior, and deterministic unresolved-secret isolation. Its
+  post-integration package/Store, race, harness, exact real-process, corpus,
+  scoped lint, build, and diff gates pass.
 - [ ] `ldap-auth` — extend the existing direct-bind fixture for failure, realm,
   and LDAPS behavior without inventing unsupported LDAP-search parity.
 - [ ] `authz-keycloak`

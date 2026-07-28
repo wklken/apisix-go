@@ -1264,12 +1264,15 @@ Execution waves:
   lifecycle, cache zones, tracing collectors, and AI protocol/runtime/streaming.
   Parallel lanes may edit distinct YAML/package files but must stop and report
   before modifying a shared owner assigned to another lane.
-- Current full-suite baseline is not green: `t/plugin` has two unrelated
-  `chaitin-waf` expectation mismatches (`metadata-rejects-empty-nodes` and
-  `metadata-requires-node-host`), and repository lint has five existing
-  findings outside the current consumer fix. Workers must report these exact
-  baseline failures separately and may not claim `go test ./...` or repository
-  lint passed until they are resolved.
+- Current full-suite baseline is not green. The 2026-07-28 refresh passed all
+  production packages, then `t/plugin` failed six remaining-work cases: two
+  `chaitin-waf` metadata expectation mismatches
+  (`metadata-rejects-empty-nodes` and `metadata-requires-node-host`), one
+  `datadog-source-1` UDP delivery case, and three generic `log-rotate-source-*`
+  file-lifecycle cases whose expected access log is never created. Repository
+  lint also has five existing findings outside the current consumer fix.
+  Workers must report these exact baseline failures separately and may not
+  claim `go test ./...` or repository lint passed until they are resolved.
 
 ## Current Remaining-Work Analysis: 2026-07-28
 

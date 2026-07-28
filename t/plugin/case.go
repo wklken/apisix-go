@@ -177,7 +177,15 @@ type FileAssertion struct {
 	Path      *Matcher                `yaml:"path"`
 	Body      *Matcher                `yaml:"body,omitempty"`
 	JSONLines *FileJSONLinesAssertion `yaml:"json_lines,omitempty"`
+	BboltJSON *FileBboltJSONAssertion `yaml:"bbolt_json,omitempty"`
 	Absent    bool                    `yaml:"absent,omitempty"`
+}
+
+type FileBboltJSONAssertion struct {
+	Bucket           string            `yaml:"bucket"`
+	Key              string            `yaml:"key"`
+	Fields           map[string]string `yaml:"fields"`
+	ForbiddenMatches []string          `yaml:"forbidden_matches,omitempty"`
 }
 
 type FileJSONLinesAssertion struct {
@@ -642,7 +650,7 @@ func (c *Case) validateScenario() error {
 			if err := validateCaseActions(step.Actions); err != nil {
 				return fmt.Errorf("step %q actions: %w", step.Name, err)
 			}
-			if err := validateFileAssertions(step.FileAssertions, "file assertion"); err != nil {
+			if err := validateFileAssertions(step.FileAssertions, "file assertion", false); err != nil {
 				return fmt.Errorf("step %q: %w", step.Name, err)
 			}
 			if step.ConfigTimeout < 0 {
@@ -1172,10 +1180,10 @@ func (r NetworkResponse) validate() error {
 }
 
 func validateAfterShutdown(assertions []FileAssertion) error {
-	return validateFileAssertions(assertions, "after_shutdown assertion")
+	return validateFileAssertions(assertions, "after_shutdown assertion", true)
 }
 
-func validateFileAssertions(assertions []FileAssertion, kind string) error {
+func validateFileAssertions(assertions []FileAssertion, kind string, afterShutdown bool) error {
 	for i, assertion := range assertions {
 		if assertion.Path == nil || assertion.Path.Equals == nil {
 			return fmt.Errorf("%s %d path must use equals", kind, i+1)
@@ -1187,20 +1195,49 @@ func validateFileAssertions(assertions []FileAssertion, kind string) error {
 			return fmt.Errorf("%s %d path must begin with {{WORK_DIR}}/", kind, i+1)
 		}
 		if assertion.Absent {
-			if assertion.Body != nil || assertion.JSONLines != nil {
-				return fmt.Errorf("%s %d body and json_lines must not be set when absent is true", kind, i+1)
+			if assertion.Body != nil || assertion.JSONLines != nil || assertion.BboltJSON != nil {
+				return fmt.Errorf("%s %d content assertions must not be set when absent is true", kind, i+1)
 			}
 			continue
 		}
-		if assertion.Body != nil && assertion.JSONLines != nil {
-			return fmt.Errorf("%s %d body and json_lines must not both be set", kind, i+1)
+		configured := 0
+		for _, present := range []bool{
+			assertion.Body != nil,
+			assertion.JSONLines != nil,
+			assertion.BboltJSON != nil,
+		} {
+			if present {
+				configured++
+			}
 		}
-		if assertion.Body == nil && assertion.JSONLines == nil {
-			return fmt.Errorf("%s %d body or json_lines is required", kind, i+1)
+		if configured != 1 {
+			return fmt.Errorf("%s %d exactly one content assertion is required", kind, i+1)
 		}
 		if assertion.Body != nil {
 			if err := assertion.Body.validate(matcherBody); err != nil {
 				return fmt.Errorf("%s %d body: %w", kind, i+1, err)
+			}
+			continue
+		}
+		if assertion.BboltJSON != nil {
+			if !afterShutdown {
+				return fmt.Errorf("%s %d bbolt_json is only supported after shutdown", kind, i+1)
+			}
+			if assertion.BboltJSON.Bucket == "" || assertion.BboltJSON.Key == "" {
+				return fmt.Errorf("%s %d bbolt_json bucket and key are required", kind, i+1)
+			}
+			if len(assertion.BboltJSON.Fields) == 0 {
+				return fmt.Errorf("%s %d bbolt_json fields are required", kind, i+1)
+			}
+			for path := range assertion.BboltJSON.Fields {
+				if _, err := parseJSONPointer(path); err != nil {
+					return fmt.Errorf("%s %d bbolt_json path %q: %w", kind, i+1, path, err)
+				}
+			}
+			for j, pattern := range assertion.BboltJSON.ForbiddenMatches {
+				if _, err := regexp.Compile(pattern); err != nil {
+					return fmt.Errorf("%s %d bbolt_json forbidden match %d: %w", kind, i+1, j+1, err)
+				}
 			}
 			continue
 		}

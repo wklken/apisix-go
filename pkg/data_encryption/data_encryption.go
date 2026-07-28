@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -47,6 +48,7 @@ var pluginFields = map[string][]string{
 		"auth.header", "auth.query", "auth.gcp.service_account_json", "auth.aws.secret_access_key",
 		"auth.aws.session_token",
 	},
+	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
 	"authz-keycloak":       {"client_secret"},
 	"authz-casdoor":        {"client_secret"},
 	"aws-lambda":           {"authorization.apikey", "authorization.iam.accesskey", "authorization.iam.secretkey"},
@@ -82,6 +84,7 @@ var pluginFields = map[string][]string{
 }
 
 var strictPluginFields = map[string][]string{
+	"ai-rate-limiting":     {"redis_password", "sentinel_password"},
 	"clickhouse-logger":    {"password"},
 	"csrf":                 {"key"},
 	"elasticsearch-logger": {"auth.password"},
@@ -109,6 +112,76 @@ func HasEncryptedPluginMetadata(name string) bool {
 
 func IsStrictPluginField(pluginName string, field string) bool {
 	return slices.Contains(strictPluginFields[pluginName], field)
+}
+
+func EncryptPluginConfigs(configs map[string]any, keyring []string) error {
+	if len(keyring) == 0 {
+		return ErrKeyUnavailable
+	}
+	for name, fields := range pluginFields {
+		config, ok := configs[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			if err := encryptField(config, field, keyring); err != nil {
+				return fmt.Errorf("%s.%s: %w", name, field, err)
+			}
+		}
+	}
+	return nil
+}
+
+func encryptField(config map[string]any, path string, keyring []string) error {
+	return encryptPath(config, strings.Split(path, "."), keyring)
+}
+
+func encryptPath(current any, segments []string, keyring []string) error {
+	if len(segments) == 0 {
+		return nil
+	}
+	segment := segments[0]
+	switch value := current.(type) {
+	case map[string]any:
+		if segment == "*" {
+			for _, child := range value {
+				if err := encryptPath(child, segments[1:], keyring); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		child, ok := value[segment]
+		if !ok {
+			return nil
+		}
+		if len(segments) == 1 {
+			plaintext, ok := child.(string)
+			if !ok || plaintext == "" {
+				return nil
+			}
+			if _, err := Decrypt(plaintext, keyring); err == nil {
+				return nil
+			}
+			encrypted, err := Encrypt(plaintext, keyring[0])
+			if err != nil {
+				return err
+			}
+			value[segment] = encrypted
+			return nil
+		}
+		return encryptPath(child, segments[1:], keyring)
+	case []any:
+		if segment != "*" {
+			return nil
+		}
+		for _, child := range value {
+			if err := encryptPath(child, segments[1:], keyring); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func DecryptPluginConfigs(configs map[string]any, keyring []string) {
@@ -213,6 +286,25 @@ func Decrypt(encoded string, keyring []string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("decrypt data encryption field")
+}
+
+func Encrypt(plaintext string, key string) (string, error) {
+	if len(key) != aes.BlockSize {
+		return "", errors.New("data encryption key must be 16 bytes")
+	}
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		return "", err
+	}
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padded := make([]byte, len(plaintext)+padding)
+	copy(padded, plaintext)
+	for i := len(plaintext); i < len(padded); i++ {
+		padded[i] = byte(padding)
+	}
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, []byte(key)).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
 func unpad(value []byte) ([]byte, error) {

@@ -12,6 +12,7 @@ import (
 
 	apisixv1 "github.com/apache/apisix-ingress-controller/pkg/types/apisix/v1"
 	"github.com/fsnotify/fsnotify"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -314,6 +315,22 @@ func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string,
 		fields[idKey], err = stdjson.Marshal(id)
 		if err != nil {
 			return "", nil, err
+		}
+	}
+	if rawPlugins, ok := fields["plugins"]; ok {
+		var plugins map[string]any
+		if err := stdjson.Unmarshal(rawPlugins, &plugins); err != nil {
+			return "", nil, fmt.Errorf("decode plugins: %w", err)
+		}
+		keyring, enabled := data_encryption.Keyring()
+		if enabled {
+			if err := data_encryption.EncryptPluginConfigs(plugins, keyring); err != nil {
+				return "", nil, fmt.Errorf("encrypt plugin fields: %w", err)
+			}
+			fields["plugins"], err = stdjson.Marshal(plugins)
+			if err != nil {
+				return "", nil, fmt.Errorf("encode encrypted plugins: %w", err)
+			}
 		}
 	}
 	value, err := stdjson.Marshal(fields)

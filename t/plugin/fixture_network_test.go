@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 type namedFixture interface {
@@ -603,10 +605,73 @@ func assertFiles(
 			}
 			continue
 		}
+		if assertion.BboltJSON != nil {
+			if err := matchFileBboltJSON(absolutePath, *assertion.BboltJSON, replacements); err != nil {
+				t.Errorf("%s %d bbolt_json: %v", kind, i+1, err)
+			}
+			continue
+		}
 		if err := assertion.Body.match(string(body), true); err != nil {
 			t.Errorf("%s %d body: %v", kind, i+1, err)
 		}
 	}
+}
+
+func matchFileBboltJSON(
+	path string,
+	assertion FileBboltJSONAssertion,
+	replacements map[string]string,
+) error {
+	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	if err != nil {
+		return fmt.Errorf("open bbolt: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var raw []byte
+	err = db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(assertion.Bucket))
+		if bucket == nil {
+			return fmt.Errorf("bucket %q is missing", assertion.Bucket)
+		}
+		value := bucket.Get([]byte(assertion.Key))
+		if value == nil {
+			return fmt.Errorf("key %q is missing from bucket %q", assertion.Key, assertion.Bucket)
+		}
+		raw = bytes.Clone(value)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, pattern := range assertion.ForbiddenMatches {
+		if regexp.MustCompile(pattern).Match(raw) {
+			return fmt.Errorf("stored JSON matches forbidden pattern %q", pattern)
+		}
+	}
+	var document any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("decode stored JSON: %w", err)
+	}
+	for pointer, expected := range assertion.Fields {
+		actual, err := resolveJSONPointer(document, pointer)
+		if err != nil {
+			return err
+		}
+		for placeholder, replacement := range replacements {
+			expected = strings.ReplaceAll(expected, placeholder, replacement)
+		}
+		actualString, err := networkJSONValue(actual)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", pointer, err)
+		}
+		if actualString != expected {
+			return fmt.Errorf("field %s = %q, want %q", pointer, actualString, expected)
+		}
+	}
+	return nil
 }
 
 func matchFileJSONLines(
@@ -1090,6 +1155,43 @@ func TestHarnessAssertsFileAfterShutdown(t *testing.T) {
 	assertAfterShutdown(t, []FileAssertion{{
 		Path: &Matcher{Equals: new("{{WORK_DIR}}/output.log")},
 		Body: &Matcher{Equals: &body},
+	}}, map[string]string{"{{WORK_DIR}}": workDir})
+}
+
+func TestHarnessAssertsTypedBboltJSONAfterShutdown(t *testing.T) {
+	workDir := t.TempDir()
+	path := filepath.Join(workDir, "apisix-go-store.db")
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open bbolt fixture: %v", err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucket([]byte("routes"))
+		if err != nil {
+			return err
+		}
+		return bucket.Put(
+			[]byte("route-1"),
+			[]byte(`{"plugins":{"ai-rate-limiting":{"redis_password":"ciphertext"}}}`),
+		)
+	})
+	if err != nil {
+		t.Fatalf("write bbolt fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close bbolt fixture: %v", err)
+	}
+
+	assertAfterShutdown(t, []FileAssertion{{
+		Path: &Matcher{Equals: new("{{WORK_DIR}}/apisix-go-store.db")},
+		BboltJSON: &FileBboltJSONAssertion{
+			Bucket: "routes",
+			Key:    "route-1",
+			Fields: map[string]string{
+				"/plugins/ai-rate-limiting/redis_password": "ciphertext",
+			},
+			ForbiddenMatches: []string{"plaintext"},
+		},
 	}}, map[string]string{"{{WORK_DIR}}": workDir})
 }
 

@@ -558,6 +558,49 @@ func TestManifestAcceptsJSONLinesFileAssertion(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsTypedBboltJSONAssertionAfterShutdown(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].AfterShutdown = []FileAssertion{{
+		Path: &Matcher{Equals: new("{{WORK_DIR}}/apisix-go-store.db")},
+		BboltJSON: &FileBboltJSONAssertion{
+			Bucket: "routes",
+			Key:    "route-1",
+			Fields: map[string]string{
+				"/plugins/ai-rate-limiting/redis_password": "ciphertext",
+			},
+			ForbiddenMatches: []string{"plaintext"},
+		},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsBboltJSONAssertionOutsideAfterShutdown(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "locked-database",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+		FileAssertions: []FileAssertion{{
+			Path: &Matcher{Equals: new("{{WORK_DIR}}/apisix-go-store.db")},
+			BboltJSON: &FileBboltJSONAssertion{
+				Bucket: "routes",
+				Key:    "route-1",
+				Fields: map[string]string{"/id": "route-1"},
+			},
+		}},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "bbolt_json is only supported after shutdown") {
+		t.Fatalf("validate() error = %v, want after-shutdown restriction", err)
+	}
+}
+
 func TestManifestRejectsJSONLinesFileAssertionWithWrongRecordTotal(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].AfterShutdown = []FileAssertion{{

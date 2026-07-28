@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/store"
 )
 
@@ -126,6 +127,68 @@ func TestStandaloneFileWatcherLoadsSecretResources(t *testing.T) {
 	got := collectStandaloneEvents(events)
 	if _, ok := got["/apisix/secrets/vault/test1"]; !ok {
 		t.Fatalf("loaded events = %#v, want Vault secret resource", got)
+	}
+}
+
+func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t *testing.T) {
+	const key = "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := `routes:
+  - id: route-1
+    uri: /ai
+    plugins:
+      ai-rate-limiting:
+        limit: 30
+        time_window: 60
+        redis_password: redis-plaintext
+        sentinel_password: sentinel-plaintext
+      loggly:
+        customer_token: loggly-plaintext
+#END
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 2)
+	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	got := collectStandaloneEvents(events)
+	raw := got["/apisix/routes/route-1"].Value
+	if strings.Contains(string(raw), "redis-plaintext") ||
+		strings.Contains(string(raw), "sentinel-plaintext") ||
+		strings.Contains(string(raw), "loggly-plaintext") {
+		t.Fatalf("stored route contains plaintext secret: %s", raw)
+	}
+	var route struct {
+		Plugins map[string]map[string]any `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &route); err != nil {
+		t.Fatalf("decode stored route: %v", err)
+	}
+	for field, plaintext := range map[string]string{
+		"redis_password":    "redis-plaintext",
+		"sentinel_password": "sentinel-plaintext",
+	} {
+		ciphertext, ok := route.Plugins["ai-rate-limiting"][field].(string)
+		if !ok {
+			t.Fatalf("%s = %T, want ciphertext string", field, route.Plugins["ai-rate-limiting"][field])
+		}
+		decrypted, err := data_encryption.Decrypt(ciphertext, []string{key})
+		if err != nil || decrypted != plaintext {
+			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
+		}
+	}
+	logglyCiphertext, ok := route.Plugins["loggly"]["customer_token"].(string)
+	if !ok {
+		t.Fatalf("loggly.customer_token = %T, want ciphertext string", route.Plugins["loggly"]["customer_token"])
+	}
+	if decrypted, err := data_encryption.Decrypt(logglyCiphertext, []string{key}); err != nil ||
+		decrypted != "loggly-plaintext" {
+		t.Fatalf("Decrypt(loggly.customer_token) = (%q, %v), want loggly-plaintext", decrypted, err)
 	}
 }
 

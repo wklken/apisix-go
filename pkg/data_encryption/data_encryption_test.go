@@ -28,6 +28,77 @@ func TestDecryptPluginConfigsUsesKeyringAndNestedFields(t *testing.T) {
 	}
 }
 
+func TestDecryptPluginConfigsPreservesAIRateLimitingRedisPassword(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	ciphertext := encryptForTest(t, key, "redis-secret")
+	sentinelCiphertext := encryptForTest(t, key, "sentinel-secret")
+	configs := map[string]any{"ai-rate-limiting": map[string]any{
+		"redis_password":    ciphertext,
+		"sentinel_password": sentinelCiphertext,
+	}}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if got := configs["ai-rate-limiting"].(map[string]any)["redis_password"]; got != ciphertext {
+		t.Fatalf("ai-rate-limiting.redis_password = %v, want ciphertext retained for runtime resolution", got)
+	}
+	if got := configs["ai-rate-limiting"].(map[string]any)["sentinel_password"]; got != sentinelCiphertext {
+		t.Fatalf("ai-rate-limiting.sentinel_password = %v, want ciphertext retained for runtime resolution", got)
+	}
+	if !IsStrictPluginField("ai-rate-limiting", "redis_password") {
+		t.Fatal("ai-rate-limiting.redis_password must be strict to remain encrypted at rest")
+	}
+	if !IsStrictPluginField("ai-rate-limiting", "sentinel_password") {
+		t.Fatal("ai-rate-limiting.sentinel_password must be strict to remain encrypted at rest")
+	}
+}
+
+func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"ai-rate-limiting": map[string]any{
+			"redis_password":    "redis-secret",
+			"sentinel_password": "sentinel-secret",
+		},
+		"basic-auth": map[string]any{"password": "basic-secret"},
+		"loggly":     map[string]any{"customer_token": "loggly-secret"},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	config := configs["ai-rate-limiting"].(map[string]any)
+	for field, plaintext := range map[string]string{
+		"redis_password":    "redis-secret",
+		"sentinel_password": "sentinel-secret",
+	} {
+		ciphertext, ok := config[field].(string)
+		if !ok || ciphertext == plaintext {
+			t.Fatalf("%s = %v, want ciphertext", field, config[field])
+		}
+		decrypted, err := Decrypt(ciphertext, []string{key})
+		if err != nil || decrypted != plaintext {
+			t.Fatalf("Decrypt(%s) = (%q, %v), want %q", field, decrypted, err, plaintext)
+		}
+	}
+	for pluginName, field := range map[string]string{
+		"basic-auth": "password",
+		"loggly":     "customer_token",
+	} {
+		ciphertext := configs[pluginName].(map[string]any)[field].(string)
+		if ciphertext == pluginName+"-secret" {
+			t.Fatalf("%s.%s remained plaintext", pluginName, field)
+		}
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if got := configs["basic-auth"].(map[string]any)["password"]; got != "basic-secret" {
+		t.Fatalf("basic-auth.password = %v, want runtime plaintext", got)
+	}
+	if got := configs["loggly"].(map[string]any)["customer_token"]; got == "loggly-secret" {
+		t.Fatalf("loggly.customer_token = %v, want strict ciphertext for plugin-local resolution", got)
+	}
+}
+
 func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

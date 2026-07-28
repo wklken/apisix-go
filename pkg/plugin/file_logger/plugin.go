@@ -230,12 +230,6 @@ func normalizeMatch(match []any) []any {
 	return group
 }
 
-func (p *Plugin) reopen() {
-	if err := FlushAndReopen(p.config.Path); err != nil {
-		logger.Error(fmt.Sprintf("failed to reopen file: %s, error info: %s", p.config.Path, err))
-	}
-}
-
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {
 		if p.logger != nil {
@@ -271,8 +265,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		includeResponseBody := recorder != nil && recorder.HasBody() &&
+			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code)
 		var capturedResponseBody string
-		if recorder != nil && recorder.HasBody() {
+		if includeResponseBody {
 			capturedResponseBody = responseBody(recorder.Body(), w.Header().Get("Content-Encoding"))
 			apisixctx.RegisterRequestVar(r, "$resp_body", capturedResponseBody)
 		}
@@ -280,8 +276,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.HasBody() &&
-			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code) {
+		if includeResponseBody {
 			base.NestedLogMap(logFields, "response")["body"] = capturedResponseBody
 		}
 
@@ -321,7 +316,14 @@ func (p *Plugin) buildLogFields(
 	started time.Time,
 ) map[string]any {
 	if p.logFormat != nil {
-		return resolveLogFormat(p.logFormat, r, request, metrics.Code)
+		fields := resolveLogFormat(p.logFormat, r, request, metrics.Code)
+		if routeID := base.RequestVar(r, "$route_id", metrics.Code); routeID != "" {
+			fields["route_id"] = routeID
+		}
+		if serviceID := base.RequestVar(r, "$service_id", metrics.Code); serviceID != "" {
+			fields["service_id"] = serviceID
+		}
+		return fields
 	}
 
 	fields := defaultLogFields(r, request, responseHeaders, metrics, started)

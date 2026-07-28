@@ -171,9 +171,20 @@ type NetworkResponse struct {
 }
 
 type FileAssertion struct {
-	Path   *Matcher `yaml:"path"`
-	Body   *Matcher `yaml:"body,omitempty"`
-	Absent bool     `yaml:"absent,omitempty"`
+	Path      *Matcher                `yaml:"path"`
+	Body      *Matcher                `yaml:"body,omitempty"`
+	JSONLines *FileJSONLinesAssertion `yaml:"json_lines,omitempty"`
+	Absent    bool                    `yaml:"absent,omitempty"`
+}
+
+type FileJSONLinesAssertion struct {
+	Count   int                       `yaml:"count"`
+	Records []FileJSONRecordAssertion `yaml:"records"`
+}
+
+type FileJSONRecordAssertion struct {
+	Count  int               `yaml:"count"`
+	Fields map[string]string `yaml:"fields"`
 }
 
 type CaseSource struct {
@@ -1136,16 +1147,49 @@ func validateFileAssertions(assertions []FileAssertion, kind string) error {
 			return fmt.Errorf("%s %d path must begin with {{WORK_DIR}}/", kind, i+1)
 		}
 		if assertion.Absent {
-			if assertion.Body != nil {
-				return fmt.Errorf("%s %d body must not be set when absent is true", kind, i+1)
+			if assertion.Body != nil || assertion.JSONLines != nil {
+				return fmt.Errorf("%s %d body and json_lines must not be set when absent is true", kind, i+1)
 			}
 			continue
 		}
-		if assertion.Body == nil {
-			return fmt.Errorf("%s %d body is required", kind, i+1)
+		if assertion.Body != nil && assertion.JSONLines != nil {
+			return fmt.Errorf("%s %d body and json_lines must not both be set", kind, i+1)
 		}
-		if err := assertion.Body.validate(matcherBody); err != nil {
-			return fmt.Errorf("%s %d body: %w", kind, i+1, err)
+		if assertion.Body == nil && assertion.JSONLines == nil {
+			return fmt.Errorf("%s %d body or json_lines is required", kind, i+1)
+		}
+		if assertion.Body != nil {
+			if err := assertion.Body.validate(matcherBody); err != nil {
+				return fmt.Errorf("%s %d body: %w", kind, i+1, err)
+			}
+			continue
+		}
+		if assertion.JSONLines.Count <= 0 {
+			return fmt.Errorf("%s %d json_lines count must be positive", kind, i+1)
+		}
+		total := 0
+		for j, record := range assertion.JSONLines.Records {
+			if record.Count <= 0 {
+				return fmt.Errorf("%s %d json_lines record %d count must be positive", kind, i+1, j+1)
+			}
+			if len(record.Fields) == 0 {
+				return fmt.Errorf("%s %d json_lines record %d fields are required", kind, i+1, j+1)
+			}
+			for path := range record.Fields {
+				if _, err := parseJSONPointer(path); err != nil {
+					return fmt.Errorf("%s %d json_lines record %d path %q: %w", kind, i+1, j+1, path, err)
+				}
+			}
+			total += record.Count
+		}
+		if total != assertion.JSONLines.Count {
+			return fmt.Errorf(
+				"%s %d json_lines record counts total %d, want %d",
+				kind,
+				i+1,
+				total,
+				assertion.JSONLines.Count,
+			)
 		}
 	}
 	return nil

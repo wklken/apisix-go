@@ -486,10 +486,81 @@ func assertFiles(
 			t.Errorf("%s %d read %s: %v", kind, i+1, absolutePath, err)
 			continue
 		}
+		if assertion.JSONLines != nil {
+			if err := matchFileJSONLines(body, *assertion.JSONLines, replacements); err != nil {
+				t.Errorf("%s %d json_lines: %v", kind, i+1, err)
+			}
+			continue
+		}
 		if err := assertion.Body.match(string(body), true); err != nil {
 			t.Errorf("%s %d body: %v", kind, i+1, err)
 		}
 	}
+}
+
+func matchFileJSONLines(
+	body []byte,
+	assertion FileJSONLinesAssertion,
+	replacements map[string]string,
+) error {
+	rawLines := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+	if len(rawLines) != assertion.Count {
+		return fmt.Errorf("record count = %d, want %d", len(rawLines), assertion.Count)
+	}
+
+	matchedCounts := make([]int, len(assertion.Records))
+	for i, rawLine := range rawLines {
+		var value any
+		decoder := json.NewDecoder(strings.NewReader(rawLine))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return fmt.Errorf("record %d decode: %w", i+1, err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			if err == nil {
+				return fmt.Errorf("record %d decode: trailing JSON value", i+1)
+			}
+			return fmt.Errorf("record %d decode trailing value: %w", i+1, err)
+		}
+
+		matchedRecord := -1
+		for j, record := range assertion.Records {
+			matches := true
+			for path, expected := range record.Fields {
+				actual, err := resolveJSONPointer(value, path)
+				if err != nil {
+					matches = false
+					break
+				}
+				for placeholder, replacement := range replacements {
+					expected = strings.ReplaceAll(expected, placeholder, replacement)
+				}
+				actualString, err := networkJSONValue(actual)
+				if err != nil || actualString != expected {
+					matches = false
+					break
+				}
+			}
+			if !matches {
+				continue
+			}
+			if matchedRecord >= 0 {
+				return fmt.Errorf("record %d matches multiple expected record groups", i+1)
+			}
+			matchedRecord = j
+		}
+		if matchedRecord < 0 {
+			return fmt.Errorf("record %d does not match any expected record group: %s", i+1, rawLine)
+		}
+		matchedCounts[matchedRecord]++
+	}
+	for i, record := range assertion.Records {
+		if matchedCounts[i] != record.Count {
+			return fmt.Errorf("record group %d count = %d, want %d", i+1, matchedCounts[i], record.Count)
+		}
+	}
+	return nil
 }
 
 func TestHarnessRunsTCPFixture(t *testing.T) {
@@ -795,4 +866,71 @@ func TestHarnessAssertsAbsentFileMidCase(t *testing.T) {
 		Path:   &Matcher{Equals: new("{{WORK_DIR}}/output.log")},
 		Absent: true,
 	}}, map[string]string{"{{WORK_DIR}}": workDir}, "step file assertion")
+}
+
+func TestMatchFileJSONLinesCorrelatesUnorderedRecords(t *testing.T) {
+	assertion := FileJSONLinesAssertion{
+		Count: 4,
+		Records: []FileJSONRecordAssertion{
+			{
+				Count: 2,
+				Fields: map[string]string{
+					"/upstream":      "127.0.0.1:{{DOMAIN_PORT}}",
+					"/upstream_host": "localhost",
+				},
+			},
+			{
+				Count: 2,
+				Fields: map[string]string{
+					"/upstream":      "127.0.0.1:1982",
+					"/upstream_host": "127.0.0.1",
+				},
+			},
+		},
+	}
+	body := []byte(
+		"{\"upstream\":\"127.0.0.1:1982\",\"upstream_host\":\"127.0.0.1\"}\n" +
+			"{\"upstream\":\"127.0.0.1:1980\",\"upstream_host\":\"localhost\"}\n" +
+			"{\"upstream\":\"127.0.0.1:1980\",\"upstream_host\":\"localhost\"}\n" +
+			"{\"upstream\":\"127.0.0.1:1982\",\"upstream_host\":\"127.0.0.1\"}\n",
+	)
+	if err := matchFileJSONLines(body, assertion, map[string]string{"{{DOMAIN_PORT}}": "1980"}); err != nil {
+		t.Fatalf("matchFileJSONLines() error = %v", err)
+	}
+}
+
+func TestMatchFileJSONLinesRejectsMalformedRecord(t *testing.T) {
+	assertion := FileJSONLinesAssertion{
+		Count: 1,
+		Records: []FileJSONRecordAssertion{{
+			Count:  1,
+			Fields: map[string]string{"/route_id": "route-1"},
+		}},
+	}
+	if err := matchFileJSONLines([]byte("{not-json}\n"), assertion, nil); err == nil {
+		t.Fatal("matchFileJSONLines() error = nil, want malformed JSON rejection")
+	}
+}
+
+func TestMatchFileJSONLinesRejectsUncorrelatedFields(t *testing.T) {
+	assertion := FileJSONLinesAssertion{
+		Count: 2,
+		Records: []FileJSONRecordAssertion{
+			{
+				Count:  1,
+				Fields: map[string]string{"/upstream": "127.0.0.1:1980", "/upstream_host": "localhost"},
+			},
+			{
+				Count:  1,
+				Fields: map[string]string{"/upstream": "127.0.0.1:1982", "/upstream_host": "127.0.0.1"},
+			},
+		},
+	}
+	body := []byte(
+		"{\"upstream\":\"127.0.0.1:1980\",\"upstream_host\":\"127.0.0.1\"}\n" +
+			"{\"upstream\":\"127.0.0.1:1982\",\"upstream_host\":\"localhost\"}\n",
+	)
+	if err := matchFileJSONLines(body, assertion, nil); err == nil {
+		t.Fatal("matchFileJSONLines() error = nil, want correlation rejection")
+	}
 }

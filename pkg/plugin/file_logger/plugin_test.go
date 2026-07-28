@@ -103,7 +103,9 @@ func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 		t.Fatalf("rotated log content = %q, want cached post-rotation write", rotatedContent)
 	}
 
-	p.reopen()
+	if err := FlushAndReopen(path); err != nil {
+		t.Fatalf("FlushAndReopen() error = %v", err)
+	}
 	serveFileLoggerRequest(t, p, "/reopened")
 	currentContent = readLogFile(t, path)
 	if !strings.Contains(currentContent, `"path":"/reopened"`) {
@@ -128,7 +130,9 @@ func TestHandlerKeepsUnlinkedFileCachedUntilReopen(t *testing.T) {
 		t.Fatalf("cached log path stat error = %v, want absent", err)
 	}
 
-	p.reopen()
+	if err := FlushAndReopen(path); err != nil {
+		t.Fatalf("FlushAndReopen() error = %v", err)
+	}
 	serveFileLoggerRequest(t, p, "/after")
 	content := readLogFile(t, path)
 	if !strings.Contains(content, `"path":"/after"`) {
@@ -249,7 +253,16 @@ func TestHandlerLogFormatReplacesDefaultAndIgnoresExtra(t *testing.T) {
 		LogFormatExtra: map[string]string{"ignored": "extra"},
 	})
 
-	serveFileLoggerRequest(t, p, "/precedence")
+	req := httptest.NewRequest(http.MethodGet, "/precedence", nil)
+	req = apisixctx.WithRequestVars(req)
+	req = apisixctx.WithApisixVars(req, map[string]string{
+		"$route_id":   "route-1",
+		"$service_id": "service-1",
+	})
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
 	var logged map[string]any
 	line := strings.TrimSpace(readLogFile(t, path))
 	if err := json.Unmarshal([]byte(line), &logged); err != nil {
@@ -257,6 +270,12 @@ func TestHandlerLogFormatReplacesDefaultAndIgnoresExtra(t *testing.T) {
 	}
 	if logged["msg"] != "precedence test" {
 		t.Fatalf("msg = %#v, want precedence test", logged["msg"])
+	}
+	if logged["route_id"] != "route-1" {
+		t.Fatalf("route_id = %#v, want route-1", logged["route_id"])
+	}
+	if logged["service_id"] != "service-1" {
+		t.Fatalf("service_id = %#v, want service-1", logged["service_id"])
 	}
 	for _, field := range []string{"request", "response", "ignored"} {
 		if _, exists := logged[field]; exists {
@@ -563,6 +582,38 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	}
 	if _, ok := response["body"]; ok {
 		t.Fatalf("logged response = %#v, want no response body", response)
+	}
+}
+
+func TestHandlerDoesNotExposeResponseBodyVariableWhenExpressionDoesNotMatch(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path:                path,
+		LogFormat:           map[string]any{"resp_body": "$resp_body"},
+		IncludeRespBody:     true,
+		IncludeRespBodyExpr: []any{[]any{"status", "==", "500"}},
+		MaxRespBodyBytes:    32,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`private-response`))
+	})).ServeHTTP(rr, req)
+
+	var logged map[string]any
+	line := strings.TrimSpace(readLogFile(t, path))
+	if err := json.Unmarshal([]byte(line), &logged); err != nil {
+		t.Fatalf("decode log line %q: %v", line, err)
+	}
+	if logged["resp_body"] != nil {
+		t.Fatalf("resp_body = %#v, want null for non-matching expression", logged["resp_body"])
+	}
+	if strings.Contains(line, "private-response") {
+		t.Fatalf("log line = %q, want response body kept private", line)
 	}
 }
 

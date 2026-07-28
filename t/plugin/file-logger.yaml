@@ -13,12 +13,12 @@ sources:
     tests: 15
 
 cases:
-  - name: cached-file-reopens-only-after-sigusr1
-    source: {file: t/plugin/file-logger-reopen.t, tests: [1, 2, 3]}
+  - name: cached-file-stays-unlinked
+    source: {file: t/plugin/file-logger-reopen.t, tests: [1, 2]}
     config:
       plugin_metadata:
         - id: file-logger
-          log_format: {host: $host, client_ip: $remote_addr, route_id: $route_id}
+          log_format: {host: $host, client_ip: $remote_addr}
       routes:
         - id: file-reopen
           uri: /hello
@@ -31,10 +31,10 @@ cases:
       - name: primary
         kind: http
         expect: [{path: {matches: "^/"}}]
-        count: {at_least: 4, at_most: 4}
+        count: {at_least: 2, at_most: 2}
         respond: [{status: 200, body: "hello world\n"}]
     steps:
-      - name: prepare-and-cache-file
+      - name: first-request-creates-and-caches-file
         input: {path: /hello}
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
@@ -52,8 +52,39 @@ cases:
         file_assertions:
           - path: {equals: '{{WORK_DIR}}/reopen.log'}
             absent: true
+
+  - name: sigusr1-reopens-cached-file
+    source: {file: t/plugin/file-logger-reopen.t, tests: [3]}
+    config:
+      plugin_metadata:
+        - id: file-logger
+          log_format: {host: $host, client_ip: $remote_addr}
+      routes:
+        - id: file-reopen
+          uri: /hello
+          plugins:
+            file-logger: {path: '{{WORK_DIR}}/reopen.log'}
+          upstream: *primary_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {matches: "^/"}}]
+        count: {at_least: 3, at_most: 3}
+        respond: [{status: 200, body: "hello world\n"}]
+    steps:
+      - name: pre-signal-request-creates-and-opens-file
+        input: {path: /hello}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        file_assertions:
+          - path: {equals: '{{WORK_DIR}}/reopen.log'}
+            body: {matches: '"client_ip":"127\.0\.0\.1"'}
+          - path: {equals: '{{WORK_DIR}}/reopen.log'}
+            body: {matches: '"route_id":"file-reopen"'}
+          - path: {equals: '{{WORK_DIR}}/reopen.log'}
+            body: {matches: '"host":"127\.0\.0\.1"'}
       - name: sigusr1-reopens-the-file
         actions:
+          - remove: '{{WORK_DIR}}/reopen.log'
           - signal: SIGUSR1
           - wait: 50ms
         input: {path: /hello}
@@ -88,7 +119,6 @@ cases:
               plugins:
                 file-logger:
                   path: '{{WORK_DIR}}/valid.log'
-                  log_format: {route_id: $route_id}
               upstream: *primary_upstream
         fixtures:
           - name: primary
@@ -122,7 +152,7 @@ cases:
     config:
       plugin_metadata:
         - id: file-logger
-          log_format: {host: $host, client_ip: $remote_addr, route_id: $route_id}
+          log_format: {host: $host, client_ip: $remote_addr}
       routes:
         - id: file-metadata-format
           uri: /hello
@@ -143,6 +173,12 @@ cases:
         input: {path: /hello}
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
+          - path: {equals: '{{WORK_DIR}}/metadata-format.log'}
+            body:
+              matches: '(?s)^(?:\{[^\n]*"host":"127\.0\.0\.1"[^\n]*\}\n){2}$'
+          - path: {equals: '{{WORK_DIR}}/metadata-format.log'}
+            body:
+              matches: '(?s)^(?:\{[^\n]*"client_ip":"127\.0\.0\.1"[^\n]*\}\n){2}$'
           - path: {equals: '{{WORK_DIR}}/metadata-format.log'}
             body:
               matches: '(?s)^(?:\{[^\n]*"route_id":"file-metadata-format"[^\n]*\}\n){2}$'
@@ -186,39 +222,41 @@ cases:
           plugins:
             file-logger:
               path: '{{WORK_DIR}}/route-format.log'
-              log_format: {host: $host, client_ip: $remote_addr, route_id: $route_id}
+              log_format: {host: $host, client_ip: $remote_addr}
           upstream: *primary_upstream
     fixtures:
       - name: primary
         kind: http
         expect: [{path: {matches: "^/"}}]
-        count: {at_least: 1, at_most: 1}
+        count: {at_least: 2, at_most: 2}
         respond: [{status: 200, body: "hello world\n"}]
     steps:
-      - name: route-format-includes-fields-absent-from-metadata
+      - name: block-seven-route-format-includes-client-ip
+        input: {path: /hello}
+        output: {status: 200, body: {equals: "hello world\n"}}
+      - name: block-nine-route-format-still-wins-over-metadata
         input: {path: /hello}
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
           - path: {equals: '{{WORK_DIR}}/route-format.log'}
-            body: {matches: '"host":"127\.0\.0\.1"'}
+            body: {matches: '(?s)^(?:\{[^\n]*"host":"127\.0\.0\.1"[^\n]*\}\n){2}$'}
           - path: {equals: '{{WORK_DIR}}/route-format.log'}
-            body: {matches: '"client_ip":"127\.0\.0\.1"'}
+            body: {matches: '(?s)^(?:\{[^\n]*"client_ip":"127\.0\.0\.1"[^\n]*\}\n){2}$'}
           - path: {equals: '{{WORK_DIR}}/route-format.log'}
-            body: {matches: '"route_id":"file-route-format"'}
+            body: {matches: '(?s)^(?:\{[^\n]*"route_id":"file-route-format"[^\n]*\}\n){2}$'}
 
   - name: nested-format-and-depth-limit
     source: {file: t/plugin/file-logger.t, tests: [10, 11, 12]}
     config:
       routes:
         - id: file-nested-format
-          uri: /nested
+          uri: /hello
           plugins:
             file-logger:
               path: '{{WORK_DIR}}/nested.log'
               log_format:
                 host: $host
                 client_ip: $remote_addr
-                route_id: $route_id
                 request:
                   method: $request_method
                   uri: $request_uri
@@ -231,7 +269,6 @@ cases:
             file-logger:
               path: '{{WORK_DIR}}/depth.log'
               log_format:
-                route_id: $route_id
                 a: {b: {c: {d: {e: {f: {g: $host}}}}}}
           upstream: *primary_upstream
     fixtures:
@@ -243,18 +280,22 @@ cases:
     steps:
       - name: nested-objects-resolve-nginx-variables
         input:
-          path: /nested
+          path: /hello
           headers: {User-Agent: pinned-agent}
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
           - path: {equals: '{{WORK_DIR}}/nested.log'}
             body: {matches: '"method":"GET"'}
           - path: {equals: '{{WORK_DIR}}/nested.log'}
-            body: {matches: '"uri":"/nested"'}
+            body: {matches: '"uri":"/hello"'}
           - path: {equals: '{{WORK_DIR}}/nested.log'}
             body: {matches: '"headers":\{"user_agent":"pinned-agent"\}'}
           - path: {equals: '{{WORK_DIR}}/nested.log'}
             body: {matches: '"response":\{"status":200\}'}
+          - path: {equals: '{{WORK_DIR}}/nested.log'}
+            body: {matches: '"host":"127\.0\.0\.1"'}
+          - path: {equals: '{{WORK_DIR}}/nested.log'}
+            body: {matches: '"client_ip":"127\.0\.0\.1"'}
           - path: {equals: '{{WORK_DIR}}/nested.log'}
             body: {matches: '"route_id":"file-nested-format"'}
       - name: depth-after-five-is-truncated-and-warned
@@ -356,6 +397,14 @@ cases:
         input: {path: /hello}
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
+          - path: {equals: '{{WORK_DIR}}/domain.log'}
+            body: {matches: '"method":"GET"'}
+          - path: {equals: '{{WORK_DIR}}/domain.log'}
+            body: {matches: '"status":200'}
+          - path: {equals: '{{WORK_DIR}}/domain.log'}
+            body: {matches: '"server":\{[^}]*"version":"apisix-go"'}
+          - path: {equals: '{{WORK_DIR}}/domain.log'}
+            body: {matches: '"route_id":"file-domain-extra"'}
           - path: {equals: '{{WORK_DIR}}/domain.log'}
             body: {matches: '"upstream":"127\.0\.0\.1:[0-9]+"'}
           - path: {equals: '{{WORK_DIR}}/domain.log'}
@@ -462,6 +511,8 @@ cases:
             body: {matches: '"route_id":"file-multi-domain"'}
           - path: {equals: '{{WORK_DIR}}/multi-domain.log'}
             body: {matches: '"upstream_host":"localhost"'}
+          - path: {equals: '{{WORK_DIR}}/multi-domain.log'}
+            body: {matches: '"method":"GET"'}
 
   - name: mixed-domain-and-ip-nodes-keep-own-host
     source: {file: t/plugin/file-logger.t, tests: [25, 26]}
@@ -497,11 +548,17 @@ cases:
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
           - path: {equals: '{{WORK_DIR}}/mixed.log'}
-            body: {matches: '"upstream_host":"localhost"'}
-          - path: {equals: '{{WORK_DIR}}/mixed.log'}
-            body: {matches: '"upstream_host":"127\.0\.0\.1"'}
-          - path: {equals: '{{WORK_DIR}}/mixed.log'}
-            body: {matches: '"upstream":"127\.0\.0\.1:[0-9]+"'}
+            json_lines:
+              count: 4
+              records:
+                - count: 2
+                  fields:
+                    /upstream: '127.0.0.1:{{FIXTURE.primary.PORT}}'
+                    /upstream_host: localhost
+                - count: 2
+                  fields:
+                    /upstream: '{{FIXTURE.secondary.ADDR}}'
+                    /upstream_host: 127.0.0.1
 
   - name: response-body-capture
     source: {file: t/plugin/file-logger2.t, tests: [1, 2]}
@@ -540,11 +597,20 @@ cases:
               include_resp_body: true
               include_resp_body_expr: [[arg_foo, ==, bar]]
           upstream: *primary_upstream
+        - id: file-response-expression-private
+          uri: /privacy
+          plugins:
+            file-logger:
+              path: '{{WORK_DIR}}/response-expression-private.log'
+              log_format: {resp_body: $resp_body}
+              include_resp_body: true
+              include_resp_body_expr: [[arg_foo, ==, bar]]
+          upstream: *primary_upstream
     fixtures:
       - name: primary
         kind: http
         expect: [{path: {matches: "^/"}}]
-        count: {at_least: 2, at_most: 2}
+        count: {at_least: 3, at_most: 3}
         respond: [{status: 200, body: "hello world\n"}]
     steps:
       - name: matching-query-captures-response
@@ -562,13 +628,21 @@ cases:
             body: {matches: '^[^\n]*"body":"hello world\\n"[^\n]*\n[^\n]*\n$'}
           - path: {equals: '{{WORK_DIR}}/response-expression.log'}
             body: {not_matches: '\n[^\n]*"body":'}
+      - name: custom-response-variable-keeps-nonmatching-body-private
+        input: {path: '/privacy?name=pix'}
+        output: {status: 200, body: {equals: "hello world\n"}}
+        file_assertions:
+          - path: {equals: '{{WORK_DIR}}/response-expression-private.log'}
+            body: {matches: '"resp_body":null'}
+          - path: {equals: '{{WORK_DIR}}/response-expression-private.log'}
+            body: {not_matches: 'hello world'}
 
   - name: metadata-resp-body-variable
     source: {file: t/plugin/file-logger2.t, tests: [5, 6, 7]}
     config:
       plugin_metadata:
         - id: file-logger
-          log_format: {resp_body: $resp_body}
+          log_format: {host: $host, client_ip: $remote_addr, resp_body: $resp_body}
       routes:
         - id: file-metadata-resp-body
           uri: /hello
@@ -590,6 +664,12 @@ cases:
         file_assertions:
           - path: {equals: '{{WORK_DIR}}/metadata-response-body.log'}
             body: {matches: '"resp_body":"hello world\\n"'}
+          - path: {equals: '{{WORK_DIR}}/metadata-response-body.log'}
+            body: {matches: '"host":"127\.0\.0\.1"'}
+          - path: {equals: '{{WORK_DIR}}/metadata-response-body.log'}
+            body: {matches: '"client_ip":"127\.0\.0\.1"'}
+          - path: {equals: '{{WORK_DIR}}/metadata-response-body.log'}
+            body: {matches: '"route_id":"file-metadata-resp-body"'}
 
   - name: request-match-controls-file-write
     source: {file: t/plugin/file-logger2.t, tests: [8, 9, 10]}
@@ -601,7 +681,7 @@ cases:
             file-logger:
               path: '{{WORK_DIR}}/match.log'
               match: [[[arg_name, ==, jack]]]
-              log_format: {request: $request, route_id: $route_id}
+              log_format: {request: $request}
           upstream: *primary_upstream
     fixtures:
       - name: primary
@@ -723,6 +803,8 @@ cases:
           headers:
             Content-Encoding: {equals: gzip}
           gzip_body: {equals: "hello world\n"}
+          logs:
+            not_matches: 'try decode compressed data err: inflate gzip err'
         file_assertions:
           - path: {equals: '{{WORK_DIR}}/gzip-response.log'}
             body: {matches: '"body":"hello world\\n"'}

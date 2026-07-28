@@ -505,6 +505,62 @@ func TestManifestAcceptsAbsentMidCaseFileAssertion(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsJSONLinesFileAssertion(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].AfterShutdown = []FileAssertion{{
+		Path: &Matcher{Equals: new("{{WORK_DIR}}/access.log")},
+		JSONLines: &FileJSONLinesAssertion{
+			Count: 2,
+			Records: []FileJSONRecordAssertion{{
+				Count:  2,
+				Fields: map[string]string{"/route_id": "route-1"},
+			}},
+		},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsJSONLinesFileAssertionWithWrongRecordTotal(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].AfterShutdown = []FileAssertion{{
+		Path: &Matcher{Equals: new("{{WORK_DIR}}/access.log")},
+		JSONLines: &FileJSONLinesAssertion{
+			Count: 2,
+			Records: []FileJSONRecordAssertion{{
+				Count:  1,
+				Fields: map[string]string{"/route_id": "route-1"},
+			}},
+		},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "record counts total 1, want 2") {
+		t.Fatalf("validate() error = %v, want record count rejection", err)
+	}
+}
+
+func TestManifestRejectsJSONLinesFileAssertionWithInvalidPointer(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].AfterShutdown = []FileAssertion{{
+		Path: &Matcher{Equals: new("{{WORK_DIR}}/access.log")},
+		JSONLines: &FileJSONLinesAssertion{
+			Count: 1,
+			Records: []FileJSONRecordAssertion{{
+				Count:  1,
+				Fields: map[string]string{"route_id": "route-1"},
+			}},
+		},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), `path "route_id"`) {
+		t.Fatalf("validate() error = %v, want JSON pointer rejection", err)
+	}
+}
+
 func TestManifestRejectsUDPFixtureClose(t *testing.T) {
 	payload := "hello"
 	manifest := validManifest()

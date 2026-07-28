@@ -99,6 +99,40 @@ cases:
 	}
 }
 
+func TestManifestAcceptsRFC5424JSONFields(t *testing.T) {
+	const manifestYAML = `source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: syslog-rfc5424-json-fields
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - path: /request/uri
+                value:
+                  equals: /hello
+        network_respond:
+          - payload: ''
+    steps:
+      - name: request
+        input:
+          path: /hello
+        output:
+          status: 200
+`
+	if _, err := loadManifest("syslog-rfc5424-json-fields.yaml", []byte(manifestYAML)); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
 func TestManifestAcceptsNetworkJSONRFC3339(t *testing.T) {
 	const manifestYAML = `source:
   repository: https://github.com/apache/apisix

@@ -1,72 +1,648 @@
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/syslog.t
+    tests: 21
+
 cases:
-    - config:
-        routes:
-            - id: syslog-source-1
+  - name: official-schema-is-accepted-and-delivers
+    source:
+      file: t/plugin/syslog.t
+      tests: [1]
+    config:
+      routes:
+        - id: syslog-schema-valid
+          uri: /schema-valid
+          plugins:
+            syslog:
+              batch_max_size: 1
+              buffer_duration: 60
+              drop_limit: 1048576
+              flush_limit: 4096
+              host: '{{FIXTURE.sink.HOST}}'
+              inactive_timeout: 5
+              log_format:
+                marker: schema-valid
+              max_retry_count: 0
+              pool_size: 5
+              port: '{{FIXTURE.sink.PORT}}'
+              retry_delay: 0
+              sock_type: tcp
+              timeout: 3000
+              tls: false
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: schema-ok
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: schema-valid}}
+              - {path: /route_id, value: {equals: syslog-schema-valid}}
+        network_respond:
+          - payload: ''
+    steps:
+      - name: accepted-schema-emits-rfc5424
+        input:
+          method: GET
+          path: /schema-valid
+          headers: {Host: localhost}
+        output:
+          status: 200
+          body: {equals: schema-ok}
+        wait: 1s
+
+  - name: missing-port-is-rejected
+    source:
+      file: t/plugin/syslog.t
+      tests: [2]
+    config:
+      routes:
+        - id: syslog-missing-port
+          uri: /missing-port
+          plugins:
+            syslog:
+              host: 127.0.0.1
+    input:
+      method: GET
+      path: /missing-port
+    output:
+      status: 404
+      logs:
+        matches: "validate plugin syslog config:.*missing properties: 'port'"
+
+  - name: string-port-is-rejected
+    source:
+      file: t/plugin/syslog.t
+      tests: [3]
+    config:
+      routes:
+        - id: syslog-string-port
+          uri: /string-port
+          plugins:
+            syslog:
+              host: 127.0.0.1
+              port: '514'
+    input:
+      method: GET
+      path: /string-port
+    output:
+      status: 404
+      logs:
+        matches: 'validate plugin syslog config:.*port.*expected integer.*got string'
+
+  - name: default-access-log-over-real-stream-transports
+    source:
+      file: t/plugin/syslog.t
+      tests: [4, 5]
+    variants:
+      - name: plain-tcp
+        config:
+          routes:
+            - id: syslog-default-tcp
+              uri: /default-tcp
               plugins:
                 syslog:
-                    batch_max_size: 1
-                    flush_limit: 1
-                    host: '{{FIXTURE.sink.HOST}}'
-                    port: '{{FIXTURE.sink.PORT}}'
-                    log_format:
-                        path: '$uri'
-                    sock_type: tcp
+                  batch_max_size: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
               upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - status: 200
+                body: tcp-ok
+                headers: {X-Upstream: tcp}
+          - name: sink
+            kind: tcp
+            network_expect:
+              - rfc5424_json_fields:
+                  - {path: /request/method, value: {equals: GET}}
+                  - {path: /request/uri, value: {equals: '/default-tcp?Upper=One'}}
+                  - {path: /request/headers/host, value: {equals: localhost}}
+                  - {path: /request/querystring/Upper, value: {equals: One}}
+                  - {path: /response/status, value: {equals: '200'}}
+                  - {path: /response/headers/x-upstream, value: {equals: tcp}}
+                  - {path: /route_id, value: {equals: syslog-default-tcp}}
+                  - {path: /client_ip, value: {equals: 127.0.0.1}}
+                  - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+            network_respond:
+              - payload: ''
+        steps:
+          - name: proxy-response-and-rfc5424-log
+            input:
+              method: GET
+              path: '/default-tcp?Upper=One'
+              headers: {Host: localhost}
+            output:
               status: 200
-        - kind: tcp
-          name: sink
-          network_expect:
-            - payload:
-                matches: '.*"path":"/probe".*'
-          network_respond:
-            - payload: ok
-      name: syslog-source-1
-      source:
-        file: t/plugin/syslog.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: syslog-delivered
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+              body: {equals: tcp-ok}
+            wait: 1s
+      - name: tls-tcp-with-source-peer-verification-policy
+        config:
+          routes:
+            - id: syslog-default-tls
+              uri: /default-tls
+              plugins:
+                syslog:
+                  batch_max_size: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
+                  tls: true
+              upstream:
+                type: roundrobin
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+        fixtures:
+          - name: primary
+            kind: http
+            respond:
+              - status: 200
+                body: tls-ok
+                headers: {X-Upstream: tls}
+          - name: sink
+            kind: tls-tcp
+            network_expect:
+              - rfc5424_json_fields:
+                  - {path: /request/uri, value: {equals: /default-tls}}
+                  - {path: /response/headers/x-upstream, value: {equals: tls}}
+                  - {path: /route_id, value: {equals: syslog-default-tls}}
+            network_respond:
+              - payload: ''
+        steps:
+          - name: real-tls-delivery
+            input:
+              method: GET
+              path: /default-tls
+              headers: {Host: localhost}
+            output:
+              status: 200
+              body: {equals: tls-ok}
+            wait: 1s
+
+  - name: batch-is-concatenated-rfc5424-frames-in-order
+    source:
       file: t/plugin/syslog.t
-      tests: 21
+      tests: [6]
+    config:
+      routes:
+        - id: syslog-ordered-batch
+          uri: /batch/*
+          plugins:
+            syslog:
+              batch_max_size: 2
+              buffer_duration: 60
+              host: '{{FIXTURE.sink.HOST}}'
+              inactive_timeout: 60
+              log_format:
+                path: '$uri'
+              port: '{{FIXTURE.sink.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: abc}
+          - {status: 200, body: efg}
+      - name: sink
+        kind: tcp
+        network_expect:
+          - payload:
+              matches: '(?s)^<46>1 [^ ]+ localhost apisix [0-9]+ - - \{"path":"/batch/abc","route_id":"syslog-ordered-batch"\}\n<46>1 [^ ]+ localhost apisix [0-9]+ - - \{"path":"/batch/efg","route_id":"syslog-ordered-batch"\}\n$'
+        network_respond:
+          - payload: ''
+    steps:
+      - name: buffer-first-frame
+        input: {method: GET, path: /batch/abc, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: abc}}
+      - name: second-frame-flushes-ordered-batch
+        input: {method: GET, path: /batch/efg, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: efg}}
+        wait: 1s
+
+  - name: flush-limit-case-emits-latency
+    source:
+      file: t/plugin/syslog.t
+      tests: [7, 8]
+    config:
+      routes:
+        - id: syslog-flush-limit
+          uri: /flush-limit
+          plugins:
+            syslog:
+              batch_max_size: 1
+              flush_limit: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              inactive_timeout: 1
+              port: '{{FIXTURE.sink.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: flush-ok}
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /request/uri, value: {equals: /flush-limit}}
+              - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+              - {path: /route_id, value: {equals: syslog-flush-limit}}
+        network_respond:
+          - payload: ''
+    steps:
+      - name: immediate-flush
+        input: {method: GET, path: /flush-limit, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: flush-ok}}
+        wait: 1s
+
+  - name: live-route-update-switches-destination
+    source:
+      file: t/plugin/syslog.t
+      tests: [9]
+    config:
+      routes:
+        - id: syslog-live-update
+          uri: /live-update
+          plugins:
+            syslog:
+              batch_max_size: 1
+              host: '{{FIXTURE.first.HOST}}'
+              log_format: {marker: first}
+              port: '{{FIXTURE.first.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: live}
+          - {status: 200, body: live}
+      - name: first
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: first}}
+              - {path: /route_id, value: {equals: syslog-live-update}}
+        network_respond:
+          - payload: ''
+      - name: second
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: second}}
+              - {path: /route_id, value: {equals: syslog-live-update}}
+        network_respond:
+          - payload: ''
+    steps:
+      - name: first-destination
+        input: {method: GET, path: /live-update, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: live}}
+        wait: 1s
+      - name: reload-and-use-second-destination
+        config:
+          routes:
+            - id: syslog-live-update
+              uri: /live-update
+              plugins:
+                syslog:
+                  batch_max_size: 1
+                  host: '{{FIXTURE.second.HOST}}'
+                  log_format: {marker: second}
+                  port: '{{FIXTURE.second.PORT}}'
+              upstream:
+                type: roundrobin
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+            - id: syslog-live-update-probe
+              uri: /reload-probe
+              plugins:
+                mocking:
+                  response_status: 204
+                  response_example: ready
+        config_probe:
+          input: {path: /reload-probe}
+          output: {status: 204}
+        config_timeout: 2s
+        input: {method: GET, path: /live-update, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: live}}
+        wait: 1s
+
+  - name: metadata-set-update-and-clear-rebuilds-route
+    source:
+      file: t/plugin/syslog.t
+      tests: [10, 11, 12, 13]
+    config:
+      plugin_metadata:
+        - id: syslog
+          log_format:
+            marker: metadata-one
+            host: '$host'
+            client_ip: '$remote_addr'
+            upstream: '$upstream_addr'
+      routes:
+        - id: syslog-metadata-lifecycle
+          uri: /metadata
+          plugins:
+            syslog:
+              batch_max_size: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: metadata}
+          - {status: 200, body: metadata}
+          - {status: 200, body: metadata}
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: metadata-one}}
+              - {path: /host, value: {equals: localhost}}
+              - {path: /client_ip, value: {equals: 127.0.0.1}}
+              - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+              - {path: /route_id, value: {equals: syslog-metadata-lifecycle}}
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: metadata-two}}
+              - {path: /host, value: {equals: localhost}}
+              - {path: /request/uri, value: {equals: /metadata}}
+              - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+              - {path: /route_id, value: {equals: syslog-metadata-lifecycle}}
+            forbidden_matches: [metadata-one]
+          - rfc5424_json_fields:
+              - {path: /request/uri, value: {equals: /metadata}}
+              - {path: /response/status, value: {equals: '200'}}
+              - {path: /apisix_latency, value: {matches: '^[0-9]+(\.[0-9]+)?$'}}
+              - {path: /route_id, value: {equals: syslog-metadata-lifecycle}}
+            forbidden_matches: [metadata-one, metadata-two]
+        network_respond:
+          - {close: true}
+          - {close: true}
+          - {close: true}
+    steps:
+      - name: metadata-format-is-active
+        input: {method: GET, path: /metadata, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: metadata}}
+        wait: 1s
+      - name: metadata-update-rebuilds-existing-route
+        config:
+          plugin_metadata:
+            - id: syslog
+              log_format: {}
+              log_format_extra:
+                marker: metadata-two
+                host: '$host'
+          routes:
+            - id: syslog-metadata-lifecycle
+              uri: /metadata
+              plugins:
+                syslog:
+                  batch_max_size: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                type: roundrobin
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+            - id: syslog-metadata-probe
+              uri: /metadata-probe
+              plugins:
+                mocking:
+                  response_status: 205
+                  response_example: ready
+        config_probe:
+          input: {path: /metadata-probe}
+          output: {status: 205}
+        config_timeout: 2s
+        input: {method: GET, path: /metadata, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: metadata}}
+        wait: 1s
+      - name: metadata-clear-restores-default-format
+        config:
+          plugin_metadata:
+            - id: syslog
+              log_format: {}
+              log_format_extra: {}
+          routes:
+            - id: syslog-metadata-lifecycle
+              uri: /metadata
+              plugins:
+                syslog:
+                  batch_max_size: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                type: roundrobin
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+            - id: syslog-metadata-probe
+              uri: /metadata-probe
+              plugins:
+                mocking:
+                  response_status: 204
+                  response_example: ready
+        config_probe:
+          input: {path: /metadata-probe}
+          output: {status: 204}
+        config_timeout: 2s
+        input: {method: GET, path: /metadata, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: metadata}}
+        wait: 1s
+
+  - name: route-log-format-overrides-metadata
+    source:
+      file: t/plugin/syslog.t
+      tests: [14, 15, 16]
+    config:
+      plugin_metadata:
+        - id: syslog
+          log_format:
+            marker: metadata-should-lose
+      routes:
+        - id: syslog-route-format
+          uri: /route-format
+          plugins:
+            syslog:
+              batch_max_size: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              log_format:
+                marker: route-wins
+                vip: '$remote_addr'
+              port: '{{FIXTURE.sink.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: route}
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: route-wins}}
+              - {path: /vip, value: {equals: 127.0.0.1}}
+              - {path: /route_id, value: {equals: syslog-route-format}}
+            forbidden_matches: [metadata-should-lose]
+        network_respond:
+          - payload: ''
+    steps:
+      - name: route-local-format-wins
+        input: {method: GET, path: /route-format, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: route}}
+        wait: 1s
+
+  - name: udp-delivery-includes-upstream
+    source:
+      file: t/plugin/syslog.t
+      tests: [17, 18, 19]
+    config:
+      routes:
+        - id: syslog-udp
+          uri: /udp
+          plugins:
+            syslog:
+              batch_max_size: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              log_format:
+                marker: udp
+                upstream: '$upstream_addr'
+              port: '{{FIXTURE.sink.PORT}}'
+              sock_type: udp
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - {status: 200, body: udp-ok}
+      - name: sink
+        kind: udp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /marker, value: {equals: udp}}
+              - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+              - {path: /route_id, value: {equals: syslog-udp}}
+        network_respond:
+          - payload: ''
+    steps:
+      - name: real-udp-delivery
+        input: {method: GET, path: /udp, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: udp-ok}}
+        wait: 1s
+
+  - name: request-body-is-logged-and-forwarded
+    source:
+      file: t/plugin/syslog.t
+      tests: [20]
+    config:
+      routes:
+        - id: syslog-request-body
+          uri: /request-body
+          plugins:
+            syslog:
+              batch_max_size: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              include_req_body: true
+              port: '{{FIXTURE.sink.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /request-body}
+            body: {equals: '{"sample_payload":"hello"}'}
+        respond:
+          - {status: 200, body: request-ok}
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /request/body, value: {equals: '{"sample_payload":"hello"}'}}
+              - {path: /request/method, value: {equals: POST}}
+              - {path: /route_id, value: {equals: syslog-request-body}}
+        network_respond:
+          - payload: ''
+    steps:
+      - name: body-reaches-upstream-and-log
+        input:
+          method: POST
+          path: /request-body
+          headers: {Host: localhost}
+          body: '{"sample_payload":"hello"}'
+        output: {status: 200, body: {equals: request-ok}}
+        wait: 1s
+
+  - name: response-body-is-logged-and-preserved
+    source:
+      file: t/plugin/syslog.t
+      tests: [21]
+    config:
+      routes:
+        - id: syslog-response-body
+          uri: /response-body
+          plugins:
+            syslog:
+              batch_max_size: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              include_resp_body: true
+              port: '{{FIXTURE.sink.PORT}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: "response body\n"
+            headers: {X-Upstream: response-body}
+      - name: sink
+        kind: tcp
+        network_expect:
+          - rfc5424_json_fields:
+              - {path: /response/body, value: {equals: "response body\n"}}
+              - {path: /response/status, value: {equals: '200'}}
+              - {path: /response/headers/x-upstream, value: {equals: response-body}}
+              - {path: /route_id, value: {equals: syslog-response-body}}
+        network_respond:
+          - payload: ''
+    steps:
+      - name: response-is-identical-at-client-and-log
+        input: {method: GET, path: /response-body, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: "response body\n"}}
+        wait: 1s

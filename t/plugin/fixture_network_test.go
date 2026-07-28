@@ -419,7 +419,13 @@ func (f *networkFixture) zeroPacketAssertionError(spec FixtureSpec) error {
 
 func matchNetworkAssertion(assertion NetworkAssertion, payload []byte) error {
 	var err error
-	if len(assertion.JSONFields) > 0 {
+	if len(assertion.RFC5424JSONFields) > 0 {
+		var message []byte
+		message, err = extractRFC5424Message(payload)
+		if err == nil {
+			err = matchNetworkJSONFields(assertion.RFC5424JSONFields, message)
+		}
+	} else if len(assertion.JSONFields) > 0 {
 		err = matchNetworkJSONFields(assertion.JSONFields, payload)
 	} else if assertion.PayloadBase64 != nil {
 		err = assertion.PayloadBase64.match(base64.StdEncoding.EncodeToString(payload), true)
@@ -439,6 +445,22 @@ func matchNetworkAssertion(assertion NetworkAssertion, payload []byte) error {
 		}
 	}
 	return nil
+}
+
+func extractRFC5424Message(payload []byte) ([]byte, error) {
+	const timestampLayout = "2006-01-02T15:04:05.000Z"
+	pattern := regexp.MustCompile(
+		`(?s)^<46>1 ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z) ` +
+			`([^ ]+) apisix ([1-9][0-9]*) - - (.*)\n$`,
+	)
+	matches := pattern.FindSubmatch(payload)
+	if matches == nil {
+		return nil, errors.New("payload does not match the APISIX RFC5424 envelope")
+	}
+	if _, err := time.Parse(timestampLayout, string(matches[1])); err != nil {
+		return nil, fmt.Errorf("RFC5424 envelope timestamp: %w", err)
+	}
+	return matches[4], nil
 }
 
 func matchNetworkJSONFields(fields []NetworkJSONFieldAssertion, payload []byte) error {
@@ -838,6 +860,31 @@ func TestMatchNetworkAssertionJSONFields(t *testing.T) {
 
 	if err := matchNetworkAssertion(assertion, payload); err != nil {
 		t.Fatalf("matchNetworkAssertion() error = %v", err)
+	}
+}
+
+func TestMatchNetworkAssertionRFC5424JSONFields(t *testing.T) {
+	assertion := NetworkAssertion{RFC5424JSONFields: []NetworkJSONFieldAssertion{{
+		Path:  "/request/uri",
+		Value: Matcher{Equals: new("/hello")},
+	}}}
+	payload := []byte("<46>1 2026-07-28T06:07:08.987Z example.com apisix 4242 - - " +
+		"{\"request\":{\"uri\":\"/hello\"}}\n")
+	if err := matchNetworkAssertion(assertion, payload); err != nil {
+		t.Fatalf("matchNetworkAssertion() error = %v", err)
+	}
+}
+
+func TestMatchNetworkAssertionRFC5424JSONFieldsRejectsInvalidEnvelope(t *testing.T) {
+	assertion := NetworkAssertion{RFC5424JSONFields: []NetworkJSONFieldAssertion{{
+		Path:  "/request/uri",
+		Value: Matcher{Equals: new("/hello")},
+	}}}
+	payload := []byte("<30>1 2026-07-28T06:07:08Z example.com apisix 4242 - - " +
+		"{\"request\":{\"uri\":\"/hello\"}}\n")
+	err := matchNetworkAssertion(assertion, payload)
+	if err == nil || !strings.Contains(err.Error(), "RFC5424 envelope") {
+		t.Fatalf("matchNetworkAssertion() error = %v, want envelope rejection", err)
 	}
 }
 

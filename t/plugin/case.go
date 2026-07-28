@@ -153,10 +153,11 @@ type GRPCMessage struct {
 }
 
 type NetworkAssertion struct {
-	Payload          *Matcher                    `yaml:"payload,omitempty"`
-	PayloadBase64    *Matcher                    `yaml:"payload_base64,omitempty"`
-	JSONFields       []NetworkJSONFieldAssertion `yaml:"json_fields,omitempty"`
-	ForbiddenMatches []string                    `yaml:"forbidden_matches,omitempty"`
+	Payload           *Matcher                    `yaml:"payload,omitempty"`
+	PayloadBase64     *Matcher                    `yaml:"payload_base64,omitempty"`
+	JSONFields        []NetworkJSONFieldAssertion `yaml:"json_fields,omitempty"`
+	RFC5424JSONFields []NetworkJSONFieldAssertion `yaml:"rfc5424_json_fields,omitempty"`
+	ForbiddenMatches  []string                    `yaml:"forbidden_matches,omitempty"`
 }
 
 type NetworkJSONFieldAssertion struct {
@@ -1071,8 +1072,13 @@ func (a NetworkAssertion) validate() error {
 	if len(a.JSONFields) > 0 {
 		configured++
 	}
+	if len(a.RFC5424JSONFields) > 0 {
+		configured++
+	}
 	if configured != 1 {
-		return errors.New("exactly one of payload, payload_base64, or json_fields is required")
+		return errors.New(
+			"exactly one of payload, payload_base64, json_fields, or rfc5424_json_fields is required",
+		)
 	}
 	for i, pattern := range a.ForbiddenMatches {
 		if strings.TrimSpace(pattern) == "" {
@@ -1082,8 +1088,12 @@ func (a NetworkAssertion) validate() error {
 			return fmt.Errorf("forbidden match %d: %w", i+1, err)
 		}
 	}
-	if len(a.JSONFields) > 0 {
-		for i, field := range a.JSONFields {
+	fields := a.JSONFields
+	if len(a.RFC5424JSONFields) > 0 {
+		fields = a.RFC5424JSONFields
+	}
+	if len(fields) > 0 {
+		for i, field := range fields {
 			if _, err := parseJSONPointer(field.Path); err != nil {
 				return fmt.Errorf("json field %d path: %w", i+1, err)
 			}

@@ -122,7 +122,7 @@ cases:
     - name: saml-auth-redirect-login
       source:
           file: t/plugin/saml-auth.t
-          tests: [1, 7]
+          tests: [1, 7, 8, 11]
       config:
           routes:
               - id: saml-auth-redirect-login
@@ -146,6 +146,11 @@ cases:
       fixtures:
           - name: primary
             kind: http
+            expect:
+                - method: GET
+                  path: {equals: /probe}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoidGVzdHVzZXJAZXhhbXBsZS5jb20iLCJhdHRyaWJ1dGVzIjp7InVpZCI6WyJ0ZXN0dXNlciJdfX0=}
             respond:
                 - status: 200
                   headers: {}
@@ -162,11 +167,36 @@ cases:
                         matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*RelayState=.*'
                 body:
                     matches: 'Found'
+                captures:
+                    redirect: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: redirect
+                    response_capture: saml_response
+                    relay_state_capture: relay_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: testuser@example.com
+                    user_name: testuser
+          - name: signed callback creates a session and returns original URI
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.saml_response}}&RelayState={{CAPTURE.relay_state}}'
+            output:
+                status: 302
+                headers: {Location: {equals: /probe}}
+          - name: session reaches upstream with authenticated user info
+            input: {method: GET, path: /probe}
+            output:
+                status: 200
+                body: {equals: saml upstream}
 
     - name: saml-auth-logout-and-callback
       source:
           file: t/plugin/saml-auth.t
-          tests: [8, 9, 10, 11, 12, 13, 14, 15]
+          tests: [9, 10, 12, 13, 14, 15]
       config:
           routes:
               - id: saml-auth-logout-and-callback

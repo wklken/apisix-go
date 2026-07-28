@@ -109,15 +109,28 @@ type CaseStep struct {
 }
 
 type CaseAction struct {
-	Remove string            `yaml:"remove,omitempty"`
-	Rename *FileRenameAction `yaml:"rename,omitempty"`
-	Signal string            `yaml:"signal,omitempty"`
-	Wait   time.Duration     `yaml:"wait,omitempty"`
+	Remove       string              `yaml:"remove,omitempty"`
+	Rename       *FileRenameAction   `yaml:"rename,omitempty"`
+	Signal       string              `yaml:"signal,omitempty"`
+	Wait         time.Duration       `yaml:"wait,omitempty"`
+	SAMLResponse *SAMLResponseAction `yaml:"saml_response,omitempty"`
 }
 
 type FileRenameAction struct {
 	From string `yaml:"from"`
 	To   string `yaml:"to"`
+}
+
+// SAMLResponseAction creates a signed, correlated HTTP-POST SAML response from
+// the authorization redirect captured by the preceding request step.
+type SAMLResponseAction struct {
+	RedirectCapture   string `yaml:"redirect_capture"`
+	ResponseCapture   string `yaml:"response_capture"`
+	RelayStateCapture string `yaml:"relay_state_capture"`
+	IDPCertificate    string `yaml:"idp_certificate"`
+	IDPPrivateKey     string `yaml:"idp_private_key"`
+	NameID            string `yaml:"name_id"`
+	UserName          string `yaml:"user_name,omitempty"`
 }
 
 type ConfigProbe struct {
@@ -1287,8 +1300,11 @@ func validateCaseActions(actions []CaseAction) error {
 		if action.Wait != 0 {
 			configured++
 		}
+		if action.SAMLResponse != nil {
+			configured++
+		}
 		if configured != 1 {
-			return fmt.Errorf("action %d must configure exactly one of remove, rename, signal, or wait", i+1)
+			return fmt.Errorf("action %d must configure exactly one of remove, rename, signal, wait, or saml_response", i+1)
 		}
 		switch {
 		case action.Remove != "":
@@ -1309,6 +1325,13 @@ func validateCaseActions(actions []CaseAction) error {
 		case action.Wait != 0:
 			if action.Wait < 0 {
 				return fmt.Errorf("action %d wait must be positive", i+1)
+			}
+		case action.SAMLResponse != nil:
+			saml := action.SAMLResponse
+			if strings.TrimSpace(saml.RedirectCapture) == "" || strings.TrimSpace(saml.ResponseCapture) == "" ||
+				strings.TrimSpace(saml.RelayStateCapture) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
+				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.NameID) == "" {
+				return fmt.Errorf("action %d saml_response requires redirect_capture, response_capture, relay_state_capture, idp_certificate, idp_private_key, and name_id", i+1)
 			}
 		}
 	}

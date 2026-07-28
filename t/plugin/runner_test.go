@@ -5,6 +5,7 @@ import (
 	"bytes"
 	cgzip "compress/gzip"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hmac"
@@ -18,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"hash"
@@ -28,6 +30,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +46,7 @@ import (
 	"time"
 
 	brotlidec "github.com/andybalholm/brotli"
+	"github.com/crewjam/saml"
 	apisixcmd "github.com/wklken/apisix-go/cmd"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/net/http2"
@@ -267,7 +271,7 @@ func TestExecuteFileLifecycleActions(t *testing.T) {
 		}},
 		{Remove: "{{WORK_DIR}}/access.log.old"},
 	}
-	if err := executeCaseActions(actions, replacements, nil); err != nil {
+	if err := executeCaseActions(actions, replacements, nil, nil); err != nil {
 		t.Fatalf("executeCaseActions() error = %v", err)
 	}
 	if _, err := os.Stat(source); !os.IsNotExist(err) {
@@ -283,7 +287,7 @@ func TestExecuteFileLifecycleActionRejectsExpandedEscape(t *testing.T) {
 	replacements := map[string]string{"{{WORK_DIR}}": workDir}
 	err := executeCaseActions([]CaseAction{{
 		Remove: "{{WORK_DIR}}/../outside.log",
-	}}, replacements, nil)
+	}}, replacements, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "escapes work directory") {
 		t.Fatalf("executeCaseActions() error = %v, want expanded escape rejection", err)
 	}
@@ -2146,7 +2150,7 @@ func runCase(t *testing.T, spec Case) {
 						)
 					}
 				}
-				if err := executeCaseActions(step.Actions, replacements, process); err != nil {
+				if err := executeCaseActions(nonSAMLResponseActions(step.Actions), replacements, process, capturedValues); err != nil {
 					t.Fatalf("execute actions: %v", err)
 				}
 				repeat := step.Repeat
@@ -2201,6 +2205,9 @@ func runCase(t *testing.T, spec Case) {
 				}
 				if step.Output.Logs != nil {
 					logMatchers = append(logMatchers, *step.Output.Logs)
+				}
+				if err := executeCaseActions(samlResponseActions(step.Actions), replacements, process, capturedValues); err != nil {
+					t.Fatalf("execute SAML response actions: %v", err)
 				}
 				assertFiles(t, step.FileAssertions, replacements, "step file assertion")
 			})
@@ -2264,6 +2271,26 @@ func runCase(t *testing.T, spec Case) {
 	}
 }
 
+func nonSAMLResponseActions(actions []CaseAction) []CaseAction {
+	filtered := make([]CaseAction, 0, len(actions))
+	for _, action := range actions {
+		if action.SAMLResponse == nil {
+			filtered = append(filtered, action)
+		}
+	}
+	return filtered
+}
+
+func samlResponseActions(actions []CaseAction) []CaseAction {
+	filtered := make([]CaseAction, 0, len(actions))
+	for _, action := range actions {
+		if action.SAMLResponse != nil {
+			filtered = append(filtered, action)
+		}
+	}
+	return filtered
+}
+
 func fixtureAssertionAfterShutdown(spec FixtureSpec) bool {
 	return len(spec.NetworkExpect) > 0 || isExactZeroUDPFixture(spec)
 }
@@ -2316,6 +2343,7 @@ func executeCaseActions(
 	actions []CaseAction,
 	replacements map[string]string,
 	process *apisixProcess,
+	capturedValues map[string]string,
 ) error {
 	for i, action := range actions {
 		switch {
@@ -2348,10 +2376,84 @@ func executeCaseActions(
 			}
 		case action.Wait > 0:
 			time.Sleep(action.Wait)
+		case action.SAMLResponse != nil:
+			if err := executeSAMLResponseAction(*action.SAMLResponse, capturedValues); err != nil {
+				return fmt.Errorf("action %d saml_response: %w", i+1, err)
+			}
 		default:
 			return fmt.Errorf("action %d is empty", i+1)
 		}
 	}
+	return nil
+}
+
+func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]string) error {
+	if captured == nil {
+		return errors.New("no captured response values are available")
+	}
+	redirect := captured[action.RedirectCapture]
+	if redirect == "" {
+		return fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
+	}
+	redirectURL, err := url.Parse(redirect)
+	if err != nil {
+		return fmt.Errorf("parse SAML redirect: %w", err)
+	}
+	request, err := http.NewRequest(http.MethodGet, redirectURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create SAML authorization request: %w", err)
+	}
+	requestState, err := saml.NewIdpAuthnRequest(&saml.IdentityProvider{}, request)
+	if err != nil {
+		return fmt.Errorf("decode SAML authorization request: %w", err)
+	}
+	if err := xml.Unmarshal(requestState.RequestBuffer, &requestState.Request); err != nil {
+		return fmt.Errorf("unmarshal SAML authorization request: %w", err)
+	}
+	if requestState.Request.Issuer == nil || requestState.Request.Issuer.Value == "" ||
+		requestState.Request.AssertionConsumerServiceURL == "" {
+		return errors.New("SAML authorization request is missing issuer or assertion consumer URL")
+	}
+
+	pair, err := tls.X509KeyPair([]byte(action.IDPCertificate), []byte(action.IDPPrivateKey))
+	if err != nil || len(pair.Certificate) == 0 {
+		return fmt.Errorf("parse IdP signing key pair: %w", err)
+	}
+	certificate, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("parse IdP certificate: %w", err)
+	}
+	key, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return errors.New("IdP private key does not implement crypto.Signer")
+	}
+	idpURL := *redirectURL
+	idpURL.RawQuery = ""
+	idpURL.Fragment = ""
+	requestState.IDP = &saml.IdentityProvider{
+		Key:         key,
+		Certificate: certificate,
+		MetadataURL: idpURL,
+	}
+	requestState.Now = time.Now().UTC()
+	requestState.ServiceProviderMetadata = &saml.EntityDescriptor{EntityID: requestState.Request.Issuer.Value}
+	requestState.SPSSODescriptor = &saml.SPSSODescriptor{}
+	requestState.ACSEndpoint = &saml.IndexedEndpoint{
+		Binding:  saml.HTTPPostBinding,
+		Location: requestState.Request.AssertionConsumerServiceURL,
+	}
+	if err := (saml.DefaultAssertionMaker{}).MakeAssertion(requestState, &saml.Session{
+		NameID:   action.NameID,
+		UserName: action.UserName,
+	}); err != nil {
+		return fmt.Errorf("make SAML assertion: %w", err)
+	}
+	form, err := requestState.PostBinding()
+	if err != nil {
+		return fmt.Errorf("sign SAML response: %w", err)
+	}
+	captured[action.ResponseCapture] = url.QueryEscape(form.SAMLResponse)
+	captured[action.RelayStateCapture] = url.QueryEscape(form.RelayState)
 	return nil
 }
 

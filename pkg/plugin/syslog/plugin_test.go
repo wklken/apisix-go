@@ -2,15 +2,24 @@ package syslog
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -33,6 +42,15 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	if p.config.Timeout != 3000 {
 		t.Fatalf("timeout = %d, want official default 3000 milliseconds", p.config.Timeout)
 	}
+	if p.config.FlushLimit != 4096 {
+		t.Fatalf("flush_limit = %d, want 4096", p.config.FlushLimit)
+	}
+	if p.config.DropLimit != 1048576 {
+		t.Fatalf("drop_limit = %d, want 1048576", p.config.DropLimit)
+	}
+	if p.config.PoolSize != 5 {
+		t.Fatalf("pool_size = %d, want 5", p.config.PoolSize)
+	}
 	if p.config.SockType != "tcp" {
 		t.Fatalf("sock_type = %q, want tcp", p.config.SockType)
 	}
@@ -47,6 +65,25 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	}
 	if p.config.RetryDelay != 1 {
 		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
+	}
+}
+
+func TestEncodeRFC5424UsesSyslogInfoEnvelope(t *testing.T) {
+	timestamp := time.Date(2026, time.July, 28, 6, 7, 8, 987654321, time.UTC)
+	got := encodeRFC5424(timestamp, "gateway.example", 4242, []byte(`{"path":"/orders"}`))
+	want := "<46>1 2026-07-28T06:07:08.987Z gateway.example apisix 4242 - - " +
+		"{\"path\":\"/orders\"}\n"
+	if string(got) != want {
+		t.Fatalf("encodeRFC5424() = %q, want %q", got, want)
+	}
+}
+
+func TestJoinRFC5424FramesPreservesBatchOrdering(t *testing.T) {
+	first := []byte("<46>1 first\n")
+	second := []byte("<46>1 second\n")
+	got := joinRFC5424Frames([][]byte{first, second})
+	if string(got) != "<46>1 first\n<46>1 second\n" {
+		t.Fatalf("joinRFC5424Frames() = %q, want concatenated frames", got)
 	}
 }
 
@@ -68,11 +105,115 @@ func TestSendWritesUDPMessage(t *testing.T) {
 
 	select {
 	case message := <-received:
-		if !strings.Contains(message, `"path":"/orders"`) {
-			t.Fatalf("message = %q, want JSON log entry", message)
-		}
+		assertDirectRFC5424Frame(t, message, `{"path":"/orders"}`)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog UDP message")
+	}
+}
+
+func TestSendWritesTCPMessage(t *testing.T) {
+	addr, received := startTCPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tcp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), Timeout: 3000})
+	p.Send(map[string]any{"path": "/orders"})
+
+	select {
+	case message := <-received:
+		assertDirectRFC5424Frame(t, message, `{"path":"/orders"}`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog TCP message")
+	}
+}
+
+func TestSendWritesTLSMessage(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:     host,
+		Port:     mustAtoi(t, port),
+		Timeout:  3000,
+		SockType: "tcp",
+		TLS:      true,
+	})
+	p.Send(map[string]any{"path": "/secure"})
+
+	select {
+	case message := <-received:
+		assertDirectRFC5424Frame(t, message, `{"path":"/secure"}`)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog TLS message")
+	}
+}
+
+func TestTLSHandshakeHonorsConfiguredTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- connection
+		}
+	}()
+
+	host, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+	p := newTestPlugin(t, Config{
+		Host:     host,
+		Port:     mustAtoi(t, port),
+		Timeout:  25,
+		SockType: "tcp",
+		TLS:      true,
+	})
+
+	started := time.Now()
+	err = p.sendBody([]byte("frame"))
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("sendBody() error = nil, want TLS handshake timeout")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("sendBody() elapsed = %s, want configured timeout to bound handshake", elapsed)
+	}
+	select {
+	case connection := <-accepted:
+		_ = connection.Close()
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept TLS connection")
+	}
+}
+
+func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"host":        "127.0.0.1",
+		"port":        9,
+		"retry_delay": 0,
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.config.RetryDelay != 0 {
+		t.Fatalf("retry_delay = %d, want explicit zero preserved", p.config.RetryDelay)
 	}
 }
 
@@ -91,6 +232,7 @@ func TestHandlerBatchesSyslogMessages(t *testing.T) {
 		BatchMaxSize:    2,
 		InactiveTimeout: 60,
 		BufferDuration:  60,
+		LogFormat:       map[string]string{"path": "$uri"},
 	})
 
 	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,12 +243,55 @@ func TestHandlerBatchesSyslogMessages(t *testing.T) {
 
 	select {
 	case message := <-received:
-		payload := extractJSONArrayPayload(t, message)
-		if len(payload) != 2 {
-			t.Fatalf("batch length = %d, want 2", len(payload))
+		frames := splitRFC5424Frames(t, message)
+		if len(frames) != 2 {
+			t.Fatalf("batch frames = %d, want 2: %q", len(frames), message)
+		}
+		first := extractJSONPayload(t, frames[0])
+		second := extractJSONPayload(t, frames[1])
+		if first["path"] != "/one" || second["path"] != "/two" {
+			t.Fatalf("batch paths = %#v then %#v, want /one then /two", first["path"], second["path"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog UDP batch message")
+	}
+}
+
+func TestHandlerManualFlushDeliversBufferedFrame(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:            host,
+		Port:            mustAtoi(t, port),
+		SockType:        "udp",
+		Timeout:         3000,
+		BatchMaxSize:    10,
+		InactiveTimeout: 60,
+		BufferDuration:  60,
+		LogFormat:       map[string]string{"path": "$uri"},
+	})
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/manual", nil))
+	p.BatchProcessor.Flush()
+
+	select {
+	case message := <-received:
+		frames := splitRFC5424Frames(t, message)
+		if len(frames) != 1 {
+			t.Fatalf("manual flush frames = %d, want 1: %q", len(frames), message)
+		}
+		payload := extractJSONPayload(t, frames[0])
+		if payload["path"] != "/manual" {
+			t.Fatalf("manual flush path = %#v, want /manual", payload["path"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for manually flushed syslog frame")
 	}
 }
 
@@ -168,6 +353,95 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 		}
 		if response["body"] != `{"ok":true}` {
 			t.Fatalf("payload response body = %#v, want upstream response body", response["body"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for syslog UDP message")
+	}
+}
+
+func TestHandlerDefaultLogContainsLatencyAndUpstream(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		SockType:     "udp",
+		Timeout:      3000,
+		BatchMaxSize: 1,
+	})
+	p.SetRouteContext("syslog-default", "127.0.0.1:9080")
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
+	req.Host = "gateway.example"
+	req.RemoteAddr = "192.0.2.20:54321"
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterApisixVar(r, "$balancer_ip", "198.51.100.30")
+		apisixctx.RegisterApisixVar(r, "$balancer_port", "1980")
+		apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(1))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		if _, ok := payload["apisix_latency"].(float64); !ok {
+			t.Fatalf("apisix_latency = %#v, want numeric milliseconds", payload["apisix_latency"])
+		}
+		if payload["upstream"] != "198.51.100.30:1980" {
+			t.Fatalf("upstream = %#v, want selected upstream", payload["upstream"])
+		}
+		request, ok := payload["request"].(map[string]any)
+		if !ok || request["method"] != http.MethodGet {
+			t.Fatalf("request = %#v, want GET request object", payload["request"])
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok || response["status"] != float64(http.StatusCreated) {
+			t.Fatalf("response = %#v, want status 201", payload["response"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rich syslog record")
+	}
+}
+
+func TestHandlerLogFormatExtraEnrichesDefaultWithoutClobbering(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:           host,
+		Port:           mustAtoi(t, port),
+		SockType:       "udp",
+		Timeout:        3000,
+		BatchMaxSize:   1,
+		LogFormatExtra: map[string]string{"marker": "extra", "route_id": "wrong"},
+	})
+	p.RouteID = "route-1"
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/extra", nil))
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		if payload["marker"] != "extra" {
+			t.Fatalf("payload marker = %#v, want extra", payload["marker"])
+		}
+		if payload["route_id"] != "route-1" {
+			t.Fatalf("payload route_id = %#v, want default field preserved", payload["route_id"])
+		}
+		if _, ok := payload["apisix_latency"]; !ok {
+			t.Fatalf("payload = %#v, want default apisix_latency", payload)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog UDP message")
@@ -266,11 +540,19 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	select {
 	case message := <-received:
 		payload := extractJSONPayload(t, message)
-		if _, ok := payload["request"]; ok {
-			t.Fatalf("payload request = %#v, want no request body", payload["request"])
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
 		}
-		if _, ok := payload["response"]; ok {
-			t.Fatalf("payload response = %#v, want no response body", payload["response"])
+		if _, ok := request["body"]; ok {
+			t.Fatalf("payload request body = %#v, want absent", request["body"])
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if _, ok := response["body"]; ok {
+			t.Fatalf("payload response body = %#v, want absent", response["body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog UDP message")
@@ -296,6 +578,22 @@ func TestSchemaAcceptsOfficialBodyFields(t *testing.T) {
 	}
 }
 
+func TestSchemaDiagnosticsMatchPinnedSource(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := util.Validate(map[string]any{"host": "127.0.0.1"}, p.GetSchema())
+	if err == nil || !strings.Contains(err.Error(), `missing properties: 'port'`) {
+		t.Fatalf("missing port error = %v, want pinned diagnostic", err)
+	}
+	err = util.Validate(map[string]any{"host": "127.0.0.1", "port": "514"}, p.GetSchema())
+	if err == nil || !strings.Contains(err.Error(), "expected integer, but got string") {
+		t.Fatalf("string port error = %v, want equivalent typed-port diagnostic", err)
+	}
+}
+
 func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
@@ -317,6 +615,60 @@ func TestSchemaAcceptsOfficialBatchFields(t *testing.T) {
 	}
 }
 
+func TestSchemaAcceptsLogFormatExtraAndExposesMetadataSchema(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{
+		"host":             "127.0.0.1",
+		"port":             514,
+		"log_format_extra": map[string]any{"cluster": "$host"},
+	}, p.GetSchema()); err != nil {
+		t.Fatalf("route schema rejected log_format_extra: %v", err)
+	}
+	if p.GetMetadataSchema() == "" {
+		t.Fatal("metadata schema is empty")
+	}
+	if err := util.Validate(map[string]any{
+		"log_format":       map[string]any{"host": "$host"},
+		"log_format_extra": map[string]any{"cluster": "east"},
+	}, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("metadata schema rejected official log formats: %v", err)
+	}
+}
+
+func TestSelectLogFormatsMatchesRouteAndMetadataPrecedence(t *testing.T) {
+	metadata := pluginMetadata{
+		LogFormat:      map[string]string{"source": "metadata"},
+		LogFormatExtra: map[string]string{"extra": "metadata"},
+	}
+
+	format, extra := selectLogFormats(Config{}, metadata)
+	if format["source"] != "metadata" || len(extra) != 0 {
+		t.Fatalf("metadata selection = %#v/%#v, want metadata log_format only", format, extra)
+	}
+
+	format, extra = selectLogFormats(Config{
+		LogFormat:      map[string]string{"source": "route"},
+		LogFormatExtra: map[string]string{"ignored": "route"},
+	}, metadata)
+	if format["source"] != "route" || len(extra) != 0 {
+		t.Fatalf("route selection = %#v/%#v, want route log_format only", format, extra)
+	}
+
+	format, extra = selectLogFormats(Config{
+		LogFormatExtra: map[string]string{"extra": "route"},
+	}, pluginMetadata{LogFormatExtra: map[string]string{"extra": "metadata", "stale": "metadata"}})
+	if len(format) != 0 || extra["extra"] != "route" {
+		t.Fatalf("route extra selection = %#v/%#v, want route extra", format, extra)
+	}
+	if _, ok := extra["stale"]; ok {
+		t.Fatalf("route extra selection = %#v, want metadata extra replaced", extra)
+	}
+}
+
 func extractJSONPayload(t *testing.T, message string) map[string]any {
 	t.Helper()
 
@@ -333,20 +685,19 @@ func extractJSONPayload(t *testing.T, message string) map[string]any {
 	return payload
 }
 
-func extractJSONArrayPayload(t *testing.T, message string) []map[string]any {
+func splitRFC5424Frames(t *testing.T, message string) []string {
 	t.Helper()
 
-	start := strings.Index(message, "[{")
-	end := strings.LastIndex(message, "]")
-	if start == -1 || end == -1 || end < start {
-		t.Fatalf("message = %q, want JSON array payload", message)
+	if !strings.HasSuffix(message, "\n") {
+		t.Fatalf("message = %q, want newline-terminated RFC5424 frame", message)
 	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal([]byte(message[start:end+1]), &payload); err != nil {
-		t.Fatalf("unmarshal syslog array payload: %v", err)
+	lines := strings.Split(strings.TrimSuffix(message, "\n"), "\n")
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "<46>1 ") {
+			t.Fatalf("frame = %q, want RFC5424 SYSLOG/INFO prefix", line)
+		}
 	}
-	return payload
+	return lines
 }
 
 func startUDPServer(t *testing.T) (string, <-chan string) {
@@ -372,6 +723,97 @@ func startUDPServer(t *testing.T) (string, <-chan string) {
 	}()
 
 	return conn.LocalAddr().String(), received
+}
+
+func startTCPServer(t *testing.T) (string, <-chan string) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	received := make(chan string, 1)
+	go acceptMessage(listener, received)
+	return listener.Addr().String(), received
+}
+
+func startTLSServer(t *testing.T) (string, <-chan string) {
+	t.Helper()
+
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{testCertificate(t)},
+	})
+	if err != nil {
+		t.Fatalf("listen tls: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	received := make(chan string, 1)
+	go acceptMessage(listener, received)
+	return listener.Addr().String(), received
+}
+
+func acceptMessage(listener net.Listener, received chan<- string) {
+	connection, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer func() { _ = connection.Close() }()
+
+	message, err := io.ReadAll(connection)
+	if err == nil {
+		received <- string(message)
+	}
+}
+
+func testCertificate(t *testing.T) tls.Certificate {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+	}
+	certificateDER, err := x509.CreateCertificate(
+		rand.Reader,
+		&template,
+		&template,
+		&key.PublicKey,
+		key,
+	)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	certificate, err := tls.X509KeyPair(certificatePEM, keyPEM)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	return certificate
+}
+
+func assertDirectRFC5424Frame(t *testing.T, message, body string) {
+	t.Helper()
+
+	pattern := `^<46>1 [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z - apisix [0-9]+ - - ` +
+		regexp.QuoteMeta(body) + `\n$`
+	if !regexp.MustCompile(pattern).MatchString(message) {
+		t.Fatalf("message = %q, want RFC5424 frame matching %q", message, pattern)
+	}
 }
 
 func mustAtoi(t *testing.T, value string) int {

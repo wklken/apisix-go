@@ -807,7 +807,17 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `proxy-mirror` — all 36 pinned blocks across three sources map exactly once to standalone schema, exact primary/mirror traffic, HTTP version, live deletion, bounded concurrent sampling, path/DNS behavior, proxy-rewrite ordering, h2c gRPC, and grpc-web cases. A generic one-shot finalized-request hook applies rewritten URI and method before ordinary or AI terminals; h2c is explicitly configured, bounded counts observe their full window, concurrent captures reject, and DNS diagnostics await the bounded mirror timeout. Affected package/race/harness, full real-process, DNS/sensitive repeats, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `traffic-split` — five header-selected routes replace weighted inline/resource upstreams, fallback/zero weights, chash, pass-host, HTTPS, health/retry, timeout, and reload behavior.
 - [ ] `workflow` — four happy-path actions omit no-case behavior, ordered fallthrough, isolated action state, invalid/no rules, limit-conn/global-rule interactions, and rewrite/log phase interaction.
-- [ ] `batch-requests` — three probes omit most pipeline validation, timeout/partial aggregation, body-file and size limits, header copying, metadata limits, custom URI, and mixed HTTP/gRPC subresponses.
+- [x] `batch-requests` — all 46 pinned blocks across three sources map exactly
+  once to real standalone pipeline validation, method/path/header/query/body
+  merging, custom URI, body and metadata limits, partial timeout aggregation,
+  real-IP handling, and mixed HTTP/h2c gRPC behavior. Validated plugin metadata
+  is Store-owned, preserves the last good snapshot across invalid reloads and
+  route generations, clears on deletion, isolates Stores, and rejects older
+  out-of-order publication. Package, Store, focused route, race, exact
+  real-process, corpus, scoped lint, build, post-integration, and task-review
+  gates pass. The broad route package still has the unrelated pre-existing
+  `TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer`
+  failure.
 - [ ] `http-dubbo` — one generic source case omits POJO/array serialization, request ID/frame assertions, void/application responses, timeouts, and connect failures.
 
 #### Task 9 — HTTP and Cloud Loggers
@@ -863,10 +873,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 23 task-review-approved and 38 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 24 task-review-approved and 37 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 38 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 37 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -875,7 +885,7 @@ manifest by manifest. Passing focused package and real-process tests is necessar
 but does not restore a checkbox until a task review confirms source-complete
 behavior. `consumer-restriction` and `traffic-label` were initially unchecked
 after their reviews found concrete gaps. Both have since passed their follow-up
-reviews and post-integration gates. The currently approved scope is **23
+reviews and post-integration gates. At this historical checkpoint the approved scope was **23
 complete and 38 remaining**; `oas-validator` also passed its task review with
 112 source blocks and 36 runtime diagnostics verified.
 
@@ -1078,7 +1088,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 20 manifests
+### Medium — 19 remaining (28 listed)
 
 - [ ] `datadog`
 - [x] `basic-auth`
@@ -1092,7 +1102,7 @@ Execution waves:
 - [ ] `graphql-proxy-cache`
 - [x] `proxy-mirror`
 - [ ] `workflow`
-- [ ] `batch-requests`
+- [x] `batch-requests`
 - [ ] `http-logger`
 - [ ] `google-cloud-logging`
 - [ ] `loggly`
@@ -1227,8 +1237,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 23 manifests
-are task-review-approved and 38 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 24 manifests
+are task-review-approved and 37 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1278,11 +1288,12 @@ already-implemented branch.
 - [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
 - [ ] `workflow` — blocked on the limiter owners.
 
-### Hard — 15 manifests
+### Hard — 14 remaining (15 at replan)
 
-- [ ] `batch-requests` — the approved worker range realized this risk through
+- [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
-  Store-owned last-good metadata publication. It is pending integration.
+  Store-owned last-good metadata publication. It is integrated and passed its
+  post-integration gates.
 - [ ] `file-logger` — the worker range realized this risk through a shared
   writer registry, cached descriptors, live `SIGUSR1`, reload/shutdown
   lifecycle, and filesystem assertions. Rereview found that source blocks 6–7

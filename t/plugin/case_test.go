@@ -652,6 +652,55 @@ func TestManifestRejectsBboltJSONAssertionOutsideAfterShutdown(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsTypedRedisAuthenticationWithUnassertedCommands(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "redis",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			Values:                  map[string]string{"quota": "1"},
+			Auth:                    []RedisAuthAssertion{{Password: "somepassword"}},
+		},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsInvalidRedisTTLRange(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "redis",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			Values:                  map[string]string{"quota": "1"},
+			TTLSecondsBetween:       map[string]IntRange{"quota": {Min: 60, Max: 59}},
+		},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "ttl_seconds_between") {
+		t.Fatalf("validate() error = %v, want ttl_seconds_between error", err)
+	}
+}
+
 func TestManifestRejectsJSONLinesFileAssertionWithWrongRecordTotal(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].AfterShutdown = []FileAssertion{{

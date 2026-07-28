@@ -196,9 +196,23 @@ type FixtureCountAssertion struct {
 }
 
 type RedisFixtureAssertion struct {
-	IgnoreNegotiation       bool              `yaml:"ignore_negotiation,omitempty"`
-	AllowUnassertedCommands bool              `yaml:"allow_unasserted_commands,omitempty"`
-	Values                  map[string]string `yaml:"values,omitempty"`
+	IgnoreNegotiation       bool                 `yaml:"ignore_negotiation,omitempty"`
+	AllowUnassertedCommands bool                 `yaml:"allow_unasserted_commands,omitempty"`
+	Values                  map[string]string    `yaml:"values,omitempty"`
+	TTLSeconds              map[string]int       `yaml:"ttl_seconds,omitempty"`
+	TTLSecondsBetween       map[string]IntRange  `yaml:"ttl_seconds_between,omitempty"`
+	ExpiryInitializations   map[string]int       `yaml:"expiry_initializations,omitempty"`
+	Auth                    []RedisAuthAssertion `yaml:"auth,omitempty"`
+}
+
+type IntRange struct {
+	Min int `yaml:"min"`
+	Max int `yaml:"max"`
+}
+
+type RedisAuthAssertion struct {
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password"`
 }
 
 type GRPCMessage struct {
@@ -1092,6 +1106,26 @@ func (f *FixtureSpec) validate() error {
 		}
 		if len(f.Redis.Values) == 0 {
 			return errors.New("redis assertion requires at least one final value")
+		}
+		for key, seconds := range f.Redis.TTLSeconds {
+			if key == "" || seconds <= 0 {
+				return errors.New("redis ttl_seconds keys and values must be positive")
+			}
+		}
+		for key, seconds := range f.Redis.TTLSecondsBetween {
+			if key == "" || seconds.Min <= 0 || seconds.Max < seconds.Min {
+				return errors.New("redis ttl_seconds_between keys and ranges must be positive and ordered")
+			}
+		}
+		for key, count := range f.Redis.ExpiryInitializations {
+			if key == "" || count <= 0 {
+				return errors.New("redis expiry_initializations keys and values must be positive")
+			}
+		}
+		for _, auth := range f.Redis.Auth {
+			if auth.Password == "" {
+				return errors.New("redis auth password is required")
+			}
 		}
 		if f.Redis.AllowUnassertedCommands && len(f.NetworkExpect) > 0 {
 			return errors.New("redis allow_unasserted_commands must not be combined with network expectations")

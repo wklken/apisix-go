@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -26,6 +27,9 @@ type redisFixture struct {
 	values    map[string]string
 	integers  map[string]int64
 	hashes    map[string]map[string]string
+	expiries  map[string]time.Time
+	expirySet map[string]int
+	auth      []RedisAuthAssertion
 	wg        sync.WaitGroup
 }
 
@@ -39,16 +43,18 @@ func startRedisFixture(spec FixtureSpec) (namedFixture, error) {
 		receivedCapacity = 128
 	}
 	fixture := &redisFixture{
-		kind:     spec.Kind,
-		spec:     spec,
-		listener: listener,
-		expect:   spec.NetworkExpect,
-		received: make(chan []byte, receivedCapacity),
-		errors:   make(chan error, len(spec.NetworkExpect)+1),
-		done:     make(chan struct{}),
-		values:   make(map[string]string),
-		integers: make(map[string]int64),
-		hashes:   make(map[string]map[string]string),
+		kind:      spec.Kind,
+		spec:      spec,
+		listener:  listener,
+		expect:    spec.NetworkExpect,
+		received:  make(chan []byte, receivedCapacity),
+		errors:    make(chan error, len(spec.NetworkExpect)+1),
+		done:      make(chan struct{}),
+		values:    make(map[string]string),
+		integers:  make(map[string]int64),
+		hashes:    make(map[string]map[string]string),
+		expiries:  make(map[string]time.Time),
+		expirySet: make(map[string]int),
 	}
 	fixture.wg.Add(1)
 	go fixture.serve()
@@ -85,7 +91,9 @@ func (f *redisFixture) serveConnection(connection net.Conn) {
 			}
 			return
 		}
-		if !f.ignoreNegotiation(command) {
+		f.recordAuthentication(command)
+		allowUnasserted := f.spec.Redis != nil && f.spec.Redis.AllowUnassertedCommands
+		if !f.ignoreNegotiation(command) && !allowUnasserted {
 			payload := []byte(strings.Join(command, " "))
 			f.received <- payload
 		}
@@ -94,6 +102,31 @@ func (f *redisFixture) serveConnection(connection net.Conn) {
 			return
 		}
 	}
+}
+
+func (f *redisFixture) recordAuthentication(command []string) {
+	var credential RedisAuthAssertion
+	switch {
+	case len(command) == 2 && strings.EqualFold(command[0], "AUTH"):
+		credential.Password = command[1]
+	case len(command) == 3 && strings.EqualFold(command[0], "AUTH"):
+		credential.Username = command[1]
+		credential.Password = command[2]
+	case len(command) >= 5 && strings.EqualFold(command[0], "HELLO"):
+		for i := 2; i+2 < len(command); i++ {
+			if strings.EqualFold(command[i], "AUTH") {
+				credential.Username = command[i+1]
+				credential.Password = command[i+2]
+				break
+			}
+		}
+	}
+	if credential.Password == "" {
+		return
+	}
+	f.stateMu.Lock()
+	f.auth = append(f.auth, credential)
+	f.stateMu.Unlock()
 }
 
 func (f *redisFixture) ignoreNegotiation(command []string) bool {
@@ -194,6 +227,8 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 				delete(f.integers, key)
 				removed++
 			}
+			delete(f.expiries, key)
+			delete(f.expirySet, key)
 		}
 		f.stateMu.Unlock()
 		return writeRESPInteger(writer, removed)
@@ -210,10 +245,22 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 		}
 		f.stateMu.Unlock()
 		return writeRESPInteger(writer, count)
-	case "EXPIRE", "PEXPIRE", "PERSIST":
-		return writeRESPInteger(writer, 1)
+	case "EXPIRE", "PEXPIRE":
+		return f.writeExpiry(writer, command)
+	case "PERSIST":
+		if len(command) < 2 {
+			return writeRESPError(writer, "wrong number of arguments for PERSIST")
+		}
+		f.stateMu.Lock()
+		_, existed := f.expiries[command[1]]
+		delete(f.expiries, command[1])
+		f.stateMu.Unlock()
+		if existed {
+			return writeRESPInteger(writer, 1)
+		}
+		return writeRESPInteger(writer, 0)
 	case "TTL", "PTTL":
-		return writeRESPInteger(writer, -1)
+		return f.writeTTL(writer, command)
 	case "SCRIPT":
 		if len(command) > 1 {
 			switch {
@@ -272,7 +319,81 @@ func (f *redisFixture) writeEvalResponse(writer io.Writer, command []string) err
 		strings.Contains(script, "redis.call(\"DECR\"") {
 		return writeRESPArray(writer, []string{"1", "0"})
 	}
+	if strings.Contains(script, `redis.call("INCRBY"`) &&
+		strings.Contains(script, `redis.call("PTTL"`) &&
+		strings.Contains(script, `redis.call("PEXPIRE"`) {
+		if len(command) < 6 {
+			return writeRESPError(writer, "wrong number of arguments for AI rate script")
+		}
+		tokens, err := strconv.ParseInt(command[4], 10, 64)
+		if err != nil {
+			return writeRESPError(writer, "AI rate tokens are not an integer")
+		}
+		ttlMilliseconds, err := strconv.ParseInt(command[5], 10, 64)
+		if err != nil || ttlMilliseconds <= 0 {
+			return writeRESPError(writer, "AI rate TTL is not a positive integer")
+		}
+		key := command[3]
+		f.stateMu.Lock()
+		f.integers[key] += tokens
+		current := f.integers[key]
+		expiry, hasExpiry := f.expiries[key]
+		if !hasExpiry || !time.Now().Before(expiry) {
+			expiry = time.Now().Add(time.Duration(ttlMilliseconds) * time.Millisecond)
+			f.expiries[key] = expiry
+			f.expirySet[key]++
+		}
+		ttl := max(time.Until(expiry).Milliseconds(), 1)
+		f.stateMu.Unlock()
+		return writeRESPArray(writer, []string{strconv.FormatInt(current, 10), strconv.FormatInt(ttl, 10)})
+	}
 	return writeRESPInteger(writer, 1)
+}
+
+func (f *redisFixture) writeExpiry(writer io.Writer, command []string) error {
+	if len(command) < 3 {
+		return writeRESPError(writer, "wrong number of arguments for expiry")
+	}
+	value, err := strconv.ParseInt(command[2], 10, 64)
+	if err != nil || value <= 0 {
+		return writeRESPError(writer, "expiry is not a positive integer")
+	}
+	duration := time.Duration(value) * time.Second
+	if strings.EqualFold(command[0], "PEXPIRE") {
+		duration = time.Duration(value) * time.Millisecond
+	}
+	f.stateMu.Lock()
+	_, stringExists := f.values[command[1]]
+	_, integerExists := f.integers[command[1]]
+	if stringExists || integerExists {
+		f.expiries[command[1]] = time.Now().Add(duration)
+		f.expirySet[command[1]]++
+	}
+	f.stateMu.Unlock()
+	if stringExists || integerExists {
+		return writeRESPInteger(writer, 1)
+	}
+	return writeRESPInteger(writer, 0)
+}
+
+func (f *redisFixture) writeTTL(writer io.Writer, command []string) error {
+	if len(command) < 2 {
+		return writeRESPError(writer, "wrong number of arguments for TTL")
+	}
+	f.stateMu.Lock()
+	expiry, ok := f.expiries[command[1]]
+	f.stateMu.Unlock()
+	if !ok {
+		return writeRESPInteger(writer, -1)
+	}
+	ttl := time.Until(expiry)
+	if ttl <= 0 {
+		return writeRESPInteger(writer, -2)
+	}
+	if strings.EqualFold(command[0], "PTTL") {
+		return writeRESPInteger(writer, max(ttl.Milliseconds(), 1))
+	}
+	return writeRESPInteger(writer, max(int64(math.Ceil(ttl.Seconds())), 1))
 }
 
 func (f *redisFixture) writeClusterResponse(writer io.Writer, command []string) error {
@@ -370,6 +491,99 @@ func (f *redisFixture) assertState(t *testing.T, spec FixtureSpec) {
 			t.Errorf("fixture %s Redis key %q = %q, want %q", spec.Name, key, actual[key], expected)
 		}
 	}
+	for key, expected := range spec.Redis.TTLSeconds {
+		actual := f.ttlSeconds(key)
+		if actual != expected {
+			t.Errorf("fixture %s Redis key %q TTL = %ds, want %ds", spec.Name, key, actual, expected)
+		}
+	}
+	for key, expected := range spec.Redis.TTLSecondsBetween {
+		actual := f.ttlSeconds(key)
+		if actual < expected.Min || actual > expected.Max {
+			t.Errorf(
+				"fixture %s Redis key %q TTL = %ds, want between %ds and %ds",
+				spec.Name,
+				key,
+				actual,
+				expected.Min,
+				expected.Max,
+			)
+		}
+	}
+	for key, expected := range spec.Redis.ExpiryInitializations {
+		f.stateMu.Lock()
+		actual := f.expirySet[key]
+		f.stateMu.Unlock()
+		if actual != expected {
+			t.Errorf(
+				"fixture %s Redis key %q expiry initializations = %d, want %d",
+				spec.Name,
+				key,
+				actual,
+				expected,
+			)
+		}
+	}
+	if len(spec.Redis.Auth) > 0 {
+		f.stateMu.Lock()
+		auth := append([]RedisAuthAssertion(nil), f.auth...)
+		f.stateMu.Unlock()
+		if len(auth) == 0 {
+			t.Errorf("fixture %s did not receive Redis authentication", spec.Name)
+		}
+		seen := make([]bool, len(spec.Redis.Auth))
+		for i, actual := range auth {
+			matched := -1
+			for j, expected := range spec.Redis.Auth {
+				if redisAuthMatches(actual, expected) {
+					matched = j
+					break
+				}
+			}
+			if matched < 0 {
+				t.Errorf(
+					"fixture %s Redis authentication %d = (%q, %q), want one of %#v",
+					spec.Name,
+					i+1,
+					actual.Username,
+					actual.Password,
+					spec.Redis.Auth,
+				)
+				continue
+			}
+			seen[matched] = true
+		}
+		for i, matched := range seen {
+			if !matched {
+				t.Errorf(
+					"fixture %s did not receive Redis authentication (%q, %q)",
+					spec.Name,
+					spec.Redis.Auth[i].Username,
+					spec.Redis.Auth[i].Password,
+				)
+			}
+		}
+	}
+}
+
+func (f *redisFixture) ttlSeconds(key string) int {
+	f.stateMu.Lock()
+	expiry, ok := f.expiries[key]
+	f.stateMu.Unlock()
+	if !ok {
+		return 0
+	}
+	return max(int(math.Ceil(time.Until(expiry).Seconds())), 0)
+}
+
+func redisAuthMatches(actual, expected RedisAuthAssertion) bool {
+	if actual.Password != expected.Password {
+		return false
+	}
+	if actual.Username == expected.Username {
+		return true
+	}
+	return expected.Username == "" && actual.Username == "default"
 }
 
 func TestRedisFixtureServesRESP(t *testing.T) {
@@ -493,6 +707,172 @@ func TestRedisFixtureCanIgnoreNegotiationAndAssertFinalState(t *testing.T) {
 		}
 	}
 	fixture.assert(t, spec)
+}
+
+func TestRedisFixtureAllowUnassertedCommandsDoesNotBlockAfter128Commands(t *testing.T) {
+	const commands = 256
+	spec := FixtureSpec{
+		Name: "redis-unasserted-volume",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			Values:                  map[string]string{"quota": strconv.Itoa(commands)},
+		},
+	}
+	fixture, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	defer fixture.close()
+	connection, err := net.Dial("tcp", fixture.address())
+	if err != nil {
+		t.Fatalf("dial Redis fixture: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	if err := connection.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set fixture deadline: %v", err)
+	}
+	reader := bufio.NewReader(connection)
+	for range commands {
+		if err := writeRESPCommand(connection, []string{"INCR", "quota"}); err != nil {
+			t.Fatalf("write Redis command: %v", err)
+		}
+		if response, err := reader.ReadString('\n'); err != nil {
+			t.Fatalf("read Redis response: %v", err)
+		} else if !strings.HasPrefix(response, ":") {
+			t.Fatalf("Redis response = %q, want integer", response)
+		}
+	}
+	fixture.assert(t, spec)
+}
+
+func TestRedisFixtureStrictModeRetainsUnexpectedCommands(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "redis-strict-extra",
+		Kind: "redis",
+		NetworkExpect: []NetworkAssertion{{
+			Payload: &Matcher{Equals: new("PING")},
+		}},
+		NetworkRespond: []NetworkResponse{{}},
+	}
+	fixture, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	defer fixture.close()
+	connection, err := net.Dial("tcp", fixture.address())
+	if err != nil {
+		t.Fatalf("dial Redis fixture: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	reader := bufio.NewReader(connection)
+	for range 2 {
+		if err := writeRESPCommand(connection, []string{"PING"}); err != nil {
+			t.Fatalf("write Redis command: %v", err)
+		}
+		if _, err := reader.ReadString('\n'); err != nil {
+			t.Fatalf("read Redis response: %v", err)
+		}
+	}
+	if got := len(fixture.(*redisFixture).received); got != 2 {
+		t.Fatalf("strict fixture retained %d commands, want both expected and unexpected commands", got)
+	}
+}
+
+func TestRedisFixtureEmulatesAIRateFixedWindowScriptAndTTL(t *testing.T) {
+	const script = `
+local current = redis.call("INCRBY", KEYS[1], ARGV[1])
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl < 0 then
+  redis.call("PEXPIRE", KEYS[1], ARGV[2])
+  ttl = tonumber(ARGV[2])
+end
+return {current, ttl}
+`
+	spec := FixtureSpec{
+		Name: "redis-ai-rate-script",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			Values:                  map[string]string{"quota": "6"},
+			TTLSeconds:              map[string]int{"quota": 60},
+			ExpiryInitializations:   map[string]int{"quota": 1},
+		},
+	}
+	fixture, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	defer fixture.close()
+	connection, err := net.Dial("tcp", fixture.address())
+	if err != nil {
+		t.Fatalf("dial Redis fixture: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	reader := bufio.NewReader(connection)
+	for range 2 {
+		if err := writeRESPCommand(connection, []string{"EVAL", script, "1", "quota", "3", "60000"}); err != nil {
+			t.Fatalf("write EVAL: %v", err)
+		}
+		for range 5 {
+			if _, err := reader.ReadString('\n'); err != nil {
+				t.Fatalf("read EVAL response: %v", err)
+			}
+		}
+	}
+	fixture.assert(t, spec)
+}
+
+func TestRedisFixtureAssertsAuthenticationWhileAllowingBusinessCommands(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "redis-auth",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			Values:                  map[string]string{"quota": "1"},
+			Auth:                    []RedisAuthAssertion{{Password: "somepassword"}},
+		},
+	}
+	fixture, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	defer fixture.close()
+	connection, err := net.Dial("tcp", fixture.address())
+	if err != nil {
+		t.Fatalf("dial Redis fixture: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	reader := bufio.NewReader(connection)
+	for _, command := range [][]string{
+		{"AUTH", "somepassword"},
+		{"INCR", "quota"},
+	} {
+		if err := writeRESPCommand(connection, command); err != nil {
+			t.Fatalf("write %s: %v", command[0], err)
+		}
+		if _, err := reader.ReadString('\n'); err != nil {
+			t.Fatalf("read %s response: %v", command[0], err)
+		}
+	}
+	fixture.assert(t, spec)
+}
+
+func TestRedisAuthMatchesPasswordOnlyDefaultUser(t *testing.T) {
+	t.Parallel()
+
+	if !redisAuthMatches(
+		RedisAuthAssertion{Username: "default", Password: "somepassword"},
+		RedisAuthAssertion{Password: "somepassword"},
+	) {
+		t.Fatal("password-only assertion did not accept Redis implicit default user")
+	}
+	if redisAuthMatches(
+		RedisAuthAssertion{Username: "alice", Password: "somepassword"},
+		RedisAuthAssertion{Password: "somepassword"},
+	) {
+		t.Fatal("password-only assertion accepted an explicit non-default user")
+	}
 }
 
 func writeRESPCommand(writer io.Writer, command []string) error {

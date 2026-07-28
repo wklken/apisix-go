@@ -13,8 +13,9 @@ sources:
     tests: 40
 
 cases:
-  - name: consumer-quotas-are-isolated
-    source: {file: t/plugin/ai-rate-limiting-consumer-isolation.t, tests: [1, 2, 3, 4, 5]}
+  - &consumer_isolation_case
+    name: consumer-route-resource-is-available
+    source: {file: t/plugin/ai-rate-limiting-consumer-isolation.t, tests: [1]}
     config:
       consumers:
         - username: jack1
@@ -56,6 +57,22 @@ cases:
         name: jack2-fourth-is-rejected
         output: {status: 503, body: {matches: 'Service Unavailable'}}
 
+  - <<: *consumer_isolation_case
+    name: consumer-jack1-resource-is-available
+    source: {file: t/plugin/ai-rate-limiting-consumer-isolation.t, tests: [2]}
+
+  - <<: *consumer_isolation_case
+    name: consumer-jack2-resource-is-available
+    source: {file: t/plugin/ai-rate-limiting-consumer-isolation.t, tests: [3]}
+
+  - <<: *consumer_isolation_case
+    name: consumer-jack1-quota-is-isolated
+    source: {file: t/plugin/ai-rate-limiting-consumer-isolation.t, tests: [4]}
+
+  - <<: *consumer_isolation_case
+    name: consumer-jack2-quota-is-isolated
+    source: {file: t/plugin/ai-rate-limiting-consumer-isolation.t, tests: [5]}
+
   - name: expression-schema-is-enforced-by-child
     source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [1]}
     variants:
@@ -92,8 +109,9 @@ cases:
         upstream: {expect: {method: POST, path: {equals: /complex}}, respond: *ten_tokens}
         output: {status: 200}
 
-  - name: expression-charges-native-anthropic-usage
-    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [2, 3]}
+  - &expression_native_case
+    name: expression-native-anthropic-route-is-available
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [2]}
     config:
       routes:
         - id: expression-anthropic
@@ -124,15 +142,20 @@ cases:
         input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'}
         output:
           status: 200
-          headers: {X-AI-RateLimit-Remaining-ai-proxy-anthropic: {equals: '320'}}
+          headers: {X-AI-RateLimit-Remaining-ai-proxy-anthropic: {equals: '500'}}
       - <<: *anthropic_input
         name: second-anthropic-response
         output:
           status: 200
-          headers: {X-AI-RateLimit-Remaining-ai-proxy-anthropic: {equals: '140'}}
+          headers: {X-AI-RateLimit-Remaining-ai-proxy-anthropic: {equals: '320'}}
 
-  - name: expression-charges-streaming-anthropic-usage
-    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [4, 5]}
+  - <<: *expression_native_case
+    name: expression-native-anthropic-pre-charge-values
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [3]}
+
+  - &expression_stream_case
+    name: expression-streaming-anthropic-route-is-available
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [4]}
     config:
       routes:
         - id: expression-anthropic-stream
@@ -161,7 +184,7 @@ cases:
       - &anthropic_stream_input
         name: first-stream-is-forwarded
         input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}]}'}
-        output: {status: 200, body: {matches: 'event: message_stop'}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-ai-proxy-anthropic: {equals: '500'}}, body: {matches: 'event: message_stop'}}
       - <<: *anthropic_stream_input
         name: second-stream-sees-first-charge
         output:
@@ -169,8 +192,13 @@ cases:
           headers: {X-AI-RateLimit-Remaining-ai-proxy-anthropic: {equals: '320'}}
           body: {matches: 'event: message_stop'}
 
-  - name: cache-aware-expression-rejects-after-first-charge
-    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [6, 7]}
+  - <<: *expression_stream_case
+    name: expression-streaming-anthropic-pre-charge-values
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [5]}
+
+  - &expression_cache_case
+    name: cache-aware-expression-route-is-available
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [6]}
     config:
       routes:
         - id: expression-cache-aware
@@ -184,11 +212,16 @@ cases:
         count: {at_least: 1, at_most: 1}
         respond: [*anthropic_usage]
     steps:
-      - {name: over-limit-cost-is-recorded, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '0'}}}}
+      - {name: over-limit-cost-is-recorded, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '100'}}}}
       - {name: following-request-is-rejected, input: {method: POST, path: /v1/messages}, output: {status: 503}}
 
-  - name: weighted-expression-is-evaluated
-    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [8, 9]}
+  - <<: *expression_cache_case
+    name: cache-aware-expression-rejects-after-first-charge
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [7]}
+
+  - &expression_weighted_case
+    name: weighted-expression-route-is-available
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [8]}
     config:
       routes:
         - id: expression-weighted
@@ -202,13 +235,18 @@ cases:
         count: {at_least: 2, at_most: 2}
         respond: [*anthropic_usage]
     steps:
-      - &weighted_first {name: first-weighted-charge, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '775'}}}}
+      - &weighted_first {name: first-weighted-charge, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '1000'}}}}
       - <<: *weighted_first
         name: second-weighted-charge
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '550'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '775'}}}
 
-  - name: missing-expression-variables-default-to-zero
-    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [10, 11]}
+  - <<: *expression_weighted_case
+    name: weighted-expression-pre-charge-values
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [9]}
+
+  - &expression_missing_case
+    name: missing-expression-variable-route-is-available
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [10]}
     config:
       routes:
         - id: expression-missing-variable
@@ -222,13 +260,18 @@ cases:
         count: {at_least: 2, at_most: 2}
         respond: [*anthropic_usage]
     steps:
-      - &missing_first {name: first-missing-variable-charge, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '420'}}}}
+      - &missing_first {name: first-missing-variable-charge, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '500'}}}}
       - <<: *missing_first
         name: second-missing-variable-charge
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '340'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '420'}}}
 
-  - name: negative-expression-cost-is-clamped-to-zero
-    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [12, 13]}
+  - <<: *expression_missing_case
+    name: missing-expression-variable-pre-charge-values
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [11]}
+
+  - &expression_negative_case
+    name: negative-expression-route-is-available
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [12]}
     config:
       routes:
         - id: expression-negative
@@ -245,6 +288,10 @@ cases:
       - &negative_first {name: first-negative-cost, input: {method: POST, path: /v1/messages}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '100'}}}}
       - <<: *negative_first
         name: second-negative-cost
+
+  - <<: *expression_negative_case
+    name: negative-expression-cost-is-clamped-to-zero
+    source: {file: t/plugin/ai-rate-limiting-expression.t, tests: [13]}
 
   - name: core-schema-validates-quota-shapes
     source: {file: t/plugin/ai-rate-limiting.t, tests: [1]}
@@ -293,13 +340,14 @@ cases:
         upstream: {expect: {method: POST, path: {equals: /global-instance-valid}}, respond: *ten_tokens}
         output: {status: 200}
 
-  - name: total-token-limit-rejection-message-and-headers
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [2, 3, 4, 5, 6, 7]}
+  - &core_default_total_case
+    name: default-total-token-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [2]}
     config:
       routes:
-        - id: core-total-tokens
+        - id: core-default-total-tokens
           uri: /ai
-          plugins: {ai-rate-limiting: {limit: 30, time_window: 60, rejected_code: 403, rejected_msg: rate limit exceeded}}
+          plugins: {ai-rate-limiting: {limit: 30, time_window: 60}}
           upstream: *primary_upstream
     fixtures:
       - name: primary
@@ -311,19 +359,58 @@ cases:
       - &total_first
         name: total-first
         input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}
-        output: {status: 200, headers: {X-AI-RateLimit-Limit-global: {equals: '30'}, X-AI-RateLimit-Remaining-global: {equals: '20'}, X-AI-RateLimit-Reset-global: {matches: '^[0-9]+$'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-global: {equals: '30'}, X-AI-RateLimit-Remaining-global: {equals: '30'}, X-AI-RateLimit-Reset-global: {equals: '60'}}}
       - <<: *total_first
         name: total-second
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '10'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '20'}}}
       - <<: *total_first
         name: total-third
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '0'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '10'}}}
+      - <<: *total_first
+        name: total-fourth-rejected
+        output: {status: 503, body: {matches: 'Service Unavailable'}, headers: {X-AI-RateLimit-Remaining-global: {equals: '0'}}}
+
+  - <<: *core_default_total_case
+    name: default-total-token-third-request-is-rejected
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [3]}
+
+  - &core_custom_total_case
+    <<: *core_default_total_case
+    name: custom-total-token-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [4]}
+    config:
+      routes:
+        - id: core-custom-total-tokens
+          uri: /ai
+          plugins: {ai-rate-limiting: {limit: 30, time_window: 60, rejected_code: 403, rejected_msg: rate limit exceeded}}
+          upstream: *primary_upstream
+    steps:
+      - *total_first
+      - <<: *total_first
+        name: total-second
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '20'}}}
+      - <<: *total_first
+        name: total-third
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '10'}}}
       - <<: *total_first
         name: total-fourth-rejected
         output: {status: 403, body: {matches: 'rate limit exceeded'}, headers: {X-AI-RateLimit-Remaining-global: {equals: '0'}}}
 
-  - name: completion-token-strategy-is-independent
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [8, 9, 10, 11, 12]}
+  - <<: *core_custom_total_case
+    name: custom-total-token-code-and-message
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [5]}
+
+  - <<: *core_custom_total_case
+    name: custom-total-token-initial-headers
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [6]}
+
+  - <<: *core_custom_total_case
+    name: custom-total-token-pre-charge-sequence
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [7]}
+
+  - &core_completion_case
+    name: completion-token-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [8]}
     config:
       routes:
         - {id: core-total-independent, uri: /ai, plugins: {ai-rate-limiting: {limit: 30, time_window: 60}}, upstream: *primary_upstream}
@@ -332,29 +419,70 @@ cases:
       - name: primary
         kind: http
         expect: [{method: POST, path: {matches: '^/ai2?$'}}]
-        count: {at_least: 6, at_most: 6}
-        respond: [*ten_tokens]
+        count: {at_least: 4, at_most: 4}
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}'}]
     steps:
-      - &completion_request {name: completion-first, input: {method: POST, path: /ai2}, output: {status: 200, headers: {X-AI-RateLimit-Limit-global: {equals: '20'}, X-AI-RateLimit-Remaining-global: {equals: '16'}}}}
+      - &completion_request {name: completion-first, input: {method: POST, path: /ai2}, output: {status: 200, headers: {X-AI-RateLimit-Limit-global: {equals: '20'}, X-AI-RateLimit-Remaining-global: {equals: '20'}, X-AI-RateLimit-Reset-global: {equals: '45'}}}}
       - <<: *completion_request
         name: completion-second
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '12'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '15'}}}
       - <<: *completion_request
         name: completion-third
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '8'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '10'}}}
       - <<: *completion_request
         name: completion-fourth
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '4'}}}
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '5'}}}
       - <<: *completion_request
-        name: completion-fifth
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '0'}}}
-      - <<: *completion_request
-        name: completion-sixth-rejected
-        output: {status: 503}
-      - {name: other-route-has-independent-counter, input: {method: POST, path: /ai}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '20'}}}}
+        name: completion-fifth-rejected
+        output: {status: 503, headers: {X-AI-RateLimit-Remaining-global: {equals: '0'}}}
 
-  - name: global-limits-drive-multi-instance-fallback
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [13, 14]}
+  - <<: *core_completion_case
+    name: completion-token-fifth-request-is-rejected
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [9]}
+
+  - <<: *core_completion_case
+    name: completion-token-initial-headers
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [10]}
+
+  - <<: *core_completion_case
+    name: completion-token-pre-charge-sequence
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [11]}
+
+  - name: total-and-completion-routes-have-independent-counters
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [12]}
+    config:
+      routes:
+        - {id: core-total-independent, uri: /ai, plugins: {ai-rate-limiting: {limit: 30, time_window: 60, rejected_code: 403, rejected_msg: rate limit exceeded}}, upstream: *primary_upstream}
+        - {id: core-completion-independent, uri: /ai2, plugins: {ai-rate-limiting: {limit: 20, time_window: 45, limit_strategy: completion_tokens}}, upstream: *primary_upstream}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: POST, path: {matches: '^/ai2?$'}}]
+        count: {at_least: 7, at_most: 7}
+        respond: [{status: 200, headers: {Content-Type: application/json}, body: '{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}'}]
+    steps:
+      - &independent_total {name: total-independent-first, input: {method: POST, path: /ai}, output: {status: 200}}
+      - <<: *independent_total
+        name: total-independent-second
+      - <<: *independent_total
+        name: total-independent-third
+      - <<: *independent_total
+        name: total-independent-fourth-rejected
+        output: {status: 403}
+      - &independent_completion {name: completion-independent-first, input: {method: POST, path: /ai2}, output: {status: 200}}
+      - <<: *independent_completion
+        name: completion-independent-second
+      - <<: *independent_completion
+        name: completion-independent-third
+      - <<: *independent_completion
+        name: completion-independent-fourth
+      - <<: *independent_completion
+        name: completion-independent-fifth-rejected
+        output: {status: 503}
+
+  - &core_global_fallback_case
+    name: global-multi-instance-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [13]}
     config:
       routes:
         - id: core-global-fallback
@@ -380,8 +508,13 @@ cases:
         name: all-instances-rate-limited
         output: {status: 503}
 
-  - name: only-configured-instance-is-limited
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [15, 16]}
+  - <<: *core_global_fallback_case
+    name: global-limits-drive-multi-instance-fallback
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [14]}
+
+  - &core_selective_instance_case
+    name: selective-instance-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [15]}
     config:
       routes:
         - id: core-selective-instance
@@ -400,8 +533,13 @@ cases:
     steps:
       - {name: weighted-traffic-moves-after-limited-instance, repeat: 10, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 200}}
 
-  - name: each-instance-has-a-distinct-limit
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [17, 18]}
+  - <<: *core_selective_instance_case
+    name: only-configured-instance-is-limited
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [16]}
+
+  - &core_distinct_instance_case
+    name: distinct-instance-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [17]}
     config:
       routes:
         - id: core-distinct-instances
@@ -423,9 +561,15 @@ cases:
     steps:
       - {name: both-instance-budgets-are-exhausted, repeat: 7, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 200}}
       - {name: exhausted-instances-reject, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 503}}
+      - {name: exhausted-instances-remain-rejected, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 503}}
 
-  - name: instance-override-falls-back-to-global-limit
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [19, 20]}
+  - <<: *core_distinct_instance_case
+    name: each-instance-has-a-distinct-limit
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [18]}
+
+  - &core_instance_override_case
+    name: global-and-instance-override-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [19]}
     config:
       routes:
         - id: core-global-with-instance-override
@@ -450,8 +594,13 @@ cases:
       - {name: eighth-request-is-rejected, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 503}}
       - {name: ninth-request-remains-rejected, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 503}}
 
-  - name: request-variables-control-instance-quotas
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [21, 22, 23]}
+  - <<: *core_instance_override_case
+    name: instance-override-falls-back-to-global-limit
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [20]}
+
+  - &core_variable_quota_case
+    name: variable-quota-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [21]}
     config:
       routes:
         - id: core-variable-instance
@@ -483,33 +632,65 @@ cases:
                 - {name: openai, limit: '${http_openai_count ?? 20}', time_window: '${http_time_window ?? 60}'}
           upstream: *terminal_upstream
     fixtures:
-      - {name: provider, kind: http, expect: [{method: POST}], count: {at_least: 8, at_most: 8}, respond: [{status: 200, body: '{"choices":[],"usage":{"total_tokens":10}}'}]}
+      - {name: provider, kind: http, expect: [{method: POST}], count: {at_least: 13, at_most: 13}, respond: [{status: 200, body: '{"choices":[],"usage":{"total_tokens":10}}'}]}
     steps:
-      - &variable_default {name: default-limit-first, input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}, output: {status: 200, headers: {X-AI-RateLimit-Limit-deepseek: {equals: '10'}}}}
-      - <<: *variable_default
-        name: default-limit-second
+      - name: default-limit-first
+        input: &variable_default_input {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-deepseek: {equals: '10'}, X-AI-RateLimit-Remaining-deepseek: {equals: '10'}}}
+      - name: default-limit-second
+        input: *variable_default_input
         output: {status: 200, headers: {X-AI-RateLimit-Limit-openai: {equals: '20'}}}
-      - <<: *variable_default
-        name: default-limit-third
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '0'}}}
-      - <<: *variable_default
-        name: default-limit-fourth-rejected
-        output: {status: 503}
-      - &variable_custom {name: custom-limit-first, input: {method: POST, path: /ai-custom, headers: {Content-Type: application/json, count: '20', openai-count: '30', time-window: '10'}, body: '{"messages":[]}'}, output: {status: 200, headers: {X-AI-RateLimit-Limit-deepseek: {equals: '20'}}}}
-      - <<: *variable_custom
-        name: custom-limit-second
-      - <<: *variable_custom
-        name: custom-limit-third
-        output: {status: 200, headers: {X-AI-RateLimit-Limit-openai: {equals: '30'}}}
-      - <<: *variable_custom
-        name: custom-limit-fourth
+      - name: default-limit-third
+        input: *variable_default_input
         output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '10'}}}
-      - <<: *variable_custom
-        name: custom-limit-fifth
-        output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '0'}}}
-      - <<: *variable_custom
-        name: custom-limit-sixth-rejected
+      - name: default-limit-fourth-rejected
+        input: *variable_default_input
         output: {status: 503}
+      - name: custom-limit-first
+        input: &variable_custom_input {method: POST, path: /ai-custom, headers: {Content-Type: application/json, count: '20', openai-count: '30', time-window: '2'}, body: '{"messages":[]}'}
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-deepseek: {equals: '20'}, X-AI-RateLimit-Remaining-deepseek: {equals: '20'}}}
+      - name: custom-limit-second
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-deepseek: {equals: '10'}}}
+      - name: custom-limit-third
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-openai: {equals: '30'}}}
+      - name: custom-limit-fourth
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '20'}}}
+      - name: custom-limit-fifth
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '10'}}}
+      - name: custom-limit-sixth-rejected
+        input: *variable_custom_input
+        output: {status: 503}
+        wait: 2100ms
+      - name: custom-limit-after-reset-first
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-deepseek: {equals: '20'}, X-AI-RateLimit-Remaining-deepseek: {equals: '20'}}}
+      - name: custom-limit-after-reset-second
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-deepseek: {equals: '10'}}}
+      - name: custom-limit-after-reset-third
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-openai: {equals: '30'}, X-AI-RateLimit-Remaining-openai: {equals: '30'}}}
+      - name: custom-limit-after-reset-fourth
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '20'}}}
+      - name: custom-limit-after-reset-fifth
+        input: *variable_custom_input
+        output: {status: 200, headers: {X-AI-RateLimit-Remaining-openai: {equals: '10'}}}
+      - name: custom-limit-after-reset-sixth-rejected
+        input: *variable_custom_input
+        output: {status: 503}
+
+  - <<: *core_variable_quota_case
+    name: default-variable-values-control-fallback
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [22]}
+
+  - <<: *core_variable_quota_case
+    name: custom-variable-values-reset-after-window
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [23]}
 
   - name: instances-and-rules-are-mutually-exclusive
     source: {file: t/plugin/ai-rate-limiting.t, tests: [24]}
@@ -525,11 +706,90 @@ cases:
     input: {path: /ai}
     output: {status: 404, logs: {matches: 'core-conflicting-modes.*rules cannot be configured'}}
 
-  - name: rule-keys-variables-counters-and-headers
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [25, 26, 27, 28, 29, 30, 31, 32]}
+  - &core_rule_index_case
+    name: rule-route-with-default-index-prefixes-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [25]}
     config:
       routes:
         - id: core-rules
+          uri: /ai
+          plugins:
+            ai-rate-limiting:
+              rejected_code: 429
+              rules:
+                - {count: 20, time_window: 10, key: '${http_user}'}
+                - {count: '${http_count ?? 30}', time_window: '${http_window ?? 10}', key: '${http_project}'}
+          upstream: *primary_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [*post_ai]
+        count: {at_least: 11, at_most: 11}
+        respond: [*ten_tokens]
+    steps:
+      - &user_jack {name: user-jack-first, input: {method: POST, path: /ai, headers: {user: jack}}, output: {status: 200, headers: {X-AI-1-RateLimit-Limit: {equals: '20'}, X-AI-1-RateLimit-Remaining: {equals: '20'}, X-AI-1-RateLimit-Reset: {equals: '10'}}}}
+      - <<: *user_jack
+        name: user-jack-second
+        output: {status: 200, headers: {X-AI-1-RateLimit-Remaining: {equals: '10'}}}
+      - <<: *user_jack
+        name: user-jack-third-rejected
+        output: {status: 429}
+      - &user_rose {name: user-rose-first, input: {method: POST, path: /ai, headers: {user: rose}}, output: {status: 200}}
+      - <<: *user_rose
+        name: user-rose-second
+      - <<: *user_rose
+        name: user-rose-third-rejected
+        output: {status: 429}
+      - &project_default {name: project-default-first, input: {method: POST, path: /ai, headers: {project: apisix}}, output: {status: 200, headers: {X-AI-2-RateLimit-Limit: {equals: '30'}, X-AI-2-RateLimit-Remaining: {equals: '30'}, X-AI-2-RateLimit-Reset: {equals: '10'}}}}
+      - <<: *project_default
+        name: project-default-second
+        output: {status: 200, headers: {X-AI-2-RateLimit-Remaining: {equals: '20'}}}
+      - <<: *project_default
+        name: project-default-third
+        output: {status: 200, headers: {X-AI-2-RateLimit-Remaining: {equals: '10'}}}
+      - <<: *project_default
+        name: project-default-fourth-rejected
+        output: {status: 429}
+      - &project_custom {name: project-custom-first, input: {method: POST, path: /ai, headers: {project: linux, count: '20', window: '2'}}, output: {status: 200, headers: {X-AI-2-RateLimit-Limit: {equals: '20'}, X-AI-2-RateLimit-Remaining: {equals: '20'}, X-AI-2-RateLimit-Reset: {equals: '2'}}}}
+      - <<: *project_custom
+        name: project-custom-second
+        output: {status: 200, headers: {X-AI-2-RateLimit-Remaining: {equals: '10'}}}
+      - <<: *project_custom
+        name: project-custom-third-rejected
+        output: {status: 429}
+        wait: 2100ms
+      - <<: *project_custom
+        name: project-custom-after-reset-first
+      - <<: *project_custom
+        name: project-custom-after-reset-second
+        output: {status: 200, headers: {X-AI-2-RateLimit-Remaining: {equals: '10'}}}
+      - <<: *project_custom
+        name: project-custom-after-reset-third-rejected
+        output: {status: 429}
+      - {name: no-rule-key-is-an-error, input: {method: POST, path: /ai}, output: {status: 500, body: {matches: 'failed to get rate limit rules'}}}
+
+  - <<: *core_rule_index_case
+    name: rule-variables-counters-and-fixed-window-replay
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [26]}
+
+  - <<: *core_rule_index_case
+    name: default-rule-index-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [27]}
+
+  - <<: *core_rule_index_case
+    name: default-rule-index-user-headers
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [28]}
+
+  - <<: *core_rule_index_case
+    name: default-rule-index-project-headers
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [29]}
+
+  - &core_rule_custom_prefix_case
+    name: custom-rule-prefix-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [30]}
+    config:
+      routes:
+        - id: core-rules-custom-prefix
           uri: /ai
           plugins:
             ai-rate-limiting:
@@ -542,42 +802,23 @@ cases:
       - name: primary
         kind: http
         expect: [*post_ai]
-        count: {at_least: 9, at_most: 9}
+        count: {at_least: 2, at_most: 2}
         respond: [*ten_tokens]
     steps:
-      - &user_jack {name: user-jack-first, input: {method: POST, path: /ai, headers: {user: jack}}, output: {status: 200, headers: {X-AI-User-RateLimit-Limit: {equals: '20'}, X-AI-User-RateLimit-Remaining: {equals: '10'}, X-AI-User-RateLimit-Reset: {matches: '^[0-9]+$'}}}}
-      - <<: *user_jack
-        name: user-jack-second
-        output: {status: 200, headers: {X-AI-User-RateLimit-Remaining: {equals: '0'}}}
-      - <<: *user_jack
-        name: user-jack-third-rejected
-        output: {status: 429}
-      - &user_rose {name: user-rose-first, input: {method: POST, path: /ai, headers: {user: rose}}, output: {status: 200}}
-      - <<: *user_rose
-        name: user-rose-second
-      - <<: *user_rose
-        name: user-rose-third-rejected
-        output: {status: 429}
-      - &project_default {name: project-default-first, input: {method: POST, path: /ai, headers: {project: apisix}}, output: {status: 200, headers: {X-AI-Project-RateLimit-Limit: {equals: '30'}, X-AI-Project-RateLimit-Remaining: {equals: '20'}}}}
-      - <<: *project_default
-        name: project-default-second
-        output: {status: 200, headers: {X-AI-Project-RateLimit-Remaining: {equals: '10'}}}
-      - <<: *project_default
-        name: project-default-third
-        output: {status: 200, headers: {X-AI-Project-RateLimit-Remaining: {equals: '0'}}}
-      - <<: *project_default
-        name: project-default-fourth-rejected
-        output: {status: 429}
-      - &project_custom {name: project-custom-first, input: {method: POST, path: /ai, headers: {project: linux, count: '20', window: '2'}}, output: {status: 200, headers: {X-AI-Project-RateLimit-Limit: {equals: '20'}}}}
-      - <<: *project_custom
-        name: project-custom-second
-      - <<: *project_custom
-        name: project-custom-third-rejected
-        output: {status: 429}
-      - {name: no-rule-key-is-an-error, input: {method: POST, path: /ai}, output: {status: 500, body: {matches: 'failed to get rate limit rules'}}}
+      - {name: custom-user-prefix, input: {method: POST, path: /ai, headers: {user: jack}}, output: {status: 200, headers: {X-AI-User-RateLimit-Limit: {equals: '20'}, X-AI-User-RateLimit-Remaining: {equals: '20'}, X-AI-User-RateLimit-Reset: {equals: '10'}}}}
+      - {name: custom-project-prefix, input: {method: POST, path: /ai, headers: {project: apisix}}, output: {status: 200, headers: {X-AI-Project-RateLimit-Limit: {equals: '30'}, X-AI-Project-RateLimit-Remaining: {equals: '30'}, X-AI-Project-RateLimit-Reset: {equals: '10'}}}}
 
-  - name: dotted-instance-name-is-literal
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [33, 34]}
+  - <<: *core_rule_custom_prefix_case
+    name: custom-rule-user-prefix-headers
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [31]}
+
+  - <<: *core_rule_custom_prefix_case
+    name: custom-rule-project-prefix-headers
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [32]}
+
+  - &core_dotted_instance_case
+    name: dotted-instance-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [33]}
     config:
       routes:
         - id: core-dotted-instance
@@ -598,6 +839,10 @@ cases:
         input: {method: POST, path: /ai, headers: {Content-Type: application/json}, body: '{"messages":[]}'}
         output: {status: 200, headers: {X-AI-RateLimit-Limit-Qwen3.5-397B-10.249.238.157: {equals: '100'}}}
 
+  - <<: *core_dotted_instance_case
+    name: dotted-instance-name-is-literal
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [34]}
+
   - name: redis-policy-requires-host
     source: {file: t/plugin/ai-rate-limiting.t, tests: [35]}
     config:
@@ -609,8 +854,9 @@ cases:
     input: {path: /ai}
     output: {status: 404, logs: {matches: 'core-redis-missing-host.*redis_host'}}
 
-  - name: redis-policy-shares-and-persists-counter
-    source: {file: t/plugin/ai-rate-limiting.t, tests: [36, 37, 38]}
+  - &core_redis_counter_case
+    name: redis-policy-route-is-available
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [36]}
     config:
       routes:
         - id: core-redis-counter
@@ -624,18 +870,40 @@ cases:
               redis_port: '{{FIXTURE.redis.PORT}}'
               redis_database: 1
           upstream: *primary_upstream
+        - id: core-redis-other
+          uri: /ai-other
+          plugins:
+            ai-rate-limiting:
+              limit: 30
+              time_window: 60
+              policy: redis
+              redis_host: '{{FIXTURE.redis.HOST}}'
+              redis_port: '{{FIXTURE.redis.PORT}}'
+              redis_database: 1
+          upstream: *primary_upstream
     fixtures:
       - name: primary
         kind: http
-        expect: [*post_ai]
-        count: {at_least: 3, at_most: 3}
+        expect: [{method: POST, path: {matches: '^/ai(?:-other)?$'}}]
+        count: {at_least: 6, at_most: 6}
         respond: [*ten_tokens]
       - name: redis
         kind: redis
         redis:
           ignore_negotiation: true
           allow_unasserted_commands: true
-          values: {'apisix-go:ai-rate-limiting:global': '30'}
+          values:
+            'apisix-go:ai-rate-limiting:route:core-redis-counter:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': '30'
+            'apisix-go:ai-rate-limiting:route:core-redis-other:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': '10'
+            'apisix-go:ai-rate-limiting:route:core-redis-counter:service::config:105ad786e290cd639ecacf8d6563d6186b3d8eadd97ee5c37b52af8610696024:global': '20'
+          ttl_seconds_between:
+            'apisix-go:ai-rate-limiting:route:core-redis-counter:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': {min: 55, max: 60}
+            'apisix-go:ai-rate-limiting:route:core-redis-other:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': {min: 55, max: 60}
+            'apisix-go:ai-rate-limiting:route:core-redis-counter:service::config:105ad786e290cd639ecacf8d6563d6186b3d8eadd97ee5c37b52af8610696024:global': {min: 55, max: 60}
+          expiry_initializations:
+            'apisix-go:ai-rate-limiting:route:core-redis-counter:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': 1
+            'apisix-go:ai-rate-limiting:route:core-redis-other:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': 1
+            'apisix-go:ai-rate-limiting:route:core-redis-counter:service::config:105ad786e290cd639ecacf8d6563d6186b3d8eadd97ee5c37b52af8610696024:global': 1
     steps:
       - &redis_request {name: redis-first, input: {method: POST, path: /ai}, output: {status: 200}}
       - <<: *redis_request
@@ -645,6 +913,45 @@ cases:
       - <<: *redis_request
         name: redis-fourth-is-rejected
         output: {status: 503}
+      - {name: second-route-does-not-collide, input: {method: POST, path: /ai-other}, output: {status: 200, headers: {X-AI-RateLimit-Remaining-global: {equals: '30'}}}}
+      - name: changed-quota-configuration-uses-a-new-counter
+        config:
+          routes:
+            - id: core-redis-counter
+              uri: /ai
+              plugins:
+                ai-rate-limiting:
+                  limit: 20
+                  time_window: 60
+                  policy: redis
+                  redis_host: '{{FIXTURE.redis.HOST}}'
+                  redis_port: '{{FIXTURE.redis.PORT}}'
+                  redis_database: 1
+              upstream: *primary_upstream
+            - id: core-redis-other
+              uri: /ai-other
+              plugins:
+                ai-rate-limiting:
+                  limit: 30
+                  time_window: 60
+                  policy: redis
+                  redis_host: '{{FIXTURE.redis.HOST}}'
+                  redis_port: '{{FIXTURE.redis.PORT}}'
+                  redis_database: 1
+              upstream: *primary_upstream
+        config_probe:
+          input: {method: POST, path: /ai}
+          output: {status: 200, headers: {X-AI-RateLimit-Limit-global: {equals: '20'}, X-AI-RateLimit-Remaining-global: {equals: '20'}}}
+        input: {method: POST, path: /ai}
+        output: {status: 200, headers: {X-AI-RateLimit-Limit-global: {equals: '20'}, X-AI-RateLimit-Remaining-global: {equals: '10'}}}
+
+  - <<: *core_redis_counter_case
+    name: redis-policy-shares-counter-and-rejects-fourth-request
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [37]}
+
+  - <<: *core_redis_counter_case
+    name: redis-policy-persists-counter-with-fixed-window
+    source: {file: t/plugin/ai-rate-limiting.t, tests: [38]}
 
   - name: redis-sentinel-auth-shape-is-runnable
     source: {file: t/plugin/ai-rate-limiting.t, tests: [39]}
@@ -671,7 +978,15 @@ cases:
         redis:
           ignore_negotiation: true
           allow_unasserted_commands: true
-          values: {'apisix-go:ai-rate-limiting:global': '10'}
+          auth:
+            - {username: bob, password: sentinelpass}
+            - {username: alice, password: somepassword}
+          values:
+            'apisix-go:ai-rate-limiting:route:core-redis-sentinel:service::config:339410a3d835c1c9dee6e54fd989ee34077fc579dc0597aece49ecb984081325:global': '10'
+          ttl_seconds_between:
+            'apisix-go:ai-rate-limiting:route:core-redis-sentinel:service::config:339410a3d835c1c9dee6e54fd989ee34077fc579dc0597aece49ecb984081325:global': {min: 55, max: 60}
+          expiry_initializations:
+            'apisix-go:ai-rate-limiting:route:core-redis-sentinel:service::config:339410a3d835c1c9dee6e54fd989ee34077fc579dc0597aece49ecb984081325:global': 1
     steps:
       - {name: sentinel-master-is-used, input: {method: POST, path: /ai}, output: {status: 200}}
 
@@ -693,7 +1008,7 @@ cases:
               policy: redis
               redis_host: '{{FIXTURE.redis.HOST}}'
               redis_port: '{{FIXTURE.redis.PORT}}'
-              redis_password: wFfhVWUFrm0MrViyR5jFDA==
+              redis_password: somepassword
           upstream: *primary_upstream
     fixtures:
       - {name: primary, kind: http, expect: [*post_ai], respond: [*ten_tokens]}
@@ -702,8 +1017,23 @@ cases:
         redis:
           ignore_negotiation: true
           allow_unasserted_commands: true
-          values: {'apisix-go:ai-rate-limiting:global': '10'}
+          auth:
+            - {password: somepassword}
+          values:
+            'apisix-go:ai-rate-limiting:route:core-encrypted-redis:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': '10'
+          ttl_seconds_between:
+            'apisix-go:ai-rate-limiting:route:core-encrypted-redis:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': {min: 55, max: 60}
+          expiry_initializations:
+            'apisix-go:ai-rate-limiting:route:core-encrypted-redis:service::config:5f1a1128dbd04df97d1d1cbad3dae1635c9599197505a7956856612feddfa0a3:global': 1
     steps:
       - name: encrypted-password-authenticates
         input: {method: POST, path: /ai}
         output: {status: 200, logs: {not_matches: somepassword}}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: core-encrypted-redis
+          fields:
+            /plugins/ai-rate-limiting/redis_password: wFfhVWUFrm0MrViyR5jFDA==
+          forbidden_matches: [somepassword]

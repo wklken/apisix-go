@@ -3,6 +3,7 @@ package ai_rate_limiting
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -21,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
@@ -32,6 +34,9 @@ type Plugin struct {
 	now      func() time.Time
 	costExpr *govaluate.EvaluableExpression
 	redis    *redis.Client
+
+	resourceScope  string
+	configIdentity string
 }
 
 const (
@@ -45,6 +50,16 @@ var (
 )
 
 var errNoUsableRules = errors.New("no usable rate limit rules")
+
+const redisChargeScript = `
+local current = redis.call("INCRBY", KEYS[1], ARGV[1])
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl < 0 then
+  redis.call("PEXPIRE", KEYS[1], ARGV[2])
+  ttl = tonumber(ARGV[2])
+end
+return {current, ttl}
+`
 
 const schema = `
 {
@@ -274,6 +289,9 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
 	}
+	if p.config.RedisTimeout == 0 {
+		p.config.RedisTimeout = 1000
+	}
 	if p.config.Policy == "redis" {
 		if p.config.RedisHost == "" {
 			return errors.New("redis_host is required when policy is redis")
@@ -281,19 +299,18 @@ func (p *Plugin) PostInit() error {
 		if p.config.RedisPort == 0 {
 			p.config.RedisPort = 6379
 		}
-		if p.config.RedisTimeout == 0 {
-			p.config.RedisTimeout = 1000
-		}
-		password, err := p.resolveRedisPassword()
+		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
 		if err != nil {
 			return err
 		}
 		p.redis = redis.NewClient(&redis.Options{
-			Addr:        fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
-			Username:    p.config.RedisUsername,
-			Password:    password,
-			DB:          p.config.RedisDatabase,
-			DialTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			Addr:         fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+			Username:     p.config.RedisUsername,
+			Password:     password,
+			DB:           p.config.RedisDatabase,
+			DialTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			ReadTimeout:  time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			WriteTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
 		})
 	}
 	if p.config.Policy == "redis-sentinel" {
@@ -304,7 +321,11 @@ func (p *Plugin) PostInit() error {
 		for _, sentinel := range p.config.RedisSentinels {
 			addresses = append(addresses, fmt.Sprintf("%s:%d", sentinel.Host, sentinel.Port))
 		}
-		password, err := p.resolveRedisPassword()
+		password, err := p.resolveSecret("redis_password", p.config.RedisPassword)
+		if err != nil {
+			return err
+		}
+		sentinelPassword, err := p.resolveSecret("sentinel_password", p.config.SentinelPassword)
 		if err != nil {
 			return err
 		}
@@ -314,8 +335,11 @@ func (p *Plugin) PostInit() error {
 			Username:         p.config.RedisUsername,
 			Password:         password,
 			SentinelUsername: p.config.SentinelUsername,
-			SentinelPassword: p.config.SentinelPassword,
+			SentinelPassword: sentinelPassword,
 			DB:               p.config.RedisDatabase,
+			DialTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			ReadTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+			WriteTimeout:     time.Duration(p.config.RedisTimeout) * time.Millisecond,
 		})
 	}
 	if p.config.LimitStrategy == "expression" {
@@ -374,16 +398,53 @@ func (p *Plugin) PostInit() error {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	p.refreshConfigIdentity()
 	return nil
 }
 
-func (p *Plugin) resolveRedisPassword() (string, error) {
+func (p *Plugin) resolveSecret(field, value string) (string, error) {
 	keyring, enabled := data_encryption.Keyring()
-	password, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.RedisPassword)
+	resolved, err := data_encryption.NewResolver(enabled, keyring).Resolve(value)
 	if err != nil {
-		return "", fmt.Errorf("ai-rate-limiting redis_password: %w", err)
+		return "", fmt.Errorf("ai-rate-limiting %s: %w", field, err)
 	}
-	return password, nil
+	return resolved, nil
+}
+
+func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
+	p.resourceScope = "route:" + route.ID + ":service:" + service.ID
+}
+
+func (p *Plugin) refreshConfigIdentity() {
+	identity := struct {
+		Limit         any             `json:"limit,omitempty"`
+		TimeWindow    any             `json:"time_window,omitempty"`
+		LimitStrategy string          `json:"limit_strategy"`
+		CostExpr      string          `json:"cost_expr,omitempty"`
+		Instances     []InstanceLimit `json:"instances,omitempty"`
+		Rules         []Rule          `json:"rules,omitempty"`
+		Policy        string          `json:"policy"`
+	}{
+		Limit:         p.config.Limit,
+		TimeWindow:    p.config.TimeWindow,
+		LimitStrategy: p.config.LimitStrategy,
+		CostExpr:      p.config.CostExpr,
+		Instances:     p.config.Instances,
+		Rules:         p.config.Rules,
+		Policy:        p.config.Policy,
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		p.configIdentity = ""
+		return
+	}
+	p.configIdentity = fmt.Sprintf("%x", sha256.Sum256(encoded))
+}
+
+func (p *Plugin) Stop() {
+	if p.redis != nil {
+		_ = p.redis.Close()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -438,6 +499,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		recorder := newResponseRecorder()
+		for _, q := range quotas {
+			p.writeQuotaHeaders(recorder.header, q)
+		}
 		next.ServeHTTP(recorder, r)
 		if len(p.config.Rules) == 0 {
 			if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
@@ -451,9 +515,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			for _, q := range quotas {
 				p.charge(q, usedTokens)
 			}
-		}
-		for _, q := range quotas {
-			p.writeQuotaHeaders(recorder.header, q)
 		}
 		recorder.writeTo(w)
 	}
@@ -691,11 +752,13 @@ func (p *Plugin) allowed(q quota) bool {
 
 func (p *Plugin) charge(q quota, tokens int64) {
 	if p.redis != nil {
-		ctx := context.Background()
-		key := p.redisKey(q)
-		if p.redis.IncrBy(ctx, key, tokens).Err() == nil {
-			_ = p.redis.Expire(ctx, key, q.window).Err()
-		}
+		_ = p.redis.Eval(
+			context.Background(),
+			redisChargeScript,
+			[]string{p.redisKey(q)},
+			tokens,
+			q.window.Milliseconds(),
+		).Err()
 		return
 	}
 	p.mu.Lock()
@@ -904,32 +967,40 @@ func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 	if q.headerPrefix != "" {
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Limit", strconv.FormatInt(q.limit, 10))
 		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
-		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		header.Set("X-AI-"+q.headerPrefix+"-RateLimit-Reset", strconv.FormatInt(reset, 10))
 		return
 	}
 	header.Set("X-AI-RateLimit-Limit-"+q.headerName, strconv.FormatInt(q.limit, 10))
 	header.Set("X-AI-RateLimit-Remaining-"+q.headerName, strconv.FormatInt(remaining, 10))
-	header.Set("X-AI-RateLimit-Reset-"+q.headerName, strconv.FormatInt(reset.Unix(), 10))
+	header.Set("X-AI-RateLimit-Reset-"+q.headerName, strconv.FormatInt(reset, 10))
 }
 
-func (p *Plugin) snapshot(q quota) (int64, time.Time) {
+func (p *Plugin) snapshot(q quota) (int64, int64) {
 	if p.redis != nil {
 		ctx := context.Background()
 		used, err := p.redis.Get(ctx, p.redisKey(q)).Int64()
 		if err != nil && err != redis.Nil {
 			used = 0
 		}
-		return used, p.now().Add(q.window)
+		ttl, err := p.redis.PTTL(ctx, p.redisKey(q)).Result()
+		if err != nil || ttl < 0 {
+			ttl = q.window
+		}
+		return used, max(int64(math.Ceil(ttl.Seconds())), 0)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	state := p.state(q)
-	return state.used, state.reset
+	return state.used, max(int64(math.Ceil(state.reset.Sub(p.now()).Seconds())), 0)
 }
 
 func (p *Plugin) redisKey(q quota) string {
-	return "apisix-go:ai-rate-limiting:" + q.key
+	scope := p.resourceScope
+	if scope == "" {
+		scope = "route::service:"
+	}
+	return "apisix-go:ai-rate-limiting:" + scope + ":config:" + p.configIdentity + ":" + q.key
 }
 
 func (p *Plugin) reject(w http.ResponseWriter) {

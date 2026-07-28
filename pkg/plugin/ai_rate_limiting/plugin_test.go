@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy_multi"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func newTestPlugin(t *testing.T, cfg Config, now func() time.Time) *Plugin {
@@ -55,8 +57,11 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	if got := first.Header().Get("X-AI-RateLimit-Limit-global"); got != "10" {
 		t.Fatalf("limit header = %q, want 10", got)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-global"); got != "0" {
-		t.Fatalf("remaining header = %q, want 0 after charging response tokens", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-global"); got != "10" {
+		t.Fatalf("remaining header = %q, want 10 before charging response tokens", got)
+	}
+	if got := first.Header().Get("X-AI-RateLimit-Reset-global"); got != "60" {
+		t.Fatalf("reset header = %q, want remaining window duration 60", got)
 	}
 
 	second := httptest.NewRecorder()
@@ -169,6 +174,88 @@ func TestPostInitRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing
 		!strings.Contains(err.Error(), "redis_password") ||
 		strings.Contains(err.Error(), "plaintext-secret") {
 		t.Fatalf("PostInit() error = %v, want redacted redis_password validation error", err)
+	}
+}
+
+func TestPostInitStrictlyResolvesBothRedisPasswordsAndAppliesTimeouts(t *testing.T) {
+	data_encryption.Configure(true, []string{"edd1c9f0985e76a2"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisPassword:    "wFfhVWUFrm0MrViyR5jFDA==",
+		SentinelPassword: "sPlnmYRPUBjcTZVYQOQweA==",
+		RedisTimeout:     37,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	options := p.redis.Options()
+	if options.Password != "somepassword" {
+		t.Fatalf("Redis password = %q, want decrypted plaintext", options.Password)
+	}
+	if options.DialTimeout != 37*time.Millisecond ||
+		options.ReadTimeout != 37*time.Millisecond ||
+		options.WriteTimeout != 37*time.Millisecond {
+		t.Fatalf(
+			"Redis timeouts = (%s, %s, %s), want 37ms",
+			options.DialTimeout,
+			options.ReadTimeout,
+			options.WriteTimeout,
+		)
+	}
+	p.Stop()
+	if err := p.redis.Ping(t.Context()).Err(); !strings.Contains(err.Error(), redis.ErrClosed.Error()) {
+		t.Fatalf("Ping() error after Stop = %v, want redis client closed", err)
+	}
+}
+
+func TestPostInitRejectsPlaintextSentinelPasswordWithoutLeakingIt(t *testing.T) {
+	data_encryption.Configure(true, []string{"edd1c9f0985e76a2"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	p := &Plugin{config: Config{
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		SentinelPassword: "sentinel-plaintext",
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := p.PostInit()
+	if err == nil ||
+		!strings.Contains(err.Error(), "sentinel_password") ||
+		strings.Contains(err.Error(), "sentinel-plaintext") {
+		t.Fatalf("PostInit() error = %v, want redacted sentinel_password validation error", err)
+	}
+}
+
+func TestRedisCounterKeyIncludesResourceAndConfigurationIdentity(t *testing.T) {
+	first := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	first.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{ID: "service-1"})
+	second := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	second.SetResourceContext(resource.Route{ID: "route-2"}, resource.Service{ID: "service-1"})
+	reloaded := newTestPlugin(t, Config{Limit: 20, TimeWindow: 60}, time.Now)
+	reloaded.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{ID: "service-1"})
+
+	q := quota{key: "global"}
+	firstKey := first.redisKey(q)
+	if firstKey == second.redisKey(q) {
+		t.Fatalf("two routes share Redis key %q", firstKey)
+	}
+	if firstKey == reloaded.redisKey(q) {
+		t.Fatalf("changed configuration retained Redis key %q", firstKey)
+	}
+	if !strings.Contains(firstKey, "route:route-1") || !strings.Contains(firstKey, "service:service-1") {
+		t.Fatalf("Redis key = %q, want route and service identity", firstKey)
 	}
 }
 
@@ -285,6 +372,27 @@ func TestHandlerResetsQuotaAfterWindow(t *testing.T) {
 	}
 }
 
+func TestHandlerReportsPinnedPreChargeSnapshots(t *testing.T) {
+	p := newTestPlugin(t, Config{Limit: 30, TimeWindow: 60}, time.Now)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"total_tokens":10}}`))
+	})
+	for i, want := range []string{"30", "20", "10", "0"} {
+		response := httptest.NewRecorder()
+		p.Handler(upstream).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
+		if got := response.Header().Get("X-AI-RateLimit-Remaining-global"); got != want {
+			t.Fatalf("response %d remaining = %q, want pre-charge snapshot %q", i+1, got, want)
+		}
+		wantStatus := http.StatusOK
+		if i == 3 {
+			wantStatus = http.StatusServiceUnavailable
+		}
+		if response.Code != wantStatus {
+			t.Fatalf("response %d status = %d, want %d", i+1, response.Code, wantStatus)
+		}
+	}
+}
+
 func TestAIProxyAndRateLimiterExecuteInAPISIXPhaseOrder(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -327,8 +435,8 @@ func TestAIProxyAndRateLimiterExecuteInAPISIXPhaseOrder(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-ai-proxy-openai-compatible"); got != "0" {
-		t.Fatalf("remaining header = %q, want 0", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-ai-proxy-openai-compatible"); got != "2" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 2", got)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -443,8 +551,8 @@ func TestAIProxyMultiPublishesInstanceBeforeRateLimitPreflight(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
-	if got := first.Header().Get("X-AI-RateLimit-Remaining-model-a"); got != "0" {
-		t.Fatalf("remaining header = %q, want 0", got)
+	if got := first.Header().Get("X-AI-RateLimit-Remaining-model-a"); got != "2" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 2", got)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -535,8 +643,8 @@ func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 	if firstCalls.Load() != 0 || secondCalls.Load() != 1 {
 		t.Fatalf("provider calls = (%d, %d), want (0, 1)", firstCalls.Load(), secondCalls.Load())
 	}
-	if got := allowed.Header().Get("X-AI-RateLimit-Remaining-model-b"); got != "4" {
-		t.Fatalf("model-b remaining header = %q, want 4", got)
+	if got := allowed.Header().Get("X-AI-RateLimit-Remaining-model-b"); got != "5" {
+		t.Fatalf("model-b remaining header = %q, want pre-charge quota 5", got)
 	}
 
 	rate.charge(quota{key: "instance:model-b", headerName: "model-b", limit: 5, window: time.Minute}, 4)
@@ -776,6 +884,48 @@ func TestHandlerAppliesIndependentRulesWithRuleHeaders(t *testing.T) {
 	}
 }
 
+func TestHandlerRuleUsesFixedWindowAndDefaultIndexHeaders(t *testing.T) {
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		Count: 1, TimeWindow: 2, Key: "$http_x_tenant",
+	}}}, func() time.Time { return now })
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
+	})
+	request := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("X-Tenant", "team-a")
+		return req
+	}
+
+	first := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(first, request())
+	for header, want := range map[string]string{
+		"X-AI-1-RateLimit-Limit":     "1",
+		"X-AI-1-RateLimit-Remaining": "1",
+		"X-AI-1-RateLimit-Reset":     "2",
+	} {
+		if got := first.Header().Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+	blocked := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(blocked, request())
+	if blocked.Code != http.StatusServiceUnavailable {
+		t.Fatalf("blocked response status = %d, want 503", blocked.Code)
+	}
+
+	now = now.Add(2100 * time.Millisecond)
+	replayed := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(replayed, request())
+	if replayed.Code != http.StatusOK {
+		t.Fatalf("replayed response status = %d, want 200 after fixed-window reset", replayed.Code)
+	}
+	if got := replayed.Header().Get("X-AI-1-RateLimit-Remaining"); got != "1" {
+		t.Fatalf("replayed remaining = %q, want reset quota 1", got)
+	}
+}
+
 func TestHandlerSkipsInvalidDynamicRuleAndAppliesValidRule(t *testing.T) {
 	p := newTestPlugin(t, Config{Rules: []Rule{
 		{Count: "$http_x_bad_count", TimeWindow: 60, Key: "$http_x_tenant", HeaderPrefix: "Bad"},
@@ -860,8 +1010,8 @@ func TestHandlerExpressionUsesRawUsageFromRequestContext(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
 	})).ServeHTTP(rr, req)
 
-	if got := rr.Header().Get("X-AI-RateLimit-Remaining-global"); got != "10" {
-		t.Fatalf("remaining header = %q, want 10 from raw usage expression", got)
+	if got := rr.Header().Get("X-AI-RateLimit-Remaining-global"); got != "20" {
+		t.Fatalf("remaining header = %q, want pre-charge quota 20", got)
 	}
 }
 

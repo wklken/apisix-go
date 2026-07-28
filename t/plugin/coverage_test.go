@@ -138,6 +138,65 @@ func TestSAMLManifestHasIndependentSingletonCases(t *testing.T) {
 	}
 }
 
+func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *testing.T) {
+	const manifestFile = "ai-rate-limiting.yaml"
+	data, err := os.ReadFile(manifestFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", manifestFile, err)
+	}
+	manifest, err := loadManifest(manifestFile, data)
+	if err != nil {
+		t.Fatalf("load %s: %v", manifestFile, err)
+	}
+	if got := len(manifest.Cases); got != 58 {
+		t.Fatalf("%s top-level cases = %d, want exactly 58 pinned behavioral cases", manifestFile, got)
+	}
+
+	next := map[string]int{
+		"t/plugin/ai-rate-limiting-consumer-isolation.t": 1,
+		"t/plugin/ai-rate-limiting-expression.t":         1,
+		"t/plugin/ai-rate-limiting.t":                    1,
+	}
+	for i, testCase := range manifest.Cases {
+		if len(testCase.Source.Tests) != 1 {
+			t.Fatalf(
+				"%s case %d %q maps %d source blocks, want exactly one",
+				manifestFile,
+				i+1,
+				testCase.Name,
+				len(testCase.Source.Tests),
+			)
+		}
+		want, ok := next[testCase.Source.File]
+		if !ok {
+			t.Fatalf("%s case %d has unexpected source %q", manifestFile, i+1, testCase.Source.File)
+		}
+		if got := testCase.Source.Tests[0]; got != want {
+			t.Fatalf(
+				"%s case %d %q maps source test %d, want next source test %d",
+				manifestFile,
+				i+1,
+				testCase.Name,
+				got,
+				want,
+			)
+		}
+		next[testCase.Source.File]++
+	}
+	for file, got := range next {
+		want := 6
+		switch file {
+		case "t/plugin/ai-rate-limiting-expression.t":
+			want = 14
+		case "t/plugin/ai-rate-limiting.t":
+			want = 41
+		}
+		if got != want {
+			t.Fatalf("%s mapped through test %d, want through test %d", file, got-1, want-1)
+		}
+	}
+}
+
 func TestSourceCoverage(t *testing.T) {
 	sourceRoot := apacheAPISIXSourceRoot(t)
 	files, err := filepath.Glob("*.yaml")

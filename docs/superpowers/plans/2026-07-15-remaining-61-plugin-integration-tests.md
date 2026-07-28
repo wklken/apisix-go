@@ -288,7 +288,7 @@ The conversion acceptance matrix is exact:
 | `cors` | four sources / 86 | simple/preflight requests, wildcard/regex origins, methods, request/expose headers, credentials, max-age, allow-private-network, missing/disallowed origins, schema rejection |
 | `consumer-restriction` | two sources / 71 | username/group/service/route allow/deny, anonymous behavior, consumer groups, plugin metadata, custom message/status, missing consumer |
 | `request-validation` | two sources / 55 | JSON/body/form/header/query validation, coercion, required/additional fields, arrays/nested objects, custom rejection status/message, malformed payloads |
-| `oas-validator` | three sources / 112 | inline and referenced OpenAPI operations, path/query/header/cookie/body validation, formats, nullable/composition, request/response modes, unmatched operations, schema errors |
+| `oas-validator` | three sources / 110 | inline and referenced OpenAPI operations, path/query/header/cookie/body validation, formats, nullable/composition, request/response modes, unmatched operations, schema errors |
 | `traffic-label` | two sources / 38 | first-match and match-all rules, nested expressions, variables, numeric/string headers, weighted actions, schema/config-time expression rejection |
 
 - [ ] **Step 1: Convert one manifest at a time using the canonical shape**
@@ -753,6 +753,13 @@ The original checked state was not supported by the manifests. This audit compar
 
 ### Remaining Harness and Coverage Work
 
+- [x] Add a real `TestSourceCoverage` gate that verifies the local Apache
+  checkout is clean at the pinned commit and compares every manifest source
+  declaration with its actual upstream `=== TEST` blocks or sparse labels. It
+  fails loudly when a configured checkout drifts and skips with an explicit
+  reason when no checkout is available. Its first run found and corrected the
+  fabricated `oas-validator.t` labels 19 and 20: that source has 32 blocks with
+  labels 1–18 and 21–34, so the three-source total is 110 rather than 112.
 - [ ] Strengthen `TestManifestCorpusExercisesTargetPlugins` so one generic request cannot claim an entire source file merely by listing every source number and activating the target plugin.
 - [ ] Add a checked source-behavior ledger or equivalent validation that ties each upstream `TEST` title to the standalone resource, request, and assertion that exercises it.
 - [ ] Complete the protocol fixtures promised by Task 3, including LDAP search/failure responses and distinct Redis Cluster/Sentinel behavior rather than routing all three kinds through one generic Redis fixture.
@@ -769,7 +776,16 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `cors` — all 86 pinned blocks run against standalone resources with behavior-specific assertions: schema and route lifecycle, wildcard/regex origin matching, default and explicit CORS response fields, credentials, methods, request/expose headers, metadata-origin validation and override, proxy-rewrite ordering, and timing-origin list/regex precedence. The focused CORS package and real-process integration gates pass.
 - [x] `consumer-restriction` — all 71 pinned source blocks run as standalone cases. Direct and `multi-auth` paths isolate authentication probes, execute consumer plugins exactly once around the real downstream request, preserve consumer-over-route precedence, and keep route/service identity in cached consumer chains. Stacked auth execution is idempotent and the HMAC helper rejects static `Authorization` in both header maps. Exact RED-then-GREEN regressions, affected packages, race tests, real-process `consumer-restriction` and `multi-auth`, manifest validation, and `make build` pass; task review approved the result.
 - [x] `request-validation` — all 55 pinned blocks are mapped exactly once to real standalone requests covering body/header schema types and rejection matrices, scalar JSON forwarding, nested/array/enum/required constraints, custom status/messages, repeated URL-encoded values, and duplicate-key normalization. APISIX legacy `table`/`function` schema types are normalized only in schema-bearing locations, with focused package regressions; the semantic and real-process gates pass.
-- [x] `oas-validator` — all 112 pinned blocks across the three sources are mapped exactly once to standalone validation behavior. The manifest covers request and response modes, inline and URL specifications, OAS 3.1 composition/format and parameter/body matrices, initialization-time inline-JSON rejection, lazy external-reference failures, URL headers/cache/TTL behavior, and all 36 pinned runtime diagnostics. Focused package, semantic, real-process, lint, and build gates pass; task review approved the result.
+- [x] `oas-validator` — all 110 pinned blocks across the three sources are
+  mapped exactly once to standalone validation behavior. The pinned first
+  source intentionally skips labels 19 and 20; the manifest now declares that
+  sparse source matrix instead of inventing two blocks. The manifest covers
+  request and response modes, inline and URL specifications, OAS 3.1
+  composition/format and parameter/body matrices, initialization-time
+  inline-JSON rejection, lazy external-reference failures, URL
+  headers/cache/TTL behavior, and all 36 pinned runtime diagnostics. Focused
+  package, semantic, real-process, lint, and build gates pass; task review
+  approved the result.
 - [x] `traffic-label` — all 38 pinned blocks map exactly once to standalone behavior. Missing and empty `rules` reject independently with identifying diagnostics; the source's two-request case now executes and observes two real requests; invalid action/operator/weight diagnostics are source-specific; explicit zero-weight actions are never selected while 100-weight actions are deterministic and omitted weights keep the default. Package, semantic, real-process, race, scoped lint, post-integration gates, and task review pass.
 
 #### Task 5 — Local-Credential Authentication

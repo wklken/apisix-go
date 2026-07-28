@@ -3,21 +3,26 @@ package pluginintegration
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 var (
 	documentedPluginName   = regexp.MustCompile("`([^`]+)`")
+	sourceTestHeader       = regexp.MustCompile(`^=== TEST\s+([0-9]+)`)
 	upstreamSourceAbsences = map[string]string{
 		"GM":              "no Apache APISIX t/plugin source at the pinned commit",
 		"proxy-buffering": "no Apache APISIX t/plugin source at the pinned commit",
 	}
 )
+
+const pinnedAPISIXSourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
 
 func TestSupportedPluginManifestSelection(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "plugins.md"))
@@ -90,6 +95,170 @@ func TestManifestCorpusValidates(t *testing.T) {
 			t.Fatalf("load %s: %v", file, err)
 		}
 	}
+}
+
+func TestSourceCoverage(t *testing.T) {
+	sourceRoot := apacheAPISIXSourceRoot(t)
+	files, err := filepath.Glob("*.yaml")
+	if err != nil {
+		t.Fatalf("discover manifests: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no manifests found")
+	}
+
+	for _, manifestFile := range files {
+		data, err := os.ReadFile(manifestFile)
+		if err != nil {
+			t.Fatalf("read %s: %v", manifestFile, err)
+		}
+		manifest, err := loadManifest(manifestFile, data)
+		if err != nil {
+			t.Fatalf("load %s: %v", manifestFile, err)
+		}
+		for _, source := range manifestSources(manifest) {
+			if source.Repository != "https://github.com/apache/apisix" {
+				t.Errorf(
+					"%s source %s repository = %q, want Apache APISIX",
+					manifestFile,
+					source.File,
+					source.Repository,
+				)
+			}
+			if source.Commit != pinnedAPISIXSourceCommit {
+				t.Errorf(
+					"%s source %s commit = %q, want %s",
+					manifestFile,
+					source.File,
+					source.Commit,
+					pinnedAPISIXSourceCommit,
+				)
+			}
+			assertPinnedSourceTests(t, sourceRoot, manifestFile, source)
+		}
+	}
+}
+
+func apacheAPISIXSourceRoot(t *testing.T) string {
+	t.Helper()
+	candidates := []string{os.Getenv("APISIX_SOURCE_DIR")}
+	if root := os.Getenv("APISIX_GO_ROOT"); root != "" {
+		candidates = append(candidates, filepath.Join(root, ".cache", "apache-apisix"))
+	}
+	candidates = append(candidates, filepath.Join("..", "..", ".cache", "apache-apisix"))
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
+			assertPinnedSourceCheckout(t, candidate)
+			return candidate
+		}
+	}
+	t.Skip("pinned Apache APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
+	return ""
+}
+
+func assertPinnedSourceCheckout(t *testing.T, root string) {
+	t.Helper()
+	command := exec.Command("git", "-C", root, "rev-parse", "HEAD")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read Apache APISIX source revision: %v: %s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != pinnedAPISIXSourceCommit {
+		t.Fatalf("Apache APISIX source revision = %s, want %s", got, pinnedAPISIXSourceCommit)
+	}
+
+	command = exec.Command("git", "-C", root, "status", "--short", "--untracked-files=no", "--", "t/plugin")
+	output, err = command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect Apache APISIX source status: %v: %s", err, output)
+	}
+	if len(output) != 0 {
+		t.Fatalf("Apache APISIX pinned t/plugin source is modified:\n%s", output)
+	}
+}
+
+func assertPinnedSourceTests(t *testing.T, sourceRoot, manifestFile string, source SourceSpec) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(source.File)))
+	if err != nil {
+		t.Errorf("%s source %s: %v", manifestFile, source.File, err)
+		return
+	}
+	headers, labels, err := parseSourceTestHeaders(data)
+	if err != nil {
+		t.Errorf("%s source %s: %v", manifestFile, source.File, err)
+		return
+	}
+	if len(source.TestNumbers) == 0 {
+		if headers != source.Tests {
+			t.Errorf(
+				"%s source %s declares %d tests, pinned source has %d TEST blocks",
+				manifestFile,
+				source.File,
+				source.Tests,
+				headers,
+			)
+		}
+		return
+	}
+	for _, number := range source.TestNumbers {
+		if !labels[number] {
+			t.Errorf("%s source %s has no pinned TEST label %d", manifestFile, source.File, number)
+		}
+	}
+}
+
+func parseSourceTestHeaders(data []byte) (int, map[int]bool, error) {
+	headers := 0
+	labels := make(map[int]bool)
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if !strings.HasPrefix(line, "=== TEST ") {
+			continue
+		}
+		headers++
+		match := sourceTestHeader.FindStringSubmatch(line)
+		if len(match) != 2 {
+			return 0, nil, fmt.Errorf("cannot parse TEST header %q", line)
+		}
+		number, err := strconv.Atoi(match[1])
+		if err != nil {
+			return 0, nil, fmt.Errorf("parse TEST label %q: %w", match[1], err)
+		}
+		labels[number] = true
+	}
+	if headers == 0 {
+		return 0, nil, fmt.Errorf("no TEST blocks found")
+	}
+	return headers, labels, nil
+}
+
+func TestParseSourceTestHeaders(t *testing.T) {
+	headers, labels, err := parseSourceTestHeaders([]byte(strings.Join([]string{
+		"=== TEST 1: first",
+		"=== TEST 24b: letter suffix",
+		"=== TEST 30 : space before colon",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("parseSourceTestHeaders() error = %v", err)
+	}
+	if headers != 3 || !labels[1] || !labels[24] || !labels[30] {
+		t.Fatalf("parseSourceTestHeaders() = (%d, %v), want three source labels", headers, labels)
+	}
+
+	if _, _, err := parseSourceTestHeaders([]byte("no source blocks")); err == nil {
+		t.Fatal("parseSourceTestHeaders() accepted a source without TEST blocks")
+	}
+}
+
+func manifestSources(manifest *Manifest) []SourceSpec {
+	if len(manifest.Sources) > 0 {
+		return manifest.Sources
+	}
+	return []SourceSpec{manifest.Source}
 }
 
 func TestManifestExercisesTargetPlugin(t *testing.T) {

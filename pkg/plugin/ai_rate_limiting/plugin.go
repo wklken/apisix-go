@@ -39,7 +39,10 @@ const (
 	name     = "ai-rate-limiting"
 )
 
-var variablePattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+var (
+	variablePattern      = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+	quotaVariablePattern = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)(?:\s*\?\?\s*([^}]+))?\}|\$([A-Za-z0-9_]+)`)
+)
 
 var errNoUsableRules = errors.New("no usable rate limit rules")
 
@@ -285,7 +288,13 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return err
 		}
-		p.redis = redis.NewClient(&redis.Options{Addr: fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort), Username: p.config.RedisUsername, Password: password, DB: p.config.RedisDatabase, DialTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond})
+		p.redis = redis.NewClient(&redis.Options{
+			Addr:        fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort),
+			Username:    p.config.RedisUsername,
+			Password:    password,
+			DB:          p.config.RedisDatabase,
+			DialTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		})
 	}
 	if p.config.Policy == "redis-sentinel" {
 		if len(p.config.RedisSentinels) == 0 || p.config.RedisMasterName == "" {
@@ -299,7 +308,15 @@ func (p *Plugin) PostInit() error {
 		if err != nil {
 			return err
 		}
-		p.redis = redis.NewFailoverClient(&redis.FailoverOptions{MasterName: p.config.RedisMasterName, SentinelAddrs: addresses, Username: p.config.RedisUsername, Password: password, SentinelUsername: p.config.SentinelUsername, SentinelPassword: p.config.SentinelPassword, DB: p.config.RedisDatabase})
+		p.redis = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       p.config.RedisMasterName,
+			SentinelAddrs:    addresses,
+			Username:         p.config.RedisUsername,
+			Password:         password,
+			SentinelUsername: p.config.SentinelUsername,
+			SentinelPassword: p.config.SentinelPassword,
+			DB:               p.config.RedisDatabase,
+		})
 	}
 	if p.config.LimitStrategy == "expression" {
 		if p.config.CostExpr == "" {
@@ -493,6 +510,9 @@ func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
 	if err != nil || !ok {
 		return nil, ok, err
 	}
+	if consumerName := fmt.Sprint(apisixctx.GetApisixVar(r, "$consumer_name")); consumerName != "" {
+		q.key = "consumer:" + consumerName + ":" + q.key
+	}
 	return []quota{q}, true, nil
 }
 
@@ -534,7 +554,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 				}, true, nil
 			}
 		}
-		if len(p.config.Instances) > 0 {
+		if len(p.config.Instances) > 0 && (p.config.Limit == nil || p.config.TimeWindow == nil) {
 			return quota{}, false, nil
 		}
 		limit, err := resolveQuotaValue(r, p.config.Limit, "limit")
@@ -550,7 +570,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 			return quota{}, false, err
 		}
 		return quota{
-			key:        "global",
+			key:        "instance:" + instanceName,
 			headerName: instanceName,
 			limit:      limit,
 			window:     windowDuration,
@@ -597,9 +617,16 @@ func staticQuotaValue(value any, name string) (int64, error) {
 
 func resolveQuotaValue(r *http.Request, value any, name string) (int64, error) {
 	if text, ok := value.(string); ok {
-		value = variablePattern.ReplaceAllStringFunc(text, func(match string) string {
-			variableName := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$"), "}")
-			return requestVariable(r, variableName)
+		value = quotaVariablePattern.ReplaceAllStringFunc(text, func(match string) string {
+			parts := quotaVariablePattern.FindStringSubmatch(match)
+			variableName := parts[1]
+			if variableName == "" {
+				variableName = parts[3]
+			}
+			if resolved := requestVariable(r, variableName); resolved != "" {
+				return resolved
+			}
+			return strings.TrimSpace(parts[2])
 		})
 	}
 	return numericQuotaValue(value, name)

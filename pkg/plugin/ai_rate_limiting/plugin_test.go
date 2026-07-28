@@ -72,6 +72,33 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerIsolatesGlobalQuotaByAuthenticatedConsumer(t *testing.T) {
+	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"total_tokens":10}}`))
+	})
+	request := func(consumer string) *http.Request {
+		return apisixctx.WithApisixVars(
+			httptest.NewRequest(http.MethodPost, "/", nil),
+			map[string]string{"$consumer_name": consumer},
+		)
+	}
+
+	p.Handler(upstream).ServeHTTP(httptest.NewRecorder(), request("jack1"))
+
+	jack2 := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(jack2, request("jack2"))
+	if jack2.Code != http.StatusOK {
+		t.Fatalf("jack2 response code = %d, want isolated quota", jack2.Code)
+	}
+
+	jack1 := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(jack1, request("jack1"))
+	if jack1.Code != http.StatusServiceUnavailable {
+		t.Fatalf("jack1 response code = %d, want exhausted quota", jack1.Code)
+	}
+}
+
 func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T) {
 	base := Config{Limit: 1, TimeWindow: 60, Policy: "redis"}
 	p := &Plugin{config: base}
@@ -83,9 +110,15 @@ func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T
 	}
 
 	sentinel := &Plugin{config: Config{
-		Limit: 1, TimeWindow: 60, Policy: "redis-sentinel", RedisMasterName: "mymaster",
-		RedisSentinels: []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
-		RedisUsername:  "alice", RedisPassword: "redis-secret", SentinelUsername: "bob", SentinelPassword: "sentinel-secret",
+		Limit:            1,
+		TimeWindow:       60,
+		Policy:           "redis-sentinel",
+		RedisMasterName:  "mymaster",
+		RedisSentinels:   []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisUsername:    "alice",
+		RedisPassword:    "redis-secret",
+		SentinelUsername: "bob",
+		SentinelPassword: "sentinel-secret",
 	}}
 	if err := sentinel.Init(); err != nil {
 		t.Fatal(err)
@@ -101,7 +134,10 @@ func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T
 func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 	tests := []Config{
 		{Limit: 1, Rules: []Rule{{Count: 1, TimeWindow: 60, Key: "${remote_addr}"}}},
-		{Instances: []InstanceLimit{{Name: "one", Limit: 1, TimeWindow: 60}}, Rules: []Rule{{Count: 1, TimeWindow: 60, Key: "${remote_addr}"}}},
+		{
+			Instances: []InstanceLimit{{Name: "one", Limit: 1, TimeWindow: 60}},
+			Rules:     []Rule{{Count: 1, TimeWindow: 60, Key: "${remote_addr}"}},
+		},
 		{Limit: 1, Instances: []InstanceLimit{{Name: "one", Limit: 1, TimeWindow: 60}}},
 	}
 	for i, config := range tests {
@@ -118,12 +154,20 @@ func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 func TestPostInitRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing.T) {
 	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
-	p := &Plugin{config: Config{Limit: 1, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPassword: "plaintext-secret"}}
+	p := &Plugin{config: Config{
+		Limit:         1,
+		TimeWindow:    60,
+		Policy:        "redis",
+		RedisHost:     "127.0.0.1",
+		RedisPassword: "plaintext-secret",
+	}}
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
 	err := p.PostInit()
-	if err == nil || !strings.Contains(err.Error(), "redis_password") || strings.Contains(err.Error(), "plaintext-secret") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "redis_password") ||
+		strings.Contains(err.Error(), "plaintext-secret") {
 		t.Fatalf("PostInit() error = %v, want redacted redis_password validation error", err)
 	}
 }
@@ -181,6 +225,37 @@ func TestHandlerSkipsUnconfiguredInstance(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("response code = %d, want pass-through for unconfigured instance", rr.Code)
+	}
+}
+
+func TestHandlerUsesGlobalQuotaForInstanceWithoutOverride(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Limit:      10,
+		TimeWindow: 60,
+		Instances: []InstanceLimit{
+			{Name: "overridden", Limit: 20, TimeWindow: 60},
+		},
+	}, time.Now)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"total_tokens":10}}`))
+	})
+	request := func() *http.Request {
+		return WithPickedAIInstanceName(httptest.NewRequest(http.MethodPost, "/", nil), "global-model")
+	}
+
+	first := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(first, request())
+	if first.Code != http.StatusOK || first.Header().Get("X-AI-RateLimit-Limit-global-model") != "10" {
+		t.Fatalf(
+			"first response = (%d, %q), want selected instance global limit 10",
+			first.Code,
+			first.Header().Get("X-AI-RateLimit-Limit-global-model"),
+		)
+	}
+	second := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(second, request())
+	if second.Code != http.StatusServiceUnavailable {
+		t.Fatalf("second response code = %d, want exhausted global quota", second.Code)
 	}
 }
 
@@ -382,6 +457,20 @@ func TestAIProxyMultiPublishesInstanceBeforeRateLimitPreflight(t *testing.T) {
 	}
 }
 
+func TestGlobalQuotaUsesSelectedInstanceCounter(t *testing.T) {
+	p := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	for _, instance := range []string{"model-a", "model-b"} {
+		request := WithPickedAIInstanceName(httptest.NewRequest(http.MethodPost, "/", nil), instance)
+		q, ok, err := p.quotaForRequest(request)
+		if err != nil || !ok {
+			t.Fatalf("quotaForRequest(%q) = (%#v, %v, %v)", instance, q, ok, err)
+		}
+		if q.key != "instance:"+instance {
+			t.Fatalf("quota key = %q, want instance:%s", q.key, instance)
+		}
+	}
+}
+
 func TestAIProxyMultiSkipsRateLimitedInstance(t *testing.T) {
 	var firstCalls atomic.Int64
 	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -498,6 +587,43 @@ func TestHandlerResolvesGlobalQuotaFromRequestVariables(t *testing.T) {
 	}
 	if got := rr.Header().Get("X-AI-RateLimit-Limit-global"); got != "2" {
 		t.Fatalf("limit header = %q, want 2", got)
+	}
+}
+
+func TestHandlerResolvesQuotaVariableDefaultsAndOverrides(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{
+		"limit":"${http_openai_count ?? 20}",
+		"time_window":"${http_time_window ?? 60}"
+	}`), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	p := newTestPlugin(t, cfg, time.Now)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
+	})
+
+	defaults := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(defaults, httptest.NewRequest(http.MethodPost, "/", nil))
+	if defaults.Code != http.StatusOK || defaults.Header().Get("X-AI-RateLimit-Limit-global") != "20" {
+		t.Fatalf(
+			"default response = (%d, %q), want limit 20",
+			defaults.Code,
+			defaults.Header().Get("X-AI-RateLimit-Limit-global"),
+		)
+	}
+
+	overrideRequest := httptest.NewRequest(http.MethodPost, "/", nil)
+	overrideRequest.Header.Set("OpenAI-Count", "30")
+	overrideRequest.Header.Set("Time-Window", "10")
+	override := httptest.NewRecorder()
+	p.Handler(upstream).ServeHTTP(override, overrideRequest)
+	if override.Code != http.StatusOK || override.Header().Get("X-AI-RateLimit-Limit-global") != "30" {
+		t.Fatalf(
+			"override response = (%d, %q), want limit 30",
+			override.Code,
+			override.Header().Get("X-AI-RateLimit-Limit-global"),
+		)
 	}
 }
 

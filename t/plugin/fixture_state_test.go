@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 type redisFixture struct {
 	kind      string
+	spec      FixtureSpec
 	listener  net.Listener
 	expect    []NetworkAssertion
 	received  chan []byte
@@ -32,11 +34,16 @@ func startRedisFixture(spec FixtureSpec) (namedFixture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen Redis fixture: %w", err)
 	}
+	receivedCapacity := len(spec.NetworkExpect) + 1
+	if spec.Redis != nil && spec.Redis.AllowUnassertedCommands {
+		receivedCapacity = 128
+	}
 	fixture := &redisFixture{
 		kind:     spec.Kind,
+		spec:     spec,
 		listener: listener,
 		expect:   spec.NetworkExpect,
-		received: make(chan []byte, len(spec.NetworkExpect)+1),
+		received: make(chan []byte, receivedCapacity),
 		errors:   make(chan error, len(spec.NetworkExpect)+1),
 		done:     make(chan struct{}),
 		values:   make(map[string]string),
@@ -78,12 +85,26 @@ func (f *redisFixture) serveConnection(connection net.Conn) {
 			}
 			return
 		}
-		payload := []byte(strings.Join(command, " "))
-		f.received <- payload
+		if !f.ignoreNegotiation(command) {
+			payload := []byte(strings.Join(command, " "))
+			f.received <- payload
+		}
 		if err := f.writeResponse(connection, command); err != nil {
 			f.errors <- fmt.Errorf("write Redis response: %w", err)
 			return
 		}
+	}
+}
+
+func (f *redisFixture) ignoreNegotiation(command []string) bool {
+	if len(command) == 0 || f.spec.Redis == nil || !f.spec.Redis.IgnoreNegotiation {
+		return false
+	}
+	switch strings.ToUpper(command[0]) {
+	case "HELLO", "AUTH", "SELECT", "CLIENT":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -106,6 +127,10 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 		}
 		f.stateMu.Lock()
 		value, ok := f.values[command[1]]
+		if integer, integerOK := f.integers[command[1]]; integerOK {
+			value = strconv.FormatInt(integer, 10)
+			ok = true
+		}
 		f.stateMu.Unlock()
 		if !ok {
 			return writeRESPNull(writer)
@@ -306,11 +331,43 @@ func (f *redisFixture) assert(t *testing.T, spec FixtureSpec) {
 		t.Errorf("fixture %s: %v", spec.Name, err)
 	default:
 	}
-	allowExtra := len(spec.NetworkExpect) == 1 && spec.NetworkExpect[0].Payload != nil &&
+	allowExtra := spec.Redis != nil && spec.Redis.AllowUnassertedCommands
+	allowExtra = allowExtra || len(spec.NetworkExpect) == 1 && spec.NetworkExpect[0].Payload != nil &&
 		spec.NetworkExpect[0].Payload.Matches != nil && *spec.NetworkExpect[0].Payload.Matches == ".*"
 	if !allowExtra {
 		if extra := len(f.received); extra > 0 {
 			t.Errorf("fixture %s received %d unexpected extra commands", spec.Name, extra)
+		}
+	}
+	f.assertState(t, spec)
+}
+
+func (f *redisFixture) assertState(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	if spec.Redis == nil || spec.Redis.Values == nil {
+		return
+	}
+
+	f.stateMu.Lock()
+	actual := make(map[string]string, len(f.values)+len(f.integers))
+	maps.Copy(actual, f.values)
+	for key, value := range f.integers {
+		actual[key] = strconv.FormatInt(value, 10)
+	}
+	f.stateMu.Unlock()
+
+	if len(actual) != len(spec.Redis.Values) {
+		t.Errorf(
+			"fixture %s Redis state has %d keys, want %d: %#v",
+			spec.Name,
+			len(actual),
+			len(spec.Redis.Values),
+			actual,
+		)
+	}
+	for key, expected := range spec.Redis.Values {
+		if actual[key] != expected {
+			t.Errorf("fixture %s Redis key %q = %q, want %q", spec.Name, key, actual[key], expected)
 		}
 	}
 }
@@ -354,10 +411,11 @@ func TestRedisFixtureSupportsStatefulCommands(t *testing.T) {
 		NetworkExpect: []NetworkAssertion{
 			{Payload: &Matcher{Equals: new("SET quota 1 NX EX 60")}},
 			{Payload: &Matcher{Equals: new("INCR quota")}},
+			{Payload: &Matcher{Equals: new("GET quota")}},
 			{Payload: &Matcher{Equals: new("HSET hash field 1")}},
 			{Payload: &Matcher{Equals: new("HGET hash field")}},
 		},
-		NetworkRespond: make([]NetworkResponse, 4),
+		NetworkRespond: make([]NetworkResponse, 5),
 	}
 	fixture, err := startRedisFixture(spec)
 	if err != nil {
@@ -373,10 +431,11 @@ func TestRedisFixtureSupportsStatefulCommands(t *testing.T) {
 	commands := [][]string{
 		{"SET", "quota", "1", "NX", "EX", "60"},
 		{"INCR", "quota"},
+		{"GET", "quota"},
 		{"HSET", "hash", "field", "1"},
 		{"HGET", "hash", "field"},
 	}
-	wantResponses := []string{"+OK\r\n", ":2\r\n", ":1\r\n", "$1\r\n1\r\n"}
+	wantResponses := []string{"+OK\r\n", ":2\r\n", "$1\r\n2\r\n", ":1\r\n", "$1\r\n1\r\n"}
 	for i, command := range commands {
 		if err := writeRESPCommand(connection, command); err != nil {
 			t.Fatalf("write Redis command %d: %v", i+1, err)
@@ -394,6 +453,43 @@ func TestRedisFixtureSupportsStatefulCommands(t *testing.T) {
 		}
 		if response != wantResponses[i] {
 			t.Fatalf("Redis response %d = %q, want %q", i+1, response, wantResponses[i])
+		}
+	}
+	fixture.assert(t, spec)
+}
+
+func TestRedisFixtureCanIgnoreNegotiationAndAssertFinalState(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "redis-rate-limit",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			IgnoreNegotiation:       true,
+			AllowUnassertedCommands: true,
+			Values:                  map[string]string{"quota": "3"},
+		},
+	}
+	fixture, err := startRedisFixture(spec)
+	if err != nil {
+		t.Fatalf("start Redis fixture: %v", err)
+	}
+	defer fixture.close()
+	connection, err := net.Dial("tcp", fixture.address())
+	if err != nil {
+		t.Fatalf("dial Redis fixture: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	reader := bufio.NewReader(connection)
+	for _, command := range [][]string{
+		{"HELLO", "3"},
+		{"CLIENT", "SETINFO", "LIB-NAME", "go-redis(,go1.26.0)"},
+		{"INCRBY", "quota", "3"},
+		{"EXPIRE", "quota", "60"},
+	} {
+		if err := writeRESPCommand(connection, command); err != nil {
+			t.Fatalf("write Redis command %q: %v", command[0], err)
+		}
+		if _, err := reader.ReadString('\n'); err != nil {
+			t.Fatalf("read Redis response for %q: %v", command[0], err)
 		}
 	}
 	fixture.assert(t, spec)

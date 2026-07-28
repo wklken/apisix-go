@@ -186,12 +186,19 @@ type FixtureSpec struct {
 	NetworkExpect  []NetworkAssertion     `yaml:"network_expect,omitempty"`
 	NetworkRespond []NetworkResponse      `yaml:"network_respond,omitempty"`
 	Count          *FixtureCountAssertion `yaml:"count,omitempty"`
+	Redis          *RedisFixtureAssertion `yaml:"redis,omitempty"`
 }
 
 type FixtureCountAssertion struct {
 	AtLeast int           `yaml:"at_least"`
 	AtMost  int           `yaml:"at_most"`
 	Timeout time.Duration `yaml:"timeout,omitempty"`
+}
+
+type RedisFixtureAssertion struct {
+	IgnoreNegotiation       bool              `yaml:"ignore_negotiation,omitempty"`
+	AllowUnassertedCommands bool              `yaml:"allow_unasserted_commands,omitempty"`
+	Values                  map[string]string `yaml:"values,omitempty"`
 }
 
 type GRPCMessage struct {
@@ -1078,6 +1085,20 @@ func (f *FixtureSpec) validate() error {
 	}
 	if len(f.Expect) > 0 || len(f.Respond) > 0 {
 		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)
+	}
+	if f.Redis != nil {
+		if f.Kind != "redis" && f.Kind != "redis-sentinel" {
+			return fmt.Errorf("%s fixture does not support Redis assertions", f.Kind)
+		}
+		if len(f.Redis.Values) == 0 {
+			return errors.New("redis assertion requires at least one final value")
+		}
+		if f.Redis.AllowUnassertedCommands && len(f.NetworkExpect) > 0 {
+			return errors.New("redis allow_unasserted_commands must not be combined with network expectations")
+		}
+		if f.Redis.AllowUnassertedCommands {
+			return nil
+		}
 	}
 	if len(f.NetworkExpect) == 0 {
 		return errors.New("at least one network expectation is required")

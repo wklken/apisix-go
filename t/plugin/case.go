@@ -134,6 +134,8 @@ type SAMLResponseAction struct {
 	IDPPrivateKey          string `yaml:"idp_private_key"`
 	NameID                 string `yaml:"name_id"`
 	UserName               string `yaml:"user_name,omitempty"`
+	RequestIDOverride      string `yaml:"request_id_override,omitempty"`
+	TamperSignature        bool   `yaml:"tamper_signature,omitempty"`
 }
 
 type ConfigProbe struct {
@@ -1324,7 +1326,10 @@ func validateCaseActions(actions []CaseAction) error {
 			configured++
 		}
 		if configured != 1 {
-			return fmt.Errorf("action %d must configure exactly one of remove, rename, signal, wait, or saml_response", i+1)
+			return fmt.Errorf(
+				"action %d must configure exactly one of remove, rename, signal, wait, or saml_response",
+				i+1,
+			)
 		}
 		switch {
 		case action.Remove != "":
@@ -1353,7 +1358,11 @@ func validateCaseActions(actions []CaseAction) error {
 			if !redirectSource || strings.TrimSpace(saml.ResponseCapture) == "" ||
 				strings.TrimSpace(saml.RelayStateCapture) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
 				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.NameID) == "" {
-				return fmt.Errorf("action %d saml_response requires redirect_capture, response_capture, relay_state_capture, idp_certificate, idp_private_key, and name_id", i+1)
+				return fmt.Errorf(
+					"action %d saml_response requires redirect_capture, response_capture, relay_state_capture, "+
+						"idp_certificate, idp_private_key, and name_id",
+					i+1,
+				)
 			}
 		}
 	}

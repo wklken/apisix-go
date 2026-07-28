@@ -182,7 +182,10 @@ func TestCallbackParserFailureReturnsAuthenticationFailure(t *testing.T) {
 	if relayState == "" {
 		t.Fatal("authentication redirect did not contain RelayState")
 	}
-	stateCookie := findSetCookie(startRecorder.Result().Cookies(), requestCookieName(p.sessionFingerprint(), relayState))
+	stateCookie := findSetCookie(
+		startRecorder.Result().Cookies(),
+		requestCookieName(p.sessionFingerprint(), relayState),
+	)
 	if stateCookie == nil {
 		t.Fatal("authentication redirect did not set state cookie")
 	}

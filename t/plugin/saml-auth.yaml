@@ -1,5 +1,5 @@
 cases:
-    - name: saml-auth-post-schema-and-login
+    - name: saml-auth-post-sp1-login-and-logout
       source:
         file: t/plugin/saml-auth-post.t
         tests: [1, 2]
@@ -57,6 +57,11 @@ cases:
       fixtures:
           - name: primary
             kind: http
+            expect:
+                - method: GET
+                  path: {equals: /probe}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoicG9zdHVzZXJAZXhhbXBsZS5jb20iLCJhdHRyaWJ1dGVzIjp7InVpZCI6WyJwb3N0dXNlciJdfX0=}
             respond:
                 - status: 200
                   headers: {}
@@ -100,11 +105,212 @@ cases:
           - name: HTTP-POST session reaches upstream
             input: {method: GET, scheme: https, path: /probe}
             output: {status: 200, body: {equals: saml upstream}}
+          - name: authenticated HTTP-POST session emits a signed logout request
+            input: {method: GET, scheme: https, path: /logout}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: logout callback clears the HTTP-POST session
+            input: {method: GET, scheme: https, path: /logout/callback}
+            output: {status: 302, headers: {Location: {equals: /logged-out}}}
+          - name: cleared HTTP-POST session must authenticate again
+            input: {method: GET, scheme: https, path: /probe}
+            output:
+                status: 200
+                body: {matches: 'name="SAMLRequest"'}
 
-    - name: saml-auth-post-invalid-callback
+    - name: saml-auth-post-two-sp-single-logout
       source:
           file: t/plugin/saml-auth-post.t
-          tests: [3, 4, 5, 6]
+          tests: [3, 4]
+      config:
+          routes:
+              - id: saml-auth-post-sp1
+                uri: /sp1/*
+                plugins:
+                    saml-auth:
+                        sp_issuer: sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /sp1/login/callback
+                        logout_uri: /sp1/logout
+                        logout_callback_uri: /sp1/logout/callback
+                        logout_redirect_uri: /sp1/logout_ok
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        auth_protocol_binding_method: HTTP-POST
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+              - id: saml-auth-post-sp2
+                uri: /sp2/*
+                plugins:
+                    saml-auth:
+                        sp_issuer: sp2
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /sp2/login/callback
+                        logout_uri: /sp2/logout
+                        logout_callback_uri: /sp2/logout/callback
+                        logout_redirect_uri: /sp2/logout_ok
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        auth_protocol_binding_method: HTTP-POST
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            expect:
+                - &post_sp_expect
+                  method: GET
+                  path: {equals: /sp1/uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+                - method: GET
+                  path: {equals: /sp2/uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+                - *post_sp_expect
+                - method: GET
+                  path: {equals: /sp2/uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+            respond:
+                - &post_sp_response
+                  status: 200
+                  headers: {}
+                  body: post multi-sp upstream
+                - *post_sp_response
+                - *post_sp_response
+                - *post_sp_response
+      steps:
+          - name: POST sp1 starts authentication
+            input: {method: GET, path: /sp1/uri}
+            output:
+                status: 200
+                body_captures:
+                    post_sp1_request: {matches: 'name="SAMLRequest" value="([^"]+)"'}
+                    post_sp1_relay: {matches: 'name="RelayState" value="([^"]+)"'}
+            actions:
+                - saml_response:
+                    idp_uri: https://idp.example.test/sso
+                    saml_request_capture: post_sp1_request
+                    relay_state_input_capture: post_sp1_relay
+                    response_capture: post_sp1_response
+                    relay_state_capture: post_sp1_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: POST sp1 accepts its own callback
+            input:
+                method: POST
+                path: /sp1/login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.post_sp1_response}}&RelayState={{CAPTURE.post_sp1_state}}'
+            output: {status: 302, headers: {Location: {equals: /sp1/uri}}}
+          - name: POST sp1 session reaches upstream
+            input: {method: GET, path: /sp1/uri}
+            output: {status: 200, body: {equals: post multi-sp upstream}}
+          - name: POST sp2 starts an independent authentication
+            input: {method: GET, path: /sp2/uri}
+            output:
+                status: 200
+                body_captures:
+                    post_sp2_request: {matches: 'name="SAMLRequest" value="([^"]+)"'}
+                    post_sp2_relay: {matches: 'name="RelayState" value="([^"]+)"'}
+            actions:
+                - saml_response:
+                    idp_uri: https://idp.example.test/sso
+                    saml_request_capture: post_sp2_request
+                    relay_state_input_capture: post_sp2_relay
+                    response_capture: post_sp2_response
+                    relay_state_capture: post_sp2_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: POST sp2 accepts its own callback
+            input:
+                method: POST
+                path: /sp2/login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.post_sp2_response}}&RelayState={{CAPTURE.post_sp2_state}}'
+            output: {status: 302, headers: {Location: {equals: /sp2/uri}}}
+          - name: POST sp2 session reaches upstream
+            input: {method: GET, path: /sp2/uri}
+            output: {status: 200, body: {equals: post multi-sp upstream}}
+          - name: POST sp2 login does not replace the sp1 session
+            input: {method: GET, path: /sp1/uri}
+            output: {status: 200, body: {equals: post multi-sp upstream}}
+          - name: POST sp1 initiates single logout
+            input: {method: GET, path: /sp1/logout}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: POST IdP single-logout callback clears the sp2 session
+            input: {method: GET, path: /sp2/logout/callback}
+            output: {status: 302, headers: {Location: {equals: /sp2/logout_ok}}}
+          - name: POST sp1 is unauthenticated after single logout
+            input: {method: GET, path: /sp1/uri}
+            output:
+                status: 200
+                body: {matches: 'name="SAMLRequest"'}
+          - name: POST sp2 performs a normal login after single logout
+            input: {method: GET, path: /sp2/uri}
+            output:
+                status: 200
+                body_captures:
+                    post_sp2_relogin_request: {matches: 'name="SAMLRequest" value="([^"]+)"'}
+                    post_sp2_relogin_relay: {matches: 'name="RelayState" value="([^"]+)"'}
+            actions:
+                - saml_response:
+                    idp_uri: https://idp.example.test/sso
+                    saml_request_capture: post_sp2_relogin_request
+                    relay_state_input_capture: post_sp2_relogin_relay
+                    response_capture: post_sp2_relogin_response
+                    relay_state_capture: post_sp2_relogin_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: POST sp2 normal re-login callback succeeds
+            input:
+                method: POST
+                path: /sp2/login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.post_sp2_relogin_response}}&RelayState={{CAPTURE.post_sp2_relogin_state}}'
+            output: {status: 302, headers: {Location: {equals: /sp2/uri}}}
+          - name: POST sp2 re-login reaches upstream
+            input: {method: GET, path: /sp2/uri}
+            output: {status: 200, body: {equals: post multi-sp upstream}}
+          - name: POST sp2 can log out independently
+            input: {method: GET, path: /sp2/logout}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: POST sp2 logout callback completes
+            input: {method: GET, path: /sp2/logout/callback}
+            output: {status: 302, headers: {Location: {equals: /sp2/logout_ok}}}
+          - name: POST sp2 session is absent after independent logout
+            input: {method: GET, path: /sp2/uri}
+            output:
+                status: 200
+                body: {matches: 'name="SAMLRequest"'}
+
+    - name: saml-auth-post-wrong-callback-uri
+      source:
+        file: t/plugin/saml-auth-post.t
+        tests: [5, 6]
       config:
           routes:
               - id: saml-auth-post-invalid-callback
@@ -114,7 +320,7 @@ cases:
                         sp_issuer: integration-sp
                         idp_uri: https://idp.example.test/sso
                         idp_cert: *saml_cert
-                        login_callback_uri: /login/callback
+                        login_callback_uri: /wrong_url
                         logout_uri: /logout
                         logout_callback_uri: /logout/callback
                         logout_redirect_uri: /logged-out
@@ -129,27 +335,58 @@ cases:
       fixtures:
           - name: primary
             kind: http
+            expect:
+                - method: GET
+                  path: {equals: /probe}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoicG9zdHVzZXJAZXhhbXBsZS5jb20iLCJhdHRyaWJ1dGVzIjp7InVpZCI6WyJwb3N0dXNlciJdfX0=}
             respond:
                 - status: 200
                   headers: {}
                   body: saml upstream
       steps:
-          - name: invalid callback state is rejected
+          - name: HTTP-POST login targets the configured callback
+            input: {method: GET, path: /probe}
+            output:
+                status: 200
+                body_captures:
+                    wrong_post_request: {matches: 'name="SAMLRequest" value="([^"]+)"'}
+                    wrong_post_relay: {matches: 'name="RelayState" value="([^"]+)"'}
+            actions:
+                - saml_response:
+                    idp_uri: https://idp.example.test/sso
+                    saml_request_capture: wrong_post_request
+                    relay_state_input_capture: wrong_post_relay
+                    response_capture: wrong_post_response
+                    relay_state_capture: wrong_post_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: postuser@example.com
+                    user_name: postuser
+          - name: default callback path cannot consume a response for the configured wrong URI
             input:
                 method: POST
                 path: /login/callback
-                headers:
-                    Content-Type: application/x-www-form-urlencoded
-                body: SAMLResponse=bad
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.wrong_post_response}}&RelayState={{CAPTURE.wrong_post_state}}'
             output:
-                status: 401
-                body:
-                    matches: invalid callback state
+                status: 200
+                body: {matches: 'name="SAMLRequest"'}
+          - name: configured callback consumes the correlated response
+            input:
+                method: POST
+                path: /wrong_url
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.wrong_post_response}}&RelayState={{CAPTURE.wrong_post_state}}'
+            output: {status: 302, headers: {Location: {equals: /probe}}}
+          - name: configured callback session reaches upstream
+            input: {method: GET, path: /probe}
+            output: {status: 200, body: {equals: saml upstream}}
 
     - name: saml-auth-redirect-login
       source:
           file: t/plugin/saml-auth.t
-          tests: [1, 7, 8, 11]
+          tests: [8]
       config:
           routes:
               - id: saml-auth-redirect-login
@@ -220,10 +457,49 @@ cases:
                 status: 200
                 body: {equals: saml upstream}
 
-    - name: saml-auth-logout-and-callback
+    - name: saml-auth-valid-required-config
       source:
           file: t/plugin/saml-auth.t
-          tests: [9, 10, 12, 13, 14, 15]
+          tests: [1]
+      config:
+          routes:
+              - id: saml-auth-valid-required-config
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: required-sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /login/callback
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logged-out
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: required-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            respond:
+                - status: 200
+                  headers: {}
+                  body: must authenticate first
+      steps:
+          - name: all required fields initialize the standalone route
+            input: {method: GET, path: /required}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*RelayState=.*'}
+
+    - name: saml-auth-rejects-invalid-state-correlation-and-signature
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [9]
       config:
           routes:
               - id: saml-auth-logout-and-callback
@@ -250,28 +526,476 @@ cases:
             respond:
                 - status: 200
                   headers: {}
-                  body: saml upstream
+                  body: must not reach upstream
       steps:
-          - name: logout without session redirects to configured target
-            input:
-                method: GET
-                path: /logout
+          - name: capture one real authentication request for failure variants
+            input: {method: GET, path: /probe}
             output:
                 status: 302
                 headers:
-                    Location:
-                        equals: /logged-out
-          - name: callback without signed state is rejected
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*RelayState=.*'}
+                captures:
+                    failure_redirect: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: failure_redirect
+                    response_capture: valid_failure_response
+                    relay_state_capture: valid_failure_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: testuser@example.com
+                    user_name: testuser
+                - saml_response:
+                    redirect_capture: failure_redirect
+                    response_capture: wrong_correlation_response
+                    relay_state_capture: wrong_correlation_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: testuser@example.com
+                    user_name: testuser
+                    request_id_override: _mismatched-request-id
+                - saml_response:
+                    redirect_capture: failure_redirect
+                    response_capture: invalid_signature_response
+                    relay_state_capture: invalid_signature_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: testuser@example.com
+                    user_name: testuser
+                    tamper_signature: true
+          - name: callback with an unknown RelayState is denied before parsing
             input:
                 method: POST
                 path: /login/callback
-                headers:
-                    Content-Type: application/x-www-form-urlencoded
-                body: SAMLResponse=bad
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.valid_failure_response}}&RelayState=unknown-state'
             output:
                 status: 401
-                body:
-                    matches: invalid callback state
+                body: {matches: invalid callback state}
+          - name: signed response with the wrong request correlation fails authentication
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.wrong_correlation_response}}&RelayState={{CAPTURE.wrong_correlation_state}}'
+            output:
+                status: 500
+                body: {matches: saml authentication failed}
+          - name: response with a tampered signature fails authentication
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.invalid_signature_response}}&RelayState={{CAPTURE.invalid_signature_state}}'
+            output:
+                status: 500
+                body: {matches: saml authentication failed}
+          - name: malformed response with valid state maps the parser error to 500
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse=bad&RelayState={{CAPTURE.valid_failure_state}}'
+            output:
+                status: 500
+                body: {matches: saml authentication failed}
+
+    - name: saml-auth-valid-optional-config
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [7]
+      config:
+          routes:
+              - id: saml-auth-valid-optional-config
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: optional-sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /login/callback
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logged-out
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        auth_protocol_binding_method: HTTP-POST
+                        secret: optional-secret
+                        secret_fallbacks: [previous-secret]
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            expect:
+                - method: GET
+                  path: {equals: /optional}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoiZmFsbGJhY2tAZXhhbXBsZS5jb20iLCJhdHRyaWJ1dGVzIjp7InVpZCI6WyJmYWxsYmFjayJdfX0=}
+            respond:
+                - status: 200
+                  headers: {}
+                  body: optional upstream
+      steps:
+          - name: optional POST binding and fallback array initialize a real route
+            input: {method: GET, path: /optional}
+            output:
+                status: 200
+                body_captures:
+                    optional_request: {matches: 'name="SAMLRequest" value="([^"]+)"'}
+                    optional_relay: {matches: 'name="RelayState" value="([^"]+)"'}
+            actions:
+                - saml_response:
+                    idp_uri: https://idp.example.test/sso
+                    saml_request_capture: optional_request
+                    relay_state_input_capture: optional_relay
+                    response_capture: optional_response
+                    relay_state_capture: optional_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: fallback@example.com
+                    user_name: fallback
+          - name: optional configuration accepts a correlated signed response
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.optional_response}}&RelayState={{CAPTURE.optional_state}}'
+            output: {status: 302, headers: {Location: {equals: /optional}}}
+          - name: optional configuration forwards the assertion user
+            input: {method: GET, path: /optional}
+            output: {status: 200, body: {equals: optional upstream}}
+
+    - name: saml-auth-redirect-sp1-login-and-logout
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [10, 11]
+      config:
+          routes:
+              - id: saml-auth-redirect-sp1-login-and-logout
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /login/callback
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logout_ok
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            expect:
+                - method: GET
+                  path: {equals: /uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+            respond:
+                - status: 200
+                  headers: {}
+                  body: sp1 upstream
+      steps:
+          - name: sp1 route emits a signed Redirect-binding request
+            input: {method: GET, path: /uri}
+            output:
+                status: 302
+                captures:
+                    sp1_redirect: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: sp1_redirect
+                    response_capture: sp1_response
+                    relay_state_capture: sp1_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: sp1 accepts the signed callback and restores the original path
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.sp1_response}}&RelayState={{CAPTURE.sp1_state}}'
+            output: {status: 302, headers: {Location: {equals: /uri}}}
+          - name: sp1 authenticated session reaches upstream
+            input: {method: GET, path: /uri}
+            output: {status: 200, body: {equals: sp1 upstream}}
+          - name: sp1 logout emits a signed IdP request
+            input: {method: GET, path: /logout}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: sp1 logout callback redirects to the configured completion URI
+            input: {method: GET, path: /logout/callback}
+            output: {status: 302, headers: {Location: {equals: /logout_ok}}}
+          - name: sp1 session is absent after logout
+            input: {method: GET, path: /uri}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+
+    - name: saml-auth-redirect-wrong-callback-uri
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [14, 15]
+      config:
+          routes:
+              - id: saml-auth-redirect-wrong-callback-uri
+                uri: /*
+                plugins:
+                    saml-auth:
+                        sp_issuer: sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /wrong_url
+                        logout_uri: /logout
+                        logout_callback_uri: /logout/callback
+                        logout_redirect_uri: /logout_ok
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            expect:
+                - method: GET
+                  path: {equals: /uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+            respond:
+                - status: 200
+                  headers: {}
+                  body: configured callback upstream
+      steps:
+          - name: wrong-callback route advertises its configured ACS
+            input: {method: GET, path: /uri}
+            output:
+                status: 302
+                captures:
+                    wrong_redirect: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: wrong_redirect
+                    response_capture: wrong_response
+                    relay_state_capture: wrong_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: default callback cannot consume the response for the wrong configured ACS
+            input:
+                method: POST
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.wrong_response}}&RelayState={{CAPTURE.wrong_state}}'
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: explicitly configured callback accepts its response
+            input:
+                method: POST
+                path: /wrong_url
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.wrong_response}}&RelayState={{CAPTURE.wrong_state}}'
+            output: {status: 302, headers: {Location: {equals: /uri}}}
+          - name: explicitly configured callback session reaches upstream
+            input: {method: GET, path: /uri}
+            output: {status: 200, body: {equals: configured callback upstream}}
+
+    - name: saml-auth-redirect-two-sp-single-logout
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [12, 13]
+      config:
+          routes:
+              - id: saml-auth-redirect-sp1
+                uri: /sp1/*
+                plugins:
+                    saml-auth:
+                        sp_issuer: sp
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /sp1/login/callback
+                        logout_uri: /sp1/logout
+                        logout_callback_uri: /sp1/logout/callback
+                        logout_redirect_uri: /sp1/logout_ok
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+              - id: saml-auth-redirect-sp2
+                uri: /sp2/*
+                plugins:
+                    saml-auth:
+                        sp_issuer: sp2
+                        idp_uri: https://idp.example.test/sso
+                        idp_cert: *saml_cert
+                        login_callback_uri: /sp2/login/callback
+                        logout_uri: /sp2/logout
+                        logout_callback_uri: /sp2/logout/callback
+                        logout_redirect_uri: /sp2/logout_ok
+                        sp_cert: *saml_cert
+                        sp_private_key: *saml_key
+                        secret: integration-secret
+                upstream:
+                    type: roundrobin
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+      fixtures:
+          - name: primary
+            kind: http
+            expect:
+                - &sp_expect
+                  method: GET
+                  path: {equals: /sp1/uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+                - method: GET
+                  path: {equals: /sp2/uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+                - *sp_expect
+                - method: GET
+                  path: {equals: /sp2/uri}
+                  headers:
+                      X-Userinfo: {equals: eyJuYW1lX2lkIjoic3B1c2VyQGV4YW1wbGUuY29tIiwiYXR0cmlidXRlcyI6eyJ1aWQiOlsic3B1c2VyIl19fQ==}
+            respond:
+                - &sp_response
+                  status: 200
+                  headers: {}
+                  body: multi-sp upstream
+                - *sp_response
+                - *sp_response
+                - *sp_response
+      steps:
+          - name: redirect sp1 starts authentication
+            input: {method: GET, path: /sp1/uri}
+            output:
+                status: 302
+                captures:
+                    redirect_sp1_login: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: redirect_sp1_login
+                    response_capture: redirect_sp1_response
+                    relay_state_capture: redirect_sp1_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: redirect sp1 accepts its own callback
+            input:
+                method: POST
+                path: /sp1/login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.redirect_sp1_response}}&RelayState={{CAPTURE.redirect_sp1_state}}'
+            output: {status: 302, headers: {Location: {equals: /sp1/uri}}}
+          - name: redirect sp1 session reaches upstream
+            input: {method: GET, path: /sp1/uri}
+            output: {status: 200, body: {equals: multi-sp upstream}}
+          - name: redirect sp2 starts an independent authentication
+            input: {method: GET, path: /sp2/uri}
+            output:
+                status: 302
+                captures:
+                    redirect_sp2_login: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: redirect_sp2_login
+                    response_capture: redirect_sp2_response
+                    relay_state_capture: redirect_sp2_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: redirect sp2 accepts its own callback
+            input:
+                method: POST
+                path: /sp2/login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.redirect_sp2_response}}&RelayState={{CAPTURE.redirect_sp2_state}}'
+            output: {status: 302, headers: {Location: {equals: /sp2/uri}}}
+          - name: redirect sp2 session reaches upstream
+            input: {method: GET, path: /sp2/uri}
+            output: {status: 200, body: {equals: multi-sp upstream}}
+          - name: redirect sp2 login does not replace the sp1 session
+            input: {method: GET, path: /sp1/uri}
+            output: {status: 200, body: {equals: multi-sp upstream}}
+          - name: redirect sp1 initiates single logout
+            input: {method: GET, path: /sp1/logout}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: IdP single-logout callback clears the sp2 session
+            input: {method: GET, path: /sp2/logout/callback}
+            output: {status: 302, headers: {Location: {equals: /sp2/logout_ok}}}
+          - name: redirect sp1 is unauthenticated after single logout
+            input: {method: GET, path: /sp1/uri}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: redirect sp2 performs a normal login after single logout
+            input: {method: GET, path: /sp2/uri}
+            output:
+                status: 302
+                captures:
+                    redirect_sp2_relogin: {header: Location, matches: '^(.*)$'}
+            actions:
+                - saml_response:
+                    redirect_capture: redirect_sp2_relogin
+                    response_capture: redirect_sp2_relogin_response
+                    relay_state_capture: redirect_sp2_relogin_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: spuser@example.com
+                    user_name: spuser
+          - name: redirect sp2 normal re-login callback succeeds
+            input:
+                method: POST
+                path: /sp2/login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.redirect_sp2_relogin_response}}&RelayState={{CAPTURE.redirect_sp2_relogin_state}}'
+            output: {status: 302, headers: {Location: {equals: /sp2/uri}}}
+          - name: redirect sp2 re-login reaches upstream
+            input: {method: GET, path: /sp2/uri}
+            output: {status: 200, body: {equals: multi-sp upstream}}
+          - name: redirect sp2 can log out independently
+            input: {method: GET, path: /sp2/logout}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
+          - name: redirect sp2 logout callback completes
+            input: {method: GET, path: /sp2/logout/callback}
+            output: {status: 302, headers: {Location: {equals: /sp2/logout_ok}}}
+          - name: redirect sp2 session is absent after independent logout
+            input: {method: GET, path: /sp2/uri}
+            output:
+                status: 302
+                headers:
+                    Location: {matches: '^https://idp\.example\.test/sso\?.*SAMLRequest=.*'}
 
     - name: saml-auth-schema-rejects-invalid-route-config
       source:

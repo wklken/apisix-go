@@ -294,6 +294,31 @@ func TestExecuteFileLifecycleActionRejectsExpandedEscape(t *testing.T) {
 	}
 }
 
+func TestTamperSAMLSignatureChangesOnlySignatureValue(t *testing.T) {
+	original := `<samlp:Response><ds:SignatureValue>ABC123</ds:SignatureValue><saml:Assertion>body</saml:Assertion></samlp:Response>`
+	tampered, err := tamperSAMLSignature(base64.StdEncoding.EncodeToString([]byte(original)))
+	if err != nil {
+		t.Fatalf("tamperSAMLSignature() error = %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(tampered)
+	if err != nil {
+		t.Fatalf("decode tampered response: %v", err)
+	}
+	if string(decoded) == original {
+		t.Fatal("tamperSAMLSignature() did not change the response")
+	}
+	if !bytes.Contains(decoded, []byte(`<saml:Assertion>body</saml:Assertion>`)) {
+		t.Fatalf("tampered response = %q, assertion changed", decoded)
+	}
+}
+
+func TestTamperSAMLSignatureRejectsUnsignedResponse(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(`<samlp:Response/>`))
+	if _, err := tamperSAMLSignature(encoded); err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("tamperSAMLSignature() error = %v, want missing signature", err)
+	}
+}
+
 func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	config := map[string]any{"routes": []any{}}
@@ -2151,7 +2176,12 @@ func runCase(t *testing.T, spec Case) {
 						)
 					}
 				}
-				if err := executeCaseActions(nonSAMLResponseActions(step.Actions), replacements, process, capturedValues); err != nil {
+				if err := executeCaseActions(
+					nonSAMLResponseActions(step.Actions),
+					replacements,
+					process,
+					capturedValues,
+				); err != nil {
 					t.Fatalf("execute actions: %v", err)
 				}
 				repeat := step.Repeat
@@ -2207,7 +2237,12 @@ func runCase(t *testing.T, spec Case) {
 				if step.Output.Logs != nil {
 					logMatchers = append(logMatchers, *step.Output.Logs)
 				}
-				if err := executeCaseActions(samlResponseActions(step.Actions), replacements, process, capturedValues); err != nil {
+				if err := executeCaseActions(
+					samlResponseActions(step.Actions),
+					replacements,
+					process,
+					capturedValues,
+				); err != nil {
 					t.Fatalf("execute SAML response actions: %v", err)
 				}
 				assertFiles(t, step.FileAssertions, replacements, "step file assertion")
@@ -2441,6 +2476,9 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 		requestState.Request.AssertionConsumerServiceURL == "" {
 		return errors.New("SAML authorization request is missing issuer or assertion consumer URL")
 	}
+	if action.RequestIDOverride != "" {
+		requestState.Request.ID = action.RequestIDOverride
+	}
 
 	pair, err := tls.X509KeyPair([]byte(action.IDPCertificate), []byte(action.IDPPrivateKey))
 	if err != nil || len(pair.Certificate) == 0 {
@@ -2479,9 +2517,44 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 	if err != nil {
 		return fmt.Errorf("sign SAML response: %w", err)
 	}
+	if action.TamperSignature {
+		form.SAMLResponse, err = tamperSAMLSignature(form.SAMLResponse)
+		if err != nil {
+			return fmt.Errorf("tamper SAML response signature: %w", err)
+		}
+	}
 	captured[action.ResponseCapture] = url.QueryEscape(form.SAMLResponse)
 	captured[action.RelayStateCapture] = url.QueryEscape(form.RelayState)
 	return nil
+}
+
+func tamperSAMLSignature(encodedResponse string) (string, error) {
+	response, err := base64.StdEncoding.DecodeString(encodedResponse)
+	if err != nil {
+		return "", fmt.Errorf("decode SAML response: %w", err)
+	}
+	start := bytes.Index(response, []byte("<ds:SignatureValue>"))
+	if start < 0 {
+		return "", errors.New("SAML response does not contain a signature value")
+	}
+	start += len("<ds:SignatureValue>")
+	end := bytes.Index(response[start:], []byte("</ds:SignatureValue>"))
+	if end <= 0 {
+		return "", errors.New("SAML response signature value is empty")
+	}
+	for i := start; i < start+end; i++ {
+		switch response[i] {
+		case 'A':
+			response[i] = 'B'
+			return base64.StdEncoding.EncodeToString(response), nil
+		case '\r', '\n', '\t', ' ':
+			continue
+		default:
+			response[i] = 'A'
+			return base64.StdEncoding.EncodeToString(response), nil
+		}
+	}
+	return "", errors.New("SAML response signature value is empty")
 }
 
 func resolveWorkDirActionPath(path string, replacements map[string]string) (string, error) {

@@ -52,22 +52,26 @@ const (
 	upstreamLatencyVar        = "$upstream_latency"
 )
 
-var parameterInPathRegexp = regexp.MustCompile(`:(\w+)`)
+var parameterInPathRegexp = regexp.MustCompile(`^:[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ConvertURI convert the apisix uri to chi compatible uri
 // NOTE:
 // 1. full path match: /blog/bar   same
 // 2. prefix match: /blog/bar*     same
 // 3. parameters in path: /blog/:name => /blog/{name} ok
+// 4. embedded wildcard: /articles/*/comments => chi prefix wildcard plus an exact suffix guard
 // FIXME:
 //
 //	https://github.com/api7/lua-resty-radixtree/#parameters-in-path
-//	4. not supported yet:
+//	5. not supported yet:
 //	   - /user/:user/*action
 //	   this will match `/user/john/` and also `/user/john/send`
 //	   - /user/*action
 func convertURI(uri string) (string, error) {
-	// if Asterisk in the uri, and endswith it, just return
+	if uri == "" || !strings.HasPrefix(uri, "/") || strings.ContainsAny(uri, "{}") {
+		return "", fmt.Errorf("not supported uri: %s", uri)
+	}
+
 	withColon := strings.ContainsRune(uri, ':')
 	withAsterisk := strings.ContainsRune(uri, '*')
 
@@ -76,19 +80,30 @@ func convertURI(uri string) (string, error) {
 	}
 
 	if withColon && !withAsterisk {
-		// replace :name with {name} in url, use regex
-		uri = parameterInPathRegexp.ReplaceAllString(uri, `{$1}`)
-		return uri, nil
+		segments := strings.Split(uri, "/")
+		for i, segment := range segments {
+			if !strings.ContainsRune(segment, ':') {
+				continue
+			}
+			if !parameterInPathRegexp.MatchString(segment) {
+				return "", fmt.Errorf("not supported uri: %s", uri)
+			}
+			segments[i] = "{" + strings.TrimPrefix(segment, ":") + "}"
+		}
+		return strings.Join(segments, "/"), nil
 	}
 
 	if !withColon && withAsterisk {
-		// prefix match
+		if strings.Count(uri, "*") != 1 {
+			return "", fmt.Errorf("not supported uri: %s", uri)
+		}
 		if strings.HasSuffix(uri, "*") {
 			return uri, nil
 		}
-		// not supported yet
-
-		return "", fmt.Errorf("not supported uri: %s", uri)
+		if !strings.Contains(uri, "/*/") {
+			return "", fmt.Errorf("not supported uri: %s", uri)
+		}
+		return uri[:strings.IndexByte(uri, '*')+1], nil
 	}
 
 	if withColon && withAsterisk {
@@ -97,6 +112,44 @@ func convertURI(uri string) (string, error) {
 	}
 
 	return "", fmt.Errorf("not supported uri: %s", uri)
+}
+
+func registerRoute(mux *chi.Mux, methods []string, uri string, handler http.Handler) error {
+	converted, err := convertURI(uri)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(uri, "/*/") {
+		handler = embeddedWildcardHandler(uri, handler)
+	}
+	if len(methods) == 0 {
+		mux.Handle(converted, handler)
+		return nil
+	}
+	for _, method := range methods {
+		if method == "PURGE" {
+			logger.Warnf("http method: %s is not supported", method)
+			continue
+		}
+		logger.Debugf("add route: %s %s", method, converted)
+		mux.Method(method, converted, handler)
+	}
+	return nil
+}
+
+func embeddedWildcardHandler(pattern string, next http.Handler) http.Handler {
+	wildcard := strings.IndexByte(pattern, '*')
+	prefix := pattern[:wildcard]
+	suffix := pattern[wildcard+1:]
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		path := request.URL.Path
+		if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) ||
+			len(path) <= len(prefix)+len(suffix) {
+			http.NotFound(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 type Builder struct {
@@ -172,25 +225,9 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Infof("methods: %v, uris: %v", methods, uris)
 		// add route to mux
 		for _, uri := range uris {
-			if len(methods) == 0 {
-				mux.Handle(uri, handler)
-				continue
-			}
-
-			uri, err = convertURI(uri)
-			if err != nil {
+			if err = registerRoute(mux, methods, uri, handler); err != nil {
 				logger.Warnf("convert uri fail: %w", err)
 				continue
-			}
-
-			for _, method := range methods {
-				if method == "PURGE" {
-					logger.Warnf("http method: %s is not supported", method)
-					continue
-				}
-				logger.Debugf("add route: %s %s", method, uri)
-
-				mux.Method(method, uri, handler)
 			}
 		}
 		fmt.Println("===============================")

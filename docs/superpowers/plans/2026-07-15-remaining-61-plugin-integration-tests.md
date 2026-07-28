@@ -825,7 +825,13 @@ The original checked state was not supported by the manifests. This audit compar
   pinned-source, corpus, scoped lint, build, post-integration, and task-review
   gates pass.
 - [x] `cas-auth` — all 24 CAS-owned blocks across `cas-auth.t` and `security-warning.t` map exactly once to real standalone login/validation/session/logout, multi-SP/SLO, schema, redirect/signature/callback, initiation, isolation, and warning behavior using captured cookies and exact provider requests. A real changed-resource reload preserves the old session; rejected and forged tickets cannot create/cross scopes; the process-local session store is a mutex-protected 10,000-entry one-hour expirable LRU with refresh, expiry, and eviction coverage. Package/race/corpus, full real-process, sensitive repeats, store stress, scoped lint, build, post-integration gates, and task review pass.
-- [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
+- [x] `saml-auth` — all 21 pinned blocks map exactly once to independent
+  standalone schema, signed Redirect/POST login, host-sensitive multi-SP
+  session, correlated four-hop logout, and terminal failure cases. Redirect
+  query signatures, POST correlation, IdP identity/endpoint separation,
+  route fallback, and session trust changes are independently reviewed.
+  Package/route/harness, race, exact real-process, source/no-alias, scoped
+  lint, build, post-integration, and task-review gates pass.
 - [x] `feishu-auth` — all 14 pinned blocks map exactly once to real standalone redirect, query/header code, token POST, userinfo Bearer, signed-cookie reuse/expiry, custom-location, secret-rotation/removal, forged-header clearing, and encrypted-fallback behavior. Distinct readiness routes prevent stale snapshots from satisfying reload probes; exact upstream counts prove accepted versus terminal rejected paths. The encrypted case uses ciphertext standalone resources, decrypts fallback arrays at runtime, and excludes plaintext from child configs/logs; removing the decrypted route debug dump closes the RED-proven secret leak. Package/race, full real-process and focused race, sensitive repeats, corpus, scoped lint, build, post-integration gates, and task review pass.
 - [x] `authz-casbin` — all 21 pinned blocks map exactly once to standalone schema, metadata, inline, file, disabled, route-policy-shape, and request behavior. Deny-to-allow and policy1-to-policy2-to-policy1 transitions use atomic standalone snapshot replacement, a side-effect-free applied-state probe, and one consuming request. The shared watcher survives invalid/Remove/Rename/Create/Write sequences and later valid snapshots; workdir file paths are confined. Package/corpus, watcher recovery, race, real-process `-count=10`, scoped lint/build, post-integration, and task-review gates pass.
 
@@ -1263,14 +1269,14 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 14 remaining (18 listed)
+### Hard — 13 remaining (18 listed)
 
 - [x] `key-auth`
 - [ ] `jwt-auth`
 - [x] `ldap-auth`
 - [ ] `openid-connect`
 - [x] `authz-keycloak`
-- [ ] `saml-auth`
+- [x] `saml-auth`
 - [ ] `limit-conn`
 - [ ] `limit-count`
 - [ ] `limit-req`
@@ -1379,7 +1385,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 10 remaining (19 at replan)
+### Medium — 9 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1402,7 +1408,16 @@ already-implemented branch.
   JSON Schema as well as PostInit. Its post-integration package, Store,
   data-encryption, registry, race, real-process, pinned-source, corpus, scoped
   lint, build, and diff gates pass.
-- [ ] `saml-auth`
+- [x] `saml-auth` — all 21 pinned blocks are source-complete with independent
+  real-child schema, signed Redirect/POST authentication, host-sensitive
+  multi-SP sessions, standards-compatible query signatures, correlated
+  Redirect/POST logout, distinct IdP trust identity and endpoint validation,
+  and terminal callback failures with zero upstream traffic. Mixed
+  host/hostless route fallback and trust-identity session invalidation close
+  the final independent-review gaps. Its post-integration package/route,
+  harness, race, real-process, source/no-alias, scoped lint, build, and diff
+  gates pass; the whole route package retains an unrelated global-Store test
+  ordering baseline.
 - [x] `ai-aws-content-moderation` — all 23 blocks are source-complete with
   real Vault/environment/literal credentials, exact SigV4 and session-token
   signing, prompt-only moderation, threshold/category precedence,

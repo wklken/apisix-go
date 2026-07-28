@@ -2,6 +2,7 @@ package ai_rate_limiting
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -13,8 +14,10 @@ import (
 	"time"
 
 	"github.com/casbin/govaluate"
+	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	v "github.com/wklken/apisix-go/pkg/apisix/variable"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -28,6 +31,7 @@ type Plugin struct {
 	counters map[string]*counter
 	now      func() time.Time
 	costExpr *govaluate.EvaluableExpression
+	redis    *redis.Client
 }
 
 const (
@@ -130,6 +134,18 @@ const schema = `
         },
         "required": ["count", "time_window", "key"]
       }
+    },
+    "policy": {"type": "string", "enum": ["local", "redis", "redis-sentinel"], "default": "local"},
+    "redis_host": {"type": "string", "minLength": 1},
+    "redis_port": {"type": "integer", "minimum": 1, "default": 6379},
+    "redis_username": {"type": "string"},
+    "redis_password": {"type": "string"},
+    "redis_database": {"type": "integer", "minimum": 0, "default": 0},
+    "redis_timeout": {"type": "integer", "minimum": 1, "default": 1000},
+    "redis_sentinels": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"host": {"type": "string", "minLength": 1}, "port": {"type": "integer", "minimum": 1}}, "required": ["host", "port"]}},
+    "redis_master_name": {"type": "string", "minLength": 1},
+    "sentinel_username": {"type": "string"},
+    "sentinel_password": {"type": "string"}
     }
   },
   "dependencies": {
@@ -150,6 +166,10 @@ const schema = `
     {
       "required": ["rules"]
     }
+  ],
+  "allOf": [
+    {"if": {"properties": {"policy": {"const": "redis"}}, "required": ["policy"]}, "then": {"required": ["redis_host"]}},
+    {"if": {"properties": {"policy": {"const": "redis-sentinel"}}, "required": ["policy"]}, "then": {"required": ["redis_sentinels", "redis_master_name"]}}
   ]
 }
 `
@@ -164,6 +184,22 @@ type Config struct {
 	RejectedCode         int             `json:"rejected_code,omitempty"`
 	RejectedMsg          string          `json:"rejected_msg,omitempty"`
 	Rules                []Rule          `json:"rules,omitempty"`
+	Policy               string          `json:"policy,omitempty"`
+	RedisHost            string          `json:"redis_host,omitempty"`
+	RedisPort            int             `json:"redis_port,omitempty"`
+	RedisUsername        string          `json:"redis_username,omitempty"`
+	RedisPassword        string          `json:"redis_password,omitempty"`
+	RedisDatabase        int             `json:"redis_database,omitempty"`
+	RedisTimeout         int             `json:"redis_timeout,omitempty"`
+	RedisSentinels       []RedisSentinel `json:"redis_sentinels,omitempty"`
+	RedisMasterName      string          `json:"redis_master_name,omitempty"`
+	SentinelUsername     string          `json:"sentinel_username,omitempty"`
+	SentinelPassword     string          `json:"sentinel_password,omitempty"`
+}
+
+type RedisSentinel struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 type InstanceLimit struct {
@@ -226,6 +262,39 @@ func (p *Plugin) PostInit() error {
 	if p.config.LimitStrategy == "" {
 		p.config.LimitStrategy = "total_tokens"
 	}
+	if p.config.Policy == "" {
+		p.config.Policy = "local"
+	}
+	if p.config.Policy == "redis" {
+		if p.config.RedisHost == "" {
+			return errors.New("redis_host is required when policy is redis")
+		}
+		if p.config.RedisPort == 0 {
+			p.config.RedisPort = 6379
+		}
+		if p.config.RedisTimeout == 0 {
+			p.config.RedisTimeout = 1000
+		}
+		password, err := p.resolveRedisPassword()
+		if err != nil {
+			return err
+		}
+		p.redis = redis.NewClient(&redis.Options{Addr: fmt.Sprintf("%s:%d", p.config.RedisHost, p.config.RedisPort), Username: p.config.RedisUsername, Password: password, DB: p.config.RedisDatabase, DialTimeout: time.Duration(p.config.RedisTimeout) * time.Millisecond})
+	}
+	if p.config.Policy == "redis-sentinel" {
+		if len(p.config.RedisSentinels) == 0 || p.config.RedisMasterName == "" {
+			return errors.New("redis_sentinels and redis_master_name are required when policy is redis-sentinel")
+		}
+		addresses := make([]string, 0, len(p.config.RedisSentinels))
+		for _, sentinel := range p.config.RedisSentinels {
+			addresses = append(addresses, fmt.Sprintf("%s:%d", sentinel.Host, sentinel.Port))
+		}
+		password, err := p.resolveRedisPassword()
+		if err != nil {
+			return err
+		}
+		p.redis = redis.NewFailoverClient(&redis.FailoverOptions{MasterName: p.config.RedisMasterName, SentinelAddrs: addresses, Username: p.config.RedisUsername, Password: password, SentinelUsername: p.config.SentinelUsername, SentinelPassword: p.config.SentinelPassword, DB: p.config.RedisDatabase})
+	}
 	if p.config.LimitStrategy == "expression" {
 		if p.config.CostExpr == "" {
 			return fmt.Errorf("cost_expr is required when limit_strategy is expression")
@@ -283,6 +352,15 @@ func (p *Plugin) PostInit() error {
 		p.now = time.Now
 	}
 	return nil
+}
+
+func (p *Plugin) resolveRedisPassword() (string, error) {
+	keyring, enabled := data_encryption.Keyring()
+	password, err := data_encryption.NewResolver(enabled, keyring).Resolve(p.config.RedisPassword)
+	if err != nil {
+		return "", fmt.Errorf("ai-rate-limiting redis_password: %w", err)
+	}
+	return password, nil
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -567,6 +645,10 @@ func requestVariable(r *http.Request, key string) string {
 }
 
 func (p *Plugin) allowed(q quota) bool {
+	if p.redis != nil {
+		value, err := p.redis.Get(context.Background(), p.redisKey(q)).Int64()
+		return err == redis.Nil || (err == nil && value < q.limit)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -575,6 +657,14 @@ func (p *Plugin) allowed(q quota) bool {
 }
 
 func (p *Plugin) charge(q quota, tokens int64) {
+	if p.redis != nil {
+		ctx := context.Background()
+		key := p.redisKey(q)
+		if p.redis.IncrBy(ctx, key, tokens).Err() == nil {
+			_ = p.redis.Expire(ctx, key, q.window).Err()
+		}
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -790,11 +880,23 @@ func (p *Plugin) writeQuotaHeaders(header http.Header, q quota) {
 }
 
 func (p *Plugin) snapshot(q quota) (int64, time.Time) {
+	if p.redis != nil {
+		ctx := context.Background()
+		used, err := p.redis.Get(ctx, p.redisKey(q)).Int64()
+		if err != nil && err != redis.Nil {
+			used = 0
+		}
+		return used, p.now().Add(q.window)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	state := p.state(q)
 	return state.used, state.reset
+}
+
+func (p *Plugin) redisKey(q quota) string {
+	return "apisix-go:ai-rate-limiting:" + q.key
 }
 
 func (p *Plugin) reject(w http.ResponseWriter) {

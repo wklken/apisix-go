@@ -71,6 +71,32 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	}
 }
 
+func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T) {
+	base := Config{Limit: 1, TimeWindow: 60, Policy: "redis"}
+	p := &Plugin{config: base}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PostInit(); err == nil || !strings.Contains(err.Error(), "redis_host") {
+		t.Fatalf("redis policy error = %v, want redis_host validation", err)
+	}
+
+	sentinel := &Plugin{config: Config{
+		Limit: 1, TimeWindow: 60, Policy: "redis-sentinel", RedisMasterName: "mymaster",
+		RedisSentinels: []RedisSentinel{{Host: "127.0.0.1", Port: 26379}},
+		RedisUsername:  "alice", RedisPassword: "redis-secret", SentinelUsername: "bob", SentinelPassword: "sentinel-secret",
+	}}
+	if err := sentinel.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sentinel.PostInit(); err != nil {
+		t.Fatalf("sentinel config PostInit() error = %v", err)
+	}
+	if sentinel.redis == nil {
+		t.Fatal("sentinel config did not create a Redis client")
+	}
+}
+
 func TestHandlerUsesInstancePromptTokenQuota(t *testing.T) {
 	now := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
 	p := newTestPlugin(t, Config{

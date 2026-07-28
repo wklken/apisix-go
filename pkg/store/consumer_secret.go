@@ -108,6 +108,22 @@ func (s *Store) resolveConsumerSecretString(value string) (string, error) {
 	return value, nil
 }
 
+// ResolveSecretReference resolves an environment or managed secret reference.
+// Literal values are returned unchanged.
+func ResolveSecretReference(value string) (string, error) {
+	if len(value) >= len(environmentSecretPrefix) &&
+		strings.EqualFold(value[:len(environmentSecretPrefix)], environmentSecretPrefix) {
+		return resolveEnvironmentSecret(value)
+	}
+	if !strings.HasPrefix(value, managedSecretPrefix) {
+		return value, nil
+	}
+	if s == nil {
+		return "", fmt.Errorf("secret store is not initialized")
+	}
+	return s.resolveManagedSecret(value)
+}
+
 func resolveEnvironmentSecret(reference string) (string, error) {
 	pathParts := strings.Split(reference[len(environmentSecretPrefix):], "/")
 	name := pathParts[0]

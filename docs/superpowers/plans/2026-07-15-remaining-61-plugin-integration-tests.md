@@ -840,7 +840,15 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `udp-logger` — all 14 pinned blocks map exactly once to standalone schema, delivery-failure, live two-sink reload, metadata, and exact request/response-body cases. Default records expose the APISIX-shaped access-log fields with explicit Go-native size approximations; custom records resolve post-downstream and append route/service context. Parsed RFC3339 and strict RFC 6901 network assertions, package/race/corpus, full real-process, reload `-count=10`, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `syslog` — one generic transport write replaces RFC framing/facility/severity/tag, TCP/UDP/TLS modes, batching, and failures.
 - [ ] `kafka-logger` — one produce per source omits topic/key/partition, metadata negotiation, SASL/TLS, body truncation, formats, batching/retry, and broker failures.
-- [ ] `file-logger` — generic file output does not preserve append/reopen, exact body/log formats, shutdown flush, path/schema, and failure cases.
+- [x] `file-logger` — all 44 pinned blocks across three sources map exactly once
+  to real standalone schema, file append/cache/reopen, live `SIGUSR1`, exact
+  default/nested/extra/metadata/route formats, pre-DNS node fields,
+  request/response body expressions, gzip, failures, and shutdown behavior.
+  Route format is separately proven both without metadata and with conflicting
+  metadata. A shared path-keyed writer registry owns cached descriptors and
+  synchronous final-lease shutdown. Package, race, full exact real-process,
+  combined Batch compatibility, corpus, scoped lint, build, post-integration,
+  and task-review gates pass.
 - [ ] `log-rotate` — generic file assertions omit size/time rotation, retention counts, reopen lifecycle, metadata/config changes, and exact rotated contents.
 - [ ] `error-log-logger` — four pass-through requests configure `{}` and do not test log levels, metadata initialization/update/removal, or ClickHouse/Kafka/SkyWalking delivery.
 - [x] `skywalking-logger` — all 15 pinned blocks map exactly once to real standalone cases. The corpus validates minimal/full/missing-endpoint schema paths, exact SkyWalking envelope arrays and nested JSON records, hostname service instances, valid and malformed `sw8` trace context, metadata and route format precedence with route/service identity, exact request/response body capture, and deterministic pending-entry overflow. A typed semantic matcher enforces envelope cardinality, trace presence/absence, and nested payload fields. Package, race, strict corpus, repeated real-process, scoped lint, build, post-integration Loki compatibility, and task-review gates pass.
@@ -873,10 +881,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 24 task-review-approved and 37 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 25 task-review-approved and 36 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 37 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 36 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -1088,7 +1096,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 19 remaining (28 listed)
+### Medium — 18 remaining (28 listed)
 
 - [ ] `datadog`
 - [x] `basic-auth`
@@ -1111,7 +1119,7 @@ Execution waves:
 - [ ] `tencent-cloud-cls`
 - [ ] `tcp-logger`
 - [ ] `syslog`
-- [ ] `file-logger`
+- [x] `file-logger`
 - [ ] `log-rotate`
 - [ ] `skywalking`
 - [ ] `ai-aws-content-moderation`
@@ -1237,8 +1245,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 24 manifests
-are task-review-approved and 37 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 25 manifests
+are task-review-approved and 36 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1288,17 +1296,17 @@ already-implemented branch.
 - [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
 - [ ] `workflow` — blocked on the limiter owners.
 
-### Hard — 14 remaining (15 at replan)
+### Hard — 13 remaining (15 at replan)
 
 - [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
   Store-owned last-good metadata publication. It is integrated and passed its
   post-integration gates.
-- [ ] `file-logger` — the worker range realized this risk through a shared
+- [x] `file-logger` — the worker range realized this risk through a shared
   writer registry, cached descriptors, live `SIGUSR1`, reload/shutdown
-  lifecycle, and filesystem assertions. Rereview found that source blocks 6–7
-  must run without metadata before blocks 8–9 test metadata precedence, so it
-  remains pending remediation and approval.
+  lifecycle, and filesystem assertions. The rereview gap was fixed by isolating
+  source blocks 6–7 without metadata from blocks 8–9 with metadata precedence;
+  the corrected range is integrated and passed its post-integration gates.
 - [ ] `log-rotate`
 - [ ] `skywalking`
 - [ ] `jwt-auth`

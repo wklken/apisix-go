@@ -287,8 +287,8 @@ func (p *Plugin) postAzureJSON(
 
 func appendSearchResult(r *http.Request, body map[string]any, searchResult string) {
 	protocol, err := ai_protocols.Detect(r.URL.Path, body)
-	if err != nil {
-		return
+	if err != nil || protocol == ai_protocols.Passthrough {
+		protocol = ai_protocols.OpenAIChat
 	}
 	ai_protocols.AppendMessages(protocol, body, []ai_protocols.Message{{Role: "user", Content: searchResult}})
 }

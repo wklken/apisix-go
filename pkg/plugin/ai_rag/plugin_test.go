@@ -194,6 +194,22 @@ func TestAppendSearchResultUsesNativeMessageProtocol(t *testing.T) {
 	}
 }
 
+func TestAppendSearchResultCreatesChatMessagesForSourceCompatibleRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/echo", nil)
+	body := map[string]any{}
+
+	appendSearchResult(req, body, "search result")
+
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one RAG message", body["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok || message["role"] != "user" || message["content"] != "search result" {
+		t.Fatalf("message = %#v, want RAG user message", messages[0])
+	}
+}
+
 func TestHandlerRejectsMissingAIRag(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		EmbeddingsProvider: EmbeddingsProvider{AzureOpenAI: AzureProvider{Endpoint: "http://127.0.0.1", APIKey: "k"}},

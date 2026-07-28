@@ -1426,6 +1426,107 @@ func TestHTTPFixtureResponseSupportsRepeatedBodyWithPrefix(t *testing.T) {
 	}
 }
 
+func TestSAMLRedirectFixtureSignatureRejectsRelayStateTampering(t *testing.T) {
+	certificatePEM, privateKeyPEM := generateSAMLRSACertificate(t)
+	pair, err := tls.X509KeyPair([]byte(certificatePEM), []byte(privateKeyPEM))
+	if err != nil {
+		t.Fatalf("parse signing pair: %v", err)
+	}
+	signer, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		t.Fatal("private key does not implement crypto.Signer")
+	}
+	redirect, err := signedSAMLFixtureRedirectURL(
+		"https://idp.example.test/slo",
+		"SAMLRequest",
+		[]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"/>`),
+		"original",
+		signer,
+	)
+	if err != nil {
+		t.Fatalf("sign Redirect request: %v", err)
+	}
+	if err := validateSAMLRedirectFixtureSignature(
+		redirect.RawQuery,
+		"SAMLRequest",
+		certificatePEM,
+	); err != nil {
+		t.Fatalf("validate Redirect signature: %v", err)
+	}
+	tampered := strings.Replace(redirect.RawQuery, "RelayState=original", "RelayState=tampered", 1)
+	if err := validateSAMLRedirectFixtureSignature(
+		tampered,
+		"SAMLRequest",
+		certificatePEM,
+	); err == nil {
+		t.Fatal("tampered RelayState passed Redirect signature validation")
+	}
+}
+
+func TestSAMLResponseActionRejectsUnexpectedSPIssuer(t *testing.T) {
+	certificatePEM, privateKeyPEM := generateSAMLRSACertificate(t)
+	sp, err := samlFixtureSigner("sp1", certificatePEM, privateKeyPEM)
+	if err != nil {
+		t.Fatalf("create SP signer: %v", err)
+	}
+	acsURL, _ := url.Parse("https://sp1.local/login/callback")
+	sp.AcsURL = *acsURL
+	request, err := sp.MakeAuthenticationRequest(
+		"https://idp.example.test/sso",
+		saml.HTTPRedirectBinding,
+		saml.HTTPPostBinding,
+	)
+	if err != nil {
+		t.Fatalf("make authentication request: %v", err)
+	}
+	redirect, err := request.Redirect("relay", sp)
+	if err != nil {
+		t.Fatalf("sign authentication request: %v", err)
+	}
+	err = executeSAMLResponseAction(SAMLResponseAction{
+		RedirectCapture:   "redirect",
+		ResponseCapture:   "response",
+		RelayStateCapture: "relay",
+		IDPCertificate:    certificatePEM,
+		IDPPrivateKey:     privateKeyPEM,
+		IDPEntityID:       "https://idp.example.test/realms/integration",
+		SPCertificate:     certificatePEM,
+		ExpectedSPIssuer:  "sp2",
+		NameID:            "alice@example.com",
+	}, map[string]string{"redirect": redirect.String()})
+	if err == nil || !strings.Contains(err.Error(), `issuer = "sp1", want "sp2"`) {
+		t.Fatalf("executeSAMLResponseAction() error = %v, want host-sensitive issuer rejection", err)
+	}
+}
+
+func generateSAMLRSACertificate(t *testing.T) (string, string) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "saml.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	certificateDER, err := x509.CreateCertificate(
+		rand.Reader,
+		&template,
+		&template,
+		&key.PublicKey,
+		key,
+	)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+}
+
 func TestAPISIXProcess(t *testing.T) {
 	if os.Getenv(helperProcessEnv) != "1" {
 		return
@@ -2520,6 +2621,13 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 		requestState.Request.AssertionConsumerServiceURL == "" {
 		return errors.New("SAML authorization request is missing issuer or assertion consumer URL")
 	}
+	if requestState.Request.Issuer.Value != action.ExpectedSPIssuer {
+		return fmt.Errorf(
+			"SAML authorization request issuer = %q, want %q",
+			requestState.Request.Issuer.Value,
+			action.ExpectedSPIssuer,
+		)
+	}
 	if err := validateSPAuthenticationRequest(request, requestState.RequestBuffer, action.SPCertificate); err != nil {
 		return fmt.Errorf("validate signed SP authentication request: %w", err)
 	}
@@ -2539,13 +2647,14 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 	if !ok {
 		return errors.New("IdP private key does not implement crypto.Signer")
 	}
-	idpURL := *redirectURL
-	idpURL.RawQuery = ""
-	idpURL.Fragment = ""
+	idpURL, err := url.Parse(action.IDPEntityID)
+	if err != nil {
+		return fmt.Errorf("parse IdP entity ID: %w", err)
+	}
 	requestState.IDP = &saml.IdentityProvider{
 		Key:         key,
 		Certificate: certificate,
-		MetadataURL: idpURL,
+		MetadataURL: *idpURL,
 	}
 	requestState.Now = time.Now().UTC()
 	requestState.ServiceProviderMetadata = &saml.EntityDescriptor{EntityID: requestState.Request.Issuer.Value}
@@ -2579,36 +2688,46 @@ func executeSAMLLogoutAction(action SAMLLogoutAction, captured map[string]string
 	if captured == nil {
 		return errors.New("no captured response values are available")
 	}
-	redirect := captured[action.RedirectCapture]
-	if redirect == "" {
-		return fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
-	}
-	redirectURL, err := url.Parse(redirect)
-	if err != nil {
-		return fmt.Errorf("parse SAML logout redirect: %w", err)
-	}
 
 	field := "SAMLRequest"
 	if action.Kind == "response" {
 		field = "SAMLResponse"
 	}
-	rawXML, err := decodeSAMLRedirectMessage(redirectURL.Query().Get(field))
+	rawXML, relayState, err := readSAMLLogoutInput(action, field, captured)
 	if err != nil {
-		return fmt.Errorf("decode %s: %w", field, err)
+		return err
 	}
-	if err := validateSignedSAMLFixtureXML(rawXML, action.SPCertificate); err != nil {
-		return fmt.Errorf("validate signed SP %s: %w", field, err)
+	var issuer string
+	switch action.Kind {
+	case "request", "finish":
+		var request saml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &request); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutRequest: %w", err)
+		}
+		if request.Issuer != nil {
+			issuer = request.Issuer.Value
+		}
+	case "response":
+		var response saml.LogoutResponse
+		if err := xml.Unmarshal(rawXML, &response); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutResponse: %w", err)
+		}
+		if response.Issuer != nil {
+			issuer = response.Issuer.Value
+		}
+	}
+	if issuer != action.ExpectedSPIssuer {
+		return fmt.Errorf("SP logout issuer = %q, want %q", issuer, action.ExpectedSPIssuer)
 	}
 
 	idp, err := samlFixtureSigner(
-		action.IDPURI,
+		action.IDPEntityID,
 		action.IDPCertificate,
 		action.IDPPrivateKey,
 	)
 	if err != nil {
 		return err
 	}
-	relayState := redirectURL.Query().Get("RelayState")
 	switch action.Kind {
 	case "request":
 		var request saml.LogoutRequest
@@ -2619,12 +2738,18 @@ func executeSAMLLogoutAction(action SAMLLogoutAction, captured map[string]string
 			return errors.New("SP LogoutRequest has no ID")
 		}
 		captured[action.InputRequestIDCapture] = request.ID
-		output, err := idp.MakeLogoutRequest(action.Destination, action.NameID)
+		output, rawOutput, redirect, err := makeFixtureLogoutRequest(
+			idp,
+			action.Destination,
+			action.NameID,
+			relayState,
+			action.OutputBinding,
+		)
 		if err != nil {
 			return fmt.Errorf("make IdP LogoutRequest: %w", err)
 		}
 		captured[action.OutputRequestIDCapture] = output.ID
-		captured[action.OutputCapture] = strings.TrimPrefix(output.Redirect(relayState).RequestURI(), "/")
+		captureSAMLLogoutOutput(action, rawOutput, redirect, relayState, captured)
 	case "finish":
 		var request saml.LogoutRequest
 		if err := xml.Unmarshal(rawXML, &request); err != nil {
@@ -2633,11 +2758,17 @@ func executeSAMLLogoutAction(action SAMLLogoutAction, captured map[string]string
 		if request.ID == "" {
 			return errors.New("SP LogoutRequest has no ID")
 		}
-		output, err := idp.MakeLogoutResponse(action.Destination, request.ID)
+		_, rawOutput, redirect, err := makeFixtureLogoutResponse(
+			idp,
+			action.Destination,
+			request.ID,
+			relayState,
+			action.OutputBinding,
+		)
 		if err != nil {
 			return fmt.Errorf("make IdP LogoutResponse: %w", err)
 		}
-		captured[action.OutputCapture] = strings.TrimPrefix(output.Redirect(relayState).RequestURI(), "/")
+		captureSAMLLogoutOutput(action, rawOutput, redirect, relayState, captured)
 	case "response":
 		var response saml.LogoutResponse
 		if err := xml.Unmarshal(rawXML, &response); err != nil {
@@ -2658,15 +2789,163 @@ func executeSAMLLogoutAction(action SAMLLogoutAction, captured map[string]string
 				action.ResponseToRequestIDCapture,
 			)
 		}
-		output, err := idp.MakeLogoutResponse(action.Destination, responseTo)
+		_, rawOutput, redirect, err := makeFixtureLogoutResponse(
+			idp,
+			action.Destination,
+			responseTo,
+			relayState,
+			action.OutputBinding,
+		)
 		if err != nil {
 			return fmt.Errorf("make IdP LogoutResponse: %w", err)
 		}
-		captured[action.OutputCapture] = strings.TrimPrefix(output.Redirect(relayState).RequestURI(), "/")
+		captureSAMLLogoutOutput(action, rawOutput, redirect, relayState, captured)
 	default:
 		return fmt.Errorf("unsupported SAML logout action kind %q", action.Kind)
 	}
 	return nil
+}
+
+func readSAMLLogoutInput(
+	action SAMLLogoutAction,
+	field string,
+	captured map[string]string,
+) ([]byte, string, error) {
+	binding := action.InputBinding
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		message := html.UnescapeString(captured[action.SAMLMessageCapture])
+		relayState := html.UnescapeString(captured[action.RelayStateInputCapture])
+		if message == "" {
+			return nil, "", fmt.Errorf("SAML message capture %q has not been recorded", action.SAMLMessageCapture)
+		}
+		rawXML, err := base64.StdEncoding.DecodeString(message)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode POST %s: %w", field, err)
+		}
+		if err := validateSignedSAMLFixtureXML(rawXML, action.SPCertificate); err != nil {
+			return nil, "", fmt.Errorf("validate signed POST SP %s: %w", field, err)
+		}
+		return rawXML, relayState, nil
+	}
+
+	redirect := captured[action.RedirectCapture]
+	if redirect == "" {
+		return nil, "", fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
+	}
+	redirectURL, err := url.Parse(redirect)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse SAML logout redirect: %w", err)
+	}
+	if err := validateSAMLRedirectFixtureSignature(
+		redirectURL.RawQuery,
+		field,
+		action.SPCertificate,
+	); err != nil {
+		return nil, "", fmt.Errorf("validate signed Redirect SP %s: %w", field, err)
+	}
+	rawXML, err := decodeSAMLRedirectMessage(redirectURL.Query().Get(field))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode %s: %w", field, err)
+	}
+	return rawXML, redirectURL.Query().Get("RelayState"), nil
+}
+
+func makeFixtureLogoutRequest(
+	signer *saml.ServiceProvider,
+	destination string,
+	nameID string,
+	relayState string,
+	binding string,
+) (*saml.LogoutRequest, []byte, *url.URL, error) {
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		request, err := signer.MakeLogoutRequest(destination, nameID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rawXML, err := request.Bytes()
+		return request, rawXML, nil, err
+	}
+	unsigned := *signer
+	unsigned.SignatureMethod = ""
+	request, err := unsigned.MakeLogoutRequest(destination, nameID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rawXML, err := request.Bytes()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	redirect, err := signedSAMLFixtureRedirectURL(
+		destination,
+		"SAMLRequest",
+		rawXML,
+		relayState,
+		signer.Key,
+	)
+	return request, rawXML, redirect, err
+}
+
+func makeFixtureLogoutResponse(
+	signer *saml.ServiceProvider,
+	destination string,
+	requestID string,
+	relayState string,
+	binding string,
+) (*saml.LogoutResponse, []byte, *url.URL, error) {
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		response, err := signer.MakeLogoutResponse(destination, requestID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rawXML, err := samlFixtureElementBytes(response.Element())
+		return response, rawXML, nil, err
+	}
+	unsigned := *signer
+	unsigned.SignatureMethod = ""
+	response, err := unsigned.MakeLogoutResponse(destination, requestID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rawXML, err := samlFixtureElementBytes(response.Element())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	redirect, err := signedSAMLFixtureRedirectURL(
+		destination,
+		"SAMLResponse",
+		rawXML,
+		relayState,
+		signer.Key,
+	)
+	return response, rawXML, redirect, err
+}
+
+func captureSAMLLogoutOutput(
+	action SAMLLogoutAction,
+	rawXML []byte,
+	redirect *url.URL,
+	relayState string,
+	captured map[string]string,
+) {
+	binding := action.OutputBinding
+	if binding == "" {
+		binding = "redirect"
+	}
+	if binding == "post" {
+		captured[action.OutputCapture] = url.QueryEscape(base64.StdEncoding.EncodeToString(rawXML))
+		captured[action.RelayStateCapture] = url.QueryEscape(relayState)
+		return
+	}
+	captured[action.OutputCapture] = strings.TrimPrefix(redirect.RequestURI(), "/")
 }
 
 func samlFixtureSigner(entityID string, certificatePEM string, privateKeyPEM string) (*saml.ServiceProvider, error) {
@@ -2689,6 +2968,117 @@ func samlFixtureSigner(entityID string, certificatePEM string, privateKeyPEM str
 		SignatureMethod: samlRSASHA256Method,
 		IDPMetadata:     &saml.EntityDescriptor{EntityID: "fixture-peer"},
 	}, nil
+}
+
+func signedSAMLFixtureRedirectURL(
+	destination string,
+	field string,
+	rawXML []byte,
+	relayState string,
+	signer crypto.Signer,
+) (*url.URL, error) {
+	var compressed bytes.Buffer
+	writer, err := flate.NewWriter(&compressed, 9)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := writer.Write(rawXML); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	signedQuery := field + "=" + url.QueryEscape(base64.StdEncoding.EncodeToString(compressed.Bytes()))
+	if relayState != "" {
+		signedQuery += "&RelayState=" + url.QueryEscape(relayState)
+	}
+	signedQuery += "&SigAlg=" + url.QueryEscape(samlRSASHA256Method)
+	digest := sha256.Sum256([]byte(signedQuery))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		return nil, err
+	}
+	redirect, err := url.Parse(destination)
+	if err != nil {
+		return nil, err
+	}
+	redirect.RawQuery = signedQuery + "&Signature=" +
+		url.QueryEscape(base64.StdEncoding.EncodeToString(signature))
+	return redirect, nil
+}
+
+func validateSAMLRedirectFixtureSignature(rawQuery string, field string, certificatePEM string) error {
+	parameters := make(map[string]string)
+	for parameter := range strings.SplitSeq(rawQuery, "&") {
+		name, value, ok := strings.Cut(parameter, "=")
+		if !ok {
+			continue
+		}
+		decodedName, err := url.QueryUnescape(name)
+		if err != nil {
+			return fmt.Errorf("decode Redirect parameter name: %w", err)
+		}
+		switch decodedName {
+		case "SAMLRequest", "SAMLResponse", "RelayState", "SigAlg", "Signature":
+			if _, duplicate := parameters[decodedName]; duplicate {
+				return fmt.Errorf("Redirect parameter %s is duplicated", decodedName)
+			}
+			parameters[decodedName] = value
+		}
+	}
+	message, ok := parameters[field]
+	if !ok {
+		return fmt.Errorf("%s is required", field)
+	}
+	sigAlg, ok := parameters["SigAlg"]
+	if !ok {
+		return errors.New("SigAlg is required")
+	}
+	decodedSigAlg, err := url.QueryUnescape(sigAlg)
+	if err != nil || decodedSigAlg != samlRSASHA256Method {
+		return errors.New("Redirect SigAlg must be rsa-sha256")
+	}
+	signatureValue, ok := parameters["Signature"]
+	if !ok {
+		return errors.New("Signature is required")
+	}
+	signedQuery := field + "=" + message
+	if relayState, present := parameters["RelayState"]; present {
+		signedQuery += "&RelayState=" + relayState
+	}
+	signedQuery += "&SigAlg=" + sigAlg
+	decodedSignature, err := url.QueryUnescape(signatureValue)
+	if err != nil {
+		return fmt.Errorf("decode Redirect signature escaping: %w", err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(decodedSignature)
+	if err != nil {
+		return fmt.Errorf("decode Redirect signature: %w", err)
+	}
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SP certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SP certificate: %w", err)
+	}
+	publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return errors.New("SP certificate does not contain an RSA public key")
+	}
+	digest := sha256.Sum256([]byte(signedQuery))
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		return fmt.Errorf("verify Redirect signature: %w", err)
+	}
+	return nil
+}
+
+func samlFixtureElementBytes(element *etree.Element) ([]byte, error) {
+	document := etree.NewDocument()
+	document.SetRoot(element)
+	return document.WriteToBytes()
 }
 
 func decodeSAMLRedirectMessage(value string) ([]byte, error) {

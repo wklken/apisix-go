@@ -97,6 +97,47 @@ func TestManifestCorpusValidates(t *testing.T) {
 	}
 }
 
+func TestSAMLManifestHasIndependentSingletonCases(t *testing.T) {
+	data, err := os.ReadFile("saml-auth.yaml")
+	if err != nil {
+		t.Fatalf("read saml-auth.yaml: %v", err)
+	}
+	if strings.Contains(string(data), "<<:") {
+		t.Fatal("saml-auth.yaml uses YAML merge aliases instead of independent cases")
+	}
+	manifest, err := loadManifest("saml-auth.yaml", data)
+	if err != nil {
+		t.Fatalf("load saml-auth.yaml: %v", err)
+	}
+	if got := len(manifest.Cases); got != 21 {
+		t.Fatalf("SAML cases = %d, want 21 independent source cases", got)
+	}
+	for _, source := range manifestSources(manifest) {
+		got := make([]int, 0, source.Tests)
+		for _, testCase := range manifest.Cases {
+			if testCase.Source.File != source.File {
+				continue
+			}
+			if len(testCase.Source.Tests) != 1 {
+				t.Fatalf(
+					"case %q source tests = %v, want one source block",
+					testCase.Name,
+					testCase.Source.Tests,
+				)
+			}
+			got = append(got, testCase.Source.Tests[0])
+		}
+		sort.Ints(got)
+		want := make([]int, source.Tests)
+		for i := range want {
+			want[i] = i + 1
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s tests = %v, want %v", source.File, got, want)
+		}
+	}
+}
+
 func TestSourceCoverage(t *testing.T) {
 	sourceRoot := apacheAPISIXSourceRoot(t)
 	files, err := filepath.Glob("*.yaml")

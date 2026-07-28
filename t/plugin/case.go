@@ -133,7 +133,9 @@ type SAMLResponseAction struct {
 	RelayStateCapture      string `yaml:"relay_state_capture"`
 	IDPCertificate         string `yaml:"idp_certificate"`
 	IDPPrivateKey          string `yaml:"idp_private_key"`
+	IDPEntityID            string `yaml:"idp_entity_id"`
 	SPCertificate          string `yaml:"sp_certificate"`
+	ExpectedSPIssuer       string `yaml:"expected_sp_issuer"`
 	NameID                 string `yaml:"name_id"`
 	UserName               string `yaml:"user_name,omitempty"`
 	RequestIDOverride      string `yaml:"request_id_override,omitempty"`
@@ -144,17 +146,24 @@ type SAMLResponseAction struct {
 // IdP message in the four-hop single-logout exchange.
 type SAMLLogoutAction struct {
 	Kind                       string `yaml:"kind"`
+	InputBinding               string `yaml:"input_binding,omitempty"`
 	RedirectCapture            string `yaml:"redirect_capture"`
+	SAMLMessageCapture         string `yaml:"saml_message_capture,omitempty"`
+	RelayStateInputCapture     string `yaml:"relay_state_input_capture,omitempty"`
+	OutputBinding              string `yaml:"output_binding,omitempty"`
 	OutputCapture              string `yaml:"output_capture"`
+	RelayStateCapture          string `yaml:"relay_state_capture,omitempty"`
 	InputRequestIDCapture      string `yaml:"input_request_id_capture,omitempty"`
 	OutputRequestIDCapture     string `yaml:"output_request_id_capture,omitempty"`
 	ExpectedRequestIDCapture   string `yaml:"expected_request_id_capture,omitempty"`
 	ResponseToRequestIDCapture string `yaml:"response_to_request_id_capture,omitempty"`
 	Destination                string `yaml:"destination"`
 	IDPURI                     string `yaml:"idp_uri"`
+	IDPEntityID                string `yaml:"idp_entity_id"`
 	IDPCertificate             string `yaml:"idp_certificate"`
 	IDPPrivateKey              string `yaml:"idp_private_key"`
 	SPCertificate              string `yaml:"sp_certificate"`
+	ExpectedSPIssuer           string `yaml:"expected_sp_issuer"`
 	NameID                     string `yaml:"name_id,omitempty"`
 }
 
@@ -1382,24 +1391,47 @@ func validateCaseActions(actions []CaseAction) error {
 				(strings.TrimSpace(saml.IDPURI) != "" && strings.TrimSpace(saml.SAMLRequestCapture) != "" && strings.TrimSpace(saml.RelayStateInputCapture) != "")
 			if !redirectSource || strings.TrimSpace(saml.ResponseCapture) == "" ||
 				strings.TrimSpace(saml.RelayStateCapture) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
-				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.SPCertificate) == "" ||
+				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.IDPEntityID) == "" ||
+				strings.TrimSpace(saml.SPCertificate) == "" || strings.TrimSpace(saml.ExpectedSPIssuer) == "" ||
 				strings.TrimSpace(saml.NameID) == "" {
 				return fmt.Errorf(
 					"action %d saml_response requires redirect_capture, response_capture, relay_state_capture, "+
-						"idp_certificate, idp_private_key, sp_certificate, and name_id",
+						"idp_certificate, idp_private_key, idp_entity_id, sp_certificate, expected_sp_issuer, and name_id",
 					i+1,
 				)
 			}
 		case action.SAMLLogout != nil:
 			saml := action.SAMLLogout
-			commonMissing := strings.TrimSpace(saml.RedirectCapture) == "" ||
-				strings.TrimSpace(saml.OutputCapture) == "" || strings.TrimSpace(saml.Destination) == "" ||
-				strings.TrimSpace(saml.IDPURI) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
-				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.SPCertificate) == ""
+			inputBinding := saml.InputBinding
+			if inputBinding == "" {
+				inputBinding = "redirect"
+			}
+			outputBinding := saml.OutputBinding
+			if outputBinding == "" {
+				outputBinding = "redirect"
+			}
+			commonMissing := strings.TrimSpace(saml.OutputCapture) == "" ||
+				strings.TrimSpace(saml.Destination) == "" || strings.TrimSpace(saml.IDPURI) == "" ||
+				strings.TrimSpace(saml.IDPEntityID) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
+				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.SPCertificate) == "" ||
+				strings.TrimSpace(saml.ExpectedSPIssuer) == ""
 			switch {
 			case commonMissing:
-				return fmt.Errorf("action %d saml_logout requires redirect_capture, output_capture, destination, "+
-					"idp_uri, idp_certificate, idp_private_key, and sp_certificate", i+1)
+				return fmt.Errorf("action %d saml_logout requires output_capture, destination, idp_uri, "+
+					"idp_entity_id, idp_certificate, idp_private_key, sp_certificate, and expected_sp_issuer", i+1)
+			case inputBinding != "redirect" && inputBinding != "post":
+				return fmt.Errorf("action %d saml_logout input_binding must be redirect or post", i+1)
+			case outputBinding != "redirect" && outputBinding != "post":
+				return fmt.Errorf("action %d saml_logout output_binding must be redirect or post", i+1)
+			case inputBinding == "redirect" && strings.TrimSpace(saml.RedirectCapture) == "":
+				return fmt.Errorf("action %d saml_logout redirect input requires redirect_capture", i+1)
+			case inputBinding == "post" &&
+				(strings.TrimSpace(saml.SAMLMessageCapture) == "" ||
+					strings.TrimSpace(saml.RelayStateInputCapture) == ""):
+				return fmt.Errorf("action %d saml_logout post input requires saml_message_capture and "+
+					"relay_state_input_capture", i+1)
+			case outputBinding == "post" && strings.TrimSpace(saml.RelayStateCapture) == "":
+				return fmt.Errorf("action %d saml_logout post output requires relay_state_capture", i+1)
 			case saml.Kind == "request" &&
 				(strings.TrimSpace(saml.InputRequestIDCapture) == "" ||
 					strings.TrimSpace(saml.OutputRequestIDCapture) == "" || strings.TrimSpace(saml.NameID) == ""):

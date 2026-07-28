@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -58,6 +59,9 @@ const schema = `
       "type": "string"
     },
     "idp_uri": {
+      "type": "string"
+    },
+    "idp_entity_id": {
       "type": "string"
     },
     "idp_cert": {
@@ -118,6 +122,7 @@ const schema = `
 type Config struct {
 	SPIssuer                  string   `json:"sp_issuer"`
 	IDPURI                    string   `json:"idp_uri"`
+	IDPEntityID               string   `json:"idp_entity_id,omitempty"`
 	IDPCert                   string   `json:"idp_cert"`
 	LoginCallbackURI          string   `json:"login_callback_uri"`
 	LogoutURI                 string   `json:"logout_uri"`
@@ -169,6 +174,13 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() any {
 	return &p.config
+}
+
+func (c Config) idpEntityID() string {
+	if c.IDPEntityID != "" {
+		return c.IDPEntityID
+	}
+	return c.IDPURI
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -311,12 +323,17 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
 		return
 	}
-	logoutRequest, err := sp.MakeLogoutRequest(p.config.IDPURI, user.NameID)
+	stateID := randomState()
+	logoutRequest, redirectURL, err := signedRedirectLogoutRequest(
+		sp,
+		p.config.IDPURI,
+		user.NameID,
+		stateID,
+	)
 	if err != nil {
 		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
 		return
 	}
-	stateID := randomState()
 	stateCookie, err := p.logoutCookie(stateID, logoutState{
 		RequestID: logoutRequest.ID,
 		ExpiresAt: time.Now().Add(stateLifetime).Unix(),
@@ -326,7 +343,6 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, stateCookie)
-	redirectURL := logoutRequest.Redirect(stateID)
 	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
 }
 
@@ -344,12 +360,29 @@ func (p *Plugin) handleLogoutRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.deleteCookie(w, sessionCookieName(p.sessionFingerprint()))
-	redirectURL, err := sp.MakeRedirectLogoutResponse(logoutRequest.ID, r.FormValue("RelayState"))
+	relayState := r.FormValue("RelayState")
+	if r.URL.Query().Get("SAMLRequest") != "" {
+		_, redirectURL, err := signedRedirectLogoutResponse(
+			sp,
+			p.config.IDPURI,
+			logoutRequest.ID,
+			relayState,
+		)
+		if err != nil {
+			http.Error(w, util.BuildMessageResponse("saml logout failed"), http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+		return
+	}
+	form, err := sp.MakePostLogoutResponse(logoutRequest.ID, relayState)
 	if err != nil {
 		http.Error(w, util.BuildMessageResponse("saml logout failed"), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(form)
 }
 
 func (p *Plugin) handleLogoutResponse(w http.ResponseWriter, r *http.Request) {
@@ -364,13 +397,13 @@ func (p *Plugin) handleLogoutResponse(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
 		return
 	}
-	if err := sp.ValidateLogoutResponseRequest(r); err != nil {
+	response, err := p.validateLogoutResponse(r, sp)
+	if err != nil {
 		logger.Errorf("saml logout response failed: %v", samlAuthenticationDiagnostic(err))
 		http.Error(w, util.BuildMessageResponse("invalid saml logout response"), http.StatusUnauthorized)
 		return
 	}
-	response, err := decodeLogoutResponse(r.URL.String())
-	if err != nil || response.InResponseTo != state.RequestID {
+	if response.InResponseTo != state.RequestID {
 		http.Error(w, util.BuildMessageResponse("invalid saml logout correlation"), http.StatusUnauthorized)
 		return
 	}
@@ -385,9 +418,16 @@ func (p *Plugin) validateLogoutRequest(r *http.Request, sp *saml.ServiceProvider
 	if err != nil {
 		return saml.LogoutRequest{}, err
 	}
-	validatedXML, err := validateSignedSAMLXML(rawXML, p.config.IDPCert)
-	if err != nil {
-		return saml.LogoutRequest{}, err
+	validatedXML := rawXML
+	if r.URL.Query().Get("SAMLRequest") != "" {
+		if err := verifySAMLRedirectSignature(r.URL.RawQuery, "SAMLRequest", p.config.IDPCert); err != nil {
+			return saml.LogoutRequest{}, err
+		}
+	} else {
+		validatedXML, err = validateSignedSAMLXML(rawXML, p.config.IDPCert)
+		if err != nil {
+			return saml.LogoutRequest{}, err
+		}
 	}
 	var request saml.LogoutRequest
 	if err := xml.Unmarshal(validatedXML, &request); err != nil {
@@ -398,8 +438,8 @@ func (p *Plugin) validateLogoutRequest(r *http.Request, sp *saml.ServiceProvider
 		return saml.LogoutRequest{}, errors.New("logout request has invalid ID or version")
 	case request.Destination != sp.SloURL.String():
 		return saml.LogoutRequest{}, fmt.Errorf("logout request Destination does not match %q", sp.SloURL.String())
-	case request.Issuer == nil || request.Issuer.Value != p.config.IDPURI:
-		return saml.LogoutRequest{}, fmt.Errorf("logout request issuer does not match %q", p.config.IDPURI)
+	case request.Issuer == nil || request.Issuer.Value != p.config.idpEntityID():
+		return saml.LogoutRequest{}, fmt.Errorf("logout request issuer does not match %q", p.config.idpEntityID())
 	case request.IssueInstant.Add(saml.MaxIssueDelay).Before(time.Now()):
 		return saml.LogoutRequest{}, errors.New("logout request has expired")
 	case request.IssueInstant.After(time.Now().Add(saml.MaxClockSkew)):
@@ -408,6 +448,46 @@ func (p *Plugin) validateLogoutRequest(r *http.Request, sp *saml.ServiceProvider
 		return saml.LogoutRequest{}, errors.New("logout request NotOnOrAfter has expired")
 	}
 	return request, nil
+}
+
+func (p *Plugin) validateLogoutResponse(
+	r *http.Request,
+	sp *saml.ServiceProvider,
+) (saml.LogoutResponse, error) {
+	rawXML, err := decodeSAMLMessage(r, "SAMLResponse")
+	if err != nil {
+		return saml.LogoutResponse{}, err
+	}
+	validatedXML := rawXML
+	if r.URL.Query().Get("SAMLResponse") != "" {
+		if err := verifySAMLRedirectSignature(r.URL.RawQuery, "SAMLResponse", p.config.IDPCert); err != nil {
+			return saml.LogoutResponse{}, err
+		}
+	} else {
+		validatedXML, err = validateSignedSAMLXML(rawXML, p.config.IDPCert)
+		if err != nil {
+			return saml.LogoutResponse{}, err
+		}
+	}
+	var response saml.LogoutResponse
+	if err := xml.Unmarshal(validatedXML, &response); err != nil {
+		return saml.LogoutResponse{}, fmt.Errorf("decode logout response: %w", err)
+	}
+	switch {
+	case response.ID == "" || response.Version != "2.0":
+		return saml.LogoutResponse{}, errors.New("logout response has invalid ID or version")
+	case response.Destination != sp.SloURL.String():
+		return saml.LogoutResponse{}, fmt.Errorf("logout response Destination does not match %q", sp.SloURL.String())
+	case response.Issuer == nil || response.Issuer.Value != p.config.idpEntityID():
+		return saml.LogoutResponse{}, fmt.Errorf("logout response issuer does not match %q", p.config.idpEntityID())
+	case response.IssueInstant.Add(saml.MaxIssueDelay).Before(time.Now()):
+		return saml.LogoutResponse{}, errors.New("logout response has expired")
+	case response.IssueInstant.After(time.Now().Add(saml.MaxClockSkew)):
+		return saml.LogoutResponse{}, errors.New("logout response IssueInstant is in the future")
+	case response.Status.StatusCode.Value != saml.StatusSuccess:
+		return saml.LogoutResponse{}, errors.New("logout response status is not success")
+	}
+	return response, nil
 }
 
 func (p *Plugin) serviceProvider(r *http.Request) (*saml.ServiceProvider, error) {
@@ -425,7 +505,7 @@ func (p *Plugin) serviceProvider(r *http.Request) (*saml.ServiceProvider, error)
 	}
 
 	idpMetadata := &saml.EntityDescriptor{
-		EntityID: p.config.IDPURI,
+		EntityID: p.config.idpEntityID(),
 		IDPSSODescriptors: []saml.IDPSSODescriptor{
 			{
 				SSODescriptor: saml.SSODescriptor{
@@ -774,6 +854,176 @@ func decodeLogoutResponse(rawURL string) (saml.LogoutResponse, error) {
 		return saml.LogoutResponse{}, fmt.Errorf("decode logout response: %w", err)
 	}
 	return response, nil
+}
+
+func signedRedirectLogoutRequest(
+	sp *saml.ServiceProvider,
+	destination string,
+	nameID string,
+	relayState string,
+) (*saml.LogoutRequest, *url.URL, error) {
+	unsignedSP := *sp
+	unsignedSP.SignatureMethod = ""
+	request, err := unsignedSP.MakeLogoutRequest(destination, nameID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rawXML, err := request.Bytes()
+	if err != nil {
+		return nil, nil, err
+	}
+	redirect, err := signedSAMLRedirectURL(destination, "SAMLRequest", rawXML, relayState, sp.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return request, redirect, nil
+}
+
+func signedRedirectLogoutResponse(
+	sp *saml.ServiceProvider,
+	destination string,
+	requestID string,
+	relayState string,
+) (*saml.LogoutResponse, *url.URL, error) {
+	unsignedSP := *sp
+	unsignedSP.SignatureMethod = ""
+	response, err := unsignedSP.MakeLogoutResponse(destination, requestID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rawXML, err := samlElementBytes(response.Element())
+	if err != nil {
+		return nil, nil, err
+	}
+	redirect, err := signedSAMLRedirectURL(destination, "SAMLResponse", rawXML, relayState, sp.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return response, redirect, nil
+}
+
+func signedSAMLRedirectURL(
+	destination string,
+	field string,
+	rawXML []byte,
+	relayState string,
+	signer crypto.Signer,
+) (*url.URL, error) {
+	if signer == nil {
+		return nil, errors.New("SAML Redirect signer is required")
+	}
+	var compressed bytes.Buffer
+	writer, err := flate.NewWriter(&compressed, 9)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := writer.Write(rawXML); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+
+	signedQuery := field + "=" + url.QueryEscape(base64.StdEncoding.EncodeToString(compressed.Bytes()))
+	if relayState != "" {
+		signedQuery += "&RelayState=" + url.QueryEscape(relayState)
+	}
+	signedQuery += "&SigAlg=" + url.QueryEscape(rsaSHA256Method)
+	digest := sha256.Sum256([]byte(signedQuery))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		return nil, err
+	}
+	redirect, err := url.Parse(destination)
+	if err != nil {
+		return nil, err
+	}
+	redirect.RawQuery = signedQuery + "&Signature=" +
+		url.QueryEscape(base64.StdEncoding.EncodeToString(signature))
+	return redirect, nil
+}
+
+func verifySAMLRedirectSignature(rawQuery string, field string, certificatePEM string) error {
+	parameters, err := rawRedirectParameters(rawQuery)
+	if err != nil {
+		return err
+	}
+	message, ok := parameters[field]
+	if !ok {
+		return fmt.Errorf("%s is required", field)
+	}
+	sigAlg, ok := parameters["SigAlg"]
+	if !ok {
+		return errors.New("SigAlg is required")
+	}
+	signatureValue, ok := parameters["Signature"]
+	if !ok {
+		return errors.New("signature is required")
+	}
+	decodedSigAlg, err := url.QueryUnescape(sigAlg)
+	if err != nil || decodedSigAlg != rsaSHA256Method {
+		return errors.New("SAML Redirect SigAlg must be rsa-sha256")
+	}
+
+	signedQuery := field + "=" + message
+	if relayState, present := parameters["RelayState"]; present {
+		signedQuery += "&RelayState=" + relayState
+	}
+	signedQuery += "&SigAlg=" + sigAlg
+	decodedSignature, err := url.QueryUnescape(signatureValue)
+	if err != nil {
+		return fmt.Errorf("decode Redirect signature escaping: %w", err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(decodedSignature)
+	if err != nil {
+		return fmt.Errorf("decode Redirect signature: %w", err)
+	}
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SAML signing certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SAML signing certificate: %w", err)
+	}
+	publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return errors.New("SAML signing certificate does not contain an RSA public key")
+	}
+	digest := sha256.Sum256([]byte(signedQuery))
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		return fmt.Errorf("verify Redirect signature: %w", err)
+	}
+	return nil
+}
+
+func rawRedirectParameters(rawQuery string) (map[string]string, error) {
+	parameters := make(map[string]string)
+	for field := range strings.SplitSeq(rawQuery, "&") {
+		name, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		decodedName, err := url.QueryUnescape(name)
+		if err != nil {
+			return nil, fmt.Errorf("decode Redirect parameter name: %w", err)
+		}
+		switch decodedName {
+		case "SAMLRequest", "SAMLResponse", "RelayState", "SigAlg", "Signature":
+			if _, duplicate := parameters[decodedName]; duplicate {
+				return nil, fmt.Errorf("redirect parameter %s is duplicated", decodedName)
+			}
+			parameters[decodedName] = value
+		}
+	}
+	return parameters, nil
+}
+
+func samlElementBytes(element *etree.Element) ([]byte, error) {
+	document := etree.NewDocument()
+	document.SetRoot(element)
+	return document.WriteToBytes()
 }
 
 func decodeSAMLMessage(r *http.Request, field string) ([]byte, error) {

@@ -70,7 +70,7 @@ var pluginFields = map[string][]string{
 	"openwhisk":            {"service_token"},
 	"clickhouse-logger":    {"password"},
 	"csrf":                 {"key"},
-	"elasticsearch-logger": {"auth.password"},
+	"elasticsearch-logger": {"auth.password", "headers.Authorization"},
 	"error-log-logger":     {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
 	"google-cloud-logging": {"auth_config.private_key"},
 	"lago":                 {"token"},

@@ -138,6 +138,34 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 	}
 }
 
+func TestEncryptPluginConfigsEncryptsElasticsearchAuthorizationHeaderAtRest(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"elasticsearch-logger": map[string]any{
+			"headers": map[string]any{
+				"Authorization": "Basic ZWxhc3RpYzoxMjM0NTY=",
+				"X-Cluster":     "logs",
+			},
+		},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	headers := configs["elasticsearch-logger"].(map[string]any)["headers"].(map[string]any)
+	if headers["Authorization"] == "Basic ZWxhc3RpYzoxMjM0NTY=" {
+		t.Fatal("elasticsearch-logger.headers.Authorization remained plaintext")
+	}
+	if headers["X-Cluster"] != "logs" {
+		t.Fatalf("elasticsearch-logger.headers.X-Cluster = %v, want unchanged", headers["X-Cluster"])
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if headers["Authorization"] != "Basic ZWxhc3RpYzoxMjM0NTY=" {
+		t.Fatalf("runtime Authorization = %v, want plaintext", headers["Authorization"])
+	}
+}
+
 func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

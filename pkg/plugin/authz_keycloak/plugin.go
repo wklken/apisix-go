@@ -32,6 +32,7 @@ type Plugin struct {
 	discovery           discoveryData
 	discoveryExpiresAt  time.Time
 	serviceAccountToken tokenCache
+	tlsTrustIdentity    string
 }
 
 const (
@@ -166,6 +167,24 @@ const schema = `
         {"required": ["discovery"]},
         {"required": ["token_endpoint"]}
       ]
+    },
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "lazy_load_paths": {"enum": [false]}
+          }
+        },
+        {
+          "properties": {
+            "lazy_load_paths": {"enum": [true]}
+          },
+          "anyOf": [
+            {"required": ["discovery"]},
+            {"required": ["resource_registration_endpoint"]}
+          ]
+        }
+      ]
     }
   ]
 }
@@ -251,6 +270,12 @@ func (p *Plugin) PostInit() error {
 	}
 	p.config.ClientSecret = resolvedClientSecret
 
+	transport, trustIdentity, err := p.transport()
+	if err != nil {
+		return err
+	}
+	p.tlsTrustIdentity = trustIdentity
+
 	configUID := shared.NewConfigUID()
 	configUID.Add(p.config.Discovery)
 	configUID.Add(p.config.TokenEndpoint)
@@ -261,13 +286,10 @@ func (p *Plugin) PostInit() error {
 	configUID.Add(*p.config.Keepalive)
 	configUID.Add(p.config.KeepaliveTimeout)
 	configUID.Add(p.config.KeepalivePool)
+	configUID.Add(p.tlsTrustIdentity)
 
 	client := resty.New()
 	client.SetTimeout(time.Duration(p.config.Timeout) * time.Millisecond)
-	transport, err := p.transport()
-	if err != nil {
-		return err
-	}
 	client.SetTransport(transport)
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
@@ -348,30 +370,31 @@ func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
 }
 
-func (p *Plugin) transport() (*http.Transport, error) {
+func (p *Plugin) transport() (*http.Transport, string, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableKeepAlives = !*p.config.Keepalive
 	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
 	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: !p.sslVerify()}
 	if !p.sslVerify() {
-		return transport, nil
+		return transport, "insecure", nil
 	}
 	caFile := os.Getenv("SSL_CERT_FILE")
 	if caFile == "" {
-		return transport, nil
+		return transport, "verified:system", nil
 	}
 	certificate, err := os.ReadFile(caFile)
 	if err != nil {
-		return nil, fmt.Errorf("read authz-keycloak trusted certificate file: %w", err)
+		return nil, "", fmt.Errorf("read authz-keycloak trusted certificate file: %w", err)
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(certificate) {
-		return nil, fmt.Errorf("parse authz-keycloak trusted certificate file %q", caFile)
+		return nil, "", fmt.Errorf("parse authz-keycloak trusted certificate file %q", caFile)
 	}
 	transport.TLSClientConfig.RootCAs = roots
+	trustHash := sha256.Sum256(certificate)
 
-	return transport, nil
+	return transport, fmt.Sprintf("verified:file:%x", trustHash), nil
 }
 
 func (p *Plugin) evaluatePermissions(r *http.Request, token string) (int, string, map[string]string) {
@@ -578,7 +601,7 @@ func validTokenCache(cache tokenCache, now time.Time) bool {
 
 func (p *Plugin) serviceAccountCacheKey(endpoint string) string {
 	identity := fmt.Sprintf(
-		"%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d",
+		"%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%s",
 		endpoint,
 		p.config.ClientID,
 		p.config.ClientSecret,
@@ -587,6 +610,7 @@ func (p *Plugin) serviceAccountCacheKey(endpoint string) string {
 		p.config.AccessTokenExpiresLeeway,
 		p.config.RefreshTokenExpiresIn,
 		p.config.RefreshTokenExpiresLeeway,
+		p.tlsTrustIdentity,
 	)
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 }
@@ -647,7 +671,8 @@ func (p *Plugin) discover() (discoveryData, error) {
 	if p.config.Discovery == "" {
 		return discoveryData{}, errors.New("discovery endpoint is not configured")
 	}
-	if discovery, ok := loadSharedDiscovery(p.config.Discovery, now); ok {
+	cacheKey := p.discoveryCacheKey()
+	if discovery, ok := loadSharedDiscovery(cacheKey, now); ok {
 		p.mu.Lock()
 		p.discovery = discovery
 		p.discoveryExpiresAt = now.Add(time.Duration(p.config.CacheTTLSeconds) * time.Second)
@@ -682,9 +707,14 @@ func (p *Plugin) discover() (discoveryData, error) {
 	p.discovery = discovery
 	p.discoveryExpiresAt = now.Add(time.Duration(p.config.CacheTTLSeconds) * time.Second)
 	p.mu.Unlock()
-	storeSharedDiscovery(p.config.Discovery, discovery, p.config.CacheTTLSeconds, now)
+	storeSharedDiscovery(cacheKey, discovery, p.config.CacheTTLSeconds, now)
 
 	return discovery, nil
+}
+
+func (p *Plugin) discoveryCacheKey() string {
+	identity := p.config.Discovery + "\x00" + p.tlsTrustIdentity
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 }
 
 func resolveDiscoveredEndpoint(discoveryEndpoint string, endpoint string) (string, error) {

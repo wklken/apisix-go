@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -55,6 +56,9 @@ func newSyslogTransport(config Config) (*syslogTransport, error) {
 	}, nil
 }
 
+// Log returns len(message) when the transport owns the message. If a failed
+// flush has not written any part of the new message, Log rolls it back and
+// returns zero so the caller can retry it without duplication.
 func (t *syslogTransport) Log(message []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -69,11 +73,17 @@ func (t *syslogTransport) Log(message []byte) (int, error) {
 		t.buffer = append(t.buffer, message...)
 		return len(message), nil
 	case total <= t.config.DropLimit:
+		previousBuffered := len(t.buffer)
 		t.buffer = append(t.buffer, message...)
-		return len(message), t.flushLocked()
+		written, err := t.flushLocked()
+		if err != nil && written <= previousBuffered {
+			t.buffer = t.buffer[:len(t.buffer)-len(message)]
+			return 0, err
+		}
+		return len(message), err
 	default:
 		buffered := len(t.buffer)
-		err := t.flushLocked()
+		_, err := t.flushLocked()
 		t.dropped++
 		logger.Warn(fmt.Sprintf(
 			"syslog buffer is full, dropping %d-byte message: buffered [%d], drop_limit [%d]",
@@ -92,7 +102,8 @@ func (t *syslogTransport) Flush() error {
 	if t.closed {
 		return nil
 	}
-	return t.flushLocked()
+	_, err := t.flushLocked()
+	return err
 }
 
 func (t *syslogTransport) Stats() transportStats {
@@ -111,7 +122,7 @@ func (t *syslogTransport) Close() {
 	if t.closed {
 		return
 	}
-	if err := t.flushLocked(); err != nil {
+	if _, err := t.flushLocked(); err != nil {
 		logger.Errorf("failed to flush syslog transport during shutdown: %s", err)
 	}
 	t.closed = true
@@ -125,19 +136,25 @@ func (t *syslogTransport) Close() {
 	}
 }
 
-func (t *syslogTransport) flushLocked() error {
+func (t *syslogTransport) flushLocked() (int, error) {
 	if len(t.buffer) == 0 {
-		return nil
+		return 0, nil
 	}
-	payload := append([]byte(nil), t.buffer...)
-	t.buffer = t.buffer[:0]
-	return t.write(payload)
+	written, err := t.write(t.buffer)
+	if written > 0 {
+		copy(t.buffer, t.buffer[written:])
+		t.buffer = t.buffer[:len(t.buffer)-written]
+	}
+	return written, err
 }
 
-func (t *syslogTransport) write(payload []byte) error {
+// write returns the payload prefix acknowledged by net.Conn.Write. A positive
+// byte count is authoritative even when the same call also returns an error, so
+// the caller can retain only the unwritten suffix without duplicating bytes.
+func (t *syslogTransport) write(payload []byte) (int, error) {
 	connection, err := t.connection()
 	if err != nil {
-		return fmt.Errorf(
+		return 0, fmt.Errorf(
 			"failed to connect to syslog server: host[%s] port[%d]: %w",
 			t.config.Host,
 			t.config.Port,
@@ -148,23 +165,32 @@ func (t *syslogTransport) write(payload []byte) error {
 	deadline := time.Now().Add(time.Duration(t.config.Timeout) * time.Millisecond)
 	if err = connection.SetWriteDeadline(deadline); err != nil {
 		_ = connection.Close()
-		return fmt.Errorf("failed to set syslog write deadline: %w", err)
+		return 0, fmt.Errorf("failed to set syslog write deadline: %w", err)
 	}
+	totalWritten := 0
 	for len(payload) > 0 {
-		var written int
-		written, err = connection.Write(payload)
-		if err != nil {
+		written, writeErr := connection.Write(payload)
+		if written < 0 || written > len(payload) {
 			_ = connection.Close()
-			return fmt.Errorf("failed to send log message: %s in syslog", err)
+			return totalWritten, fmt.Errorf("failed to send log message: %w in syslog", io.ErrShortWrite)
 		}
+		totalWritten += written
 		payload = payload[written:]
+		if writeErr != nil {
+			_ = connection.Close()
+			return totalWritten, fmt.Errorf("failed to send log message: %w in syslog", writeErr)
+		}
+		if written == 0 {
+			_ = connection.Close()
+			return totalWritten, fmt.Errorf("failed to send log message: %w in syslog", io.ErrNoProgress)
+		}
 	}
 	if err = connection.SetWriteDeadline(time.Time{}); err != nil {
 		_ = connection.Close()
-		return fmt.Errorf("failed to clear syslog write deadline: %w", err)
+		return totalWritten, fmt.Errorf("failed to clear syslog write deadline: %w", err)
 	}
 	t.release(connection)
-	return nil
+	return totalWritten, nil
 }
 
 func (t *syslogTransport) connection() (net.Conn, error) {

@@ -660,6 +660,12 @@ func (p *Plugin) sendBody(body []byte) error {
 	if p.transport == nil {
 		return errors.New("syslog transport is not initialized")
 	}
-	_, err := p.transport.Log(body)
+	accepted, err := p.transport.Log(body)
+	if accepted == len(body) {
+		if err != nil {
+			logger.Errorf("failed to flush accepted syslog message: %s", err)
+		}
+		return nil
+	}
 	return err
 }

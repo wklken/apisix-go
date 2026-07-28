@@ -257,6 +257,9 @@ func TestStopIsBoundedWhenSyslogSinkStopsReading(t *testing.T) {
 		<-stopped
 		t.Fatal("Plugin.Stop() blocked after configured write timeout")
 	}
+	if stats := p.transport.Stats(); stats.Buffered == 0 {
+		t.Fatal("Plugin.Stop() discarded the unsent socket-buffer suffix")
+	}
 }
 
 func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {

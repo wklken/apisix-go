@@ -260,6 +260,101 @@ func TestEmbeddedWildcardWinsOverCatchAllSibling(t *testing.T) {
 	}
 }
 
+func TestWildcardDispatcherKeepsMethodScopesSeparate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		allPattern string
+		getPattern string
+		assertions []struct {
+			method string
+			path   string
+			want   int
+		}
+	}{
+		{
+			name:       "all-method embedded with GET catch-all",
+			allPattern: "/articles/*/comments",
+			getPattern: "/articles/*",
+			assertions: []struct {
+				method string
+				path   string
+				want   int
+			}{
+				{method: http.MethodGet, path: "/articles/123/comments", want: http.StatusAccepted},
+				{method: http.MethodPost, path: "/articles/123/comments", want: http.StatusAccepted},
+				{method: http.MethodGet, path: "/articles/123/likes", want: http.StatusCreated},
+				{method: http.MethodPost, path: "/articles/123/likes", want: http.StatusMethodNotAllowed},
+			},
+		},
+		{
+			name:       "all-method catch-all with GET embedded",
+			allPattern: "/articles/*",
+			getPattern: "/articles/*/comments",
+			assertions: []struct {
+				method string
+				path   string
+				want   int
+			}{
+				{method: http.MethodGet, path: "/articles/123/comments", want: http.StatusCreated},
+				{method: http.MethodPost, path: "/articles/123/comments", want: http.StatusAccepted},
+				{method: http.MethodGet, path: "/articles/123/likes", want: http.StatusAccepted},
+				{method: http.MethodPost, path: "/articles/123/likes", want: http.StatusAccepted},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for _, allFirst := range []bool{true, false} {
+				order := "GET-first"
+				if allFirst {
+					order = "all-method-first"
+				}
+				t.Run(order, func(t *testing.T) {
+					t.Parallel()
+
+					router := chi.NewRouter()
+					register := func(methods []string, pattern string, status int) {
+						t.Helper()
+						handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+							writer.WriteHeader(status)
+						})
+						if err := registerRoute(router, methods, pattern, handler); err != nil {
+							t.Fatalf("register %s: %v", pattern, err)
+						}
+					}
+					if allFirst {
+						register(nil, test.allPattern, http.StatusAccepted)
+						register([]string{http.MethodGet}, test.getPattern, http.StatusCreated)
+					} else {
+						register([]string{http.MethodGet}, test.getPattern, http.StatusCreated)
+						register(nil, test.allPattern, http.StatusAccepted)
+					}
+
+					for _, assertion := range test.assertions {
+						response := httptest.NewRecorder()
+						router.ServeHTTP(
+							response,
+							httptest.NewRequest(assertion.method, assertion.path, nil),
+						)
+						if response.Code != assertion.want {
+							t.Fatalf(
+								"%s %s status = %d, want %d",
+								assertion.method,
+								assertion.path,
+								response.Code,
+								assertion.want,
+							)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 	t.Parallel()
 

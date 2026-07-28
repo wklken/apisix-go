@@ -15,7 +15,11 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/store"
 )
 
 type Plugin struct {
@@ -26,7 +30,7 @@ type Plugin struct {
 }
 
 const (
-	priority = 1050
+	priority = 1031
 	name     = "ai-aws-content-moderation"
 )
 
@@ -76,6 +80,15 @@ const schema = `
       "minimum": 0,
       "maximum": 1,
       "default": 0.5
+    },
+    "deny_code": {
+      "type": "integer",
+      "default": 200
+    },
+    "fail_mode": {
+      "type": "string",
+      "enum": ["skip", "warn", "error"],
+      "default": "skip"
     }
   },
   "required": ["comprehend"]
@@ -86,6 +99,8 @@ type Config struct {
 	Comprehend           Comprehend         `json:"comprehend"`
 	ModerationCategories map[string]float64 `json:"moderation_categories,omitempty"`
 	ModerationThreshold  *float64           `json:"moderation_threshold,omitempty"`
+	DenyCode             *int               `json:"deny_code,omitempty"`
+	FailMode             string             `json:"fail_mode,omitempty"`
 }
 
 type Comprehend struct {
@@ -132,6 +147,27 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.FailMode == "" {
+		p.config.FailMode = "skip"
+	}
+	if p.config.FailMode != "skip" && p.config.FailMode != "warn" && p.config.FailMode != "error" {
+		return fmt.Errorf("invalid fail_mode: %s", p.config.FailMode)
+	}
+	var err error
+	p.config.Comprehend.AccessKeyID, err = store.ResolveSecretReference(p.config.Comprehend.AccessKeyID)
+	if err != nil {
+		return fmt.Errorf("resolve comprehend access_key_id: %w", err)
+	}
+	p.config.Comprehend.SecretAccessKey, err = store.ResolveSecretReference(p.config.Comprehend.SecretAccessKey)
+	if err != nil {
+		return fmt.Errorf("resolve comprehend secret_access_key: %w", err)
+	}
+	if p.config.Comprehend.SessionToken != "" {
+		p.config.Comprehend.SessionToken, err = store.ResolveSecretReference(p.config.Comprehend.SessionToken)
+		if err != nil {
+			return fmt.Errorf("resolve comprehend session_token: %w", err)
+		}
+	}
 	if p.config.Comprehend.SSLVerify == nil {
 		sslVerify := true
 		p.config.Comprehend.SSLVerify = &sslVerify
@@ -139,6 +175,10 @@ func (p *Plugin) PostInit() error {
 	if p.config.ModerationThreshold == nil {
 		threshold := 0.5
 		p.config.ModerationThreshold = &threshold
+	}
+	if p.config.DenyCode == nil {
+		denyCode := http.StatusOK
+		p.config.DenyCode = &denyCode
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -152,28 +192,45 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		if _, ok := ai_runtime.SelectedInstanceName(r); !ok {
+			p.handleMissingAIInstance(w, r, next)
+			return
+		}
+
+		body, err := base.ReadRequestBody(r)
 		if err != nil {
 			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := r.Body.Close(); err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(body)), nil
-		}
-
 		if len(body) == 0 {
 			base.WriteJSONMessage(w, http.StatusBadRequest, "missing request body")
 			return
 		}
 
-		code, message := p.checkContent(r, string(body))
-		if code != 0 {
-			base.WriteJSONMessage(w, code, message)
+		var requestBody map[string]any
+		if err := json.Unmarshal(body, &requestBody); err != nil {
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		protocol, err := ai_protocols.Detect(r.URL.Path, requestBody)
+		if err != nil || protocol == ai_protocols.Passthrough {
+			base.WriteJSONMessage(w, http.StatusBadRequest, "unsupported AI request protocol")
+			return
+		}
+		content := strings.Join(ai_protocols.ExtractRequestContent(protocol, requestBody), " ")
+		if content == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		reason, err := p.checkContent(r, content)
+		if err != nil {
+			logger.Error(err.Error())
+			writeText(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if reason != "" {
+			p.writeDenyResponse(w, protocol, requestBody, reason)
 			return
 		}
 
@@ -182,28 +239,77 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) checkContent(r *http.Request, body string) (int, string) {
+func (p *Plugin) handleMissingAIInstance(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	const reason = "no ai instance picked"
+	if p.config.FailMode == "error" {
+		writeText(
+			w,
+			http.StatusInternalServerError,
+			reason+", ai-aws-content-moderation plugin must be used with "+
+				"ai-proxy or ai-proxy-multi plugin",
+		)
+		return
+	}
+	message := name + " skipped: " + reason
+	if p.config.FailMode == "warn" {
+		logger.Warn(message)
+	} else {
+		logger.Info(message)
+	}
+	next.ServeHTTP(w, r)
+}
+
+func (p *Plugin) writeDenyResponse(
+	w http.ResponseWriter,
+	protocol ai_protocols.Protocol,
+	requestBody map[string]any,
+	reason string,
+) {
+	model, _ := requestBody["model"].(string)
+	body, contentType, err := ai_protocols.BuildDenyWireResponse(
+		protocol,
+		model,
+		reason,
+		ai_protocols.IsStreaming(protocol, requestBody),
+	)
+	if err != nil {
+		logger.Error(err.Error())
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(*p.config.DenyCode)
+	_, _ = w.Write(body)
+}
+
+func writeText(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, message)
+}
+
+func (p *Plugin) checkContent(r *http.Request, body string) (string, error) {
 	result, err := p.detectToxicContent(r, body)
 	if err != nil {
-		return http.StatusInternalServerError, err.Error()
+		return "", err
 	}
 	if len(result.ResultList) == 0 {
-		return http.StatusInternalServerError, "failed to get moderation results from response"
+		return "", fmt.Errorf("failed to get moderation results from response")
 	}
 
 	for _, item := range result.ResultList {
 		for _, label := range item.Labels {
 			threshold, ok := p.config.ModerationCategories[label.Name]
 			if ok && label.Score > threshold {
-				return http.StatusBadRequest, "request body exceeds " + label.Name + " threshold"
+				return "request body exceeds " + label.Name + " threshold", nil
 			}
 		}
 		if item.Toxicity > *p.config.ModerationThreshold {
-			return http.StatusBadRequest, "request body exceeds toxicity threshold"
+			return "request body exceeds toxicity threshold", nil
 		}
 	}
 
-	return 0, ""
+	return "", nil
 }
 
 func (p *Plugin) detectToxicContent(r *http.Request, body string) (comprehendResponse, error) {

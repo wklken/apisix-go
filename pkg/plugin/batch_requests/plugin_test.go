@@ -216,8 +216,42 @@ func TestHandlerAllowsUnknownTopLevelFields(t *testing.T) {
 	}
 }
 
-func TestDynamicHandlerRejectsInvalidInitialMetadata(t *testing.T) {
-	handler := newDynamicHandler(http.NewServeMux(), func() (Limits, error) {
+func TestHandlerDistinguishesMissingPipelineFromEmptyPipeline(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
+
+	missing := httptest.NewRecorder()
+	handler.ServeHTTP(
+		missing,
+		httptest.NewRequest(
+			http.MethodPost,
+			DefaultURI,
+			strings.NewReader(`{"pipeline1":[{"path":"/inner"}]}`),
+		),
+	)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing pipeline response code = %d, want 400; body=%q",
+			missing.Code, missing.Body.String())
+	}
+	if !strings.Contains(missing.Body.String(), "pipeline is required") {
+		t.Fatalf("missing pipeline body = %q, want required reason", missing.Body.String())
+	}
+
+	empty := httptest.NewRecorder()
+	handler.ServeHTTP(
+		empty,
+		httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{"pipeline":[]}`)),
+	)
+	if empty.Code != http.StatusBadRequest {
+		t.Fatalf("empty pipeline response code = %d, want 400; body=%q",
+			empty.Code, empty.Body.String())
+	}
+	if !strings.Contains(empty.Body.String(), "at least one request") {
+		t.Fatalf("empty pipeline body = %q, want minItems reason", empty.Body.String())
+	}
+}
+
+func TestMetadataHandlerRejectsInvalidInitialMetadata(t *testing.T) {
+	handler := newMetadataHandler(http.NewServeMux(), func() (Limits, error) {
 		return Limits{}, errors.New("max_body_size must be positive")
 	})
 	req := httptest.NewRequest(
@@ -236,36 +270,26 @@ func TestDynamicHandlerRejectsInvalidInitialMetadata(t *testing.T) {
 	}
 }
 
-func TestDynamicHandlerKeepsLastValidMetadata(t *testing.T) {
+func TestMetadataHandlerSeedsBeforeFirstRequest(t *testing.T) {
 	var loads atomic.Int32
-	handler := newDynamicHandler(http.NewServeMux(), func() (Limits, error) {
-		if loads.Add(1) == 1 {
-			return Limits{MaxBodySize: 64, MaxPipelineItems: 2}, nil
-		}
-		return Limits{}, errors.New("max_body_size must be positive")
+	handler := newMetadataHandler(http.NewServeMux(), func() (Limits, error) {
+		loads.Add(1)
+		return Limits{MaxBodySize: defaultMaxBodySize, MaxPipelineItems: defaultMaxPipelineItems}, nil
 	})
-
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(
-		first,
-		httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{"pipeline":[{"path":"/inner"}]}`)),
-	)
-	if first.Code != http.StatusOK {
-		t.Fatalf("first response code = %d, want 200; body=%q", first.Code, first.Body.String())
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("metadata loads after construction = %d, want 1 seed", got)
 	}
 
-	second := httptest.NewRecorder()
+	res := httptest.NewRecorder()
 	handler.ServeHTTP(
-		second,
-		httptest.NewRequest(
-			http.MethodPost,
-			DefaultURI,
-			strings.NewReader(strings.Repeat(" ", 64)+`{"pipeline":[{"path":"/inner"}]}`),
-		),
+		res,
+		httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{"pipeline":[{"path":"/missing"}]}`)),
 	)
-	if second.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("second response code = %d, want 413 from last valid limit; body=%q",
-			second.Code, second.Body.String())
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+	}
+	if got := loads.Load(); got != 2 {
+		t.Fatalf("metadata loads after request = %d, want seed plus request load", got)
 	}
 }
 

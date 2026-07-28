@@ -35,6 +35,8 @@ type Store struct {
 	// store consumer ID -> plugin names registered in consumerReferenceKV
 	consumerToReferences map[string][]string
 	consumerMu           sync.RWMutex
+
+	validatedPluginMetadata *validatedPluginMetadataCache
 }
 
 // should it be global store?
@@ -56,11 +58,12 @@ func NewStore(dbPath string, events chan *Event) *Store {
 			// Initialize other fields for kv storage in memory
 			db: db,
 
-			consumerKV:           map[string][]byte{},
-			consumerToKeys:       map[string][]string{},
-			consumerValues:       map[string]resource.Consumer{},
-			consumerReferenceKV:  map[string]map[string][]byte{},
-			consumerToReferences: map[string][]string{},
+			consumerKV:              map[string][]byte{},
+			consumerToKeys:          map[string][]string{},
+			consumerValues:          map[string]resource.Consumer{},
+			consumerReferenceKV:     map[string]map[string][]byte{},
+			consumerToReferences:    map[string][]string{},
+			validatedPluginMetadata: newValidatedPluginMetadataCache(),
 		}
 
 		s.InitBuckets()

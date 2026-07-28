@@ -96,8 +96,8 @@ cases:
     config: {routes: []}
     steps:
       - name: missing-pipeline
-        input: {method: POST, path: /apisix/batch-requests, body: '{"extension":"no pipeline"}'}
-        output: {status: 400, body: {matches: 'pipeline must contain at least one request'}}
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline1":[{"path":"/b"}]}'}
+        output: {status: 400, body: {matches: 'pipeline is required'}}
       - name: top-level-extension-is-allowed
         input: {method: POST, path: /apisix/batch-requests, body: '{"extension":{"trace":true},"pipeline":[{"path":"/missing"}]}'}
         output: {status: 200, body: {matches: '"status":404'}}
@@ -363,19 +363,16 @@ cases:
           plugin_metadata: [{id: batch-requests, max_body_size: 128}]
           routes: []
         steps:
-          - name: valid-limit-is-active
-            input:
-              method: POST
-              path: /apisix/batch-requests
-              body_repeat: &above_128 {value: " ", count: 128, suffix: '{"pipeline":[{"path":"/missing"}]}'}
-            output: &limited_413 {status: 413, body: {matches: 'request body too large'}}
           - name: install-invalid-limit
             config:
               plugin_metadata: [{id: batch-requests, max_body_size: 0}]
               routes: []
             config_probe:
-              input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
-              output: *limited_413
+              input:
+                method: POST
+                path: /apisix/batch-requests
+                body_repeat: &above_128 {value: " ", count: 128, suffix: '{"pipeline":[{"path":"/missing"}]}'}
+              output: &limited_413 {status: 413, body: {matches: 'request body too large'}}
             input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
             output: *limited_413
             wait: 150ms
@@ -385,6 +382,42 @@ cases:
               status: 413
               body: {matches: 'request body too large'}
               logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
+      - name: invalid-reload-plus-route-change-keeps-store-snapshot
+        runtime: {plugins: [batch-requests, mocking]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 128}]
+          routes:
+            - {id: metadata-generation-one, uri: /generation-one, plugins: {mocking: {response_status: 204, response_example: ready}}}
+        steps:
+          - name: rebuild-router-with-invalid-metadata
+            config:
+              plugin_metadata: [{id: batch-requests, max_body_size: 0}]
+              routes:
+                - {id: metadata-generation-two, uri: /generation-two, plugins: {mocking: {response_status: 204, response_example: ready}}}
+            config_probe:
+              input: {path: /generation-two}
+              output: {status: 204}
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output:
+              status: 413
+              body: {matches: 'request body too large'}
+              logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
+      - name: metadata-deletion-clears-store-snapshot
+        runtime: {plugins: [batch-requests, mocking]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 128}]
+          routes:
+            - {id: metadata-delete-one, uri: /delete-one, plugins: {mocking: {response_status: 204, response_example: ready}}}
+        steps:
+          - name: delete-metadata-and-rebuild-router
+            config:
+              routes:
+                - {id: metadata-delete-two, uri: /delete-two, plugins: {mocking: {response_status: 204, response_example: ready}}}
+            config_probe:
+              input: {path: /delete-two}
+              output: {status: 204}
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output: {status: 200, body: {matches: '"status":404'}}
 
   - name: pipeline-request-body
     source: {file: t/plugin/batch-requests.t, tests: [25]}

@@ -3,6 +3,7 @@ package batch_requests
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
@@ -113,7 +113,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func NewHandler(dispatcher http.Handler) http.Handler {
-	return newDynamicHandler(dispatcher, loadLimits)
+	return newMetadataHandler(dispatcher, loadLimits)
 }
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
@@ -123,29 +123,14 @@ func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	})
 }
 
-func newDynamicHandler(dispatcher http.Handler, loader func() (Limits, error)) http.Handler {
-	var mu sync.Mutex
-	var lastGood Limits
-	hasLastGood := false
-
+func newMetadataHandler(dispatcher http.Handler, loader func() (Limits, error)) http.Handler {
+	// Seed the Store-owned last-good snapshot before the public endpoint serves
+	// its first request. Later router generations repeat this validation against
+	// the same active Store.
+	_, _ = loader()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limits, err := loader()
-
-		mu.Lock()
-		switch {
-		case err == nil:
-			lastGood = limits
-			hasLastGood = true
-		case hasLastGood:
-			limits = lastGood
-		}
-		canServe := err == nil || hasLastGood
-		mu.Unlock()
-
 		if err != nil {
-			logger.Errorf("validate plugin_metadata %s: %s", name, err)
-		}
-		if !canServe {
 			writeJSON(w, http.StatusBadRequest, ErrorResponse{
 				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
 			})
@@ -182,8 +167,12 @@ func handleBatchRequest(
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
 	}
-	if err := validateDecodedRequestTypes(decoded); err != nil {
+	pipelinePresent, err := validateDecodedRequestTypes(decoded)
+	if err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
+	}
+	if !pipelinePresent {
+		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: pipeline is required")
 	}
 
 	var req Request
@@ -210,20 +199,24 @@ func handleBatchRequest(
 	return responses, http.StatusOK, nil
 }
 
-func validateDecodedRequestTypes(decoded any) error {
+func validateDecodedRequestTypes(decoded any) (bool, error) {
 	request, ok := decoded.(map[string]any)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	if timeout, exists := request["timeout"]; exists {
 		number, ok := timeout.(float64)
 		if !ok || number != math.Trunc(number) {
-			return fmt.Errorf(`property "timeout" validation failed: expected integer`)
+			return false, fmt.Errorf(`property "timeout" validation failed: expected integer`)
 		}
 	}
-	pipeline, ok := request["pipeline"].([]any)
+	rawPipeline, present := request["pipeline"]
+	if !present {
+		return false, nil
+	}
+	pipeline, ok := rawPipeline.([]any)
 	if !ok {
-		return nil
+		return true, nil
 	}
 	for i, rawItem := range pipeline {
 		item, ok := rawItem.(map[string]any)
@@ -234,7 +227,7 @@ func validateDecodedRequestTypes(decoded any) error {
 			switch key {
 			case "version", "method", "path", "query", "headers", "body", "ssl_verify":
 			default:
-				return fmt.Errorf(
+				return true, fmt.Errorf(
 					`property "pipeline" validation failed: item %d unknown field %q`,
 					i+1,
 					key,
@@ -243,14 +236,14 @@ func validateDecodedRequestTypes(decoded any) error {
 		}
 		if sslVerify, exists := item["ssl_verify"]; exists {
 			if _, ok := sslVerify.(bool); !ok {
-				return fmt.Errorf(
+				return true, fmt.Errorf(
 					`property "pipeline" validation failed: item %d property "ssl_verify" expected boolean`,
 					i+1,
 				)
 			}
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]byte, error) {
@@ -297,27 +290,24 @@ func applyLimitDefaults(limits Limits) Limits {
 }
 
 func loadLimits() (Limits, error) {
-	var metadata map[string]any
-	if err := safeGetPluginMetadata(name, &metadata); err != nil {
+	var limits Limits
+	usedLastGood, err := store.GetValidatedPluginMetadata(
+		name,
+		func(metadata map[string]any) error {
+			return util.Validate(metadata, metadataSchema)
+		},
+		&limits,
+	)
+	if errors.Is(err, store.ErrNotFound) {
 		return applyLimitDefaults(Limits{}), nil
 	}
-	if err := util.Validate(metadata, metadataSchema); err != nil {
-		return Limits{}, err
-	}
-	var limits Limits
-	if err := util.Parse(metadata, &limits); err != nil {
-		return Limits{}, err
+	if err != nil {
+		logger.Errorf("validate plugin_metadata %s: %s", name, err)
+		if !usedLastGood {
+			return Limits{}, err
+		}
 	}
 	return applyLimitDefaults(limits), nil
-}
-
-func safeGetPluginMetadata(id string, v any) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = store.ErrNotFound
-		}
-	}()
-	return store.GetPluginMetadata(id, v)
 }
 
 func validMethod(method string) bool {

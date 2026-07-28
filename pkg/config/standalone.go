@@ -333,6 +333,29 @@ func normalizeStandaloneResource(bucket string, raw stdjson.RawMessage) (string,
 			}
 		}
 	}
+	if bucket == "plugin_metadata" {
+		keyring, enabled := data_encryption.Keyring()
+		if enabled && data_encryption.HasEncryptedPluginMetadata(id) {
+			encoded, err := stdjson.Marshal(fields)
+			if err != nil {
+				return "", nil, fmt.Errorf("encode plugin metadata: %w", err)
+			}
+			var metadata map[string]any
+			if err := stdjson.Unmarshal(encoded, &metadata); err != nil {
+				return "", nil, fmt.Errorf("decode plugin metadata: %w", err)
+			}
+			if err := data_encryption.EncryptPluginMetadata(id, metadata, keyring); err != nil {
+				return "", nil, fmt.Errorf("encrypt plugin metadata fields: %w", err)
+			}
+			encoded, err = stdjson.Marshal(metadata)
+			if err != nil {
+				return "", nil, fmt.Errorf("encode encrypted plugin metadata: %w", err)
+			}
+			if err := stdjson.Unmarshal(encoded, &fields); err != nil {
+				return "", nil, fmt.Errorf("decode encrypted plugin metadata: %w", err)
+			}
+		}
+	}
 	value, err := stdjson.Marshal(fields)
 	if err != nil {
 		return "", nil, err

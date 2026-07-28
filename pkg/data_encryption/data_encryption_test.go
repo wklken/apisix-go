@@ -99,6 +99,45 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 	}
 }
 
+func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	alreadyEncrypted := encryptForTest(t, key, "already-encrypted")
+	configs := map[string]any{
+		"ai-proxy": map[string]any{"auth": map[string]any{
+			"header": map[string]any{
+				"Authorization": "Bearer secret",
+				"X-Encrypted":   alreadyEncrypted,
+			},
+		}},
+		"feishu-auth": map[string]any{
+			"secret_fallbacks": []any{"old-secret-1", "old-secret-2"},
+		},
+	}
+
+	if err := EncryptPluginConfigs(configs, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginConfigs() error = %v", err)
+	}
+	header := configs["ai-proxy"].(map[string]any)["auth"].(map[string]any)["header"].(map[string]any)
+	if header["Authorization"] == "Bearer secret" {
+		t.Fatal("ai-proxy.auth.header.Authorization remained plaintext")
+	}
+	if header["X-Encrypted"] != alreadyEncrypted {
+		t.Fatal("already encrypted container leaf was encrypted again")
+	}
+	fallbacks := configs["feishu-auth"].(map[string]any)["secret_fallbacks"].([]any)
+	if fallbacks[0] == "old-secret-1" || fallbacks[1] == "old-secret-2" {
+		t.Fatalf("feishu-auth.secret_fallbacks remained plaintext: %#v", fallbacks)
+	}
+
+	DecryptPluginConfigs(configs, []string{key})
+	if header["Authorization"] != "Bearer secret" || header["X-Encrypted"] != "already-encrypted" {
+		t.Fatalf("ai-proxy runtime header = %#v, want plaintext leaves", header)
+	}
+	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
+		t.Fatalf("feishu-auth runtime fallbacks = %#v, want plaintext leaves", fallbacks)
+	}
+}
+
 func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

@@ -192,6 +192,61 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 	}
 }
 
+func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *testing.T) {
+	const key = "qeddd145sfvddff3"
+	data_encryption.Configure(true, []string{key})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+
+	path := filepath.Join(t.TempDir(), "apisix.yaml")
+	content := `plugin_metadata:
+  - id: azure-functions
+    master_apikey: master-plaintext
+    master_clientid: master-client
+#END
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write standalone config: %v", err)
+	}
+
+	events := make(chan *store.Event, 4)
+	storage := store.NewStore(filepath.Join(t.TempDir(), "store.db"), events)
+	storage.Start()
+	t.Cleanup(storage.Stop)
+	if err := NewStandaloneFileWatcher(path, "yaml", events).Reload(); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	storage.Sync()
+
+	raw := storage.GetFromBucket("plugin_metadata", []byte("azure-functions"))
+	if strings.Contains(string(raw), "master-plaintext") {
+		t.Fatalf("stored plugin metadata contains plaintext secret: %s", raw)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode stored plugin metadata: %v", err)
+	}
+	ciphertext, ok := stored["master_apikey"].(string)
+	if !ok {
+		t.Fatalf("stored master_apikey = %T, want ciphertext string", stored["master_apikey"])
+	}
+	if decrypted, err := data_encryption.Decrypt(ciphertext, []string{key}); err != nil ||
+		decrypted != "master-plaintext" {
+		t.Fatalf("Decrypt(master_apikey) = (%q, %v), want master-plaintext", decrypted, err)
+	}
+
+	var runtimeMetadata struct {
+		MasterAPIKey   string `json:"master_apikey"`
+		MasterClientID string `json:"master_clientid"`
+	}
+	if err := store.GetPluginMetadata("azure-functions", &runtimeMetadata); err != nil {
+		t.Fatalf("GetPluginMetadata() error = %v", err)
+	}
+	if runtimeMetadata.MasterAPIKey != "master-plaintext" ||
+		runtimeMetadata.MasterClientID != "master-client" {
+		t.Fatalf("runtime plugin metadata = %#v, want decrypted secret", runtimeMetadata)
+	}
+}
+
 func TestStandaloneFileWatcherDeletesRemovedResources(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := `routes:

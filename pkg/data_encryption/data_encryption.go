@@ -110,6 +110,18 @@ func HasEncryptedPluginMetadata(name string) bool {
 	return len(pluginMetadataFields[name]) != 0
 }
 
+func EncryptPluginMetadata(name string, metadata map[string]any, keyring []string) error {
+	if len(keyring) == 0 {
+		return ErrKeyUnavailable
+	}
+	for _, field := range pluginMetadataFields[name] {
+		if err := encryptField(metadata, field, keyring); err != nil {
+			return fmt.Errorf("%s.%s: %w", name, field, err)
+		}
+	}
+	return nil
+}
+
 func IsStrictPluginField(pluginName string, field string) bool {
 	return slices.Contains(strictPluginFields[pluginName], field)
 }
@@ -156,14 +168,7 @@ func encryptPath(current any, segments []string, keyring []string) error {
 			return nil
 		}
 		if len(segments) == 1 {
-			plaintext, ok := child.(string)
-			if !ok || plaintext == "" {
-				return nil
-			}
-			if _, err := Decrypt(plaintext, keyring); err == nil {
-				return nil
-			}
-			encrypted, err := Encrypt(plaintext, keyring[0])
+			encrypted, err := encryptValue(child, keyring)
 			if err != nil {
 				return err
 			}
@@ -182,6 +187,36 @@ func encryptPath(current any, segments []string, keyring []string) error {
 		}
 	}
 	return nil
+}
+
+func encryptValue(value any, keyring []string) (any, error) {
+	switch typed := value.(type) {
+	case string:
+		if typed == "" {
+			return typed, nil
+		}
+		if _, err := Decrypt(typed, keyring); err == nil {
+			return typed, nil
+		}
+		return Encrypt(typed, keyring[0])
+	case map[string]any:
+		for key, child := range typed {
+			encrypted, err := encryptValue(child, keyring)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = encrypted
+		}
+	case []any:
+		for i, child := range typed {
+			encrypted, err := encryptValue(child, keyring)
+			if err != nil {
+				return nil, err
+			}
+			typed[i] = encrypted
+		}
+	}
+	return value, nil
 }
 
 func DecryptPluginConfigs(configs map[string]any, keyring []string) {

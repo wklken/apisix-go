@@ -16,6 +16,7 @@ import (
 
 	brotli "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -321,6 +322,81 @@ func TestHandlerDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
 	}
 }
 
+func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) {
+	t.Run("completed delivery worker is removed while processor remains usable", func(t *testing.T) {
+		received := make(chan struct{}, 2)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			received <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		t.Cleanup(server.Close)
+
+		p := newTestPlugin(t, Config{URI: server.URL, BatchMaxSize: 1})
+		t.Cleanup(p.BatchProcessor.Stop)
+		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for first delivery")
+		}
+		deadline := time.Now().Add(time.Second)
+		for {
+			stats := p.BatchProcessor.Stats()
+			if stats.Pending == 0 && stats.Processing == 0 && stats.Buffered == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("completed worker state = %+v, want no pending, processing, or buffered entries", stats)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatal("processor was not usable after completed worker cleanup")
+		}
+	})
+
+	t.Run("buffered processor remains in use past stale window", func(t *testing.T) {
+		received := make(chan struct{}, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			received <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		t.Cleanup(server.Close)
+
+		p := newTestPlugin(t, Config{
+			URI:             server.URL,
+			BatchMaxSize:    2,
+			InactiveTimeout: 5,
+		})
+		t.Cleanup(p.BatchProcessor.Stop)
+		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+		time.Sleep(1500 * time.Millisecond)
+		stats := p.BatchProcessor.Stats()
+		if stats.Pending != 1 || stats.Buffered != 1 || stats.Processing != 0 {
+			t.Fatalf("buffered state = %+v, want one pending buffered entry and no delivery worker", stats)
+		}
+
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for preserved two-entry batch")
+		}
+	})
+}
+
 func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -558,6 +634,48 @@ func TestHandlerResolvesNestedLogFormatAndTruncatesAtDepthFive(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for nested http log")
+	}
+}
+
+func TestHandlerResolvesFinalStatusWithoutCapturingResponseBody(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		URI:          server.URL,
+		BatchMaxSize: 1,
+		LogFormat: map[string]any{
+			"response": map[string]any{"status": "$status"},
+		},
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, capturingBody := w.(*base.ResponseRecorder); capturingBody {
+			t.Error("handler received a response-body recorder without a body logging requirement")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, "created")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/status", nil))
+
+	select {
+	case body := <-received:
+		response, ok := body["response"].(map[string]any)
+		if !ok || response["status"] != float64(http.StatusCreated) {
+			t.Fatalf("response = %#v, want final status %d", body["response"], http.StatusCreated)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for status log")
 	}
 }
 

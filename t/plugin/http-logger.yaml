@@ -471,20 +471,6 @@ cases:
       plugin_metadata:
         - {id: http-logger, log_format: {host: $host, labels: $a6_route_labels, client_ip: $remote_addr}}
       routes:
-        - id: format-features
-          name: named-route
-          uri: /format-features
-          plugins:
-            http-logger:
-              uri: '{{FIXTURE.sink.URL}}/logs'
-              batch_max_size: 1
-              include_req_body: true
-              include_req_body_expr: [[arg_log, '==', yes], [request_method, '==', POST]]
-              log_format:
-                source: route
-                route_name: $route_name
-                nested: {method: $request_method, request_body: $request_body}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         - id: route-label-variable
           uri: /route-label-variable
           labels: {key: testvalue}
@@ -505,19 +491,46 @@ cases:
                 - [http_content_type, in, [application/xml, application/json, text/plain, text/xml]]
               log_format: {source: nested-expression}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: plugin-log-format
+          uri: /plugin-log-format
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              concat_method: new_line
+              log_format: {x_ip: $remote_addr}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: nested-log-format
+          uri: /nested-log-format
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              concat_method: json
+              log_format:
+                host: $host
+                client_ip: $remote_addr
+                request:
+                  method: $request_method
+                  uri: $request_uri
+                  headers: {user_agent: $http_user_agent}
+                response: {status: $status}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
       - name: sink
         kind: http
         expect:
-          - {body: {json_equals: '{"nested":{"method":"POST","request_body":"payload"},"route_name":"named-route","source":"route","request":{"body":"payload"}}'}}
-          - {body: {matches: '^\{"client_ip":"[^"]+","host":"example.com","labels":\{"key":"testvalue"\}\}$'}}
           - {body: {json_equals: '{"source":"nested-expression","response":{"body":"ok"}}'}}
+          - {body: {matches: '^\{"client_ip":"[^"]+","host":"example.com","labels":\{"key":"testvalue"\}\}$'}}
+          - {body: {matches: '^\{"x_ip":"[^"]+"\}$'}}
+          - {body: {matches: '^\{"client_ip":"[^"]+","host":"nested.example.com","request":\{"headers":\{"user_agent":"http-logger-nested"\},"method":"GET","uri":"/nested-log-format\?ab=cd"\},"response":\{"status":200\}\}$'}}
         respond: [{status: 200}]
     steps:
-      - {name: route-format-overrides-metadata-and-resolves-nesting, input: {method: POST, path: '/format-features?log=yes', body: payload}, output: {status: 200, body: {equals: ok}}}
-      - {name: custom-route-label-variable-resolves-object, input: {path: /route-label-variable, headers: {Host: example.com}}, output: {status: 200, body: {equals: ok}}}
       - {name: official-nested-in-expression-captures-response, input: {method: POST, path: /nested-expression, headers: {Content-Length: '4', Content-Type: text/plain}, body: tiny}, output: {status: 200, body: {equals: ok}}}
+      - {name: custom-route-label-variable-resolves-object, input: {path: /route-label-variable, headers: {Host: example.com}}, output: {status: 200, body: {equals: ok}}}
+      - {name: plugin-log-format-resolves-remote-address, input: {path: /plugin-log-format}, output: {status: 200, body: {equals: ok}}}
+      - {name: nested-log-format-resolves-final-status, input: {path: '/nested-log-format?ab=cd', headers: {Host: nested.example.com, User-Agent: http-logger-nested}}, output: {status: 200, body: {equals: ok}}}
 
   - name: depth-five-log-format-truncation
     source: {file: t/plugin/http-logger-log-format.t, tests: [21]}
@@ -866,10 +879,10 @@ cases:
         - id: invalid-body-expression
           uri: /invalid-body-expression
           plugins:
-            http-logger: {uri: 'http://127.0.0.1/logs', include_req_body: true, include_req_body_expr: [[arg_log, '<>', yes]]}
+            http-logger: {uri: 'http://127.0.0.1/logs', include_resp_body: true, include_resp_body_expr: [[bar, '<>', foo]]}
           upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
     input: {path: /invalid-body-expression}
-    output: {status: 404, logs: {matches: 'include_req_body_expr|operator|<>'}}
+    output: {status: 404, logs: {matches: 'include_resp_body_expr|operator|<>'}}
 
   - name: response-body-and-file-logger-interaction
     source: {file: t/plugin/http-logger.t, tests: [24, 25, 26, 27, 28, 29]}
@@ -934,41 +947,44 @@ cases:
               - {path: {equals: '{{WORK_DIR}}/global-access.log'}, body: {matches: '"source":"global-file".*"response":\{"body":"hello response"\}|"response":\{"body":"hello response"\}.*"source":"global-file"'}}
               - {path: {equals: '{{WORK_DIR}}/route-access.log'}, body: {matches: '"source":"route-file".*"response":\{"body":"hello response"\}|"response":\{"body":"hello response"\}.*"source":"route-file"'}}
 
-  - name: processor-replacement-and-stale-lifecycle
+  - name: current-stale-and-buffered-processor-lifecycle
     source: {file: t/plugin/http-logger2.t, tests: [1, 2, 3, 4, 5]}
-    config:
-      routes:
-        - id: processor-lifecycle
-          uri: /processor-lifecycle
-          plugins:
-            http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 2, inactive_timeout: 5, log_format: {generation: old}}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-      - name: sink
-        kind: http
-        expect:
-          - {body: {matches: '^\[?\{"generation":"old"\}\]?$'}}
-          - {body: {json_equals: '{"generation":"new"}'}}
-          - {body: {json_equals: '{"generation":"new"}'}}
-        respond: [{status: 200}]
-    steps:
-      - {name: current-processor-retains-buffered-entry, input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
-      - name: replacing-config-flushes-retired-processor
+    variants:
+      - name: current-processor-survives-half-second-and-idle-worker-cleanup
         config:
           routes:
             - id: processor-lifecycle
               uri: /processor-lifecycle
               plugins:
-                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, log_format: {generation: new}}
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, log_format: {generation: current}}
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-            - id: processor-lifecycle-ready
-              uri: /processor-lifecycle-ready
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - name: sink
+            kind: http
+            expect:
+              - {body: {json_equals: '{"generation":"current"}'}}
+              - {body: {json_equals: '{"generation":"current"}'}}
+              - {body: {json_equals: '{"generation":"current"}'}}
+            respond: [{status: 200}, {status: 200}, {status: 200}]
+        steps:
+          - {name: create-and-use-current-processor, input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+          - {name: current-processor-survives-half-second, actions: [{wait: 500ms}], input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+          - {name: idle-delivery-worker-is-cleaned-and-current-processor-remains-usable, actions: [{wait: 1500ms}], input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+      - name: buffered-in-use-processor-survives-stale-window
+        config:
+          routes:
+            - id: buffered-processor-lifecycle
+              uri: /buffered-processor-lifecycle
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 2, inactive_timeout: 5, log_format: {generation: buffered}}
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        config_probe: {input: {path: /processor-lifecycle-ready}, output: {status: 200, body: {equals: ok}}}
-        input: {path: /processor-lifecycle}
-        output: {status: 200, body: {equals: ok}}
-      - {name: replacement-remains-usable-after-retired-processor-stops, input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"generation":"buffered"},{"generation":"buffered"}]'}}], respond: [{status: 200}]}
+        steps:
+          - {name: first-entry-keeps-processor-in-use-past-one-and-a-half-seconds, wait: 1500ms, input: {path: /buffered-processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+          - {name: second-entry-flushes-the-preserved-buffer, input: {path: /buffered-processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
 
   - name: full-request-response-body-route
     source: {file: t/plugin/http-logger2.t, tests: [6, 7]}
@@ -1065,33 +1081,17 @@ cases:
         expect:
           - {body: {json_equals: '{"generation":"first"}'}}
           - {body: {json_equals: '{"generation":"first"}'}}
+          - {body: {json_equals: '{"generation":"first"}'}}
+          - {body: {json_equals: '{"generation":"first"}'}}
         respond:
           - {status: 200, delay: 1s}
           - {status: 200, delay: 1s}
-      - name: secondSink
-        kind: http
-        expect:
-          - {body: {json_equals: '{"generation":"second"}'}}
-          - {body: {json_equals: '{"generation":"second"}'}}
-        respond:
           - {status: 200}
           - {status: 200}
     steps:
       - {name: third-entry-is-dropped-while-two-are-pending, repeat: 3, concurrency: 3, input: {path: /pending-overflow}, output: {status: 200, body: {equals: ok}, logs: {matches: 'max pending entries limit exceeded'}}}
-      - name: replacement-processor-recovers-full-capacity
-        config:
-          plugin_metadata:
-            - {id: http-logger, max_pending_entries: 1, log_format: {generation: second}}
-          routes:
-            - id: pending-overflow
-              uri: /pending-overflow
-              plugins:
-                http-logger: {uri: '{{FIXTURE.secondSink.URL}}/logs', batch_max_size: 1, log_format: {generation: second}}
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-            - id: pending-overflow-ready
-              uri: /pending-overflow-ready
-              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        config_probe: {input: {path: /pending-overflow-ready}, output: {status: 200, body: {equals: ok}}}
+      - name: same-processor-recovers-capacity-after-completed-deliveries
+        actions: [{wait: 2500ms}]
         repeat: 2
         input: {path: /pending-overflow}
         output: {status: 200, body: {equals: ok}}

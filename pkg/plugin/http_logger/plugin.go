@@ -13,6 +13,7 @@ import (
 	"time"
 
 	brotli "github.com/andybalholm/brotli"
+	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -384,11 +385,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
+		status := metrics.Code
 
 		var responseBody string
 		if recorder != nil && recorder.HasBody() &&

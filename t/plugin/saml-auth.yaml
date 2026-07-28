@@ -61,10 +61,12 @@ cases:
                 - status: 200
                   headers: {}
                   body: saml upstream
+      frontend_tls: {sni: localhost}
       steps:
           - name: HTTP-POST binding emits an auto-submit SAML form
             input:
                 method: GET
+                scheme: https
                 path: /probe
             output:
                 status: 200
@@ -73,6 +75,31 @@ cases:
                         matches: text/html; charset=utf-8
                 body:
                     matches: 'SAMLRequest'
+                body_captures:
+                    saml_request: {matches: 'name="SAMLRequest" value="([^"]+)"'}
+                    input_relay_state: {matches: 'name="RelayState" value="([^"]+)"'}
+            actions:
+                - saml_response:
+                    idp_uri: https://idp.example.test/sso
+                    saml_request_capture: saml_request
+                    relay_state_input_capture: input_relay_state
+                    response_capture: saml_response
+                    relay_state_capture: relay_state
+                    idp_certificate: *saml_cert
+                    idp_private_key: *saml_key
+                    name_id: postuser@example.com
+                    user_name: postuser
+          - name: signed HTTP-POST callback establishes a secure session
+            input:
+                method: POST
+                scheme: https
+                path: /login/callback
+                headers: {Content-Type: application/x-www-form-urlencoded}
+                body: 'SAMLResponse={{CAPTURE.saml_response}}&RelayState={{CAPTURE.relay_state}}'
+            output: {status: 302, headers: {Location: {equals: /probe}}}
+          - name: HTTP-POST session reaches upstream
+            input: {method: GET, scheme: https, path: /probe}
+            output: {status: 200, body: {equals: saml upstream}}
 
     - name: saml-auth-post-invalid-callback
       source:

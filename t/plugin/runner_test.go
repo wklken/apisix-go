@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"html"
 	"io"
 	"maps"
 	"math/big"
@@ -2392,6 +2393,23 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 		return errors.New("no captured response values are available")
 	}
 	redirect := captured[action.RedirectCapture]
+	postBinding := false
+	postForm := url.Values{}
+	if redirect == "" && action.RedirectCapture == "" {
+		requestValue := html.UnescapeString(captured[action.SAMLRequestCapture])
+		relayState := captured[action.RelayStateInputCapture]
+		if requestValue == "" || relayState == "" {
+			return errors.New("SAML POST form request or relay-state capture has not been recorded")
+		}
+		redirectURL, err := url.Parse(action.IDPURI)
+		if err != nil {
+			return fmt.Errorf("parse SAML IdP URI: %w", err)
+		}
+		postBinding = true
+		postForm.Set("SAMLRequest", requestValue)
+		postForm.Set("RelayState", relayState)
+		redirect = redirectURL.String()
+	}
 	if redirect == "" {
 		return fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
 	}
@@ -2399,9 +2417,18 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 	if err != nil {
 		return fmt.Errorf("parse SAML redirect: %w", err)
 	}
-	request, err := http.NewRequest(http.MethodGet, redirectURL.String(), nil)
+	method := http.MethodGet
+	var body io.Reader
+	if postBinding {
+		method = http.MethodPost
+		body = strings.NewReader(postForm.Encode())
+	}
+	request, err := http.NewRequest(method, redirectURL.String(), body)
 	if err != nil {
 		return fmt.Errorf("create SAML authorization request: %w", err)
+	}
+	if postBinding {
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 	requestState, err := saml.NewIdpAuthnRequest(&saml.IdentityProvider{}, request)
 	if err != nil {
@@ -2852,6 +2879,10 @@ func runHTTPInput(
 		t.Errorf("capture response header: %v", err)
 		return err
 	}
+	if err := captureResponseBody(output.BodyCaptures, string(responseBody), capturedValues); err != nil {
+		t.Errorf("capture response body: %v", err)
+		return err
+	}
 	return nil
 }
 
@@ -3004,6 +3035,17 @@ func captureResponseHeaders(captures map[string]HeaderCapture, headers http.Head
 	return nil
 }
 
+func captureResponseBody(captures map[string]BodyCapture, body string, captured map[string]string) error {
+	for name, capture := range captures {
+		match := regexp.MustCompile(capture.Matches).FindStringSubmatch(body)
+		if len(match) != 2 {
+			return fmt.Errorf("response body value %q does not match capture %q", body, name)
+		}
+		captured[name] = match[1]
+	}
+	return nil
+}
+
 func replaceCookiePlaceholders(value string, cookies map[string]string) (string, error) {
 	const prefix = "{{COOKIE."
 	for {
@@ -3102,6 +3144,10 @@ func runRawHTTP10Input(
 	captureResponseCookies(response, capturedCookies)
 	if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
 		t.Errorf("capture response header: %v", err)
+		return err
+	}
+	if err := captureResponseBody(output.BodyCaptures, string(body), capturedValues); err != nil {
+		t.Errorf("capture response body: %v", err)
 		return err
 	}
 	return nil

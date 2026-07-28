@@ -124,13 +124,16 @@ type FileRenameAction struct {
 // SAMLResponseAction creates a signed, correlated HTTP-POST SAML response from
 // the authorization redirect captured by the preceding request step.
 type SAMLResponseAction struct {
-	RedirectCapture   string `yaml:"redirect_capture"`
-	ResponseCapture   string `yaml:"response_capture"`
-	RelayStateCapture string `yaml:"relay_state_capture"`
-	IDPCertificate    string `yaml:"idp_certificate"`
-	IDPPrivateKey     string `yaml:"idp_private_key"`
-	NameID            string `yaml:"name_id"`
-	UserName          string `yaml:"user_name,omitempty"`
+	RedirectCapture        string `yaml:"redirect_capture,omitempty"`
+	IDPURI                 string `yaml:"idp_uri,omitempty"`
+	SAMLRequestCapture     string `yaml:"saml_request_capture,omitempty"`
+	RelayStateInputCapture string `yaml:"relay_state_input_capture,omitempty"`
+	ResponseCapture        string `yaml:"response_capture"`
+	RelayStateCapture      string `yaml:"relay_state_capture"`
+	IDPCertificate         string `yaml:"idp_certificate"`
+	IDPPrivateKey          string `yaml:"idp_private_key"`
+	NameID                 string `yaml:"name_id"`
+	UserName               string `yaml:"user_name,omitempty"`
 }
 
 type ConfigProbe struct {
@@ -327,11 +330,16 @@ type HTTPOutput struct {
 	ElapsedAtLeast          time.Duration            `yaml:"elapsed_at_least,omitempty"`
 	ElapsedLessThan         time.Duration            `yaml:"elapsed_less_than,omitempty"`
 	Captures                map[string]HeaderCapture `yaml:"captures,omitempty"`
+	BodyCaptures            map[string]BodyCapture   `yaml:"body_captures,omitempty"`
 	GRPC                    *GRPCMessage             `yaml:"grpc,omitempty"`
 }
 
 type HeaderCapture struct {
 	Header  string `yaml:"header"`
+	Matches string `yaml:"matches"`
+}
+
+type BodyCapture struct {
 	Matches string `yaml:"matches"`
 }
 
@@ -905,6 +913,18 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 			return fmt.Errorf("response capture %q matches must contain exactly one capture group", name)
 		}
 	}
+	for name, capture := range output.BodyCaptures {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("response body capture name must not be blank")
+		}
+		pattern, err := regexp.Compile(capture.Matches)
+		if err != nil {
+			return fmt.Errorf("response body capture %q matches: %w", name, err)
+		}
+		if pattern.NumSubexp() != 1 {
+			return fmt.Errorf("response body capture %q matches must contain exactly one capture group", name)
+		}
+	}
 	if output.Body != nil {
 		if err := output.Body.validate(matcherBody); err != nil {
 			return fmt.Errorf("output body: %w", err)
@@ -1328,7 +1348,9 @@ func validateCaseActions(actions []CaseAction) error {
 			}
 		case action.SAMLResponse != nil:
 			saml := action.SAMLResponse
-			if strings.TrimSpace(saml.RedirectCapture) == "" || strings.TrimSpace(saml.ResponseCapture) == "" ||
+			redirectSource := strings.TrimSpace(saml.RedirectCapture) != "" ||
+				(strings.TrimSpace(saml.IDPURI) != "" && strings.TrimSpace(saml.SAMLRequestCapture) != "" && strings.TrimSpace(saml.RelayStateInputCapture) != "")
+			if !redirectSource || strings.TrimSpace(saml.ResponseCapture) == "" ||
 				strings.TrimSpace(saml.RelayStateCapture) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
 				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.NameID) == "" {
 				return fmt.Errorf("action %d saml_response requires redirect_capture, response_capture, relay_state_capture, idp_certificate, idp_private_key, and name_id", i+1)

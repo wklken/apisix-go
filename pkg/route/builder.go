@@ -897,6 +897,15 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 	if err != nil {
 		return nil, fmt.Errorf("get upstream fail: %s", err)
 	}
+	switch upstream.PassHost {
+	case "", "pass", "node":
+	case "rewrite":
+		if upstream.UpstreamHost == "" {
+			return nil, fmt.Errorf("`upstream_host` can't be empty when `pass_host` is `rewrite`")
+		}
+	default:
+		return nil, fmt.Errorf("pass_host must be one of pass, node, or rewrite")
+	}
 
 	servers := make(map[string]int, len(upstream.Nodes))
 	// fmt.Printf("the upstream nodes is: %v\n", upstream.Nodes)
@@ -912,7 +921,10 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		port := node.Port
 		weight := node.Weight
 
-		uri := fmt.Sprintf("%s://%s:%d", targetScheme, host, port)
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		}
+		uri := fmt.Sprintf("%s://%s", targetScheme, net.JoinHostPort(host, strconv.Itoa(port)))
 		servers[uri] = weight
 	}
 
@@ -954,16 +966,17 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			}
 			req.URL.Scheme = u.Scheme
 			req.URL.Host = u.Host
+			nodeHost := upstreamNodeHost(u.Scheme, u.Hostname(), u.Port())
 			switch upstream.PassHost {
 			case "", "pass":
 				req.Host = originalHost
 				if req.Host == "" {
-					req.Host = u.Host
+					req.Host = nodeHost
 				}
 			case "rewrite":
 				req.Host = upstream.UpstreamHost
-			default:
-				req.Host = u.Host
+			case "node":
+				req.Host = nodeHost
 			}
 		}
 		if ctx.GetApisixVars(req) != nil {
@@ -1056,6 +1069,26 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		}
 		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
 	}), nil
+}
+
+func upstreamNodeHost(scheme, host, port string) string {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	standardPort := false
+	switch strings.ToLower(scheme) {
+	case "http", "grpc":
+		standardPort = port == "80"
+	case "https", "grpcs":
+		standardPort = port == "443"
+	}
+	if standardPort {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func buildKafkaPubSubProxyHandler(upstream resource.Upstream, factory kafka_proxy.KafkaConsumerFactory) http.Handler {

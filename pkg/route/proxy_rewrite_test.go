@@ -166,6 +166,83 @@ func TestBuildReverseHandlerAppliesUpstreamPassHost(t *testing.T) {
 	}
 }
 
+func TestBuildReverseHandlerRejectsInvalidUpstreamHostMode(t *testing.T) {
+	tests := []struct {
+		name         string
+		passHost     string
+		upstreamHost string
+		wantError    string
+	}{
+		{
+			name:      "unknown mode",
+			passHost:  "invalid",
+			wantError: "pass_host must be one of pass, node, or rewrite",
+		},
+		{
+			name:      "rewrite without upstream host",
+			passHost:  "rewrite",
+			wantError: "`upstream_host` can't be empty when `pass_host` is `rewrite`",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := (&Builder{}).buildReverseHandler(resource.Route{
+				Upstream: resource.Upstream{
+					Type:         "roundrobin",
+					Scheme:       "http",
+					PassHost:     test.passHost,
+					UpstreamHost: test.upstreamHost,
+					Nodes:        []resource.Node{{Host: "127.0.0.1", Port: 80, Weight: 1}},
+				},
+			}, resource.Service{})
+			if err == nil {
+				t.Fatal("buildReverseHandler() error = nil, want invalid pass_host rejection")
+			}
+			if err.Error() != test.wantError {
+				t.Fatalf("buildReverseHandler() error = %q, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestUpstreamNodeHostUsesSourceBalancerPortFormatting(t *testing.T) {
+	tests := []struct {
+		name   string
+		scheme string
+		host   string
+		port   string
+		want   string
+	}{
+		{name: "HTTP standard port", scheme: "http", host: "node.example.com", port: "80", want: "node.example.com"},
+		{name: "HTTPS standard port", scheme: "https", host: "node.example.com", port: "443", want: "node.example.com"},
+		{
+			name: "HTTP nonstandard port", scheme: "http", host: "node.example.com",
+			port: "8080", want: "node.example.com:8080",
+		},
+		{
+			name: "HTTPS nonstandard port", scheme: "https", host: "node.example.com",
+			port: "8443", want: "node.example.com:8443",
+		},
+		{name: "IPv6 standard port", scheme: "http", host: "[2001:db8::1]", port: "80", want: "[2001:db8::1]"},
+		{
+			name: "IPv6 nonstandard port", scheme: "http", host: "2001:db8::1",
+			port: "8080", want: "[2001:db8::1]:8080",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := upstreamNodeHost(test.scheme, test.host, test.port); got != test.want {
+				t.Fatalf(
+					"upstreamNodeHost(%q, %q, %q) = %q, want %q",
+					test.scheme, test.host, test.port, got, test.want,
+				)
+			}
+		})
+	}
+}
+
 func TestBuildReverseHandlerKeepsTrafficSplitTargetWithRewrittenHost(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host != "api.example.com" {

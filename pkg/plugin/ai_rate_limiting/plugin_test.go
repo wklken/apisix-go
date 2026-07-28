@@ -97,6 +97,23 @@ func TestPostInitRequiresRedisEndpointAndAcceptsSentinelCredentials(t *testing.T
 	}
 }
 
+func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
+	tests := []Config{
+		{Limit: 1, Rules: []Rule{{Count: 1, TimeWindow: 60, Key: "${remote_addr}"}}},
+		{Instances: []InstanceLimit{{Name: "one", Limit: 1, TimeWindow: 60}}, Rules: []Rule{{Count: 1, TimeWindow: 60, Key: "${remote_addr}"}}},
+		{Limit: 1, Instances: []InstanceLimit{{Name: "one", Limit: 1, TimeWindow: 60}}},
+	}
+	for i, config := range tests {
+		plugin := &Plugin{config: config}
+		if err := plugin.Init(); err != nil {
+			t.Fatal(err)
+		}
+		if err := plugin.PostInit(); err == nil {
+			t.Fatalf("config %d PostInit() unexpectedly succeeded", i)
+		}
+	}
+}
+
 func TestHandlerUsesInstancePromptTokenQuota(t *testing.T) {
 	now := time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)
 	p := newTestPlugin(t, Config{

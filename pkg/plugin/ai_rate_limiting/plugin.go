@@ -255,6 +255,12 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if len(p.config.Rules) > 0 && (len(p.config.Instances) > 0 || p.config.Limit != nil || p.config.TimeWindow != nil) {
+		return errors.New("rules cannot be configured with limit, time_window, or instances")
+	}
+	if len(p.config.Instances) > 0 && ((p.config.Limit == nil) != (p.config.TimeWindow == nil)) {
+		return errors.New("limit and time_window must be configured together")
+	}
 	if p.config.ShowLimitQuotaHeader == nil {
 		show := true
 		p.config.ShowLimitQuotaHeader = &show

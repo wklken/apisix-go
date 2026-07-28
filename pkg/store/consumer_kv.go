@@ -13,6 +13,16 @@ type keyAuth struct {
 	Key string `json:"key"`
 }
 
+const keyAuthConsumerSchema = `
+{
+  "type": "object",
+  "title": "work with consumer object",
+  "required": ["key"],
+  "properties": {
+    "key": {"type": "string"}
+  }
+}`
+
 type basicAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -53,6 +63,16 @@ type ldapAuth struct {
 	UserDN string `json:"user_dn"`
 }
 
+const ldapAuthConsumerSchema = `
+{
+  "type": "object",
+  "title": "work with consumer object",
+  "required": ["user_dn"],
+  "properties": {
+    "user_dn": {"type": "string"}
+  }
+}`
+
 type jweDecrypt struct {
 	Key             any  `json:"key"`
 	Secret          any  `json:"secret"`
@@ -75,6 +95,11 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 	if err != nil {
 		return consumerSnapshot{}, err
 	}
+	if keyAuthPlugin, ok := consumer.Plugins["key-auth"]; ok {
+		if err := util.Validate(keyAuthPlugin, keyAuthConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("key-auth consumer configuration: %w", err)
+		}
+	}
 	if basicAuthPlugin, ok := consumer.Plugins["basic-auth"]; ok {
 		if err := util.Validate(basicAuthPlugin, basicAuthConsumerSchema); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("basic-auth consumer configuration: %w", err)
@@ -83,6 +108,11 @@ func (s *Store) prepareConsumerSnapshot(id []byte, value []byte) (consumerSnapsh
 	if hmacAuthPlugin, ok := consumer.Plugins["hmac-auth"]; ok {
 		if err := util.Validate(hmacAuthPlugin, hmacAuthConsumerSchema); err != nil {
 			return consumerSnapshot{}, fmt.Errorf("hmac-auth consumer configuration: %w", err)
+		}
+	}
+	if ldapAuthPlugin, ok := consumer.Plugins["ldap-auth"]; ok {
+		if err := util.Validate(ldapAuthPlugin, ldapAuthConsumerSchema); err != nil {
+			return consumerSnapshot{}, fmt.Errorf("ldap-auth consumer configuration: %w", err)
 		}
 	}
 	jweDecryptPlugin, hasJWEDecrypt := consumer.Plugins["jwe-decrypt"]

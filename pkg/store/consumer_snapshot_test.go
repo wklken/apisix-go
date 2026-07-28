@@ -85,6 +85,73 @@ func TestConsumerSnapshotRejectsInvalidHMACAuthUpdateAndKeepsLastGood(t *testing
 	}
 }
 
+func TestConsumerSnapshotValidatesKeyAuthKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		diagnostic string
+	}{
+		{name: "literal key", config: `{"key":"auth-one"}`},
+		{name: "environment reference", config: `{"key":"$ENV://KEY_AUTH_KEY"}`},
+		{name: "managed secret reference", config: `{"key":"$secret://vault/test1/jack/key"}`},
+		{name: "missing key", config: `{}`, diagnostic: "key"},
+		{name: "non-string key", config: `{"key":123}`, diagnostic: "expected string"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumerStore := &Store{
+				consumerKV:     make(map[string][]byte),
+				consumerToKeys: make(map[string][]string),
+			}
+			value := []byte(`{"username":"jack","plugins":{"key-auth":` + test.config + `}}`)
+			err := consumerStore.consumerKVAdd([]byte("jack"), value)
+			if test.diagnostic == "" {
+				if err != nil {
+					t.Fatalf("consumerKVAdd() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.diagnostic) {
+				t.Fatalf("consumerKVAdd() error = %v, want %q", err, test.diagnostic)
+			}
+		})
+	}
+}
+
+func TestConsumerSnapshotValidatesLDAPAuthUserDN(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		diagnostic string
+	}{
+		{name: "literal user DN", config: `{"user_dn":"cn=user,dc=example,dc=org"}`},
+		{name: "environment reference", config: `{"user_dn":"$ENV://LDAP_AUTH_USER_DN"}`},
+		{name: "managed secret reference", config: `{"user_dn":"$secret://vault/test1/ldap/user_dn"}`},
+		{name: "missing user DN", config: `{}`, diagnostic: "user_dn"},
+		{name: "non-string user DN", config: `{"user_dn":123}`, diagnostic: "expected string"},
+		{name: "non-object config", config: `"cn=user,dc=example,dc=org"`, diagnostic: "expected object"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			consumerStore := &Store{
+				consumerKV:     make(map[string][]byte),
+				consumerToKeys: make(map[string][]string),
+			}
+			value := []byte(`{"username":"ldap-user","plugins":{"ldap-auth":` + test.config + `}}`)
+			err := consumerStore.consumerKVAdd([]byte("ldap-user"), value)
+			if test.diagnostic == "" {
+				if err != nil {
+					t.Fatalf("consumerKVAdd() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.diagnostic) {
+				t.Fatalf("consumerKVAdd() error = %v, want %q", err, test.diagnostic)
+			}
+		})
+	}
+}
+
 func TestConsumerKVAddCachesRawEnvironmentCredential(t *testing.T) {
 	t.Setenv("BASIC_AUTH_PASSWORD", "late-value")
 	consumerStore := &Store{

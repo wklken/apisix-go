@@ -200,6 +200,33 @@ func TestHandlerRejectsMissingKey(t *testing.T) {
 	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
 		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
+	if got := rr.Header().Get("WWW-Authenticate"); got != `apikey realm="key"` {
+		t.Fatalf("WWW-Authenticate = %q, want default key-auth realm", got)
+	}
+}
+
+func TestHandlerUsesConfiguredRealm(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{"realm": "my-custom-realm"}, p.Config()); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("WWW-Authenticate"); got != `apikey realm="my-custom-realm"` {
+		t.Fatalf("WWW-Authenticate = %q, want configured realm", got)
+	}
 }
 
 func TestHandlerUsesAnonymousConsumerWhenKeyIsMissing(t *testing.T) {
@@ -268,6 +295,29 @@ func TestHandlerRejectsInvalidKey(t *testing.T) {
 	}
 	if got := rr.Header().Get("Content-Type"); got != "text/plain" {
 		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
+}
+
+func TestHandlerRecordsInvalidKeyProbeDiagnostic(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, Config{})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	req.Header.Set("apikey", "invalid-key-diagnostic")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid key reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || diagnostics[0] != "Invalid API key in request" {
+		t.Fatalf("probe diagnostics = %v, want invalid API key response detail", diagnostics)
 	}
 }
 
@@ -341,5 +391,19 @@ func TestSchemaAcceptsAnonymousConsumer(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected anonymous_consumer: %v", err)
+	}
+}
+
+func TestSchemaValidatesRealm(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	if err := util.Validate(map[string]any{"realm": "my-custom-realm"}, p.GetSchema()); err != nil {
+		t.Fatalf("schema rejected realm: %v", err)
+	}
+	if err := util.Validate(map[string]any{"realm": 123}, p.GetSchema()); err == nil {
+		t.Fatal("schema accepted non-string realm")
 	}
 }

@@ -35,6 +35,7 @@ type networkFixture struct {
 	listener  net.Listener
 	packet    net.PacketConn
 	server    *httptest.Server
+	caPath    string
 	expect    []NetworkAssertion
 	respond   []NetworkResponse
 	received  chan []byte
@@ -73,8 +74,23 @@ func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load TLS TCP fixture certificate: %w", err)
 		}
+		caFile, err := os.CreateTemp("", "apisix-go-tls-tcp-ca-*.pem")
+		if err != nil {
+			return nil, fmt.Errorf("create TLS TCP fixture CA file: %w", err)
+		}
+		fixture.caPath = caFile.Name()
+		if _, err = caFile.WriteString(certPEM); err != nil {
+			_ = caFile.Close()
+			_ = os.Remove(fixture.caPath)
+			return nil, fmt.Errorf("write TLS TCP fixture CA file: %w", err)
+		}
+		if err = caFile.Close(); err != nil {
+			_ = os.Remove(fixture.caPath)
+			return nil, fmt.Errorf("close TLS TCP fixture CA file: %w", err)
+		}
 		listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{certificate}})
 		if err != nil {
+			_ = os.Remove(fixture.caPath)
 			return nil, fmt.Errorf("listen TLS TCP fixture: %w", err)
 		}
 		fixture.listener = listener
@@ -288,6 +304,8 @@ func (f *networkFixture) url() string {
 	return f.kind + "://" + f.address()
 }
 
+func (f *networkFixture) caFile() string { return f.caPath }
+
 func (f *networkFixture) close() {
 	f.closeOnce.Do(func() {
 		close(f.done)
@@ -301,6 +319,9 @@ func (f *networkFixture) close() {
 			f.server.Close()
 		}
 		f.wg.Wait()
+		if f.caPath != "" {
+			_ = os.Remove(f.caPath)
+		}
 	})
 }
 

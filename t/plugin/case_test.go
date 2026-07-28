@@ -2,6 +2,7 @@ package pluginintegration
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -729,6 +730,86 @@ cases:
 
 	if _, err := loadManifest("environment.yaml", data); err != nil {
 		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestManifestAcceptsCaseAndVariantEnvironmentUnset(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 2
+cases:
+  - name: case-environment-unset
+    source:
+      tests: [1]
+    environment_unset:
+      - SSL_CERT_FILE
+    config:
+      routes: []
+    output:
+      logs:
+        matches: ready
+  - name: variant-environment-unset
+    source:
+      tests: [2]
+    variants:
+      - name: child
+        environment_unset:
+          - VAULT_TOKEN
+        config:
+          routes: []
+        output:
+          logs:
+            matches: ready
+`)
+
+	manifest, err := loadManifest("environment-unset.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	if got := manifest.Cases[0].EnvironmentUnset; !slices.Equal(got, []string{"SSL_CERT_FILE"}) {
+		t.Fatalf("case environment_unset = %v, want [SSL_CERT_FILE]", got)
+	}
+	if got := manifest.Cases[1].Variants[0].caseSpec().EnvironmentUnset; !slices.Equal(got, []string{"VAULT_TOKEN"}) {
+		t.Fatalf("variant environment_unset = %v, want [VAULT_TOKEN]", got)
+	}
+}
+
+func TestManifestRejectsInvalidEnvironmentUnset(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		environment      Environment
+		environmentUnset []string
+		want             string
+	}{
+		{
+			name:             "invalid-name",
+			environmentUnset: []string{"1INVALID"},
+			want:             "nonempty POSIX-style name",
+		},
+		{
+			name:             "duplicate",
+			environmentUnset: []string{"SSL_CERT_FILE", "SSL_CERT_FILE"},
+			want:             `environment_unset variable "SSL_CERT_FILE" is duplicated`,
+		},
+		{
+			name:             "overlap",
+			environment:      Environment{"SSL_CERT_FILE": "fixture.pem"},
+			environmentUnset: []string{"SSL_CERT_FILE"},
+			want:             `environment variable "SSL_CERT_FILE" must not be both set and unset`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := validManifest()
+			manifest.Cases[0].Environment = test.environment
+			manifest.Cases[0].EnvironmentUnset = test.environmentUnset
+
+			err := manifest.validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

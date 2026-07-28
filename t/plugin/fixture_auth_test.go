@@ -1,10 +1,13 @@
 package pluginintegration
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -260,6 +263,70 @@ func TestLDAPFixtureReturnsBindSuccess(t *testing.T) {
 	}
 	if string(got) != string(response) {
 		t.Fatalf("LDAP response = %x, want %x", got, response)
+	}
+	fixture.assert(t, spec)
+}
+
+func TestLDAPFixtureSupportsTrustedTLS(t *testing.T) {
+	request := []byte{
+		0x30, 0x22,
+		0x02, 0x01, 0x01,
+		0x60, 0x1d,
+		0x02, 0x01, 0x03,
+		0x04, 0x10,
+		'c', 'n', '=', 'a', 'l', 'i', 'c', 'e', ',',
+		'd', 'c', '=', 't', 'e', 's', 't',
+		0x80, 0x06, 's', 'e', 'c', 'r', 'e', 't',
+	}
+	spec := FixtureSpec{
+		Name: "ldap-tls",
+		Kind: "tls-tcp",
+		NetworkExpect: []NetworkAssertion{{
+			PayloadBase64: &Matcher{Equals: new(base64.StdEncoding.EncodeToString(request))},
+		}},
+		NetworkRespond: []NetworkResponse{{
+			PayloadBase64: encodeLDAPBindSuccess(1),
+		}},
+	}
+	fixture, err := startNetworkFixture(spec)
+	if err != nil {
+		t.Fatalf("start TLS TCP fixture: %v", err)
+	}
+	defer fixture.close()
+	trusted, ok := fixture.(interface{ caFile() string })
+	if !ok || trusted.caFile() == "" {
+		t.Fatal("TLS TCP fixture does not expose a CA file")
+	}
+	certificate, err := os.ReadFile(trusted.caFile())
+	if err != nil {
+		t.Fatalf("read TLS TCP fixture CA: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certificate) {
+		t.Fatal("append TLS TCP fixture CA certificate")
+	}
+	connection, err := tls.Dial("tcp", "localhost:"+fixture.port(), &tls.Config{
+		RootCAs:    roots,
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("dial trusted TLS TCP fixture: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+	if _, err := connection.Write(request); err != nil {
+		t.Fatalf("write LDAPS bind: %v", err)
+	}
+	response, err := base64.StdEncoding.DecodeString(encodeLDAPBindSuccess(1))
+	if err != nil {
+		t.Fatalf("decode LDAP response: %v", err)
+	}
+	got := make([]byte, len(response))
+	if _, err := io.ReadFull(connection, got); err != nil {
+		t.Fatalf("read LDAPS response: %v", err)
+	}
+	if string(got) != string(response) {
+		t.Fatalf("LDAP over TLS response = %x, want %x", got, response)
 	}
 	fixture.assert(t, spec)
 }

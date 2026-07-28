@@ -1050,7 +1050,7 @@ func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
 		environmentName:             "fixture-user",
 	}
 	first := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
-	first.Env = childEnvironment(parent, configured)
+	first.Env = childEnvironment(parent, configured, nil)
 	firstOutput, err := first.CombinedOutput()
 	if err != nil {
 		t.Fatalf("configured child error = %v, output = %s", err, firstOutput)
@@ -1063,7 +1063,7 @@ func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
 	}
 
 	second := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
-	second.Env = childEnvironment(os.Environ(), Environment{environmentHelperProcessEnv: "1"})
+	second.Env = childEnvironment(os.Environ(), Environment{environmentHelperProcessEnv: "1"}, nil)
 	secondOutput, err := second.CombinedOutput()
 	if err != nil {
 		t.Fatalf("unconfigured child error = %v, output = %s", err, secondOutput)
@@ -1076,6 +1076,29 @@ func TestChildEnvironmentScopesCaseValuesWithoutLeakage(t *testing.T) {
 	}
 	if got := os.Getenv(environmentName); got != "ambient-user" {
 		t.Fatalf("parent %s after unconfigured child = %q, want ambient value preserved", environmentName, got)
+	}
+}
+
+func TestChildEnvironmentRemovesInheritedValuesWithoutChangingParent(t *testing.T) {
+	const environmentName = "APISIX_GO_CASE_ENVIRONMENT_VALUE"
+	t.Setenv(environmentName, "ambient-user")
+
+	child := childEnvironment(
+		os.Environ(),
+		Environment{environmentHelperProcessEnv: "1"},
+		[]string{environmentName},
+	)
+	command := exec.Command(os.Args[0], "-test.run=^TestCaseEnvironmentHelperProcess$", "-test.v")
+	command.Env = child
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unset child error = %v, output = %s", err, output)
+	}
+	if strings.Contains(string(output), "ambient-user") {
+		t.Fatalf("unset child output = %q, want inherited value removed", output)
+	}
+	if got := os.Getenv(environmentName); got != "ambient-user" {
+		t.Fatalf("parent %s = %q, want ambient value preserved", environmentName, got)
 	}
 }
 
@@ -1601,7 +1624,7 @@ type apisixProcess struct {
 	logPath string
 }
 
-func startAPISIX(workDir string, environment Environment) (*apisixProcess, error) {
+func startAPISIX(workDir string, environment Environment, environmentUnset []string) (*apisixProcess, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("locate test executable: %w", err)
@@ -1616,7 +1639,7 @@ func startAPISIX(workDir string, environment Environment) (*apisixProcess, error
 	childEnvironmentOverrides := make(Environment, len(environment)+1)
 	maps.Copy(childEnvironmentOverrides, environment)
 	childEnvironmentOverrides[helperProcessEnv] = "1"
-	command.Env = childEnvironment(os.Environ(), childEnvironmentOverrides)
+	command.Env = childEnvironment(os.Environ(), childEnvironmentOverrides, environmentUnset)
 	command.Stdout = logFile
 	command.Stderr = logFile
 	if err := command.Start(); err != nil {
@@ -1636,10 +1659,13 @@ func startAPISIX(workDir string, environment Environment) (*apisixProcess, error
 	return process, nil
 }
 
-func childEnvironment(inherited []string, environment Environment) []string {
-	overrides := make(map[string]struct{}, len(environment))
+func childEnvironment(inherited []string, environment Environment, environmentUnset []string) []string {
+	removed := make(map[string]struct{}, len(environment)+len(environmentUnset))
 	for name := range environment {
-		overrides[name] = struct{}{}
+		removed[name] = struct{}{}
+	}
+	for _, name := range environmentUnset {
+		removed[name] = struct{}{}
 	}
 
 	result := make([]string, 0, len(inherited)+len(environment))
@@ -1649,7 +1675,7 @@ func childEnvironment(inherited []string, environment Environment) []string {
 		if !ok || name == "" {
 			continue
 		}
-		if _, overridden := overrides[name]; overridden {
+		if _, shouldRemove := removed[name]; shouldRemove {
 			continue
 		}
 		if _, duplicate := seen[name]; duplicate {
@@ -1950,6 +1976,9 @@ func runCase(t *testing.T, spec Case) {
 		replacements[prefix+".URL}}"] = namedFixture.url()
 		replacements[prefix+".HOST}}"] = namedFixture.host()
 		replacements[prefix+".PORT}}"] = namedFixture.port()
+		if trustedFixture, ok := namedFixture.(interface{ caFile() string }); ok && trustedFixture.caFile() != "" {
+			replacements[prefix+".CA_FILE}}"] = trustedFixture.caFile()
+		}
 	}
 
 	port, err := reservePort()
@@ -2011,7 +2040,7 @@ func runCase(t *testing.T, spec Case) {
 	if err != nil {
 		t.Fatalf("expand case environment: %v", err)
 	}
-	process, err := startAPISIX(workDir, environment)
+	process, err := startAPISIX(workDir, environment, spec.EnvironmentUnset)
 	if err != nil {
 		t.Fatalf("start APISIX: %v", err)
 	}

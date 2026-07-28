@@ -34,35 +34,37 @@ type SourceSpec struct {
 }
 
 type Case struct {
-	Name          string          `yaml:"name"`
-	Source        CaseSource      `yaml:"source"`
-	Variants      []CaseVariant   `yaml:"variants,omitempty"`
-	Environment   Environment     `yaml:"environment,omitempty"`
-	Runtime       map[string]any  `yaml:"runtime,omitempty"`
-	Config        map[string]any  `yaml:"config,omitempty"`
-	Input         HTTPInput       `yaml:"input,omitempty"`
-	Upstream      *UpstreamSpec   `yaml:"upstream,omitempty"`
-	Output        HTTPOutput      `yaml:"output,omitempty"`
-	Fixtures      []FixtureSpec   `yaml:"fixtures,omitempty"`
-	Files         []ScenarioFile  `yaml:"files,omitempty"`
-	Steps         []CaseStep      `yaml:"steps,omitempty"`
-	TLS           *FrontendTLS    `yaml:"frontend_tls,omitempty"`
-	AfterShutdown []FileAssertion `yaml:"after_shutdown,omitempty"`
+	Name             string          `yaml:"name"`
+	Source           CaseSource      `yaml:"source"`
+	Variants         []CaseVariant   `yaml:"variants,omitempty"`
+	Environment      Environment     `yaml:"environment,omitempty"`
+	EnvironmentUnset []string        `yaml:"environment_unset,omitempty"`
+	Runtime          map[string]any  `yaml:"runtime,omitempty"`
+	Config           map[string]any  `yaml:"config,omitempty"`
+	Input            HTTPInput       `yaml:"input,omitempty"`
+	Upstream         *UpstreamSpec   `yaml:"upstream,omitempty"`
+	Output           HTTPOutput      `yaml:"output,omitempty"`
+	Fixtures         []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Files            []ScenarioFile  `yaml:"files,omitempty"`
+	Steps            []CaseStep      `yaml:"steps,omitempty"`
+	TLS              *FrontendTLS    `yaml:"frontend_tls,omitempty"`
+	AfterShutdown    []FileAssertion `yaml:"after_shutdown,omitempty"`
 }
 
 type CaseVariant struct {
-	Name          string          `yaml:"name"`
-	Environment   Environment     `yaml:"environment,omitempty"`
-	Runtime       map[string]any  `yaml:"runtime,omitempty"`
-	Config        map[string]any  `yaml:"config,omitempty"`
-	Input         HTTPInput       `yaml:"input,omitempty"`
-	Upstream      *UpstreamSpec   `yaml:"upstream,omitempty"`
-	Output        HTTPOutput      `yaml:"output,omitempty"`
-	Fixtures      []FixtureSpec   `yaml:"fixtures,omitempty"`
-	Files         []ScenarioFile  `yaml:"files,omitempty"`
-	Steps         []CaseStep      `yaml:"steps,omitempty"`
-	TLS           *FrontendTLS    `yaml:"frontend_tls,omitempty"`
-	AfterShutdown []FileAssertion `yaml:"after_shutdown,omitempty"`
+	Name             string          `yaml:"name"`
+	Environment      Environment     `yaml:"environment,omitempty"`
+	EnvironmentUnset []string        `yaml:"environment_unset,omitempty"`
+	Runtime          map[string]any  `yaml:"runtime,omitempty"`
+	Config           map[string]any  `yaml:"config,omitempty"`
+	Input            HTTPInput       `yaml:"input,omitempty"`
+	Upstream         *UpstreamSpec   `yaml:"upstream,omitempty"`
+	Output           HTTPOutput      `yaml:"output,omitempty"`
+	Fixtures         []FixtureSpec   `yaml:"fixtures,omitempty"`
+	Files            []ScenarioFile  `yaml:"files,omitempty"`
+	Steps            []CaseStep      `yaml:"steps,omitempty"`
+	TLS              *FrontendTLS    `yaml:"frontend_tls,omitempty"`
+	AfterShutdown    []FileAssertion `yaml:"after_shutdown,omitempty"`
 }
 
 type FrontendTLS struct {
@@ -509,7 +511,8 @@ func (c *Case) validate() error {
 }
 
 func (c *Case) hasScenario() bool {
-	return len(c.Environment) > 0 || len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" ||
+	return len(c.Environment) > 0 || len(c.EnvironmentUnset) > 0 ||
+		len(c.Runtime) > 0 || len(c.Config) > 0 || c.Input.Method != "" ||
 		c.Input.Path != "" ||
 		len(c.Input.Headers) > 0 ||
 		len(c.Input.HeaderValues) > 0 ||
@@ -544,18 +547,19 @@ func (c *Case) hasScenario() bool {
 
 func (v *CaseVariant) caseSpec() *Case {
 	return &Case{
-		Name:          v.Name,
-		Environment:   v.Environment,
-		Runtime:       v.Runtime,
-		Config:        v.Config,
-		Input:         v.Input,
-		Upstream:      v.Upstream,
-		Output:        v.Output,
-		Fixtures:      v.Fixtures,
-		Files:         v.Files,
-		Steps:         v.Steps,
-		TLS:           v.TLS,
-		AfterShutdown: v.AfterShutdown,
+		Name:             v.Name,
+		Environment:      v.Environment,
+		EnvironmentUnset: v.EnvironmentUnset,
+		Runtime:          v.Runtime,
+		Config:           v.Config,
+		Input:            v.Input,
+		Upstream:         v.Upstream,
+		Output:           v.Output,
+		Fixtures:         v.Fixtures,
+		Files:            v.Files,
+		Steps:            v.Steps,
+		TLS:              v.TLS,
+		AfterShutdown:    v.AfterShutdown,
 	}
 }
 
@@ -563,7 +567,7 @@ func (c *Case) validateScenario() error {
 	if len(c.Config) == 0 {
 		return errors.New("config is required")
 	}
-	if err := validateEnvironment(c.Environment); err != nil {
+	if err := validateEnvironment(c.Environment, c.EnvironmentUnset); err != nil {
 		return err
 	}
 	if err := validateScenarioFiles(c.Files); err != nil {
@@ -675,12 +679,24 @@ func (c *Case) validateScenario() error {
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func validateEnvironment(environment Environment) error {
+func validateEnvironment(environment Environment, environmentUnset []string) error {
 	for name := range environment {
-		if strings.ContainsRune(name, '\x00') || strings.Contains(name, "=") ||
-			!environmentNamePattern.MatchString(name) {
+		if !environmentNamePattern.MatchString(name) {
 			return fmt.Errorf("environment variable name %q must be a nonempty POSIX-style name", name)
 		}
+	}
+	unset := make(map[string]struct{}, len(environmentUnset))
+	for _, name := range environmentUnset {
+		if !environmentNamePattern.MatchString(name) {
+			return fmt.Errorf("environment_unset variable name %q must be a nonempty POSIX-style name", name)
+		}
+		if _, duplicate := unset[name]; duplicate {
+			return fmt.Errorf("environment_unset variable %q is duplicated", name)
+		}
+		if _, overlap := environment[name]; overlap {
+			return fmt.Errorf("environment variable %q must not be both set and unset", name)
+		}
+		unset[name] = struct{}{}
 	}
 	return nil
 }

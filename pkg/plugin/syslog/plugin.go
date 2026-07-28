@@ -1,7 +1,7 @@
 package syslog
 
 import (
-	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -22,6 +22,7 @@ const (
 	priority       = 401
 	name           = "syslog"
 	version        = "apisix-go"
+	maxFormatDepth = 5
 	syslogFrameKey = "__apisix_syslog_frame"
 )
 
@@ -152,34 +153,37 @@ const metadataSchema = `
 }`
 
 type pluginMetadata struct {
-	LogFormat         map[string]string `json:"log_format"`
-	LogFormatExtra    map[string]string `json:"log_format_extra"`
-	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
+	LogFormat         map[string]any `json:"log_format"`
+	LogFormatExtra    map[string]any `json:"log_format_extra"`
+	MaxPendingEntries int            `json:"max_pending_entries,omitempty"`
 }
 
 type Plugin struct {
 	base.BaseLoggerPlugin
-	config         Config
-	logFormatExtra map[string]string
+	config          Config
+	logFormat       map[string]any
+	logFormatExtra  map[string]any
+	customLogFormat bool
+	transport       *syslogTransport
 }
 
 type Config struct {
-	Host                string            `json:"host"`
-	Port                int               `json:"port"`
-	FlushLimit          int               `json:"flush_limit,omitempty"`
-	DropLimit           int               `json:"drop_limit,omitempty"`
-	Timeout             int               `json:"timeout,omitempty"`
-	LogFormat           map[string]string `json:"log_format,omitempty"`
-	LogFormatExtra      map[string]string `json:"log_format_extra,omitempty"`
-	SockType            string            `json:"sock_type,omitempty"`
-	PoolSize            int               `json:"pool_size,omitempty"`
-	TLS                 bool              `json:"tls,omitempty"`
-	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
-	IncludeReqBodyExpr  [][]any           `json:"include_req_body_expr,omitempty"`
-	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
-	IncludeRespBodyExpr [][]any           `json:"include_resp_body_expr,omitempty"`
-	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
-	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
+	Host                string         `json:"host"`
+	Port                int            `json:"port"`
+	FlushLimit          int            `json:"flush_limit,omitempty"`
+	DropLimit           int            `json:"drop_limit,omitempty"`
+	Timeout             int            `json:"timeout,omitempty"`
+	LogFormat           map[string]any `json:"log_format,omitempty"`
+	LogFormatExtra      map[string]any `json:"log_format_extra,omitempty"`
+	SockType            string         `json:"sock_type,omitempty"`
+	PoolSize            int            `json:"pool_size,omitempty"`
+	TLS                 bool           `json:"tls,omitempty"`
+	IncludeReqBody      bool           `json:"include_req_body,omitempty"`
+	IncludeReqBodyExpr  [][]any        `json:"include_req_body_expr,omitempty"`
+	IncludeRespBody     bool           `json:"include_resp_body,omitempty"`
+	IncludeRespBodyExpr [][]any        `json:"include_resp_body_expr,omitempty"`
+	MaxReqBodyBytes     int            `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes    int            `json:"max_resp_body_bytes,omitempty"`
 
 	BatchMaxSize      int `json:"batch_max_size,omitempty"`
 	MaxRetryCount     int `json:"max_retry_count,omitempty"`
@@ -262,7 +266,16 @@ func (p *Plugin) PostInit() error {
 	}
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
-	p.LogFormat, p.logFormatExtra = selectLogFormats(p.config, metadata)
+	p.logFormat, p.logFormatExtra = selectLogFormats(p.config, metadata)
+	p.customLogFormat = p.config.logFormatSet || len(p.config.LogFormat) > 0 ||
+		len(metadata.LogFormat) > 0
+	var truncated bool
+	p.logFormat, truncated = truncateSyslogLogFormat(p.logFormat, 0)
+	var extraTruncated bool
+	p.logFormatExtra, extraTruncated = truncateSyslogLogFormat(p.logFormatExtra, 0)
+	if truncated || extraTruncated {
+		logger.Warn("log_format nesting exceeds max depth 5, truncating")
+	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
@@ -272,6 +285,11 @@ func (p *Plugin) PostInit() error {
 	}
 
 	p.config.addr = net.JoinHostPort(p.config.Host, fmt.Sprint(p.config.Port))
+	transport, err := newSyslogTransport(p.config)
+	if err != nil {
+		return err
+	}
+	p.transport = transport
 
 	p.BatchProcessor = logger_batch.New(logger_batch.Config{
 		Name:              "sys logger",
@@ -287,6 +305,13 @@ func (p *Plugin) PostInit() error {
 	}, p.SendBatch)
 
 	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.BaseLoggerPlugin.Stop()
+	if p.transport != nil {
+		p.transport.Close()
+	}
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
@@ -310,11 +335,13 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		metrics := httpsnoop.CaptureMetrics(next, writer, r)
 		var logFields map[string]any
-		if len(p.LogFormat) > 0 {
-			logFields = resolveSyslogLogFormat(r, request, p.LogFormat)
+		if p.customLogFormat {
+			logFields = resolveSyslogLogFormat(r, request, p.logFormat)
 			logFields["route_id"] = p.RouteID
 			if serviceID := apisixString(r, "$service_id"); serviceID != "" {
 				logFields["service_id"] = serviceID
+			} else {
+				delete(logFields, "service_id")
 			}
 		} else {
 			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
@@ -343,7 +370,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func selectLogFormats(config Config, metadata pluginMetadata) (map[string]string, map[string]string) {
+func selectLogFormats(config Config, metadata pluginMetadata) (map[string]any, map[string]any) {
 	if config.logFormatSet || len(config.LogFormat) > 0 {
 		return config.LogFormat, nil
 	}
@@ -387,24 +414,56 @@ func captureAccessRequest(r *http.Request, started time.Time, serverAddr string)
 func resolveSyslogLogFormat(
 	r *http.Request,
 	request accessRequest,
-	format map[string]string,
+	format map[string]any,
 ) map[string]any {
 	fields := make(map[string]any, len(format))
 	for key, value := range format {
-		switch value {
-		case "$host":
-			fields[key] = request.host
-		case "$remote_addr":
-			fields[key] = request.clientIP
-		case "$time_iso8601":
-			fields[key] = request.started.Format(time.RFC3339)
-		case "$upstream_addr":
-			fields[key] = upstreamAddress(r)
-		default:
-			fields[key] = apisixlog.GetField(r, value)
-		}
+		fields[key] = resolveSyslogLogFormatNode(r, request, value)
 	}
 	return fields
+}
+
+func resolveSyslogLogFormatNode(r *http.Request, request accessRequest, value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return resolveSyslogLogFormat(r, request, typed)
+	case string:
+		switch typed {
+		case "$host":
+			return request.host
+		case "$remote_addr":
+			return request.clientIP
+		case "$time_iso8601":
+			return request.started.Format(time.RFC3339)
+		case "$upstream_addr":
+			return upstreamAddress(r)
+		default:
+			return apisixlog.GetField(r, typed)
+		}
+	default:
+		return typed
+	}
+}
+
+func truncateSyslogLogFormat(format map[string]any, depth int) (map[string]any, bool) {
+	result := make(map[string]any, len(format))
+	truncated := false
+	for key, value := range format {
+		nested, ok := value.(map[string]any)
+		if !ok {
+			result[key] = value
+			continue
+		}
+		if depth+1 >= maxFormatDepth {
+			result[key] = map[string]any{}
+			truncated = truncated || len(nested) > 0
+			continue
+		}
+		resolved, childTruncated := truncateSyslogLogFormat(nested, depth+1)
+		result[key] = resolved
+		truncated = truncated || childTruncated
+	}
+	return result, truncated
 }
 
 func (p *Plugin) defaultAccessLog(
@@ -598,29 +657,9 @@ func requestHostname(r *http.Request) string {
 }
 
 func (p *Plugin) sendBody(body []byte) error {
-	connection, err := p.dial()
-	if err != nil {
-		return fmt.Errorf(
-			"failed to connect to syslog server: host[%s] port[%d]: %w",
-			p.config.Host,
-			p.config.Port,
-			err,
-		)
+	if p.transport == nil {
+		return errors.New("syslog transport is not initialized")
 	}
-	defer func() { _ = connection.Close() }()
-
-	if _, err = connection.Write(body); err != nil {
-		return fmt.Errorf("failed to send log message: %s in syslog", err)
-	}
-	return nil
-}
-
-func (p *Plugin) dial() (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: time.Duration(p.config.Timeout) * time.Millisecond}
-	if !p.config.TLS {
-		return dialer.Dial(p.config.SockType, p.config.addr)
-	}
-	return tls.DialWithDialer(dialer, "tcp", p.config.addr, &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // APISIX syslog TLS does not verify the peer certificate
-	})
+	_, err := p.transport.Log(body)
+	return err
 }

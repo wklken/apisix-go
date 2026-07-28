@@ -18,7 +18,7 @@ cases:
               batch_max_size: 1
               buffer_duration: 60
               drop_limit: 1048576
-              flush_limit: 4096
+              flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               inactive_timeout: 5
               log_format:
@@ -111,6 +111,7 @@ cases:
               plugins:
                 syslog:
                   batch_max_size: 1
+                  flush_limit: 1
                   host: '{{FIXTURE.sink.HOST}}'
                   port: '{{FIXTURE.sink.PORT}}'
               upstream:
@@ -157,6 +158,7 @@ cases:
               plugins:
                 syslog:
                   batch_max_size: 1
+                  flush_limit: 1
                   host: '{{FIXTURE.sink.HOST}}'
                   port: '{{FIXTURE.sink.PORT}}'
                   tls: true
@@ -191,7 +193,7 @@ cases:
               body: {equals: tls-ok}
             wait: 1s
 
-  - name: batch-is-concatenated-rfc5424-frames-in-order
+  - name: explicit-flush-concatenates-buffered-rfc5424-frames-in-order
     source:
       file: t/plugin/syslog.t
       tests: [6]
@@ -201,8 +203,9 @@ cases:
           uri: /batch/*
           plugins:
             syslog:
-              batch_max_size: 2
+              batch_max_size: 1
               buffer_duration: 60
+              flush_limit: 100000
               host: '{{FIXTURE.sink.HOST}}'
               inactive_timeout: 60
               log_format:
@@ -229,10 +232,30 @@ cases:
       - name: buffer-first-frame
         input: {method: GET, path: /batch/abc, headers: {Host: localhost}}
         output: {status: 200, body: {equals: abc}}
-      - name: second-frame-flushes-ordered-batch
+      - name: buffer-second-frame
         input: {method: GET, path: /batch/efg, headers: {Host: localhost}}
         output: {status: 200, body: {equals: efg}}
-        wait: 1s
+      - name: route-reload-explicitly-flushes-socket-buffer
+        config:
+          routes:
+            - id: syslog-ordered-batch
+              uri: /batch/*
+              upstream:
+                type: roundrobin
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+            - id: syslog-explicit-flush-probe
+              uri: /explicit-flush-probe
+              plugins:
+                mocking:
+                  response_status: 204
+                  response_example: ready
+        config_probe:
+          input: {path: /explicit-flush-probe}
+          output: {status: 204}
+        config_timeout: 2s
+        input: {method: GET, path: /explicit-flush-probe}
+        output: {status: 204}
 
   - name: flush-limit-case-emits-latency
     source:
@@ -244,7 +267,6 @@ cases:
           uri: /flush-limit
           plugins:
             syslog:
-              batch_max_size: 1
               flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               inactive_timeout: 1
@@ -284,6 +306,7 @@ cases:
           plugins:
             syslog:
               batch_max_size: 1
+              flush_limit: 1
               host: '{{FIXTURE.first.HOST}}'
               log_format: {marker: first}
               port: '{{FIXTURE.first.PORT}}'
@@ -326,6 +349,7 @@ cases:
               plugins:
                 syslog:
                   batch_max_size: 1
+                  flush_limit: 1
                   host: '{{FIXTURE.second.HOST}}'
                   log_format: {marker: second}
                   port: '{{FIXTURE.second.PORT}}'
@@ -359,12 +383,18 @@ cases:
             host: '$host'
             client_ip: '$remote_addr'
             upstream: '$upstream_addr'
+            nested:
+              host: '$host'
+              constants:
+                number: 7
+                bool: true
       routes:
         - id: syslog-metadata-lifecycle
           uri: /metadata
           plugins:
             syslog:
               batch_max_size: 1
+              flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               port: '{{FIXTURE.sink.PORT}}'
           upstream:
@@ -386,6 +416,9 @@ cases:
               - {path: /host, value: {equals: localhost}}
               - {path: /client_ip, value: {equals: 127.0.0.1}}
               - {path: /upstream, value: {matches: '^127\.0\.0\.1:[0-9]+$'}}
+              - {path: /nested/host, value: {equals: localhost}}
+              - {path: /nested/constants/number, value: {equals: '7'}}
+              - {path: /nested/constants/bool, value: {equals: 'true'}}
               - {path: /route_id, value: {equals: syslog-metadata-lifecycle}}
           - rfc5424_json_fields:
               - {path: /marker, value: {equals: metadata-two}}
@@ -423,6 +456,7 @@ cases:
               plugins:
                 syslog:
                   batch_max_size: 1
+                  flush_limit: 1
                   host: '{{FIXTURE.sink.HOST}}'
                   port: '{{FIXTURE.sink.PORT}}'
               upstream:
@@ -454,6 +488,7 @@ cases:
               plugins:
                 syslog:
                   batch_max_size: 1
+                  flush_limit: 1
                   host: '{{FIXTURE.sink.HOST}}'
                   port: '{{FIXTURE.sink.PORT}}'
               upstream:
@@ -489,9 +524,16 @@ cases:
           plugins:
             syslog:
               batch_max_size: 1
+              flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               log_format:
                 marker: route-wins
+                nested:
+                  host: '$host'
+                  constants:
+                    number: 7
+                    bool: true
+                service_id: stale-service
                 vip: '$remote_addr'
               port: '{{FIXTURE.sink.PORT}}'
           upstream:
@@ -503,18 +545,63 @@ cases:
         kind: http
         respond:
           - {status: 200, body: route}
+          - {status: 200, body: route}
       - name: sink
         kind: tcp
         network_expect:
           - rfc5424_json_fields:
               - {path: /marker, value: {equals: route-wins}}
+              - {path: /nested/host, value: {equals: localhost}}
+              - {path: /nested/constants/number, value: {equals: '7'}}
+              - {path: /nested/constants/bool, value: {equals: 'true'}}
               - {path: /vip, value: {equals: 127.0.0.1}}
               - {path: /route_id, value: {equals: syslog-route-format}}
-            forbidden_matches: [metadata-should-lose]
+            forbidden_matches: [metadata-should-lose, stale-service, '"service_id"']
+          - rfc5424_json_fields:
+              - {path: /route_id, value: {equals: syslog-route-format}}
+            forbidden_matches:
+              - metadata-should-lose
+              - stale-service
+              - '"request"'
+              - '"service_id"'
         network_respond:
+          - {close: true}
           - payload: ''
     steps:
       - name: route-local-format-wins
+        input: {method: GET, path: /route-format, headers: {Host: localhost}}
+        output: {status: 200, body: {equals: route}}
+        wait: 1s
+      - name: explicit-empty-route-format-stays-custom
+        config:
+          plugin_metadata:
+            - id: syslog
+              log_format:
+                marker: metadata-should-lose
+          routes:
+            - id: syslog-route-format
+              uri: /route-format
+              plugins:
+                syslog:
+                  batch_max_size: 1
+                  flush_limit: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  log_format: {}
+                  port: '{{FIXTURE.sink.PORT}}'
+              upstream:
+                type: roundrobin
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+            - id: syslog-route-format-probe
+              uri: /route-format-probe
+              plugins:
+                mocking:
+                  response_status: 204
+                  response_example: ready
+        config_probe:
+          input: {path: /route-format-probe}
+          output: {status: 204}
+        config_timeout: 2s
         input: {method: GET, path: /route-format, headers: {Host: localhost}}
         output: {status: 200, body: {equals: route}}
         wait: 1s
@@ -530,6 +617,7 @@ cases:
           plugins:
             syslog:
               batch_max_size: 1
+              flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               log_format:
                 marker: udp
@@ -571,6 +659,7 @@ cases:
           plugins:
             syslog:
               batch_max_size: 1
+              flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               include_req_body: true
               port: '{{FIXTURE.sink.PORT}}'
@@ -617,6 +706,7 @@ cases:
           plugins:
             syslog:
               batch_max_size: 1
+              flush_limit: 1
               host: '{{FIXTURE.sink.HOST}}'
               include_resp_body: true
               port: '{{FIXTURE.sink.PORT}}'

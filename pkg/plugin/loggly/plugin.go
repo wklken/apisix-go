@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -24,8 +26,10 @@ type Plugin struct {
 }
 
 const (
-	priority = 411
-	name     = "loggly"
+	priority          = 411
+	name              = "loggly"
+	version           = "apisix-go"
+	logglyStatusField = "\x00loggly_status"
 )
 
 const schema = `
@@ -289,11 +293,10 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if !p.config.IncludeReqBody && !p.config.IncludeRespBody {
-		return p.BaseLoggerPlugin.Handler(next)
-	}
-
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		request := captureAccessRequest(r, started, p.ServerAddr)
+
 		var requestBody string
 		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
 			body, err := base.ReadAndRestoreRequestBody(r, p.config.MaxReqBodyBytes)
@@ -309,23 +312,197 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			writer = recorder
 		}
 
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
+		metrics := httpsnoop.CaptureMetrics(next, writer, r)
+		var logFields map[string]any
+		if len(p.LogFormat) > 0 {
+			logFields = resolveLogFormat(r, request, p.LogFormat)
+			logFields["route_id"] = p.RouteID
+		} else {
+			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
 		}
 
-		logFields := apisixlog.GetFields(r, p.LogFormat)
 		if requestBody != "" {
 			base.NestedLogMap(logFields, "request")["body"] = requestBody
 		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
+		if recorder != nil && recorder.HasBody() &&
+			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code) {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
+		logFields[logglyStatusField] = metrics.Code
 
 		_ = p.Fire(logFields)
 	}
 	return http.HandlerFunc(fn)
+}
+
+type accessRequest struct {
+	method        string
+	uri           string
+	url           string
+	host          string
+	clientIP      string
+	contentLength int64
+	headers       map[string]any
+	queryString   map[string]any
+	started       time.Time
+}
+
+func captureAccessRequest(r *http.Request, started time.Time, serverAddr string) accessRequest {
+	headers := collapseHeaderValues(r.Header)
+	headers["host"] = r.Host
+	return accessRequest{
+		method:        r.Method,
+		uri:           r.URL.RequestURI(),
+		url:           requestURL(r, serverAddr),
+		host:          hostWithoutPort(r.Host),
+		clientIP:      hostWithoutPort(r.RemoteAddr),
+		contentLength: max(r.ContentLength, 0),
+		headers:       headers,
+		queryString:   collapseQueryValues(r.URL.Query()),
+		started:       started,
+	}
+}
+
+func resolveLogFormat(r *http.Request, request accessRequest, format map[string]string) map[string]any {
+	fields := make(map[string]any, len(format))
+	for key, value := range format {
+		switch value {
+		case "$host":
+			fields[key] = request.host
+		case "$remote_addr":
+			fields[key] = request.clientIP
+		case "$time_iso8601":
+			fields[key] = request.started.Format(time.RFC3339)
+		default:
+			fields[key] = apisixlog.GetField(r, value)
+		}
+	}
+	return fields
+}
+
+func (p *Plugin) defaultAccessLog(
+	r *http.Request,
+	request accessRequest,
+	metrics httpsnoop.Metrics,
+	responseHeaders http.Header,
+) map[string]any {
+	hostname, _ := os.Hostname()
+	latency := float64(metrics.Duration) / float64(time.Millisecond)
+	upstreamLatency := requestInt64(r, "$upstream_latency")
+	apisixLatency := latency - float64(upstreamLatency)
+	if apisixLatency < 0 {
+		apisixLatency = 0
+	}
+	log := map[string]any{
+		"request": map[string]any{
+			"url":         request.url,
+			"uri":         request.uri,
+			"method":      request.method,
+			"headers":     request.headers,
+			"querystring": request.queryString,
+			"size":        request.contentLength,
+		},
+		"response": map[string]any{
+			"status":  metrics.Code,
+			"headers": collapseHeaderValues(responseHeaders),
+			"size":    metrics.Written,
+		},
+		"server": map[string]any{
+			"hostname": hostname,
+			"version":  version,
+		},
+		"service_id":       apisixString(r, "$service_id"),
+		"route_id":         p.RouteID,
+		"client_ip":        request.clientIP,
+		"start_time":       float64(request.started.UnixNano()) / float64(time.Millisecond),
+		"latency":          latency,
+		"upstream_latency": upstreamLatency,
+		"apisix_latency":   apisixLatency,
+		"upstream":         upstreamAddress(r),
+	}
+	if consumer := apisixString(r, "$consumer_name"); consumer != "" {
+		log["consumer"] = map[string]any{"username": consumer}
+	}
+	return log
+}
+
+func requestURL(r *http.Request, serverAddr string) string {
+	scheme := r.URL.Scheme
+	if scheme == "" {
+		scheme = "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+	}
+	host := hostWithoutPort(r.Host)
+	_, port, err := net.SplitHostPort(serverAddr)
+	if err != nil {
+		_, port, _ = net.SplitHostPort(r.Host)
+	}
+	authority := host
+	if port != "" {
+		authority = net.JoinHostPort(host, port)
+	}
+	return scheme + "://" + authority + r.URL.RequestURI()
+}
+
+func collapseHeaderValues(values http.Header) map[string]any {
+	normalized := make(map[string][]string, len(values))
+	for key, value := range values {
+		key = strings.ToLower(key)
+		normalized[key] = append(normalized[key], value...)
+	}
+	return collapseValues(normalized)
+}
+
+func collapseQueryValues(values map[string][]string) map[string]any {
+	return collapseValues(values)
+}
+
+func collapseValues(values map[string][]string) map[string]any {
+	collapsed := make(map[string]any, len(values))
+	for key, value := range values {
+		if len(value) == 1 {
+			collapsed[key] = value[0]
+		} else {
+			collapsed[key] = value
+		}
+	}
+	return collapsed
+}
+
+func hostWithoutPort(address string) string {
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		return host
+	}
+	return strings.Trim(address, "[]")
+}
+
+func upstreamAddress(r *http.Request) string {
+	host, _ := apisixctx.GetApisixVar(r, "$balancer_ip").(string)
+	port, _ := apisixctx.GetApisixVar(r, "$balancer_port").(string)
+	if host == "" || port == "" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func apisixString(r *http.Request, key string) string {
+	value, _ := apisixctx.GetApisixVar(r, key).(string)
+	return value
+}
+
+func requestInt64(r *http.Request, key string) int64 {
+	switch value := apisixctx.GetRequestVar(r, key).(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	default:
+		return 0
+	}
 }
 
 func (p *Plugin) Send(log map[string]any) {
@@ -398,7 +575,7 @@ func (p *Plugin) sendHTTPBulk(entries []map[string]any, batchMaxSize int) error 
 
 func (p *Plugin) encodeHTTPBulk(entries []map[string]any, batchMaxSize int) ([]byte, error) {
 	if batchMaxSize == 1 && len(entries) == 1 {
-		payload, err := json.Marshal(entries[0])
+		payload, err := json.Marshal(logglyPayload(entries[0]))
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal loggly message: %w", err)
 		}
@@ -407,7 +584,7 @@ func (p *Plugin) encodeHTTPBulk(entries []map[string]any, batchMaxSize int) ([]b
 
 	lines := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		payload, err := json.Marshal(entry)
+		payload, err := json.Marshal(logglyPayload(entry))
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal loggly message: %w", err)
 		}
@@ -425,7 +602,7 @@ func (p *Plugin) bulkEndpoint() string {
 }
 
 func (p *Plugin) buildMessage(log map[string]any) string {
-	payload, err := json.Marshal(log)
+	payload, err := json.Marshal(logglyPayload(log))
 	if err != nil {
 		payload = []byte(`{}`)
 	}
@@ -448,6 +625,12 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 }
 
 func messageSeverity(defaultSeverity string, severityMap map[string]string, log map[string]any) int {
+	if status, ok := log[logglyStatusField]; ok {
+		key := fmt.Sprint(status)
+		if severity, ok := severityMap[key]; ok {
+			return severityCode(severity)
+		}
+	}
 	if status, ok := log["status"]; ok {
 		key := fmt.Sprint(status)
 		if severity, ok := severityMap[key]; ok {
@@ -455,6 +638,19 @@ func messageSeverity(defaultSeverity string, severityMap map[string]string, log 
 		}
 	}
 	return severityCode(defaultSeverity)
+}
+
+func logglyPayload(entry map[string]any) map[string]any {
+	if _, ok := entry[logglyStatusField]; !ok {
+		return entry
+	}
+	payload := make(map[string]any, len(entry)-1)
+	for key, value := range entry {
+		if key != logglyStatusField {
+			payload[key] = value
+		}
+	}
+	return payload
 }
 
 func severityCode(severity string) int {

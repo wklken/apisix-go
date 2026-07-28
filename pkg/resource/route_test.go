@@ -2,8 +2,24 @@ package resource
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
+
+func TestRouteUnmarshalPreservesLabels(t *testing.T) {
+	var route Route
+	if err := json.Unmarshal([]byte(`{
+		"id": "labeled-route",
+		"uri": "/labels",
+		"labels": {"key": "testvalue", "revision": 2}
+	}`), &route); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	want := map[string]any{"key": "testvalue", "revision": float64(2)}
+	if !reflect.DeepEqual(route.Labels, want) {
+		t.Fatalf("route labels = %#v, want %#v", route.Labels, want)
+	}
+}
 
 func TestUpstreamUnmarshalPreservesKafkaTLSOptions(t *testing.T) {
 	var upstream Upstream

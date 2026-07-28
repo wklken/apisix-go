@@ -256,6 +256,7 @@ type Route struct {
 	Priority    int                     `json:"priority,omitempty"`
 	Name        string                  `json:"name,omitempty"`
 	Desc        string                  `json:"desc,omitempty"`
+	Labels      map[string]any          `json:"labels,omitempty"`
 	RemoteAddrs []string                `json:"remote_addrs,omitempty"`
 	Vars        [][]string              `json:"vars,omitempty"`
 	// FIXME: the ID maybe number => will unmarshal fail

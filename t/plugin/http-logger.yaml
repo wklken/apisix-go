@@ -1,445 +1,1097 @@
-cases:
-    - config:
-        routes:
-            - id: http-logger-source-1
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-1
-      source:
-        file: t/plugin/http-logger-json.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: http-logger-source-2
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-2
-      source:
-        file: t/plugin/http-logger-large-body.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: http-logger-source-3
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-3
-      source:
-        file: t/plugin/http-logger-log-format.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: http-logger-source-4
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-4
-      source:
-        file: t/plugin/http-logger-new-line.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: http-logger-source-5
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-5
-      source:
-        file: t/plugin/http-logger.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: http-logger-source-6
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-6
-      source:
-        file: t/plugin/http-logger2.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: http-logger-source-7
-              plugins:
-                http-logger:
-                    batch_max_size: 1
-                    inactive_timeout: 1
-                    uri: '{{FIXTURE.sink.URL}}/logs'
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
-          expect:
-            - method: POST
-              path: {equals: /logs}
-          respond:
-            - body: ok
-              headers: {}
-              status: 200
-      name: http-logger-source-7
-      source:
-        file: t/plugin/http-logger3.t
-        tests:
-            - 1
-            - 2
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: log-delivered-to-sink
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger-json.t
-      tests: 8
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger-large-body.t
-      tests: 29
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger-log-format.t
-      tests: 21
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger-new-line.t
-      tests: 10
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger.t
-      tests: 29
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger2.t
-      tests: 15
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-logger3.t
-      tests: 2
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger-json.t, tests: 8}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger-large-body.t, tests: 29}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger-log-format.t, tests: 21}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger-new-line.t, tests: 10}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger.t, tests: 29}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger2.t, tests: 15}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/http-logger3.t, tests: 2}
+
+cases:
+  - name: request-and-response-body-selection
+    source: {file: t/plugin/http-logger-json.t, tests: [1, 2, 3, 4, 5, 6, 7, 8]}
+    variants:
+      - name: request-body
+        config:
+          routes:
+            - id: body-request
+              uri: /body-request
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, log_format: {case: request}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: POST, path: {equals: /body-request}, body: {equals: request-body}}], respond: [{status: 200, body: response-body}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /logs}, body: {json_equals: '{"case":"request","request":{"body":"request-body"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: request-body-is-logged, input: {method: POST, path: /body-request, body: request-body}, output: {status: 200, body: {equals: response-body}}}
+      - name: response-body
+        config:
+          routes:
+            - id: body-response
+              uri: /body-response
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, log_format: {case: response}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, expect: [{method: POST, path: {equals: /body-response}, body: {equals: request-body}}], respond: [{status: 200, body: response-body}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /logs}, body: {json_equals: '{"case":"response","response":{"body":"response-body"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: response-body-is-logged, input: {method: POST, path: /body-response, body: request-body}, output: {status: 200, body: {equals: response-body}}}
+      - name: response-expression-hit
+        config:
+          routes:
+            - id: response-expression-hit
+              uri: /response-expression-hit
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, include_resp_body_expr: [[arg_bar, '==', baz]], log_format: {case: response-hit}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-hit","response":{"body":"response-body"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: matching-response-expression, input: {path: '/response-expression-hit?bar=baz'}, output: {status: 200, body: {equals: response-body}}}
+      - name: response-expression-miss
+        config:
+          routes:
+            - id: response-expression-miss
+              uri: /response-expression-miss
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, include_resp_body_expr: [[arg_bar, '==', baz]], log_format: {case: response-miss}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-miss"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: nonmatching-response-expression, input: {path: '/response-expression-miss?bar=no'}, output: {status: 200, body: {equals: response-body}}}
+      - name: both-bodies
+        config:
+          routes:
+            - id: both-bodies
+              uri: /both-bodies
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, include_resp_body: true, log_format: {case: both}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"both","request":{"body":"request-body"},"response":{"body":"response-body"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: both-bodies-logged, input: {method: POST, path: /both-bodies, body: request-body}, output: {status: 200, body: {equals: response-body}}}
+      - name: neither-body
+        config:
+          routes:
+            - id: neither-body
+              uri: /neither-body
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, log_format: {case: neither}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"neither"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: neither-body-logged, input: {method: POST, path: /neither-body, body: request-body}, output: {status: 200, body: {equals: response-body}}}
+      - name: request-expression-hit
+        config:
+          routes:
+            - id: request-expression-hit
+              uri: /request-expression-hit
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, include_req_body_expr: [[arg_bar, '==', baz]], log_format: {case: request-hit}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-hit","request":{"body":"request-body"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: matching-request-expression, input: {method: POST, path: '/request-expression-hit?bar=baz', body: request-body}, output: {status: 200, body: {equals: ok}}}
+      - name: request-expression-miss
+        config:
+          routes:
+            - id: request-expression-miss
+              uri: /request-expression-miss
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, include_req_body_expr: [[arg_bar, '==', baz]], log_format: {case: request-miss}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-miss"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: nonmatching-request-expression, input: {method: POST, path: '/request-expression-miss?bar=no', body: request-body}, output: {status: 200, body: {equals: ok}}}
+
+  - name: body-size-schema-rejection
+    source: {file: t/plugin/http-logger-large-body.t, tests: [1, 2]}
+    variants:
+      - name: request-size-string
+        config:
+          routes:
+            - id: invalid-request-size
+              uri: /invalid-request-size
+              plugins:
+                http-logger: {uri: 'http://127.0.0.1/logs', max_req_body_bytes: invalid}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        input: {path: /invalid-request-size}
+        output: {status: 404, logs: {matches: 'max_req_body_bytes.+integer'}}
+      - name: response-size-string
+        config:
+          routes:
+            - id: invalid-response-size
+              uri: /invalid-response-size
+              plugins:
+                http-logger: {uri: 'http://127.0.0.1/logs', max_resp_body_bytes: invalid}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        input: {path: /invalid-response-size}
+        output: {status: 404, logs: {matches: 'max_resp_body_bytes.+integer'}}
+
+  - name: body-truncation-matrix
+    source: {file: t/plugin/http-logger-large-body.t, tests: [3, 4, 5, 6, 7, 8, 9, 10]}
+    variants:
+      - name: request-only
+        config:
+          routes:
+            - id: truncate-request
+              uri: /truncate-request
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, max_req_body_bytes: 5, log_format: {case: request-only}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-only","request":{"body":"abcde"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: request-truncated, input: {method: POST, path: /truncate-request, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
+      - name: response-only
+        config:
+          routes:
+            - id: truncate-response
+              uri: /truncate-response
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, max_resp_body_bytes: 5, log_format: {case: response-only}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-only","response":{"body":"abcde"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: response-truncated, input: {method: POST, path: /truncate-response, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
+      - name: both
+        config:
+          routes:
+            - id: truncate-both
+              uri: /truncate-both
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5, log_format: {case: both}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"both","request":{"body":"abcde"},"response":{"body":"abcde"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: both-truncated, input: {method: POST, path: /truncate-both, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
+      - name: neither
+        config:
+          routes:
+            - id: truncate-neither
+              uri: /truncate-neither
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, max_req_body_bytes: 5, max_resp_body_bytes: 5, log_format: {case: neither}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"neither"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: neither-captured, input: {method: POST, path: /truncate-neither, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
+
+  - name: large-and-empty-body-caps
+    source: {file: t/plugin/http-logger-large-body.t, tests: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]}
+    variants:
+      - name: both-large
+        config:
+          routes:
+            - id: both-large
+              uri: /both-large
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, include_resp_body: true, max_req_body_bytes: 256, max_resp_body_bytes: 256, log_format: {case: both-large}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, echo_request_body: true}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '"request":\{"body":"hello[l]{251}"\}.*"response":\{"body":"hello[l]{251}"\}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: both-capped-at-256, input: {method: POST, path: /both-large, body_repeat: {prefix: hello, value: l, count: 10240}}, output: {status: 200}}
+      - name: response-only-ten-kilobytes
+        config:
+          routes:
+            - id: response-only-ten-kilobytes
+              uri: /response-only-ten-kilobytes
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, max_resp_body_bytes: 256, log_format: {case: response-only-10k}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, echo_request_body: true}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '"case":"response-only-10k".*"response":\{"body":"hello[l]{251}"\}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: response-only-echo-is-capped, input: {method: POST, path: /response-only-ten-kilobytes, body_repeat: {prefix: hello, value: l, count: 10240}}, output: {status: 200}}
+      - name: request-only-ten-kilobytes
+        config:
+          routes:
+            - id: request-only-ten-kilobytes
+              uri: /request-only-ten-kilobytes
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, max_req_body_bytes: 256, log_format: {case: request-only-10k}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, echo_request_body: true}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '"case":"request-only-10k".*"request":\{"body":"hello[l]{251}"\}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: request-only-echo-is-capped, input: {method: POST, path: /request-only-ten-kilobytes, body_repeat: {prefix: hello, value: l, count: 10240}}, output: {status: 200}}
+      - name: response-large
+        config:
+          routes:
+            - id: response-large
+              uri: /response-large
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, max_resp_body_bytes: 256, log_format: {case: response-large}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body_repeat: {prefix: hello, value: l, count: 1048576}}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '"response":\{"body":"hello[l]{251}"\}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: one-megabyte-response-capped, input: {path: /response-large}, output: {status: 200}}
+      - name: request-large
+        config:
+          routes:
+            - id: request-large
+              uri: /request-large
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, max_req_body_bytes: 256, log_format: {case: request-large}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '"request":\{"body":"hello[l]{251}"\}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: hundred-kilobyte-request-capped, input: {method: POST, path: /request-large, body_repeat: {prefix: hello, value: l, count: 102400}}, output: {status: 200, body: {equals: ok}}}
+      - name: empty-request
+        config:
+          routes:
+            - id: empty-request
+              uri: /empty-request
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, log_format: {case: empty}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"empty"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: empty-request-does-not-add-body, input: {path: '/empty-request?ab=cd'}, output: {status: 200, body: {equals: ok}}}
+
+  - name: metadata-and-route-log-format
+    source: {file: t/plugin/http-logger-large-body.t, tests: [23, 24, 25]}
+    config:
+      plugin_metadata:
+        - id: http-logger
+          log_format: {request_body: $request_body}
+      routes:
+        - id: metadata-format-route
+          uri: /metadata-format
+          plugins:
+            http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, max_req_body_bytes: 5}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: route-format-route
+          uri: /route-format
+          plugins:
+            http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, max_req_body_bytes: 5, log_format: {request_body: $request_body}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - {method: POST, body: {json_equals: '{"request_body":"abcde"}'}}
+          - {method: POST, body: {matches: '"request".*"body":"abcde".*"request_body":"abcde"|"request_body":"abcde".*"request".*"body":"abcde"'}}
+        respond: [{status: 200}]
+    steps:
+      - {name: metadata-format-captures-capped-request, input: {method: POST, path: /metadata-format, body: abcdef}, output: {status: 200, body: {equals: ok}}}
+      - {name: route-format-overrides-and-captures, input: {method: POST, path: /route-format, body: abcdef}, output: {status: 200, body: {equals: ok}}}
+
+  - name: newline-body-truncation-batches
+    source: {file: t/plugin/http-logger-large-body.t, tests: [26, 27, 28, 29]}
+    variants:
+      - name: request-batch
+        config:
+          routes:
+            - id: newline-request
+              uri: /newline-request
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 2, include_req_body: true, max_req_body_bytes: 5, log_format: {kind: request}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: text/plain}}, body: {matches: '^\{"kind":"request","request":\{"body":"test_"\}\}\n\{"kind":"request","request":\{"body":"test_"\}\}$'}}], respond: [{status: 200}]}
+        steps:
+          - {name: two-request-bodies-form-one-newline-batch, repeat: 2, input: {method: POST, path: /newline-request, body: test_body}, output: {status: 200, body: {equals: ok}}}
+      - name: response-batch
+        config:
+          routes:
+            - id: newline-response
+              uri: /newline-response
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 2, include_resp_body: true, max_resp_body_bytes: 6, log_format: {kind: response}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: hello world}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '^\{"kind":"response","response":\{"body":"hello "\}\}\n\{"kind":"response","response":\{"body":"hello "\}\}$'}}], respond: [{status: 200}]}
+        steps:
+          - {name: two-response-bodies-form-one-newline-batch, repeat: 2, input: {path: /newline-response}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: metadata-log-format-and-json-newline-shapes
+    source: {file: t/plugin/http-logger-log-format.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    variants:
+      - name: newline-single
+        config:
+          plugin_metadata:
+            - {id: http-logger, log_format: {host: $http_host, '@timestamp': $time_iso8601, client_ip: $remote_addr}}
+          routes:
+            - id: newline-single
+              uri: /newline-single
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: text/plain}}, body: {matches: '^\{"@timestamp":"[^"]+","client_ip":"[^"]+","host":"example.com"\}$'}}], respond: [{status: 200}]}
+        steps:
+          - {name: newline-single-object, input: {path: /newline-single, headers: {Host: example.com}}, output: {status: 200, body: {equals: ok}}}
+      - name: newline-two
+        config:
+          routes:
+            - id: newline-two
+              uri: /newline-two
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 2, log_format: {path: $uri}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '^\{"path":"/newline-two"\}\n\{"path":"/newline-two"\}$'}}], respond: [{status: 200}]}
+        steps:
+          - {name: newline-two-objects, repeat: 2, input: {path: /newline-two}, output: {status: 200, body: {equals: ok}}}
+      - name: json-single
+        config:
+          routes:
+            - id: json-single
+              uri: /json-single
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: json, batch_max_size: 1, log_format: {path: $uri}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: application/json}}, body: {json_equals: '{"path":"/json-single"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: json-single-object, input: {path: /json-single}, output: {status: 200, body: {equals: ok}}}
+      - name: json-two
+        config:
+          routes:
+            - id: json-two
+              uri: /json-two
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: json, batch_max_size: 2, log_format: {path: $uri}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"path":"/json-two"},{"path":"/json-two"}]'}}], respond: [{status: 200}]}
+        steps:
+          - {name: json-array-of-two, repeat: 2, input: {path: /json-two}, output: {status: 200, body: {equals: ok}}}
+
+  - name: metadata-removal-and-default-log
+    source: {file: t/plugin/http-logger-log-format.t, tests: [10, 11, 12, 13]}
+    config:
+      plugin_metadata:
+        - {id: http-logger, log_format: {phase: metadata}}
+      routes:
+        - id: metadata-removal
+          uri: /metadata-removal
+          plugins:
+            http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - {body: {json_equals: '{"phase":"metadata"}'}}
+          - {body: {matches: '"request":\{"method":"GET","uri":"/metadata-removal"\}.*"response":\{"status":200\}.*"route_id":"metadata-removal"|"route_id":"metadata-removal".*"request".*"response"'}}
+          - {body: {matches: '"consumer":\{"username":"jack"\}'}}
+        respond: [{status: 200}]
+    steps:
+      - {name: metadata-format-active, input: {path: /metadata-removal}, output: {status: 200, body: {equals: ok}}}
+      - name: removing-metadata-restores-default-format
+        config:
+          routes:
+            - id: metadata-removal
+              uri: /metadata-removal
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: metadata-removal-ready
+              uri: /metadata-removal-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /metadata-removal-ready}, output: {status: 200, body: {equals: ok}}}
+        input: {path: /metadata-removal}
+        output: {status: 200, body: {equals: ok}}
+      - name: route-removal-removes-the-logger
+        config:
+          routes:
+            - id: metadata-route-removed-ready
+              uri: /metadata-route-removed-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /metadata-route-removed-ready}, output: {status: 200, body: {equals: ok}}}
+        input: {path: /metadata-removal}
+        output: {status: 404}
+      - name: default-format-includes-authenticated-consumer
+        config:
+          consumers:
+            - username: jack
+              plugins: {key-auth: {key: auth-one}}
+          routes:
+            - id: default-consumer-log
+              uri: /metadata-removal
+              plugins:
+                key-auth: {}
+                http-logger:
+                  uri: '{{FIXTURE.sink.URL}}/logs'
+                  batch_max_size: 1
+                  max_retry_count: 1
+                  retry_delay: 2
+                  buffer_duration: 2
+                  inactive_timeout: 2
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: metadata-consumer-ready
+              uri: /metadata-consumer-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /metadata-consumer-ready}, output: {status: 200, body: {equals: ok}}}
+        input: {path: /metadata-removal, headers: {apikey: auth-one}}
+        output: {status: 200, body: {equals: ok}}
+
+  - name: expression-custom-override-and-nested-log-format
+    source: {file: t/plugin/http-logger-log-format.t, tests: [14, 15, 16, 17, 18, 19, 20]}
+    config:
+      plugin_metadata:
+        - {id: http-logger, log_format: {host: $host, labels: $a6_route_labels, client_ip: $remote_addr}}
+      routes:
+        - id: format-features
+          name: named-route
+          uri: /format-features
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              include_req_body: true
+              include_req_body_expr: [[arg_log, '==', yes], [request_method, '==', POST]]
+              log_format:
+                source: route
+                route_name: $route_name
+                nested: {method: $request_method, request_body: $request_body}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: route-label-variable
+          uri: /route-label-variable
+          labels: {key: testvalue}
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: nested-expression
+          uri: /nested-expression
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              include_resp_body: true
+              include_resp_body_expr:
+                - [http_content_length, '<', 1024]
+                - [http_content_type, in, [application/xml, application/json, text/plain, text/xml]]
+              log_format: {source: nested-expression}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - {body: {json_equals: '{"nested":{"method":"POST","request_body":"payload"},"route_name":"named-route","source":"route","request":{"body":"payload"}}'}}
+          - {body: {matches: '^\{"client_ip":"[^"]+","host":"example.com","labels":\{"key":"testvalue"\}\}$'}}
+          - {body: {json_equals: '{"source":"nested-expression","response":{"body":"ok"}}'}}
+        respond: [{status: 200}]
+    steps:
+      - {name: route-format-overrides-metadata-and-resolves-nesting, input: {method: POST, path: '/format-features?log=yes', body: payload}, output: {status: 200, body: {equals: ok}}}
+      - {name: custom-route-label-variable-resolves-object, input: {path: /route-label-variable, headers: {Host: example.com}}, output: {status: 200, body: {equals: ok}}}
+      - {name: official-nested-in-expression-captures-response, input: {method: POST, path: /nested-expression, headers: {Content-Length: '4', Content-Type: text/plain}, body: tiny}, output: {status: 200, body: {equals: ok}}}
+
+  - name: depth-five-log-format-truncation
+    source: {file: t/plugin/http-logger-log-format.t, tests: [21]}
+    config:
+      routes:
+        - id: depth-five
+          uri: /depth-five
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              log_format: {a: {b: {c: {d: {e: {f: too-deep}}}}}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - {name: sink, kind: http, expect: [{body: {json_equals: '{"a":{"b":{"c":{"d":{"e":{}}}}}}'}}], respond: [{status: 200}]}
+    steps:
+      - {name: depth-five-object-is-empty, input: {path: /depth-five}, output: {status: 200, body: {equals: ok}, logs: {matches: 'log_format nesting exceeds max depth 5, truncating'}}}
+
+  - name: newline-batch-timing
+    source: {file: t/plugin/http-logger-new-line.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+    variants:
+      - name: batch-one
+        config:
+          routes:
+            - id: newline-batch-one
+              uri: /newline-batch-one
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 1, log_format: {sequence: one}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"sequence":"one"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: batch-size-one-flushes-immediately, input: {path: /newline-batch-one}, output: {status: 200, body: {equals: ok}}}
+      - name: full-batches
+        config:
+          routes:
+            - id: newline-full-batches
+              uri: /newline-full-batches
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 3, inactive_timeout: 5, log_format: {path: $uri}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - name: sink
+            kind: http
+            expect:
+              - {body: {matches: '^(\{"path":"/newline-full-batches"\}\n){2}\{"path":"/newline-full-batches"\}$'}}
+              - {body: {matches: '^(\{"path":"/newline-full-batches"\}\n){2}\{"path":"/newline-full-batches"\}$'}}
+            respond: [{status: 200}]
+        steps:
+          - {name: first-entry-stays-buffered, input: {path: /newline-full-batches}, output: {status: 200, body: {equals: ok}}}
+          - {name: six-total-entries-form-two-full-batches, repeat: 5, input: {path: /newline-full-batches}, output: {status: 200, body: {equals: ok}}}
+      - name: inactive-partial-batch
+        config:
+          routes:
+            - id: newline-inactive
+              uri: /newline-inactive
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', concat_method: new_line, batch_max_size: 3, inactive_timeout: 1, log_format: {path: $uri}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - name: sink
+            kind: http
+            expect:
+              - {body: {matches: '^(\{"path":"/newline-inactive"\}\n){2}\{"path":"/newline-inactive"\}$'}}
+              - {body: {matches: '^\{"path":"/newline-inactive"\}\n\{"path":"/newline-inactive"\}$'}}
+            respond: [{status: 200}]
+        steps:
+          - {name: full-batch-of-three, repeat: 3, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}}
+          - {name: partial-batch-flushes-on-inactivity, repeat: 2, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}}
+
+  - name: global-rule-http-logging
+    source: {file: t/plugin/http-logger-new-line.t, tests: [8, 9, 10]}
+    config:
+      global_rules:
+        - id: global-http-logger
+          plugins:
+            http-logger: {uri: '{{FIXTURE.sink.URL}}/global', concat_method: new_line, batch_max_size: 5, log_format: {path: $uri}}
+      routes:
+        - id: global-ready
+          uri: /global-ready
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: global-ok}]}
+      - {name: sink, kind: http, expect: [{path: {equals: /global}, body: {matches: '^(\{"path":"/unmatched"\}\n){4}\{"path":"/unmatched"\}$'}}], respond: [{status: 200}]}
+    steps:
+      - {name: global-rule-logs-five-unmatched-requests, repeat: 5, input: {path: /unmatched}, output: {status: 404}}
+      - name: deleting-global-rule-stops-delivery
+        config:
+          routes:
+            - id: global-ready
+              uri: /global-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /global-ready}, output: {status: 200, body: {equals: global-ok}}}
+        input: {path: /unmatched}
+        output: {status: 404}
+
+  - name: schema-and-complete-configuration
+    source: {file: t/plugin/http-logger.t, tests: [1, 2]}
+    config:
+      routes:
+        - id: complete-http-logger
+          uri: /complete
+          plugins:
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/complete'
+              auth_header: Bearer complete
+              timeout: 3
+              log_format: {case: complete}
+              include_req_body: true
+              include_req_body_expr: [[arg_log, '==', yes]]
+              include_resp_body: true
+              include_resp_body_expr: [[status, '==', 200]]
+              max_req_body_bytes: 128
+              max_resp_body_bytes: 128
+              concat_method: json
+              ssl_verify: false
+              batch_max_size: 1
+              max_retry_count: 1
+              retry_delay: 0
+              buffer_duration: 2
+              inactive_timeout: 1
+              max_pending_entries: 10
+              name: accepted-extra-field
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: complete-response}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /complete}, headers: {Authorization: {equals: Bearer complete}, Content-Type: {equals: application/json}}, body: {json_equals: '{"case":"complete","request":{"body":"complete-request"},"response":{"body":"complete-response"}}'}}], respond: [{status: 200}]}
+    steps:
+      - {name: full-schema-config-delivers, input: {method: POST, path: '/complete?log=yes', body: complete-request}, output: {status: 200, body: {equals: complete-response}}}
+
+  - name: missing-and-invalid-uri-rejection
+    source: {file: t/plugin/http-logger.t, tests: [3, 16]}
+    variants:
+      - name: missing-uri
+        config:
+          routes:
+            - id: missing-uri
+              uri: /missing-uri
+              plugins:
+                http-logger: {batch_max_size: 1}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        input: {path: /missing-uri}
+        output: {status: 404, logs: {matches: 'http-logger.+uri|required'}}
+      - name: host-only
+        config:
+          routes:
+            - id: host-only
+              uri: /host-only
+              plugins:
+                http-logger: {uri: '127.0.0.1'}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        input: {path: /host-only}
+        output: {status: 404, logs: {matches: 'http-logger.+uri|format'}}
+      - name: scheme-missing
+        config:
+          routes:
+            - id: scheme-missing
+              uri: /scheme-missing
+              plugins:
+                http-logger: {uri: '127.0.0.1:1024'}
+              upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+        input: {path: /scheme-missing}
+        output: {status: 404, logs: {matches: 'http-logger.+uri|format'}}
+      - name: accepted-uri-shapes
+        config:
+          routes:
+            - id: accepted-uri-path-query
+              uri: /accepted-uri-path-query
+              plugins:
+                http-logger: {uri: 'http://127.0.0.1:1024/x?aa=b', batch_max_size: 1, timeout: 1, max_retry_count: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: accepted-uri-query
+              uri: /accepted-uri-query
+              plugins:
+                http-logger: {uri: 'http://127.0.0.1:1024?aa=b', batch_max_size: 1, timeout: 1, max_retry_count: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: accepted-uri-host-port
+              uri: /accepted-uri-host-port
+              plugins:
+                http-logger: {uri: 'http://127.0.0.1:1024', batch_max_size: 1, timeout: 1, max_retry_count: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: accepted-uri-http-domain
+              uri: /accepted-uri-http-domain
+              plugins:
+                http-logger: {uri: 'http://x.con', batch_max_size: 1, timeout: 1, max_retry_count: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: accepted-uri-https-domain
+              uri: /accepted-uri-https-domain
+              plugins:
+                http-logger: {uri: 'https://x.con', batch_max_size: 1, timeout: 1, max_retry_count: 0}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: accepted}]}
+        steps:
+          - {name: accepts-path-and-query, input: {path: /accepted-uri-path-query}, output: {status: 200, body: {equals: accepted}}}
+          - {name: accepts-query-without-path, input: {path: /accepted-uri-query}, output: {status: 200, body: {equals: accepted}}}
+          - {name: accepts-host-and-port, input: {path: /accepted-uri-host-port}, output: {status: 200, body: {equals: accepted}}}
+          - {name: accepts-http-domain, input: {path: /accepted-uri-http-domain}, output: {status: 200, body: {equals: accepted}}}
+          - {name: accepts-https-domain, input: {path: /accepted-uri-https-domain}, output: {status: 200, body: {equals: accepted}}}
+
+  - name: normal-delivery-local-and-external-equivalent
+    source: {file: t/plugin/http-logger.t, tests: [4, 5, 6, 7]}
+    config:
+      routes:
+        - id: normal-http-delivery
+          uri: /normal-delivery
+          plugins:
+            http-logger: {uri: '{{FIXTURE.localSink.URL}}/hello', batch_max_size: 1, log_format: {case: local}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: external-http-delivery
+          uri: /external-delivery
+          plugins:
+            http-logger: {uri: '{{FIXTURE.externalSink.URL}}/anything', batch_max_size: 1, log_format: {case: external}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{method: GET, path: {equals: /normal-delivery}}, {method: GET, path: {equals: /external-delivery}}], respond: [{status: 200, body: hello world}]}
+      - {name: localSink, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {json_equals: '{"case":"local"}'}}], respond: [{status: 200}]}
+      - {name: externalSink, kind: http, expect: [{method: POST, path: {equals: /anything}, body: {json_equals: '{"case":"external"}'}}], respond: [{status: 200}]}
+    steps:
+      - {name: local-http-post-delivery, input: {path: /normal-delivery}, output: {status: 200, body: {equals: hello world}}}
+      - {name: second-endpoint-http-post-delivery, input: {path: /external-delivery}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: tls-and-ssl-verify-matrix
+    source: {file: t/plugin/http-logger.t, tests: [8, 9, 10, 11, 19, 20, 21, 22, 23]}
+    variants:
+      - name: https-to-plaintext-fails
+        config:
+          routes:
+            - id: https-to-plaintext
+              uri: /https-to-plaintext
+              plugins:
+                http-logger: {uri: 'https://{{FIXTURE.sink.ADDR}}/logs', batch_max_size: 1, ssl_verify: false, max_retry_count: 0, log_format: {case: mismatch}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect_requests: 0, respond: [{status: 200}]}
+        steps:
+          - {name: tls-handshake-against-plaintext-is-rejected, input: {path: /https-to-plaintext}, output: {status: 200, body: {equals: ok}, logs: {matches: 'error while sending data|HTTP response to HTTPS client'}}}
+      - name: self-signed-default-false
+        config:
+          routes:
+            - id: tls-default-false
+              uri: /tls-default-false
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, log_format: {case: tls-default}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: https, expect: [{body: {json_equals: '{"case":"tls-default"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: default-ssl-verify-false-accepts-self-signed, input: {path: /tls-default-false}, output: {status: 200, body: {equals: ok}}}
+      - name: self-signed-explicit-false
+        config:
+          routes:
+            - id: tls-explicit-false
+              uri: /tls-explicit-false
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, ssl_verify: false, log_format: {case: tls-false}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: https, expect: [{body: {json_equals: '{"case":"tls-false"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: explicit-false-accepts-self-signed, input: {path: /tls-explicit-false}, output: {status: 200, body: {equals: ok}}}
+      - name: self-signed-explicit-true
+        config:
+          routes:
+            - id: tls-explicit-true
+              uri: /tls-explicit-true
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, ssl_verify: true, max_retry_count: 0, log_format: {case: tls-true}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: https, expect_requests: 0, respond: [{status: 200}]}
+        steps:
+          - {name: true-rejects-self-signed, input: {path: /tls-explicit-true}, output: {status: 200, body: {equals: ok}, logs: {matches: 'certificate|unknown authority'}}}
+
+  - name: batching-and-connection-failure
+    source: {file: t/plugin/http-logger.t, tests: [12, 13, 14, 15]}
+    variants:
+      - name: batch-two
+        config:
+          routes:
+            - id: batch-two
+              uri: /batch-two
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 2, log_format: {path: $uri}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"path":"/batch-two"},{"path":"/batch-two"}]'}}], respond: [{status: 200}]}
+        steps:
+          - {name: two-entries-one-json-array, repeat: 2, input: {path: /batch-two}, output: {status: 200, body: {equals: ok}}}
+      - name: refused
+        config:
+          routes:
+            - id: connection-refused
+              uri: /connection-refused
+              plugins:
+                http-logger: {uri: 'http://127.0.0.1:1/logs', batch_max_size: 1, timeout: 1, max_retry_count: 0, log_format: {case: refused}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+        steps:
+          - {name: request-is-not-blocked-by-log-delivery-failure, input: {path: /connection-refused}, output: {status: 200, body: {equals: ok}, logs: {matches: 'connection refused|error while sending data'}}}
+
+  - name: live-route-config-update-flushes-old-and-uses-new-sink
+    source: {file: t/plugin/http-logger.t, tests: [17]}
+    config:
+      routes:
+        - id: live-update
+          uri: /live-update
+          plugins:
+            http-logger: {uri: '{{FIXTURE.old.URL}}/logs', batch_max_size: 2, inactive_timeout: 5, log_format: {sink: old}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - {name: old, kind: http, expect: [{body: {matches: '^\[?\{"sink":"old"\}\]?$'}}], respond: [{status: 200}]}
+      - {name: new, kind: http, expect: [{body: {json_equals: '{"sink":"new"}'}}], respond: [{status: 200}]}
+    steps:
+      - {name: old-config-buffers-one-entry, input: {path: /live-update}, output: {status: 200, body: {equals: ok}}}
+      - name: replacement-flushes-old-and-delivers-to-new
+        config:
+          routes:
+            - id: live-update
+              uri: /live-update
+              plugins:
+                http-logger: {uri: '{{FIXTURE.new.URL}}/logs', batch_max_size: 1, log_format: {sink: new}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: live-update-ready
+              uri: /live-update-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /live-update-ready}, output: {status: 200, body: {equals: ok}}}
+        input: {path: /live-update}
+        output: {status: 200, body: {equals: ok}}
+
+  - name: invalid-body-expression-is-rejected
+    source: {file: t/plugin/http-logger.t, tests: [18]}
+    config:
+      routes:
+        - id: invalid-body-expression
+          uri: /invalid-body-expression
+          plugins:
+            http-logger: {uri: 'http://127.0.0.1/logs', include_req_body: true, include_req_body_expr: [[arg_log, '<>', yes]]}
+          upstream: {type: roundrobin, nodes: {'127.0.0.1:1': 1}}
+    input: {path: /invalid-body-expression}
+    output: {status: 404, logs: {matches: 'include_req_body_expr|operator|<>'}}
+
+  - name: response-body-and-file-logger-interaction
+    source: {file: t/plugin/http-logger.t, tests: [24, 25, 26, 27, 28, 29]}
+    variants:
+      - name: route-http-includes-response
+        config:
+          routes:
+            - id: http-response-body
+              uri: /http-response-body
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, log_format: {source: http-body}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: hello response}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"http-body","response":{"body":"hello response"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: route-http-includes-response, input: {path: /http-response-body}, output: {status: 200, body: {equals: hello response}}}
+      - name: route-http-excludes-response-file-includes-response
+        files:
+          - {path: '{{WORK_DIR}}/route-access.log', body: ''}
+        config:
+          routes:
+            - id: logger-interaction
+              uri: /logger-interaction
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: false, log_format: {source: http}}
+                file-logger: {path: '{{WORK_DIR}}/route-access.log', include_resp_body: true, log_format: {source: file}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: hello response}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"http"}'}}], respond: [{status: 200}]}
+        steps:
+          - name: route-http-excludes-response-while-file-includes-it
+            input: {path: /logger-interaction}
+            output: {status: 200, body: {equals: hello response}}
+            file_assertions:
+              - {path: {equals: '{{WORK_DIR}}/route-access.log'}, body: {matches: '"source":"file".*"response":\{"body":"hello response"\}|"response":\{"body":"hello response"\}.*"source":"file"'}}
+      - name: global-http-retains-response-with-global-and-route-file-loggers
+        files:
+          - {path: '{{WORK_DIR}}/global-access.log', body: ''}
+          - {path: '{{WORK_DIR}}/route-access.log', body: ''}
+        config:
+          global_rules:
+            - id: global-http-and-file
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, log_format: {source: global-http}}
+                file-logger: {path: '{{WORK_DIR}}/global-access.log', include_resp_body: true, log_format: {source: global-file}}
+          routes:
+            - id: global-and-route-file
+              uri: /global-and-route-file
+              plugins:
+                file-logger: {path: '{{WORK_DIR}}/route-access.log', include_resp_body: true, log_format: {source: route-file}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: hello response}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"global-http","response":{"body":"hello response"}}'}}], respond: [{status: 200}]}
+        steps:
+          - name: global-http-keeps-response-with-both-file-loggers
+            input: {path: /global-and-route-file}
+            output: {status: 200, body: {equals: hello response}}
+            file_assertions:
+              - {path: {equals: '{{WORK_DIR}}/global-access.log'}, body: {matches: '"source":"global-file".*"response":\{"body":"hello response"\}|"response":\{"body":"hello response"\}.*"source":"global-file"'}}
+              - {path: {equals: '{{WORK_DIR}}/route-access.log'}, body: {matches: '"source":"route-file".*"response":\{"body":"hello response"\}|"response":\{"body":"hello response"\}.*"source":"route-file"'}}
+
+  - name: processor-replacement-and-stale-lifecycle
+    source: {file: t/plugin/http-logger2.t, tests: [1, 2, 3, 4, 5]}
+    config:
+      routes:
+        - id: processor-lifecycle
+          uri: /processor-lifecycle
+          plugins:
+            http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 2, inactive_timeout: 5, log_format: {generation: old}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - name: sink
+        kind: http
+        expect:
+          - {body: {matches: '^\[?\{"generation":"old"\}\]?$'}}
+          - {body: {json_equals: '{"generation":"new"}'}}
+          - {body: {json_equals: '{"generation":"new"}'}}
+        respond: [{status: 200}]
+    steps:
+      - {name: current-processor-retains-buffered-entry, input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+      - name: replacing-config-flushes-retired-processor
+        config:
+          routes:
+            - id: processor-lifecycle
+              uri: /processor-lifecycle
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, log_format: {generation: new}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: processor-lifecycle-ready
+              uri: /processor-lifecycle-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /processor-lifecycle-ready}, output: {status: 200, body: {equals: ok}}}
+        input: {path: /processor-lifecycle}
+        output: {status: 200, body: {equals: ok}}
+      - {name: replacement-remains-usable-after-retired-processor-stops, input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
+
+  - name: full-request-response-body-route
+    source: {file: t/plugin/http-logger2.t, tests: [6, 7]}
+    config:
+      routes:
+        - id: full-bodies
+          uri: /full-bodies
+          plugins:
+            http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_req_body: true, include_resp_body: true}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: test-http-logger-response}]}
+      - {name: sink, kind: http, expect: [{body: {matches: '"request":\{[^}]*"body":"test-http-logger-request".*"response":\{[^}]*"body":"test-http-logger-response"'}}], respond: [{status: 200}]}
+    steps:
+      - {name: request-and-response-are-present-in-default-log, input: {method: POST, path: /full-bodies, body: test-http-logger-request}, output: {status: 200, body: {equals: test-http-logger-response}}}
+
+  - name: gzip-and-brotli-response-body-decoding
+    source: {file: t/plugin/http-logger2.t, tests: [8, 9, 10, 11]}
+    variants:
+      - name: gzip
+        config:
+          routes:
+            - id: gzip-response-log
+              uri: /gzip-response-log
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, log_format: {encoding: gzip}}
+                gzip: {types: ['*'], min_length: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: gzip hello world, headers: {Content-Type: text/plain}}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"encoding":"gzip","response":{"body":"gzip hello world"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: gzip-wire-body-is-decoded-for-log, input: {path: /gzip-response-log, headers: {Accept-Encoding: gzip}}, output: {status: 200, gzip_body: {equals: gzip hello world}}}
+      - name: brotli
+        config:
+          routes:
+            - id: brotli-response-log
+              uri: /brotli-response-log
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/logs', batch_max_size: 1, include_resp_body: true, log_format: {encoding: brotli}}
+                brotli: {types: '*', min_length: 1}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: brotli hello world, headers: {Content-Type: text/plain}}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"encoding":"brotli","response":{"body":"brotli hello world"}}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: brotli-wire-body-is-decoded-for-log, input: {path: /brotli-response-log, headers: {Accept-Encoding: br}}, output: {status: 200, brotli_body: {equals: brotli hello world}}}
+
+  - name: authorization-default-and-root-path
+    source: {file: t/plugin/http-logger2.t, tests: [12, 13, 14, 15]}
+    variants:
+      - name: authorization-absent
+        config:
+          routes:
+            - id: auth-absent
+              uri: /auth-absent
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}/authorization', batch_max_size: 1, log_format: {case: no-auth}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{path: {equals: /authorization}, headers: {Authorization: {absent: true}}, body: {json_equals: '{"case":"no-auth"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: authorization-header-is-absent-by-default, input: {path: /auth-absent}, output: {status: 200, body: {equals: ok}}}
+      - name: root-path
+        config:
+          routes:
+            - id: root-path
+              uri: /root-path
+              plugins:
+                http-logger: {uri: '{{FIXTURE.sink.URL}}', batch_max_size: 1, log_format: {case: root}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+          - {name: sink, kind: http, expect: [{path: {equals: /}, body: {json_equals: '{"case":"root"}'}}], respond: [{status: 200}]}
+        steps:
+          - {name: empty-uri-path-posts-to-root, input: {path: /root-path}, output: {status: 200, body: {equals: ok}}}
+
+  - name: max-pending-overflow-and-capacity-recovery
+    source: {file: t/plugin/http-logger3.t, tests: [1, 2]}
+    config:
+      plugin_metadata:
+        - {id: http-logger, max_pending_entries: 1, log_format: {generation: first}}
+      routes:
+        - id: pending-overflow
+          uri: /pending-overflow
+          plugins:
+            http-logger: {uri: '{{FIXTURE.firstSink.URL}}/logs', batch_max_size: 1, timeout: 3, max_retry_count: 0}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
+      - name: firstSink
+        kind: http
+        expect:
+          - {body: {json_equals: '{"generation":"first"}'}}
+          - {body: {json_equals: '{"generation":"first"}'}}
+        respond:
+          - {status: 200, delay: 1s}
+          - {status: 200, delay: 1s}
+      - name: secondSink
+        kind: http
+        expect:
+          - {body: {json_equals: '{"generation":"second"}'}}
+          - {body: {json_equals: '{"generation":"second"}'}}
+        respond:
+          - {status: 200}
+          - {status: 200}
+    steps:
+      - {name: third-entry-is-dropped-while-two-are-pending, repeat: 3, concurrency: 3, input: {path: /pending-overflow}, output: {status: 200, body: {equals: ok}, logs: {matches: 'max pending entries limit exceeded'}}}
+      - name: replacement-processor-recovers-full-capacity
+        config:
+          plugin_metadata:
+            - {id: http-logger, max_pending_entries: 1, log_format: {generation: second}}
+          routes:
+            - id: pending-overflow
+              uri: /pending-overflow
+              plugins:
+                http-logger: {uri: '{{FIXTURE.secondSink.URL}}/logs', batch_max_size: 1, log_format: {generation: second}}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: pending-overflow-ready
+              uri: /pending-overflow-ready
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe: {input: {path: /pending-overflow-ready}, output: {status: 200, body: {equals: ok}}}
+        repeat: 2
+        input: {path: /pending-overflow}
+        output: {status: 200, body: {equals: ok}}

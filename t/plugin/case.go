@@ -221,6 +221,7 @@ type HMACSignature struct {
 }
 
 type RepeatedBody struct {
+	Prefix string `yaml:"prefix,omitempty"`
 	Value  string `yaml:"value"`
 	Count  int    `yaml:"count"`
 	Suffix string `yaml:"suffix,omitempty"`
@@ -282,6 +283,7 @@ type HTTPResponse struct {
 	Status          int               `yaml:"status,omitempty"`
 	Headers         map[string]string `yaml:"headers,omitempty"`
 	Body            string            `yaml:"body,omitempty"`
+	BodyRepeat      *RepeatedBody     `yaml:"body_repeat,omitempty"`
 	Chunks          []string          `yaml:"chunks,omitempty"`
 	EchoRequestBody bool              `yaml:"echo_request_body,omitempty"`
 	Delay           time.Duration     `yaml:"delay,omitempty"`
@@ -1301,6 +1303,15 @@ func (r HTTPResponse) validate() error {
 	if r.EchoRequestBody {
 		configuredBodies++
 	}
+	if r.BodyRepeat != nil {
+		configuredBodies++
+		if r.BodyRepeat.Value == "" {
+			return errors.New("body_repeat value must not be empty")
+		}
+		if r.BodyRepeat.Count <= 0 {
+			return errors.New("body_repeat count must be positive")
+		}
+	}
 	if r.GRPC != nil {
 		configuredBodies++
 		if err := r.GRPC.validate(true); err != nil {
@@ -1308,7 +1319,7 @@ func (r HTTPResponse) validate() error {
 		}
 	}
 	if configuredBodies > 1 || (r.Body != "" && len(r.Chunks) > 0) {
-		return errors.New("body, chunks, echo_request_body, and grpc are mutually exclusive")
+		return errors.New("body, body_repeat, chunks, echo_request_body, and grpc are mutually exclusive")
 	}
 	if r.Delay < 0 {
 		return errors.New("delay must not be negative")

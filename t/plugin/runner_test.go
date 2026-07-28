@@ -830,7 +830,7 @@ func TestHarnessSendsRepeatedRequestHeaders(t *testing.T) {
 }
 
 func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
-	body := "AAAAAAtail"
+	body := "headAAAAAAtail"
 	caseSpec := Case{
 		Name:   "repeated-chunked-body",
 		Source: CaseSource{Tests: []int{1}},
@@ -850,7 +850,7 @@ func TestHarnessGeneratesRepeatedChunkedBody(t *testing.T) {
 			Method:     http.MethodPost,
 			Path:       "/body",
 			Chunked:    true,
-			BodyRepeat: &RepeatedBody{Value: "A", Count: 6, Suffix: "tail"},
+			BodyRepeat: &RepeatedBody{Prefix: "head", Value: "A", Count: 6, Suffix: "tail"},
 		},
 		Upstream: &UpstreamSpec{
 			Expect:  HTTPAssertion{Body: &Matcher{Equals: &body}},
@@ -1327,7 +1327,11 @@ func TestResolveCapturedInputExpandsAllRequestPayloadForms(t *testing.T) {
 		HeaderValues: map[string][]string{
 			"X-Values": {"before", "{{CAPTURE.state}}"},
 		},
-		BodyRepeat: &RepeatedBody{Value: "{{CAPTURE.state}}", Count: 2},
+		BodyRepeat: &RepeatedBody{
+			Prefix: "{{CAPTURE.state}}-",
+			Value:  "{{CAPTURE.state}}",
+			Count:  2,
+		},
 	}, map[string]string{"state": "captured"})
 	if err != nil {
 		t.Fatalf("resolveCapturedInput() error = %v", err)
@@ -1340,6 +1344,20 @@ func TestResolveCapturedInputExpandsAllRequestPayloadForms(t *testing.T) {
 	}
 	if got := input.BodyRepeat.Value; got != "captured" {
 		t.Fatalf("resolved repeated body = %q, want captured", got)
+	}
+	if got := input.BodyRepeat.Prefix; got != "captured-" {
+		t.Fatalf("resolved repeated body prefix = %q, want captured-", got)
+	}
+}
+
+func TestHTTPFixtureResponseSupportsRepeatedBodyWithPrefix(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeFixtureResponse(recorder, context.Background(), HTTPResponse{
+		BodyRepeat: &RepeatedBody{Prefix: "hello", Value: "l", Count: 3, Suffix: "!"},
+	}, "")
+
+	if got := recorder.Body.String(); got != "hellolll!" {
+		t.Fatalf("response body = %q, want hellolll!", got)
 	}
 }
 
@@ -1490,6 +1508,10 @@ func writeFixtureResponse(w http.ResponseWriter, context context.Context, respon
 	w.WriteHeader(status)
 	if response.EchoRequestBody {
 		_, _ = io.WriteString(w, requestBody)
+		return
+	}
+	if response.BodyRepeat != nil {
+		_, _ = io.WriteString(w, renderRepeatedBody(response.BodyRepeat))
 		return
 	}
 	if len(response.Chunks) == 0 {
@@ -2493,7 +2515,7 @@ func probeHTTPInput(
 		body = string(decoded)
 	}
 	if input.BodyRepeat != nil {
-		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
+		body = renderRepeatedBody(input.BodyRepeat)
 	}
 	request, err := http.NewRequest(method, scheme+"://"+address+input.Path, strings.NewReader(body))
 	if err != nil {
@@ -2631,7 +2653,7 @@ func runHTTPInput(
 		body = string(decoded)
 	}
 	if input.BodyRepeat != nil {
-		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
+		body = renderRepeatedBody(input.BodyRepeat)
 	}
 	if input.GRPC != nil {
 		message, decodeErr := base64.StdEncoding.DecodeString(*input.GRPC.MessageBase64)
@@ -2802,6 +2824,10 @@ func resolveCapturedInput(input HTTPInput, captured map[string]string) (HTTPInpu
 	}
 	if input.BodyRepeat != nil {
 		repeated := *input.BodyRepeat
+		repeated.Prefix, err = replaceCapturePlaceholders(repeated.Prefix, captured)
+		if err != nil {
+			return input, fmt.Errorf("body_repeat prefix: %w", err)
+		}
 		repeated.Value, err = replaceCapturePlaceholders(repeated.Value, captured)
 		if err != nil {
 			return input, fmt.Errorf("body_repeat: %w", err)
@@ -3151,11 +3177,16 @@ func expandIterationInput(input HTTPInput, iteration int) HTTPInput {
 	}
 	if input.BodyRepeat != nil {
 		repeated := *input.BodyRepeat
+		repeated.Prefix = replaceIteration(repeated.Prefix, replacement)
 		repeated.Value = replaceIteration(repeated.Value, replacement)
 		repeated.Suffix = replaceIteration(repeated.Suffix, replacement)
 		input.BodyRepeat = &repeated
 	}
 	return input
+}
+
+func renderRepeatedBody(repeated *RepeatedBody) string {
+	return repeated.Prefix + strings.Repeat(repeated.Value, repeated.Count) + repeated.Suffix
 }
 
 func expandIterationOutput(output HTTPOutput, iteration int) HTTPOutput {

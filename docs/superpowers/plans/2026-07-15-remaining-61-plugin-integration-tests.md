@@ -1223,3 +1223,104 @@ Execution waves:
   findings outside the current consumer fix. Workers must report these exact
   baseline failures separately and may not claim `go test ./...` or repository
   lint passed until they are resolved.
+
+## Current Remaining-Work Analysis: 2026-07-28
+
+The user's reference to 56 remaining manifests is the historical count at
+commit `335203d`. The live checked ledger above is authoritative: 23 manifests
+are task-review-approved and 38 are still unchecked. An approved worker branch
+does not reduce that number until its commits are integrated and its
+post-integration gates pass.
+
+The following tiers supersede the 2026-07-18 complexity lists for execution
+ordering. They classify the intrinsic implementation and review risk exposed by
+the pinned source cases, not merely the number of commands left to land an
+already-implemented branch.
+
+### Easy — 4 manifests
+
+- [ ] `ai-prompt-guard` — 44 blocks; existing HTTP/JSON fixtures and package
+  behavior cover the needed schema, pattern, role, malformed-body, and
+  pass-through cases.
+- [ ] `ai-rag` — 17 blocks; two deterministic HTTP exchanges, auth/header
+  assertions, Responses API context injection, failures, and TLS defaults fit
+  the current harness.
+- [ ] `ai-request-rewrite` — 19 blocks; source-specific provider, endpoint,
+  query, option, empty-body, and error-mapping assertions fit the existing HTTP
+  fixtures. Serialize it after `ai-rag` if either lane changes shared AI
+  protocol code.
+- [ ] `http-dubbo` — 5 blocks; the framed Dubbo fixture and package tests
+  already cover the required POJO/array, application/void, timeout, and
+  connection-failure paths.
+
+### Medium — 19 manifests
+
+- [ ] `key-auth` — the Basic/HMAC consumer-secret foundations now exist; own
+  only the missing 24 blocks, realm, limiter chain, service inheritance, and
+  DNS/domain-node behavior.
+- [ ] `ldap-auth` — extend the existing direct-bind fixture for failure, realm,
+  and LDAPS behavior without inventing unsupported LDAP-search parity.
+- [ ] `authz-keycloak`
+- [ ] `saml-auth`
+- [ ] `ai-aws-content-moderation`
+- [ ] `datadog` — waits for the embedded-wildcard route prerequisite.
+- [ ] `tcp-logger`
+- [ ] `syslog` — follows the reviewed TCP Logger network lifecycle.
+- [ ] `http-logger` — owns the serialized `logger_batch` ordering contract.
+- [ ] `loggly`
+- [ ] `elasticsearch-logger`
+- [ ] `google-cloud-logging`
+- [ ] `sls-logger`
+- [ ] `tencent-cloud-cls`
+- [ ] `error-log-logger` — follows Kafka plus HTTP/SkyWalking sink contracts.
+- [ ] `ai-rate-limiting`
+- [ ] `graphql-limit-count` — blocked on the Hard Redis owner.
+- [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
+- [ ] `workflow` — blocked on the limiter owners.
+
+### Hard — 15 manifests
+
+- [ ] `batch-requests` — the approved worker range realized this risk through
+  strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
+  Store-owned last-good metadata publication. It is pending integration.
+- [ ] `file-logger` — the worker range realized this risk through a shared
+  writer registry, cached descriptors, live `SIGUSR1`, reload/shutdown
+  lifecycle, and filesystem assertions. Rereview found that source blocks 6–7
+  must run without metadata before blocks 8–9 test metadata precedence, so it
+  remains pending remediation and approval.
+- [ ] `log-rotate`
+- [ ] `skywalking`
+- [ ] `jwt-auth`
+- [ ] `openid-connect`
+- [ ] `limit-conn`
+- [ ] `limit-count`
+- [ ] `limit-req`
+- [ ] `proxy-cache`
+- [ ] `traffic-split`
+- [ ] `rocketmq-logger`
+- [ ] `kafka-logger`
+- [ ] `opentelemetry`
+- [ ] `ai-proxy`
+
+### Updated Parallel Execution Waves
+
+1. In parallel, remediate and rereview File Logger, integrate the approved
+   Batch Requests range, and implement `ai-prompt-guard` plus `http-dubbo` in
+   isolated worktrees. Batch integration stays in the primary worktree; no
+   worker may edit Store metadata or the file-writer lifecycle owned by those
+   two ranges.
+2. Finish Easy with `ai-rag`, then `ai-request-rewrite`; keep one owner for
+   shared AI protocol/runtime changes.
+3. Run independent Medium foundations in parallel: `key-auth`, `ldap-auth`,
+   `tcp-logger`, and `ai-aws-content-moderation`. Serialize their dependent
+   lanes (`jwt-auth`; auth/session; network loggers; bounded AI) behind reviewed
+   integration heads.
+4. Give `http-logger` exclusive `logger_batch` ownership, then parallelize
+   source-specific HTTP/cloud logger manifests that consume the reviewed
+   contract without changing it.
+5. Run Hard owners concurrently only across independent domains: Redis,
+   cache, proxy health, broker, telemetry, and auth/session. Serialize every
+   plugin within its owner group and rebase/re-execute consumers when a
+   prerequisite changes.
+6. Run `ai-proxy` last, after bounded AI contracts and the disconnect,
+   flushed-chunk, and AWS EventStream harness primitives are reviewed.

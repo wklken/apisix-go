@@ -818,7 +818,14 @@ The original checked state was not supported by the manifests. This audit compar
   gates pass. The broad route package still has the unrelated pre-existing
   `TestBuildHandlerStrictRunsConsumerRestrictionFromAuthenticatedConsumer`
   failure.
-- [ ] `http-dubbo` — one generic source case omits POJO/array serialization, request ID/frame assertions, void/application responses, timeouts, and connect failures.
+- [x] `http-dubbo` — all five pinned blocks map one-to-one to real standalone
+  POJO/array serialization, timeout/connect failure, void, and application
+  failure cases. Fixtures assert protocol-valid Dubbo 2.7.21 FastJSON response
+  flags, exact request IDs, payload lengths, request frames, exception payload,
+  and empty void body. Connection logging is limited to final live dial
+  failures and clears retry state across selection errors/cancellation.
+  Package, race, exact real-process, corpus, scoped lint, build,
+  post-integration, and task-review gates pass.
 
 #### Task 9 — HTTP and Cloud Loggers
 
@@ -889,10 +896,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 26 task-review-approved and 35 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 27 task-review-approved and 34 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 35 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 34 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -1170,7 +1177,7 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 18 manifests
+### Hard — 17 remaining (18 listed)
 
 - [ ] `key-auth`
 - [ ] `jwt-auth`
@@ -1183,7 +1190,7 @@ Execution waves:
 - [ ] `limit-req`
 - [ ] `proxy-cache`
 - [ ] `traffic-split`
-- [ ] `http-dubbo`
+- [x] `http-dubbo`
 - [ ] `rocketmq-logger`
 - [ ] `kafka-logger`
 - [ ] `error-log-logger`
@@ -1253,8 +1260,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 26 manifests
-are task-review-approved and 35 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 27 manifests
+are task-review-approved and 34 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1263,7 +1270,7 @@ ordering. They classify the intrinsic implementation and review risk exposed by
 the pinned source cases, not merely the number of commands left to land an
 already-implemented branch.
 
-### Easy — 3 remaining (4 at replan)
+### Easy — 2 remaining (4 at replan)
 
 - [x] `ai-prompt-guard` — 44 blocks; existing HTTP/JSON fixtures and package
   behavior cover the needed schema, pattern, role, malformed-body, and
@@ -1275,7 +1282,7 @@ already-implemented branch.
   query, option, empty-body, and error-mapping assertions fit the existing HTTP
   fixtures. Serialize it after `ai-rag` if either lane changes shared AI
   protocol code.
-- [ ] `http-dubbo` — 5 blocks; the framed Dubbo fixture and package tests
+- [x] `http-dubbo` — 5 blocks; the framed Dubbo fixture and package tests
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 

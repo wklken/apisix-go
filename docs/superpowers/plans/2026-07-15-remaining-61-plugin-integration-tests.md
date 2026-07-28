@@ -954,6 +954,20 @@ assert request count, endpoint, content type, batch cardinality, ordering, and
 the relevant payload fields or absences; seven generic `/probe` deliveries are
 not completion evidence.
 
+The `google-cloud-logging` audit confirms 33 blocks across
+`google-cloud-logging.t`, `google-cloud-logging2.t`, and
+`google-cloud-logging3.t`. It remains Medium as a serialized successor to the
+File/HTTP Logger and `logger_batch` foundations. Its 19 behavior cases must
+prove real RS256 OAuth assertions and claims, token-type propagation, token and
+entries endpoints, auth-file loading, trusted TLS/hostname mismatch/disabled
+verification, exact Cloud Logging resource and payload fields, metadata versus
+route formats, encrypted private-key consumption, batching/retry/pending
+overflow, reload flush, and shutdown flush. The upstream Admin/etcd ciphertext
+round trip is not available in standalone mode; encrypted standalone input
+that decrypts into a successful OAuth exchange is the bounded equivalent.
+Three generic `/probe` deliveries or whole-body-only sink assertions are not
+completion evidence.
+
 The `wolf-rbac` audit corrected its source surface from 42 blocks in one file
 to 44 blocks across two files: all of `wolf-rbac.t` plus Wolf-specific
 `security-warning2.t` tests 19–20. The eight Wolf public-endpoint dispatch cases

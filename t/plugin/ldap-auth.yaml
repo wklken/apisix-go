@@ -134,13 +134,13 @@ cases:
         output:
           status: 401
           body: {equals: '{"message":"Invalid authorization in request"}'}
-          logs: {matches: 'Failed to decode authentication header: aca_a'}
+          logs: {matches: 'Failed to decode authentication header'}
       - name: missing-password
         input: {path: /hello, headers: {Authorization: 'Basic Zm9v'}}
         output:
           status: 401
           body: {equals: '{"message":"Invalid authorization in request"}'}
-          logs: {matches: 'Split authorization err: invalid decoded data: foo'}
+          logs: {matches: 'Split authorization err: invalid decoded data'}
       - name: wrong-password
         input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmZvbwo='}}
         output:
@@ -151,6 +151,11 @@ cases:
       - name: valid-credentials
         input: {path: /hello, headers: {Authorization: 'Basic dXNlcjAxOnBhc3N3b3JkMQ=='}}
         output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer user01'}}
+      - name: authorization-payloads-are-not-logged
+        input: {path: /hello}
+        output:
+          status: 401
+          logs: {not_matches: 'aca_a|Zm9v|\bfoo\b'}
 
   - name: capitalization-scheme
     source: {file: t/plugin/ldap-auth.t, tests: [11, 12]}
@@ -328,38 +333,74 @@ cases:
 
   - name: trusted-ldaps-certificate-verification
     source: {file: t/plugin/ldap-auth.t, tests: [19, 20]}
-    environment:
-      SSL_CERT_FILE: '{{FIXTURE.ldap.CA_FILE}}'
-    config:
-      consumers:
-        - username: user01
-          plugins:
-            ldap-auth: {user_dn: 'cn=user01,ou=users,dc=example,dc=org'}
-      routes:
-        - id: ldap-auth-ldaps-trusted
-          uri: /hello
-          plugins:
-            ldap-auth:
-              base_dn: 'ou=users,dc=example,dc=org'
-              ldap_uri: 'localhost:{{FIXTURE.ldap.PORT}}'
-              uid: cn
-              use_tls: true
-              tls_verify: true
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures:
-      - name: ldap
-        kind: tls-tcp
-        network_expect:
-          - payload_base64: {equals: 'MDkCAQFgNAIBAwQkY249dXNlcjAxLG91PXVzZXJzLGRjPWV4YW1wbGUsZGM9b3JngAlwYXNzd29yZDE='}
-        network_respond:
-          - payload_base64: 'MAwCAQFhBwoBAAQABAA='
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: hello world}]
-    steps:
-      - name: trusted-ldaps-bind-verifies-fixture-certificate
-        input: {path: /hello, headers: {Authorization: 'Basic dXNlcjAxOnBhc3N3b3JkMQ=='}}
-        output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer user01'}}
+    variants:
+      - name: verification-enabled-without-ca-rejects-before-bind
+        environment_unset: [SSL_CERT_FILE]
+        config:
+          consumers:
+            - username: user01
+              plugins:
+                ldap-auth: {user_dn: 'cn=user01,ou=users,dc=example,dc=org'}
+          routes:
+            - id: ldap-auth-ldaps-untrusted
+              uri: /hello
+              plugins:
+                ldap-auth:
+                  base_dn: 'ou=users,dc=example,dc=org'
+                  ldap_uri: 'localhost:{{FIXTURE.ldap.PORT}}'
+                  uid: cn
+                  use_tls: true
+                  tls_verify: true
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: ldap
+            kind: https
+            expect_requests: 0
+            respond: [{status: 200}]
+          - name: primary
+            kind: http
+            expect_requests: 0
+            respond: [{status: 200, body: hello world}]
+        steps:
+          - name: untrusted-certificate-rejects-before-ldap-bind
+            input: {path: /hello, headers: {Authorization: 'Basic dXNlcjAxOnBhc3N3b3JkMQ=='}}
+            output:
+              status: 401
+              body: {equals: '{"message":"Invalid user authorization"}'}
+              logs: {matches: 'ldap-auth failed:.*(x509|certificate)'}
+      - name: trusted-certificate-authenticates
+        environment:
+          SSL_CERT_FILE: '{{FIXTURE.ldap.CA_FILE}}'
+        config:
+          consumers:
+            - username: user01
+              plugins:
+                ldap-auth: {user_dn: 'cn=user01,ou=users,dc=example,dc=org'}
+          routes:
+            - id: ldap-auth-ldaps-trusted
+              uri: /hello
+              plugins:
+                ldap-auth:
+                  base_dn: 'ou=users,dc=example,dc=org'
+                  ldap_uri: 'localhost:{{FIXTURE.ldap.PORT}}'
+                  uid: cn
+                  use_tls: true
+                  tls_verify: true
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        fixtures:
+          - name: ldap
+            kind: tls-tcp
+            network_expect:
+              - payload_base64: {equals: 'MDkCAQFgNAIBAwQkY249dXNlcjAxLG91PXVzZXJzLGRjPWV4YW1wbGUsZGM9b3JngAlwYXNzd29yZDE='}
+            network_respond:
+              - payload_base64: 'MAwCAQFhBwoBAAQABAA='
+          - name: primary
+            kind: http
+            respond: [{status: 200, body: hello world}]
+        steps:
+          - name: trusted-ldaps-bind-verifies-fixture-certificate
+            input: {path: /hello, headers: {Authorization: 'Basic dXNlcjAxOnBhc3N3b3JkMQ=='}}
+            output: {status: 200, body: {equals: hello world}, logs: {matches: 'find consumer user01'}}
 
   - name: vault-user-dn-reference
     source: {file: t/plugin/ldap-auth.t, tests: [21, 22, 23]}

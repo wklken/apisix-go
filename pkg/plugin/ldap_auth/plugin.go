@@ -159,12 +159,12 @@ func extractBasicUser(authorization string) (basicUser, error) {
 	encoded = strings.TrimSpace(encoded)
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return basicUser{}, authorizationError("Failed to decode authentication header: " + encoded)
+		return basicUser{}, authorizationError("Failed to decode authentication header")
 	}
 
 	parts := strings.SplitN(string(decoded), ":", 2)
 	if len(parts) != 2 {
-		return basicUser{}, authorizationError("Split authorization err: invalid decoded data: " + string(decoded))
+		return basicUser{}, authorizationError("Split authorization err: invalid decoded data")
 	}
 
 	username := removeWhitespace(parts[0])

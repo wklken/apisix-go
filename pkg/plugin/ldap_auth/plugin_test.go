@@ -170,21 +170,25 @@ func TestHandlerRecordsAuthorizationDiagnostics(t *testing.T) {
 		name       string
 		header     string
 		diagnostic string
+		forbidden  []string
 	}{
 		{
 			name:       "invalid scheme",
 			header:     "Bad_header Zm9vOmZvbwo=",
 			diagnostic: "Invalid authorization header format",
+			forbidden:  []string{"Zm9vOmZvbwo=", "foo:foo"},
 		},
 		{
 			name:       "invalid base64",
 			header:     "Basic aca_a",
-			diagnostic: "Failed to decode authentication header: aca_a",
+			diagnostic: "Failed to decode authentication header",
+			forbidden:  []string{"aca_a"},
 		},
 		{
 			name:       "missing password",
 			header:     "Basic Zm9v",
-			diagnostic: "Split authorization err: invalid decoded data: foo",
+			diagnostic: "Split authorization err: invalid decoded data",
+			forbidden:  []string{"Zm9v", "foo"},
 		},
 	}
 
@@ -211,6 +215,11 @@ func TestHandlerRecordsAuthorizationDiagnostics(t *testing.T) {
 			}
 			if len(diagnostics) != 1 || diagnostics[0] != tt.diagnostic {
 				t.Fatalf("diagnostics = %v, want [%q]", diagnostics, tt.diagnostic)
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(diagnostics[0], forbidden) {
+					t.Errorf("diagnostic %q contains authorization payload %q", diagnostics[0], forbidden)
+				}
 			}
 		})
 	}

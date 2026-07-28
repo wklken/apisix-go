@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	priority = 405
-	name     = "tcp-logger"
-	version  = "apisix-go"
+	priority          = 405
+	name              = "tcp-logger"
+	version           = "apisix-go"
+	maxLogFormatDepth = 5
 )
 
 const schema = `
@@ -229,6 +230,13 @@ func (p *Plugin) PostInit() error {
 	} else {
 		p.logFormat = p.config.LogFormat
 	}
+	if p.logFormat != nil {
+		var truncated bool
+		p.logFormat, truncated = truncateTCPLogFormat(p.logFormat, 0)
+		if truncated {
+			logger.Warn("log_format nesting exceeds max depth 5, truncating")
+		}
+	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
 	}
@@ -278,6 +286,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			logFields["route_id"] = p.RouteID
 			if serviceID := apisixString(r, "$service_id"); serviceID != "" {
 				logFields["service_id"] = serviceID
+			} else {
+				delete(logFields, "service_id")
 			}
 		} else {
 			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
@@ -349,6 +359,27 @@ func resolveTCPLogFormatNode(r *http.Request, request accessRequest, value any) 
 	default:
 		return typed
 	}
+}
+
+func truncateTCPLogFormat(format map[string]any, depth int) (map[string]any, bool) {
+	result := make(map[string]any, len(format))
+	truncated := false
+	for key, value := range format {
+		nested, ok := value.(map[string]any)
+		if !ok {
+			result[key] = value
+			continue
+		}
+		if depth+1 >= maxLogFormatDepth {
+			result[key] = map[string]any{}
+			truncated = truncated || len(nested) > 0
+			continue
+		}
+		resolved, childTruncated := truncateTCPLogFormat(nested, depth+1)
+		result[key] = resolved
+		truncated = truncated || childTruncated
+	}
+	return result, truncated
 }
 
 func (p *Plugin) defaultAccessLog(

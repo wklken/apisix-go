@@ -317,9 +317,12 @@ cases:
               - {path: /request snapshot/host, value: {equals: localhost}}
               - {path: /request snapshot/client/ip, value: {equals: 127.0.0.1}}
               - {path: /response snapshot/status, value: {equals: '200'}}
+              - {path: /within limit/a/b/c/host, value: {equals: localhost}}
               - {path: /@timestamp, rfc3339: true}
               - {path: /route_id, value: {equals: tcp-logger-metadata-lifecycle}}
               - {path: /service_id, value: {equals: tcp-logger-service}}
+            forbidden_matches:
+              - 'deep-marker'
           - json_fields:
               - {path: /request/method, value: {equals: GET}}
               - {path: /response/status, value: {equals: '200'}}
@@ -347,12 +350,24 @@ cases:
               log_format:
                 '@timestamp': '$time_iso8601'
                 case name: plugin_metadata
+                service_id: stale-service
                 request snapshot:
                   client:
                     ip: '$remote_addr'
                   host: '$host'
                 response snapshot:
                   status: '$status'
+                within limit:
+                  a:
+                    b:
+                      c:
+                        host: '$host'
+                beyond limit:
+                  a:
+                    b:
+                      c:
+                        d:
+                          marker: deep-marker
           services:
             - id: tcp-logger-service
               upstream:
@@ -448,6 +463,7 @@ cases:
               host: '{{FIXTURE.sink.HOST}}'
               log_format:
                 case name: logger format in plugin
+                service_id: stale-service
                 status: '$status'
                 vip: '$remote_addr'
               port: '{{FIXTURE.sink.PORT}}'

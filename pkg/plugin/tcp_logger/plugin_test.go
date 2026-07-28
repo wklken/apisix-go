@@ -319,6 +319,57 @@ func TestHandlerResolvesNestedCustomFormat(t *testing.T) {
 	assertNestedField(t, payload, "response", "status", float64(http.StatusCreated))
 }
 
+func TestHandlerTruncatesCustomFormatAfterDepthFive(t *testing.T) {
+	addr, received := startTCPServer(t)
+	host, port := splitAddr(t, addr)
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		Timeout:      1000,
+		BatchMaxSize: 1,
+		LogFormat: map[string]any{
+			"within": map[string]any{
+				"a": map[string]any{
+					"b": map[string]any{
+						"c": map[string]any{
+							"host": "$host",
+						},
+					},
+				},
+			},
+			"beyond": map[string]any{
+				"a": map[string]any{
+					"b": map[string]any{
+						"c": map[string]any{
+							"d": map[string]any{
+								"deep": "$host",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req.Host = "gateway.example"
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForTCPPayload(t, received)
+	within := payload["within"].(map[string]any)["a"].(map[string]any)["b"].(map[string]any)["c"].(map[string]any)
+	if within["host"] != "gateway.example" {
+		t.Fatalf("depth-four host = %#v, want resolved boundary value", within["host"])
+	}
+	beyond := payload["beyond"].(map[string]any)["a"].(map[string]any)["b"].(map[string]any)["c"].(map[string]any)["d"].(map[string]any)
+	if len(beyond) != 0 {
+		t.Fatalf("depth-five object = %#v, want truncated empty map", beyond)
+	}
+}
+
 func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
@@ -329,7 +380,8 @@ func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 		Timeout:      1000,
 		BatchMaxSize: 1,
 		LogFormat: map[string]any{
-			"case": "no-service",
+			"case":       "no-service",
+			"service_id": "stale-service",
 		},
 	})
 	p.SetRouteContext("route-without-service", "127.0.0.1:9080")

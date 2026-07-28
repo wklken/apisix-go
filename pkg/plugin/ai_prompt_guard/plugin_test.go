@@ -200,6 +200,57 @@ func TestHandlerLeavesPassthroughRequestUnchecked(t *testing.T) {
 	}
 }
 
+func TestHandlerLeavesNonJSONRequestUncheckedByDefault(t *testing.T) {
+	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader("name=alice&action=upload"))
+	req.Header.Set("Content-Type", "multipart/form-data")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandlerRejectsUnrecognizedJSONWhenFailModeIsError(t *testing.T) {
+	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}, FailMode: "error"})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"foo":"bar"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for unrecognized JSON in error mode")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+	if got := strings.TrimSpace(
+		rr.Body.String(),
+	); got != `{"message":"Request format not recognized by ai-prompt-guard"}` {
+		t.Fatalf("response body = %q, want fail_mode error message", got)
+	}
+}
+
+func TestHandlerDeniesStructuredResponsesInputText(t *testing.T) {
+	p := newTestPlugin(t, Config{MatchAllRoles: true, DenyPatterns: []string{`secret`}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"secret"}]}]
+	}`))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for denied structured Responses input")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400", rr.Code)
+	}
+}
+
 func TestHandlerRejectsInvalidJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
 

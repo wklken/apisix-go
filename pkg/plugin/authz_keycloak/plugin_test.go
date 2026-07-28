@@ -583,6 +583,25 @@ func TestPostInitResolvesEnvironmentClientSecret(t *testing.T) {
 	}
 }
 
+func TestPostInitRequiresDiscoveryOrRegistrationForLazyPaths(t *testing.T) {
+	p := &Plugin{config: Config{
+		TokenEndpoint: "http://keycloak.example.com/token",
+		ClientID:      "apisix",
+		LazyLoadPaths: true,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want lazy endpoint validation failure")
+	}
+	const want = "authz-keycloak lazy_load_paths requires discovery or resource_registration_endpoint"
+	if err.Error() != want {
+		t.Fatalf("PostInit() error = %q, want %q", err, want)
+	}
+}
+
 func TestPostInitRedactsClientSecretResolutionError(t *testing.T) {
 	const secretReference = "$ENV://AUTHZ_KEYCLOAK_MISSING_SECRET"
 	old, existed := os.LookupEnv("AUTHZ_KEYCLOAK_MISSING_SECRET")

@@ -238,7 +238,8 @@ cases:
         input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
         output:
           status: 404
-          logs: {matches: 'keycloak-lazy-missing-registration.*authz-keycloak.*lazy_load_paths.*value must be false'}
+          logs:
+            matches: 'keycloak-lazy-missing-registration.*authz-keycloak lazy_load_paths requires discovery or resource_registration_endpoint'
 
   - name: tls-verification-defaults-to-enabled
     source: {file: t/plugin/authz-keycloak.t, tests: [9, 10]}

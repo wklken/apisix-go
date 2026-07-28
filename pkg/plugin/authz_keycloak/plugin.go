@@ -166,24 +166,6 @@ const schema = `
         {"required": ["discovery"]},
         {"required": ["token_endpoint"]}
       ]
-    },
-    {
-      "anyOf": [
-        {
-          "properties": {
-            "lazy_load_paths": {"enum": [false]}
-          }
-        },
-        {
-          "properties": {
-            "lazy_load_paths": {"enum": [true]}
-          },
-          "anyOf": [
-            {"required": ["discovery"]},
-            {"required": ["resource_registration_endpoint"]}
-          ]
-        }
-      ]
     }
   ]
 }
@@ -258,6 +240,10 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
+
+	if p.config.LazyLoadPaths && p.config.Discovery == "" && p.config.ResourceRegistrationEndpoint == "" {
+		return errors.New("authz-keycloak lazy_load_paths requires discovery or resource_registration_endpoint")
+	}
 
 	resolvedClientSecret, err := store.ResolveSecretReference(p.config.ClientSecret)
 	if err != nil {

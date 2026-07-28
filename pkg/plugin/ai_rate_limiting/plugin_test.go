@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_proxy_multi"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
@@ -111,6 +112,19 @@ func TestPostInitRejectsConflictingQuotaModes(t *testing.T) {
 		if err := plugin.PostInit(); err == nil {
 			t.Fatalf("config %d PostInit() unexpectedly succeeded", i)
 		}
+	}
+}
+
+func TestPostInitRejectsPlaintextRedisPasswordWhenEncryptionIsEnabled(t *testing.T) {
+	data_encryption.Configure(true, []string{"qeddd145sfvddff3"})
+	t.Cleanup(func() { data_encryption.Configure(false, nil) })
+	p := &Plugin{config: Config{Limit: 1, TimeWindow: 60, Policy: "redis", RedisHost: "127.0.0.1", RedisPassword: "plaintext-secret"}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "redis_password") || strings.Contains(err.Error(), "plaintext-secret") {
+		t.Fatalf("PostInit() error = %v, want redacted redis_password validation error", err)
 	}
 }
 

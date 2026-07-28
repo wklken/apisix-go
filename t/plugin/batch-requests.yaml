@@ -96,8 +96,11 @@ cases:
     config: {routes: []}
     steps:
       - name: missing-pipeline
-        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline1":[{"path":"/b"}]}'}
-        output: {status: 400, body: {matches: 'bad request body:.*pipeline1'}}
+        input: {method: POST, path: /apisix/batch-requests, body: '{"extension":"no pipeline"}'}
+        output: {status: 400, body: {matches: 'pipeline must contain at least one request'}}
+      - name: top-level-extension-is-allowed
+        input: {method: POST, path: /apisix/batch-requests, body: '{"extension":{"trace":true},"pipeline":[{"path":"/missing"}]}'}
+        output: {status: 200, body: {matches: '"status":404'}}
       - name: timeout-is-not-number
         input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":"200","pipeline":[{"path":"/b"}]}'}
         output: {status: 400, body: {matches: 'bad request body:.*timeout'}}
@@ -162,10 +165,14 @@ cases:
         - {id: last-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: last-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: last-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
+        - {id: intentional-504, uri: /intentional-504, upstream: {type: roundrobin, nodes: {"{{FIXTURE.intentional.ADDR}}": 1}}}
+        - {id: after-intentional-504, uri: /after-504, upstream: {type: roundrobin, nodes: {"{{FIXTURE.after.ADDR}}": 1}}}
     fixtures:
       - {name: b, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /b}}], respond: [{status: 200}]}
       - {name: c, kind: http, expect_requests: 1, expect: [{method: PUT, path: {equals: /c}}], respond: [{status: 201}]}
       - {name: d, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /d}}], respond: [{status: 202, delay: 1s}]}
+      - {name: intentional, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /intentional-504}}], respond: [{status: 504, body: intentional}]}
+      - {name: after, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /after-504}}], respond: [{status: 204}]}
     steps:
       - name: aggregate-timeout-after-successes
         input:
@@ -177,6 +184,14 @@ cases:
           elapsed_at_least: 90ms
           elapsed_less_than: 500ms
           body: {matches: '"status":200.*"status":201.*"status":504,"reason":"upstream timeout"'}
+      - name: intentional-504-does-not-stop-pipeline
+        input:
+          method: POST
+          path: /apisix/batch-requests
+          body: '{"pipeline":[{"path":"/intentional-504"},{"path":"/after-504"}]}'
+        output:
+          status: 200
+          body: {matches: '^\[\{"status":504,"reason":"Gateway Timeout".*"body":"intentional"\},\{"status":204,"reason":"No Content".*\}\]\n?$'}
 
   - name: first-request-timeout-stops-pipeline
     source: {file: t/plugin/batch-requests.t, tests: [7]}
@@ -331,17 +346,45 @@ cases:
 
   - name: invalid-metadata-body-size
     source: {file: t/plugin/batch-requests.t, tests: [23]}
-    runtime: {plugins: [batch-requests]}
-    config:
-      plugin_metadata: [{id: batch-requests, max_body_size: 0}]
-      routes:
-        - id: invalid-batch-metadata
-          uri: /probe
-          plugins: {batch-requests: {}}
-    input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"}]}'}
-    output:
-      status: 404
-      logs: {matches: 'validate plugin batch-requests metadata'}
+    variants:
+      - name: reject-invalid-initial-global-metadata
+        runtime: {plugins: [batch-requests]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 0}]
+          routes: []
+        input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"}]}'}
+        output:
+          status: 400
+          body: {matches: 'invalid configuration:.*max_body_size'}
+          logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
+      - name: invalid-reload-keeps-last-valid-global-metadata
+        runtime: {plugins: [batch-requests]}
+        config:
+          plugin_metadata: [{id: batch-requests, max_body_size: 128}]
+          routes: []
+        steps:
+          - name: valid-limit-is-active
+            input:
+              method: POST
+              path: /apisix/batch-requests
+              body_repeat: &above_128 {value: " ", count: 128, suffix: '{"pipeline":[{"path":"/missing"}]}'}
+            output: &limited_413 {status: 413, body: {matches: 'request body too large'}}
+          - name: install-invalid-limit
+            config:
+              plugin_metadata: [{id: batch-requests, max_body_size: 0}]
+              routes: []
+            config_probe:
+              input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+              output: *limited_413
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output: *limited_413
+            wait: 150ms
+          - name: invalid-limit-was-observed-and-last-good-survived
+            input: {method: POST, path: /apisix/batch-requests, body_repeat: *above_128}
+            output:
+              status: 413
+              body: {matches: 'request body too large'}
+              logs: {matches: 'validate plugin_metadata batch-requests:.*max_body_size'}
 
   - name: pipeline-request-body
     source: {file: t/plugin/batch-requests.t, tests: [25]}

@@ -2,6 +2,7 @@ package batch_requests
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,6 +148,124 @@ func TestHandlerStopsAfterTimedOutPipelineRequest(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("dispatcher calls = %d, want 1", got)
+	}
+}
+
+func TestHandlerContinuesAfterIntentionalGatewayTimeout(t *testing.T) {
+	var calls atomic.Int32
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		switch r.URL.Path {
+		case "/gateway-timeout":
+			w.WriteHeader(http.StatusGatewayTimeout)
+		case "/after":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected dispatch path %q", r.URL.Path)
+		}
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [
+			{"path": "/gateway-timeout"},
+			{"path": "/after"}
+		]
+	}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	var responses []PipelineResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &responses); err != nil {
+		t.Fatalf("decode responses: %v, body=%q", err, res.Body.String())
+	}
+	if len(responses) != 2 {
+		t.Fatalf("responses length = %d, want 2: %#v", len(responses), responses)
+	}
+	if responses[0].Status != http.StatusGatewayTimeout || responses[0].Reason != "Gateway Timeout" {
+		t.Fatalf("first response = %#v, want intentional 504", responses[0])
+	}
+	if responses[1].Status != http.StatusNoContent {
+		t.Fatalf("second response = %#v, want 204", responses[1])
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("dispatcher calls = %d, want 2", got)
+	}
+}
+
+func TestHandlerAllowsUnknownTopLevelFields(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/inner" {
+			t.Fatalf("dispatch path = %q, want /inner", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"extension": {"trace": true},
+		"pipeline": [{"path": "/inner"}]
+	}`))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200; body=%q", res.Code, res.Body.String())
+	}
+	responses := decodePipelineResponses(t, res.Body.String())
+	if responses[0].Status != http.StatusNoContent {
+		t.Fatalf("pipeline status = %d, want 204", responses[0].Status)
+	}
+}
+
+func TestDynamicHandlerRejectsInvalidInitialMetadata(t *testing.T) {
+	handler := newDynamicHandler(http.NewServeMux(), func() (Limits, error) {
+		return Limits{}, errors.New("max_body_size must be positive")
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		DefaultURI,
+		strings.NewReader(`{"pipeline":[{"path":"/inner"}]}`),
+	)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400; body=%q", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "invalid configuration") {
+		t.Fatalf("response body = %q, want invalid configuration", res.Body.String())
+	}
+}
+
+func TestDynamicHandlerKeepsLastValidMetadata(t *testing.T) {
+	var loads atomic.Int32
+	handler := newDynamicHandler(http.NewServeMux(), func() (Limits, error) {
+		if loads.Add(1) == 1 {
+			return Limits{MaxBodySize: 64, MaxPipelineItems: 2}, nil
+		}
+		return Limits{}, errors.New("max_body_size must be positive")
+	})
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(
+		first,
+		httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{"pipeline":[{"path":"/inner"}]}`)),
+	)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first response code = %d, want 200; body=%q", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(
+		second,
+		httptest.NewRequest(
+			http.MethodPost,
+			DefaultURI,
+			strings.NewReader(strings.Repeat(" ", 64)+`{"pipeline":[{"path":"/inner"}]}`),
+		),
+	)
+	if second.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("second response code = %d, want 413 from last valid limit; body=%q",
+			second.Code, second.Body.String())
 	}
 }
 

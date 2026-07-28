@@ -10,11 +10,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -110,19 +113,55 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func NewHandler(dispatcher http.Handler) http.Handler {
-	return NewHandlerWithLimits(dispatcher, loadLimits())
+	return newDynamicHandler(dispatcher, loadLimits)
 }
 
 func NewHandlerWithLimits(dispatcher http.Handler, limits Limits) http.Handler {
 	limits = applyLimitDefaults(limits)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
+		serveBatchRequest(dispatcher, limits, w, r)
+	})
+}
+
+func newDynamicHandler(dispatcher http.Handler, loader func() (Limits, error)) http.Handler {
+	var mu sync.Mutex
+	var lastGood Limits
+	hasLastGood := false
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limits, err := loader()
+
+		mu.Lock()
+		switch {
+		case err == nil:
+			lastGood = limits
+			hasLastGood = true
+		case hasLastGood:
+			limits = lastGood
+		}
+		canServe := err == nil || hasLastGood
+		mu.Unlock()
+
 		if err != nil {
-			writeJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
+			logger.Errorf("validate plugin_metadata %s: %s", name, err)
+		}
+		if !canServe {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				ErrorMessage: fmt.Sprintf("invalid configuration: %s", err),
+			})
 			return
 		}
-		writeJSON(w, http.StatusOK, responses)
+		serveBatchRequest(dispatcher, limits, w, r)
 	})
+}
+
+func serveBatchRequest(dispatcher http.Handler, limits Limits, w http.ResponseWriter, r *http.Request) {
+	responses, errStatus, err := handleBatchRequest(dispatcher, w, r, limits)
+	if err != nil {
+		writeJSON(w, errStatus, ErrorResponse{ErrorMessage: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, responses)
 }
 
 func handleBatchRequest(
@@ -148,17 +187,8 @@ func handleBatchRequest(
 	}
 
 	var req Request
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("multiple JSON values")
-		}
-		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
 	}
 	if err := validateRequest(req, limits); err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
@@ -171,9 +201,9 @@ func handleBatchRequest(
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
-		response := dispatchPipelineRequest(dispatcher, r, req, item, timeout)
+		response, timedOut := dispatchPipelineRequest(dispatcher, r, req, item, timeout)
 		responses = append(responses, response)
-		if response.Status == http.StatusGatewayTimeout {
+		if timedOut {
 			break
 		}
 	}
@@ -199,6 +229,17 @@ func validateDecodedRequestTypes(decoded any) error {
 		item, ok := rawItem.(map[string]any)
 		if !ok {
 			continue
+		}
+		for key := range item {
+			switch key {
+			case "version", "method", "path", "query", "headers", "body", "ssl_verify":
+			default:
+				return fmt.Errorf(
+					`property "pipeline" validation failed: item %d unknown field %q`,
+					i+1,
+					key,
+				)
+			}
 		}
 		if sslVerify, exists := item["ssl_verify"]; exists {
 			if _, ok := sslVerify.(bool); !ok {
@@ -255,12 +296,19 @@ func applyLimitDefaults(limits Limits) Limits {
 	return limits
 }
 
-func loadLimits() Limits {
-	var limits Limits
-	if err := safeGetPluginMetadata(name, &limits); err != nil {
-		return applyLimitDefaults(Limits{})
+func loadLimits() (Limits, error) {
+	var metadata map[string]any
+	if err := safeGetPluginMetadata(name, &metadata); err != nil {
+		return applyLimitDefaults(Limits{}), nil
 	}
-	return applyLimitDefaults(limits)
+	if err := util.Validate(metadata, metadataSchema); err != nil {
+		return Limits{}, err
+	}
+	var limits Limits
+	if err := util.Parse(metadata, &limits); err != nil {
+		return Limits{}, err
+	}
+	return applyLimitDefaults(limits), nil
 }
 
 func safeGetPluginMetadata(id string, v any) (err error) {
@@ -288,7 +336,7 @@ func dispatchPipelineRequest(
 	batch Request,
 	item PipelineRequest,
 	timeout time.Duration,
-) PipelineResponse {
+) (PipelineResponse, bool) {
 	var ctx context.Context = contextWithoutValues{Context: outer.Context()}
 	var cancel func()
 	if timeout > 0 {
@@ -324,10 +372,10 @@ func dispatchPipelineRequest(
 
 	select {
 	case <-ctx.Done():
-		return timeoutResponse()
+		return timeoutResponse(), true
 	case <-done:
 		if ctx.Err() != nil {
-			return timeoutResponse()
+			return timeoutResponse(), true
 		}
 	}
 	result := recorder.Result()
@@ -342,7 +390,7 @@ func dispatchPipelineRequest(
 	if err == nil && len(body) > 0 {
 		resp.Body = string(body)
 	}
-	return resp
+	return resp, false
 }
 
 type contextWithoutValues struct {

@@ -250,7 +250,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	assertion, err := sp.ParseResponse(r, []string{state.RequestID})
 	if err != nil {
-		http.Error(w, util.BuildMessageResponse("invalid saml response"), http.StatusUnauthorized)
+		http.Error(w, util.BuildMessageResponse("saml authentication failed"), http.StatusInternalServerError)
 		return
 	}
 

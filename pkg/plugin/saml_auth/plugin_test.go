@@ -165,6 +165,46 @@ func TestInvalidSAMLResponseIsRejected(t *testing.T) {
 	}
 }
 
+func TestCallbackParserFailureReturnsAuthenticationFailure(t *testing.T) {
+	p := newTestPlugin(t, testConfig(t))
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not be called")
+	})
+
+	start := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	startRecorder := httptest.NewRecorder()
+	p.Handler(next).ServeHTTP(startRecorder, start)
+	redirectURL, err := url.Parse(startRecorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect URL: %v", err)
+	}
+	relayState := redirectURL.Query().Get("RelayState")
+	if relayState == "" {
+		t.Fatal("authentication redirect did not contain RelayState")
+	}
+	stateCookie := findSetCookie(startRecorder.Result().Cookies(), requestCookieName(p.sessionFingerprint(), relayState))
+	if stateCookie == nil {
+		t.Fatal("authentication redirect did not set state cookie")
+	}
+
+	callback := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/login/callback",
+		strings.NewReader("SAMLResponse=bad&RelayState="+url.QueryEscape(relayState)),
+	)
+	callback.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	callback.AddCookie(stateCookie)
+	recorder := httptest.NewRecorder()
+	p.Handler(next).ServeHTTP(recorder, callback)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "saml authentication failed") {
+		t.Fatalf("body = %q, want authentication failure", body)
+	}
+}
+
 func testConfig(t *testing.T) Config {
 	t.Helper()
 

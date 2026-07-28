@@ -1324,8 +1324,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 35 manifests
-are task-review-approved and 26 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 36 manifests
+are task-review-approved and 25 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1354,7 +1354,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 13 remaining (19 at replan)
+### Medium — 12 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1399,7 +1399,15 @@ already-implemented branch.
   body capture, APISIX-compatible nested custom fields, and explicit-zero
   logger-batch configuration. Its post-integration package, race,
   real-process, pinned-source, corpus, scoped lint, build, and diff gates pass.
-- [ ] `syslog` — follows the reviewed TCP Logger network lifecycle.
+- [x] `syslog` — all 21 pinned blocks are source-complete with exact RFC5424
+  framing over real TCP/UDP/TLS, explicit socket buffering/flush/drop controls,
+  bounded write deadlines, connection reuse, metadata lifecycle, body capture,
+  empty/custom/nested formats, and runtime route/service identity. Partial,
+  failed, and zero-progress writes retain only the unsent suffix in order and
+  assign retry ownership without loss or duplication. Its post-integration
+  package, logger-batch, Store/config/server, race, real-process,
+  pinned-source, corpus, Datadog shared-harness regression, scoped lint, build,
+  and diff gates pass.
 - [ ] `http-logger` — owns the serialized `logger_batch` ordering contract.
 - [ ] `loggly`
 - [ ] `elasticsearch-logger`

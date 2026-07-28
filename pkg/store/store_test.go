@@ -1,11 +1,70 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"testing"
 
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestGetFromBucketReturnsCopyStableAcrossDatabaseGrowth(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/copy.db", 0o600, nil)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+	})
+
+	storage := &Store{db: db}
+	storage.InitBuckets()
+
+	key := []byte("route-1")
+	want := bytes.Repeat([]byte("r"), 64<<10)
+	if err := db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("routes")).Put(key, want)
+	}); err != nil {
+		t.Fatalf("store route: %v", err)
+	}
+
+	got := storage.GetFromBucket("routes", key)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("GetFromBucket() returned unexpected %d-byte value", len(got))
+	}
+	if err := db.View(func(tx *bolt.Tx) error {
+		stored := tx.Bucket([]byte("routes")).Get(key)
+		if &got[0] == &stored[0] {
+			t.Fatal("GetFromBucket() returned bbolt transaction-owned storage")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("compare stored route: %v", err)
+	}
+
+	before, err := os.Stat(db.Path())
+	if err != nil {
+		t.Fatalf("stat database before growth: %v", err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("routes")).Put([]byte("growth"), make([]byte, 1<<20))
+	}); err != nil {
+		t.Fatalf("grow database: %v", err)
+	}
+	after, err := os.Stat(db.Path())
+	if err != nil {
+		t.Fatalf("stat database after growth: %v", err)
+	}
+	if after.Size() <= before.Size() {
+		t.Fatalf("database size after growth = %d, want greater than %d", after.Size(), before.Size())
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("GetFromBucket() changed after database growth")
+	}
+}
 
 func TestSyncWaitsForQueuedEvents(t *testing.T) {
 	db, err := bolt.Open(t.TempDir()+"/store.db", 0o600, nil)

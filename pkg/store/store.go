@@ -150,7 +150,7 @@ func (s *Store) GetFromBucket(bucketName string, id []byte) []byte {
 		if b == nil {
 			return errBucketNotFound
 		}
-		value = b.Get(id)
+		value = bytes.Clone(b.Get(id))
 		return nil
 	})
 	return value

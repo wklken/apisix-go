@@ -968,6 +968,19 @@ that decrypts into a successful OAuth exchange is the bounded equivalent.
 Three generic `/probe` deliveries or whole-body-only sink assertions are not
 completion evidence.
 
+The `loggly` audit confirms 22 blocks in `loggly.t` and keeps the manifest
+Medium after the shared File/HTTP Logger access-log and HTTP-lifecycle work.
+Its behavior cases must prove metadata-driven UDP delivery, RFC5424
+token/tag/severity framing, the full default event, request/response body
+include/match/mismatch and truncation, metadata and route custom-format
+precedence with automatic route/service IDs, exact HTTP bulk path/token/tag
+payloads, status-derived severity even when custom output omits `status`, and
+per-route inactivity-batch configuration isolation. The standalone data plane
+cannot reproduce the Admin/etcd plaintext-to-ciphertext round trip; a clearly
+named pre-encrypted-token delivery is the bounded equivalent and must not be
+claimed as control-plane proof. One path-only POST claiming all 22 blocks is
+not completion evidence.
+
 The `wolf-rbac` audit corrected its source surface from 42 blocks in one file
 to 44 blocks across two files: all of `wolf-rbac.t` plus Wolf-specific
 `security-warning2.t` tests 19–20. The eight Wolf public-endpoint dispatch cases

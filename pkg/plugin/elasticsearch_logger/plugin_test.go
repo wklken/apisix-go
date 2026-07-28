@@ -106,6 +106,9 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
+		if contentType := r.Header.Get("Content-Type"); contentType != "application/x-ndjson" {
+			t.Fatalf("Content-Type = %q, want application/x-ndjson", contentType)
+		}
 		if r.Header.Get("X-Cluster") != "logs" {
 			t.Fatalf("X-Cluster = %q, want logs", r.Header.Get("X-Cluster"))
 		}
@@ -289,6 +292,63 @@ func TestSendDiscoversOlderElasticsearchVersion(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestBulkBodyIgnoresUnsupportedConfiguredType(t *testing.T) {
+	configuredType := "collector"
+	for _, test := range []struct {
+		version  string
+		wantType string
+	}{
+		{version: "9"},
+		{version: "8"},
+		{version: "7"},
+		{version: "6", wantType: "_doc"},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			p := &Plugin{
+				config: Config{
+					Field: FieldConfig{Index: "services", Type: &configuredType},
+				},
+				esVersion: test.version,
+			}
+
+			body, err := p.bulkBodyEntry(map[string]any{"test": "test"})
+			if err != nil {
+				t.Fatalf("bulkBodyEntry() error = %v", err)
+			}
+			action := strings.SplitN(string(body), "\n", 2)[0]
+			if strings.Contains(action, configuredType) {
+				t.Fatalf("bulk action = %s, want unsupported configured type omitted", action)
+			}
+			if test.wantType == "" {
+				if strings.Contains(action, `"_type"`) {
+					t.Fatalf("bulk action = %s, want no _type for Elasticsearch %s", action, test.version)
+				}
+				return
+			}
+			if !strings.Contains(action, `"_type":"`+test.wantType+`"`) {
+				t.Fatalf("bulk action = %s, want _type %q", action, test.wantType)
+			}
+		})
+	}
+}
+
+func TestElasticsearchLogFieldsPreservesNginxHostAndRemoteAddress(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://unused.example/orders", nil)
+	req.Host = "logs.example"
+	req.RemoteAddr = "127.0.0.1:54321"
+
+	fields := elasticsearchLogFields(req, map[string]string{
+		"custom_host":      "$host",
+		"custom_client_ip": "$remote_addr",
+	})
+	if fields["custom_host"] != "logs.example" {
+		t.Fatalf("custom_host = %#v, want logs.example", fields["custom_host"])
+	}
+	if fields["custom_client_ip"] != "127.0.0.1" {
+		t.Fatalf("custom_client_ip = %#v, want 127.0.0.1", fields["custom_client_ip"])
 	}
 }
 

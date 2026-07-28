@@ -1324,8 +1324,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 33 manifests
-are task-review-approved and 28 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 34 manifests
+are task-review-approved and 27 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1354,7 +1354,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 15 remaining (19 at replan)
+### Medium — 14 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1368,7 +1368,15 @@ already-implemented branch.
   trusted/untrusted LDAPS controls, and real Vault/environment references. Its
   post-integration package/Store, race, fixture, exact real-process,
   pinned-source, corpus, scoped lint, build, and diff gates pass.
-- [ ] `authz-keycloak`
+- [x] `authz-keycloak` — all 45 pinned blocks are source-complete with direct
+  and discovery-based authorization, real service-account tokens, relative
+  endpoints, exact denial and diagnostic behavior, secret references, and
+  verified/unverified TLS. Resty clients, discovery, and token caches are
+  isolated by TLS mode and hashed effective CA contents, so insecure discovery
+  cannot feed verified routes. The pinned lazy-path conditional is enforced by
+  JSON Schema as well as PostInit. Its post-integration package, Store,
+  data-encryption, registry, race, real-process, pinned-source, corpus, scoped
+  lint, build, and diff gates pass.
 - [ ] `saml-auth`
 - [x] `ai-aws-content-moderation` — all 23 blocks are source-complete with
   real Vault/environment/literal credentials, exact SigV4 and session-token

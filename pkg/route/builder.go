@@ -938,6 +938,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// target is like: http://127.0.0.1 => schema + host
 
 		rewrite := ctx.FinalizeProxyRewrite(req)
+		originalHost := req.Host
 
 		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
@@ -953,7 +954,17 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			}
 			req.URL.Scheme = u.Scheme
 			req.URL.Host = u.Host
-			req.Host = u.Host
+			switch upstream.PassHost {
+			case "", "pass":
+				req.Host = originalHost
+				if req.Host == "" {
+					req.Host = u.Host
+				}
+			case "rewrite":
+				req.Host = upstream.UpstreamHost
+			default:
+				req.Host = u.Host
+			}
 		}
 		if ctx.GetApisixVars(req) != nil {
 			ctx.RegisterApisixVar(req, "$balancer_ip", req.URL.Hostname())

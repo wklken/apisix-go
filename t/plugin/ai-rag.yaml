@@ -38,7 +38,7 @@ cases:
         respond: [{status: 200, body: minimal-rag-ok}]
     steps:
       - name: valid-provider-configuration-builds-a-real-route
-        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
+        input: {method: POST, path: /echo, headers: {Host: minimal.client.example, Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
         output: {status: 200, body: {equals: minimal-rag-ok}}
 
   - name: missing-vector-search-provider-is-rejected
@@ -201,7 +201,7 @@ cases:
         respond: [{status: 200, body: '{"messages":[{"role":"user","content":"passed"}]}'}]
     steps:
       - name: rag-result-is-appended-as-a-chat-message
-        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"which service is good for devops"}}}'}
+        input: {method: POST, path: /echo, headers: {Host: chat.client.example, Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"which service is good for devops"}}}'}
         output: {status: 200, body: {json_equals: '{"messages":[{"role":"user","content":"passed"}]}'}}
 
   - name: responses-api-rag-injection
@@ -243,7 +243,7 @@ cases:
         respond: [{status: 200, body: '{"input":"which service is good for devops\npassed"}'}]
     steps:
       - name: rag-result-is-appended-to-responses-input
-        input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"input":"which service is good for devops","ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"which service is good for devops"}}}'}
+        input: {method: POST, path: /v1/responses, headers: {Host: responses.client.example, Content-Type: application/json}, body: '{"input":"which service is good for devops","ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"which service is good for devops"}}}'}
         output: {status: 200, body: {json_equals: '{"input":"which service is good for devops\npassed"}'}}
 
   - name: ssl-verify-defaults-to-true
@@ -280,7 +280,7 @@ cases:
                 azure_openai: {endpoint: '{{FIXTURE.providers.URL}}/embeddings', api_key: key}
               vector_search_provider:
                 azure_ai_search: {endpoint: '{{FIXTURE.providers.URL}}/search', api_key: key}
-          upstream: {type: roundrobin, pass_host: node, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - name: providers
         kind: https
@@ -301,13 +301,13 @@ cases:
         expect:
           - method: POST
             path: {equals: /echo}
-            host: {matches: '^127\.0\.0\.1:[0-9]+$'}
+            host: {equals: tls.client.example}
             headers: {Content-Type: {equals: application/json}}
             body: {json_equals: '{"messages":[{"role":"user","content":"passed"}]}'}
         respond: [{status: 200, body: tls-rag-ok}]
     steps:
       - name: ssl-verify-false-is-used-for-both-provider-requests
-        input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
+        input: {method: POST, path: /echo, headers: {Host: tls.client.example, Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"input":"test"}}}'}
         output: {status: 200, body: {equals: tls-rag-ok}}
 
 sources:

@@ -400,10 +400,38 @@ func TestSchemaValidatesRealm(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	if err := util.Validate(map[string]any{"realm": "my-custom-realm"}, p.GetSchema()); err != nil {
-		t.Fatalf("schema rejected realm: %v", err)
+	valid := []struct {
+		name  string
+		realm string
+	}{
+		{name: "minimum length", realm: " "},
+		{name: "printable range boundaries", realm: "!#[]~"},
+		{name: "maximum length", realm: strings.Repeat("~", 128)},
 	}
-	if err := util.Validate(map[string]any{"realm": 123}, p.GetSchema()); err == nil {
-		t.Fatal("schema accepted non-string realm")
+	for _, test := range valid {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(map[string]any{"realm": test.realm}, p.GetSchema()); err != nil {
+				t.Fatalf("schema rejected realm %q: %v", test.realm, err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name  string
+		realm any
+	}{
+		{name: "non-string", realm: 123},
+		{name: "empty", realm: ""},
+		{name: "over maximum length", realm: strings.Repeat("a", 129)},
+		{name: "quote", realm: `contains"quote`},
+		{name: "backslash", realm: `contains\backslash`},
+		{name: "non-printable", realm: "contains\nnewline"},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(map[string]any{"realm": test.realm}, p.GetSchema()); err == nil {
+				t.Fatalf("schema accepted invalid realm %#v", test.realm)
+			}
+		})
 	}
 }

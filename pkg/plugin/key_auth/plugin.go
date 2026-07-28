@@ -36,7 +36,10 @@ const schema = `
 	  },
 	  "realm": {
 		"type": "string",
-		"default": "key"
+		"default": "key",
+		"minLength": 1,
+		"maxLength": 128,
+		"pattern": "^[\\x20-\\x21\\x23-\\x5B\\x5D-\\x7E]+$"
 	  },
 	  "hide_credentials": {
 		"type": "boolean",

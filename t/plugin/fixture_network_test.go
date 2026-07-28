@@ -447,6 +447,15 @@ func networkJSONValue(value any) (string, error) {
 }
 
 func assertAfterShutdown(t *testing.T, assertions []FileAssertion, replacements map[string]string) {
+	assertFiles(t, assertions, replacements, "after_shutdown assertion")
+}
+
+func assertFiles(
+	t *testing.T,
+	assertions []FileAssertion,
+	replacements map[string]string,
+	kind string,
+) {
 	t.Helper()
 	for i, assertion := range assertions {
 		path := *assertion.Path.Equals
@@ -456,21 +465,29 @@ func assertAfterShutdown(t *testing.T, assertions []FileAssertion, replacements 
 		workDir := replacements["{{WORK_DIR}}"]
 		absolutePath, err := filepath.Abs(path)
 		if err != nil {
-			t.Errorf("after_shutdown assertion %d path: %v", i+1, err)
+			t.Errorf("%s %d path: %v", kind, i+1, err)
 			continue
 		}
 		relativePath, err := filepath.Rel(workDir, absolutePath)
 		if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
-			t.Errorf("after_shutdown assertion %d path escapes work directory: %s", i+1, path)
+			t.Errorf("%s %d path escapes work directory: %s", kind, i+1, path)
 			continue
 		}
 		body, err := os.ReadFile(absolutePath)
+		if assertion.Absent {
+			if err == nil {
+				t.Errorf("%s %d path exists, want absent: %s", kind, i+1, absolutePath)
+			} else if !os.IsNotExist(err) {
+				t.Errorf("%s %d stat %s: %v", kind, i+1, absolutePath, err)
+			}
+			continue
+		}
 		if err != nil {
-			t.Errorf("after_shutdown assertion %d read %s: %v", i+1, absolutePath, err)
+			t.Errorf("%s %d read %s: %v", kind, i+1, absolutePath, err)
 			continue
 		}
 		if err := assertion.Body.match(string(body), true); err != nil {
-			t.Errorf("after_shutdown assertion %d body: %v", i+1, err)
+			t.Errorf("%s %d body: %v", kind, i+1, err)
 		}
 	}
 }
@@ -770,4 +787,12 @@ func TestHarnessAssertsFileAfterShutdown(t *testing.T) {
 		Path: &Matcher{Equals: new("{{WORK_DIR}}/output.log")},
 		Body: &Matcher{Equals: &body},
 	}}, map[string]string{"{{WORK_DIR}}": workDir})
+}
+
+func TestHarnessAssertsAbsentFileMidCase(t *testing.T) {
+	workDir := t.TempDir()
+	assertFiles(t, []FileAssertion{{
+		Path:   &Matcher{Equals: new("{{WORK_DIR}}/output.log")},
+		Absent: true,
+	}}, map[string]string{"{{WORK_DIR}}": workDir}, "step file assertion")
 }

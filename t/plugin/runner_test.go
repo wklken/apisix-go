@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -37,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -246,6 +248,44 @@ func TestWriteScenarioFilesCreatesFilesUnderWorkDirectory(t *testing.T) {
 	}
 	if got := string(data); got != "model text" {
 		t.Fatalf("scenario file body = %q, want model text", got)
+	}
+}
+
+func TestExecuteFileLifecycleActions(t *testing.T) {
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "access.log")
+	rotated := filepath.Join(workDir, "access.log.old")
+	if err := os.WriteFile(source, []byte("before"), 0o600); err != nil {
+		t.Fatalf("write source log: %v", err)
+	}
+	replacements := map[string]string{"{{WORK_DIR}}": workDir}
+
+	actions := []CaseAction{
+		{Rename: &FileRenameAction{
+			From: "{{WORK_DIR}}/access.log",
+			To:   "{{WORK_DIR}}/access.log.old",
+		}},
+		{Remove: "{{WORK_DIR}}/access.log.old"},
+	}
+	if err := executeCaseActions(actions, replacements, nil); err != nil {
+		t.Fatalf("executeCaseActions() error = %v", err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source stat error = %v, want absent", err)
+	}
+	if _, err := os.Stat(rotated); !os.IsNotExist(err) {
+		t.Fatalf("rotated stat error = %v, want absent", err)
+	}
+}
+
+func TestExecuteFileLifecycleActionRejectsExpandedEscape(t *testing.T) {
+	workDir := t.TempDir()
+	replacements := map[string]string{"{{WORK_DIR}}": workDir}
+	err := executeCaseActions([]CaseAction{{
+		Remove: "{{WORK_DIR}}/../outside.log",
+	}}, replacements, nil)
+	if err == nil || !strings.Contains(err.Error(), "escapes work directory") {
+		t.Fatalf("executeCaseActions() error = %v, want expanded escape rejection", err)
 	}
 }
 
@@ -1672,6 +1712,21 @@ func (p *apisixProcess) stop() error {
 	}
 }
 
+func (p *apisixProcess) signal(signal os.Signal) error {
+	if p.command.Process == nil {
+		return errors.New("APISIX child is not running")
+	}
+	if err := p.command.Process.Signal(signal); err != nil {
+		select {
+		case waitErr := <-p.done:
+			return fmt.Errorf("APISIX child exited before signal: %w", waitErr)
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
 func (p *apisixProcess) logs() (string, error) {
 	data, err := os.ReadFile(p.logPath)
 	if err != nil {
@@ -2040,6 +2095,9 @@ func runCase(t *testing.T, spec Case) {
 						)
 					}
 				}
+				if err := executeCaseActions(step.Actions, replacements, process); err != nil {
+					t.Fatalf("execute actions: %v", err)
+				}
 				repeat := step.Repeat
 				if repeat == 0 {
 					repeat = 1
@@ -2093,6 +2151,7 @@ func runCase(t *testing.T, spec Case) {
 				if step.Output.Logs != nil {
 					logMatchers = append(logMatchers, *step.Output.Logs)
 				}
+				assertFiles(t, step.FileAssertions, replacements, "step file assertion")
 			})
 		}
 	} else if spec.Input.Path != "" {
@@ -2152,6 +2211,63 @@ func runCase(t *testing.T, spec Case) {
 			}
 		}
 	}
+}
+
+func executeCaseActions(
+	actions []CaseAction,
+	replacements map[string]string,
+	process *apisixProcess,
+) error {
+	for i, action := range actions {
+		switch {
+		case action.Remove != "":
+			path, err := resolveWorkDirActionPath(action.Remove, replacements)
+			if err != nil {
+				return fmt.Errorf("action %d remove: %w", i+1, err)
+			}
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("action %d remove %s: %w", i+1, path, err)
+			}
+		case action.Rename != nil:
+			from, err := resolveWorkDirActionPath(action.Rename.From, replacements)
+			if err != nil {
+				return fmt.Errorf("action %d rename from: %w", i+1, err)
+			}
+			to, err := resolveWorkDirActionPath(action.Rename.To, replacements)
+			if err != nil {
+				return fmt.Errorf("action %d rename to: %w", i+1, err)
+			}
+			if err := os.Rename(from, to); err != nil {
+				return fmt.Errorf("action %d rename %s to %s: %w", i+1, from, to, err)
+			}
+		case action.Signal != "":
+			if process == nil {
+				return fmt.Errorf("action %d signal requires a live APISIX child", i+1)
+			}
+			if err := process.signal(syscall.SIGUSR1); err != nil {
+				return fmt.Errorf("action %d signal: %w", i+1, err)
+			}
+		case action.Wait > 0:
+			time.Sleep(action.Wait)
+		default:
+			return fmt.Errorf("action %d is empty", i+1)
+		}
+	}
+	return nil
+}
+
+func resolveWorkDirActionPath(path string, replacements map[string]string) (string, error) {
+	workDir := replacements["{{WORK_DIR}}"]
+	expanded := strings.ReplaceAll(path, "{{WORK_DIR}}", workDir)
+	absolutePath, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", err
+	}
+	relativePath, err := filepath.Rel(workDir, absolutePath)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes work directory: %s", path)
+	}
+	return absolutePath, nil
 }
 
 func expandEnvironment(environment Environment, replacements map[string]string) (Environment, error) {

@@ -32,7 +32,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(func() { _ = p.logger.Sync() })
+	t.Cleanup(p.Stop)
 	return p
 }
 
@@ -40,7 +40,7 @@ func TestHandlerWritesLogWhenMatchPasses(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path: path,
-		LogFormat: map[string]string{
+		LogFormat: map[string]any{
 			"path":   "$uri",
 			"status": "$status",
 		},
@@ -74,7 +74,7 @@ func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 	rotated := dir + "/2026-07-09_12-00-00__access.log"
 	p := newTestPlugin(t, Config{
 		Path:      path,
-		LogFormat: map[string]string{"path": "$uri"},
+		LogFormat: map[string]any{"path": "$uri"},
 	})
 
 	serveFileLoggerRequest(t, p, "/before")
@@ -91,16 +91,275 @@ func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 	_ = p.logger.Sync()
 
 	currentContent := readLogFile(t, path)
-	if !strings.Contains(currentContent, `"path":"/after"`) {
-		t.Fatalf("current log content = %q, want post-rotation log line", currentContent)
+	if currentContent != "" {
+		t.Fatalf("current log content = %q, want cached writer to stay on rotated file", currentContent)
 	}
 
 	rotatedContent := readLogFile(t, rotated)
 	if !strings.Contains(rotatedContent, `"path":"/before"`) {
 		t.Fatalf("rotated log content = %q, want pre-rotation log line", rotatedContent)
 	}
-	if strings.Contains(rotatedContent, `"path":"/after"`) {
-		t.Fatalf("rotated log content = %q, want post-rotation write to current file", rotatedContent)
+	if !strings.Contains(rotatedContent, `"path":"/after"`) {
+		t.Fatalf("rotated log content = %q, want cached post-rotation write", rotatedContent)
+	}
+
+	p.reopen()
+	serveFileLoggerRequest(t, p, "/reopened")
+	currentContent = readLogFile(t, path)
+	if !strings.Contains(currentContent, `"path":"/reopened"`) {
+		t.Fatalf("current log content = %q, want post-reopen write", currentContent)
+	}
+}
+
+func TestHandlerKeepsUnlinkedFileCachedUntilReopen(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"path": "$uri"},
+	})
+
+	serveFileLoggerRequest(t, p, "/before")
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove current log: %v", err)
+	}
+
+	serveFileLoggerRequest(t, p, "/cached")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cached log path stat error = %v, want absent", err)
+	}
+
+	p.reopen()
+	serveFileLoggerRequest(t, p, "/after")
+	content := readLogFile(t, path)
+	if !strings.Contains(content, `"path":"/after"`) {
+		t.Fatalf("reopened log content = %q, want post-reopen entry", content)
+	}
+	if strings.Contains(content, "/before") || strings.Contains(content, "/cached") {
+		t.Fatalf("reopened log content = %q, want only post-reopen entry", content)
+	}
+}
+
+func TestHandlerResolvesNestedLogFormatAndTruncatesAfterDepthFive(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path: path,
+		LogFormat: map[string]any{
+			"request": map[string]any{
+				"method": "$request_method",
+				"headers": map[string]any{
+					"user_agent": "$http_user_agent",
+				},
+			},
+			"a": map[string]any{
+				"b": map[string]any{
+					"c": map[string]any{
+						"d": map[string]any{
+							"e": map[string]any{
+								"f": "$host",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/nested", nil)
+	req.Header.Set("User-Agent", "pinned-agent")
+	req = apisixctx.WithRequestVars(req)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+
+	var logged map[string]any
+	line := strings.TrimSpace(readLogFile(t, path))
+	if err := json.Unmarshal([]byte(line), &logged); err != nil {
+		t.Fatalf("decode log line %q: %v", line, err)
+	}
+	request := logged["request"].(map[string]any)
+	if request["method"] != http.MethodGet {
+		t.Fatalf("request.method = %#v, want GET", request["method"])
+	}
+	headers := request["headers"].(map[string]any)
+	if headers["user_agent"] != "pinned-agent" {
+		t.Fatalf("request.headers.user_agent = %#v, want pinned-agent", headers["user_agent"])
+	}
+	e := logged["a"].(map[string]any)["b"].(map[string]any)["c"].(map[string]any)["d"].(map[string]any)["e"].(map[string]any)
+	if _, exists := e["f"]; exists {
+		t.Fatalf("depth-five object = %#v, want f truncated", e)
+	}
+}
+
+func TestHandlerUsesRichDefaultAndRouteLogFormatExtra(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path: path,
+		LogFormatExtra: map[string]string{
+			"route_field":   "from route",
+			"upstream_host": "$upstream_unresolved_host",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/default?foo=bar", nil)
+	req = apisixctx.WithRequestVars(req)
+	req = apisixctx.WithApisixVars(req, map[string]string{
+		"$route_id":      "route-1",
+		"$balancer_ip":   "localhost",
+		"$balancer_port": "1982",
+	})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	})).ServeHTTP(rr, req)
+
+	var logged map[string]any
+	line := strings.TrimSpace(readLogFile(t, path))
+	if err := json.Unmarshal([]byte(line), &logged); err != nil {
+		t.Fatalf("decode log line %q: %v", line, err)
+	}
+	request := logged["request"].(map[string]any)
+	if request["method"] != http.MethodGet {
+		t.Fatalf("request.method = %#v, want GET", request["method"])
+	}
+	response := logged["response"].(map[string]any)
+	if response["status"] != float64(http.StatusCreated) {
+		t.Fatalf("response.status = %#v, want 201", response["status"])
+	}
+	if logged["route_id"] != "route-1" {
+		t.Fatalf("route_id = %#v, want route-1", logged["route_id"])
+	}
+	if logged["route_field"] != "from route" {
+		t.Fatalf("route_field = %#v, want route value", logged["route_field"])
+	}
+	if logged["upstream_host"] != "localhost" {
+		t.Fatalf("upstream_host = %#v, want unresolved host", logged["upstream_host"])
+	}
+	if logged["upstream"] != "127.0.0.1:1982" {
+		t.Fatalf("upstream = %#v, want resolved address", logged["upstream"])
+	}
+}
+
+func TestHandlerLogFormatReplacesDefaultAndIgnoresExtra(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path:           path,
+		LogFormat:      map[string]any{"msg": "precedence test"},
+		LogFormatExtra: map[string]string{"ignored": "extra"},
+	})
+
+	serveFileLoggerRequest(t, p, "/precedence")
+	var logged map[string]any
+	line := strings.TrimSpace(readLogFile(t, path))
+	if err := json.Unmarshal([]byte(line), &logged); err != nil {
+		t.Fatalf("decode log line %q: %v", line, err)
+	}
+	if logged["msg"] != "precedence test" {
+		t.Fatalf("msg = %#v, want precedence test", logged["msg"])
+	}
+	for _, field := range []string{"request", "response", "ignored"} {
+		if _, exists := logged[field]; exists {
+			t.Fatalf("field %q exists in %#v, want log_format replacement", field, logged)
+		}
+	}
+}
+
+func TestAppendFileWriteSyncerDoesNotCreateMissingParent(t *testing.T) {
+	writer := &appendFileWriteSyncer{path: t.TempDir() + "/missing/access.log"}
+	if _, err := writer.Write([]byte("entry")); err == nil {
+		t.Fatal("Write() error = nil, want missing parent error")
+	}
+}
+
+func TestPluginsWithSamePathShareWriterLease(t *testing.T) {
+	path := t.TempDir() + "/shared.log"
+	first := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"path": "$uri"},
+	})
+	second := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"path": "$uri"},
+	})
+	if first.writer != second.writer {
+		t.Fatal("same-path plugins use different writers")
+	}
+
+	serveFileLoggerRequest(t, first, "/first")
+	first.Stop()
+	serveFileLoggerRequest(t, second, "/second")
+	content := readLogFile(t, path)
+	if !strings.Contains(content, `"path":"/first"`) || !strings.Contains(content, `"path":"/second"`) {
+		t.Fatalf("shared log content = %q, want both entries", content)
+	}
+}
+
+func TestFlushAndReopenMovesWritesToCurrentPath(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/access.log"
+	rotated := dir + "/access.log.old"
+	p := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"path": "$uri"},
+	})
+
+	serveFileLoggerRequest(t, p, "/before")
+	if err := os.Rename(path, rotated); err != nil {
+		t.Fatalf("rename current log: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("recreate current log: %v", err)
+	}
+	if err := FlushAndReopen(path); err != nil {
+		t.Fatalf("FlushAndReopen() error = %v", err)
+	}
+	serveFileLoggerRequest(t, p, "/after")
+
+	if content := readLogFile(t, rotated); !strings.Contains(content, `"path":"/before"`) ||
+		strings.Contains(content, `"path":"/after"`) {
+		t.Fatalf("rotated log content = %q, want only pre-reopen entry", content)
+	}
+	if content := readLogFile(t, path); !strings.Contains(content, `"path":"/after"`) {
+		t.Fatalf("current log content = %q, want post-reopen entry", content)
+	}
+}
+
+func TestFlushAndReopenAcceptsRegisteredMissingPath(t *testing.T) {
+	path := t.TempDir() + "/missing.log"
+	p := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"path": "$uri"},
+	})
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("initial path stat error = %v, want absent", err)
+	}
+	if err := FlushAndReopen(path); err != nil {
+		t.Fatalf("FlushAndReopen() missing path error = %v", err)
+	}
+	serveFileLoggerRequest(t, p, "/created-after-reopen")
+	if content := readLogFile(t, path); !strings.Contains(content, "/created-after-reopen") {
+		t.Fatalf("created log content = %q, want request after reopen", content)
+	}
+}
+
+func TestFinalLeaseReleaseRemovesRegisteredWriter(t *testing.T) {
+	path := t.TempDir() + "/released.log"
+	p := newTestPlugin(t, Config{Path: path})
+	key, err := canonicalWriterPath(path)
+	if err != nil {
+		t.Fatalf("canonicalWriterPath() error = %v", err)
+	}
+	if !sharedFileWriters.has(key) {
+		t.Fatal("writer is not registered after PostInit")
+	}
+
+	p.Stop()
+	if sharedFileWriters.has(key) {
+		t.Fatal("writer remains registered after final lease release")
+	}
+	if sharedFileWriters.signalWatcherRunning() {
+		t.Fatal("SIGUSR1 watcher remains after final lease release")
 	}
 }
 
@@ -108,7 +367,7 @@ func TestHandlerSkipsLogWhenMatchFails(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path:      path,
-		LogFormat: map[string]string{"path": "$uri"},
+		LogFormat: map[string]any{"path": "$uri"},
 		Match:     []any{[]any{"http_x_tenant", "==", "gold"}},
 	})
 
@@ -124,6 +383,30 @@ func TestHandlerSkipsLogWhenMatchFails(t *testing.T) {
 
 	if content := readLogFile(t, path); content != "" {
 		t.Fatalf("log content = %q, want no log line for non-matching request", content)
+	}
+}
+
+func TestHandlerAcceptsOfficialNestedMatchGroup(t *testing.T) {
+	path := t.TempDir() + "/access.log"
+	p := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"request": "$request"},
+		Match: []any{
+			[]any{
+				[]any{"arg_name", "==", "jack"},
+			},
+		},
+	})
+
+	matched := httptest.NewRequest(http.MethodGet, "/orders?name=jack", nil)
+	matched = apisixctx.WithRequestVars(matched)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), matched)
+
+	content := readLogFile(t, path)
+	if !strings.Contains(content, "name=jack") {
+		t.Fatalf("log content = %q, want nested match request", content)
 	}
 }
 
@@ -267,11 +550,19 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	if err := json.Unmarshal([]byte(line), &logged); err != nil {
 		t.Fatalf("decode log line %q: %v", line, err)
 	}
-	if _, ok := logged["request"]; ok {
-		t.Fatalf("logged request = %#v, want no request body", logged["request"])
+	request, ok := logged["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("logged request = %#v, want rich request object", logged["request"])
 	}
-	if _, ok := logged["response"]; ok {
-		t.Fatalf("logged response = %#v, want no response body", logged["response"])
+	if _, ok := request["body"]; ok {
+		t.Fatalf("logged request = %#v, want no request body", request)
+	}
+	response, ok := logged["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("logged response = %#v, want rich response object", logged["response"])
+	}
+	if _, ok := response["body"]; ok {
+		t.Fatalf("logged response = %#v, want no response body", response)
 	}
 }
 

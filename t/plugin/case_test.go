@@ -403,6 +403,108 @@ func TestManifestRejectsUnsafeFileAssertion(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsWorkDirFileLifecycleActions(t *testing.T) {
+	body := "after"
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name: "rotate-and-reopen",
+		Actions: []CaseAction{
+			{Rename: &FileRenameAction{
+				From: "{{WORK_DIR}}/access.log",
+				To:   "{{WORK_DIR}}/access.log.old",
+			}},
+			{Remove: "{{WORK_DIR}}/access.log.old"},
+			{Signal: "SIGUSR1"},
+			{Wait: 10 * time.Millisecond},
+		},
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+		FileAssertions: []FileAssertion{{
+			Path: &Matcher{Equals: new("{{WORK_DIR}}/access.log")},
+			Body: &Matcher{Equals: &body},
+		}},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsUnsafeFileLifecycleAction(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:    "unsafe-remove",
+		Actions: []CaseAction{{Remove: "/tmp/outside.log"}},
+		Input:   HTTPInput{Path: "/hello"},
+		Output:  HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "must begin with {{WORK_DIR}}/") {
+		t.Fatalf("validate() error = %v, want unsafe action path rejection", err)
+	}
+}
+
+func TestManifestRejectsMixedFileLifecycleAction(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name: "mixed-action",
+		Actions: []CaseAction{{
+			Remove: "{{WORK_DIR}}/access.log",
+			Signal: "SIGUSR1",
+		}},
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("validate() error = %v, want mixed action rejection", err)
+	}
+}
+
+func TestManifestRejectsUnsupportedChildSignal(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:    "unsupported-signal",
+		Actions: []CaseAction{{Signal: "SIGTERM"}},
+		Input:   HTTPInput{Path: "/hello"},
+		Output:  HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "only SIGUSR1") {
+		t.Fatalf("validate() error = %v, want unsupported signal rejection", err)
+	}
+}
+
+func TestManifestAcceptsAbsentMidCaseFileAssertion(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "cached-unlinked-file",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+		FileAssertions: []FileAssertion{{
+			Path:   &Matcher{Equals: new("{{WORK_DIR}}/access.log")},
+			Absent: true,
+		}},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
 func TestManifestRejectsUDPFixtureClose(t *testing.T) {
 	payload := "hello"
 	manifest := validManifest()

@@ -93,15 +93,29 @@ func (e *Environment) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type CaseStep struct {
-	Name          string         `yaml:"name"`
-	Repeat        int            `yaml:"repeat,omitempty"`
-	Concurrency   int            `yaml:"concurrency,omitempty"`
-	Config        map[string]any `yaml:"config,omitempty"`
-	ConfigProbe   *ConfigProbe   `yaml:"config_probe,omitempty"`
-	ConfigTimeout time.Duration  `yaml:"config_timeout,omitempty"`
-	Input         HTTPInput      `yaml:"input"`
-	Output        HTTPOutput     `yaml:"output"`
-	Wait          time.Duration  `yaml:"wait,omitempty"`
+	Name           string          `yaml:"name"`
+	Repeat         int             `yaml:"repeat,omitempty"`
+	Concurrency    int             `yaml:"concurrency,omitempty"`
+	Config         map[string]any  `yaml:"config,omitempty"`
+	ConfigProbe    *ConfigProbe    `yaml:"config_probe,omitempty"`
+	ConfigTimeout  time.Duration   `yaml:"config_timeout,omitempty"`
+	Actions        []CaseAction    `yaml:"actions,omitempty"`
+	Input          HTTPInput       `yaml:"input"`
+	Output         HTTPOutput      `yaml:"output"`
+	FileAssertions []FileAssertion `yaml:"file_assertions,omitempty"`
+	Wait           time.Duration   `yaml:"wait,omitempty"`
+}
+
+type CaseAction struct {
+	Remove string            `yaml:"remove,omitempty"`
+	Rename *FileRenameAction `yaml:"rename,omitempty"`
+	Signal string            `yaml:"signal,omitempty"`
+	Wait   time.Duration     `yaml:"wait,omitempty"`
+}
+
+type FileRenameAction struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
 }
 
 type ConfigProbe struct {
@@ -157,8 +171,9 @@ type NetworkResponse struct {
 }
 
 type FileAssertion struct {
-	Path *Matcher `yaml:"path"`
-	Body *Matcher `yaml:"body"`
+	Path   *Matcher `yaml:"path"`
+	Body   *Matcher `yaml:"body,omitempty"`
+	Absent bool     `yaml:"absent,omitempty"`
 }
 
 type CaseSource struct {
@@ -602,6 +617,15 @@ func (c *Case) validateScenario() error {
 			}
 			if step.Concurrency > 0 && len(step.Output.Captures) > 0 {
 				return fmt.Errorf("step %q concurrency must not be combined with output captures", step.Name)
+			}
+			if step.Concurrency > 0 && (len(step.Actions) > 0 || len(step.FileAssertions) > 0) {
+				return fmt.Errorf("step %q concurrency must not be combined with actions or file assertions", step.Name)
+			}
+			if err := validateCaseActions(step.Actions); err != nil {
+				return fmt.Errorf("step %q actions: %w", step.Name, err)
+			}
+			if err := validateFileAssertions(step.FileAssertions, "file assertion"); err != nil {
+				return fmt.Errorf("step %q: %w", step.Name, err)
 			}
 			if step.ConfigTimeout < 0 {
 				return fmt.Errorf("step %q config_timeout must not be negative", step.Name)
@@ -1097,22 +1121,82 @@ func (r NetworkResponse) validate() error {
 }
 
 func validateAfterShutdown(assertions []FileAssertion) error {
+	return validateFileAssertions(assertions, "after_shutdown assertion")
+}
+
+func validateFileAssertions(assertions []FileAssertion, kind string) error {
 	for i, assertion := range assertions {
 		if assertion.Path == nil || assertion.Path.Equals == nil {
-			return fmt.Errorf("after_shutdown assertion %d path must use equals", i+1)
+			return fmt.Errorf("%s %d path must use equals", kind, i+1)
 		}
 		if err := assertion.Path.validate(matcherPath); err != nil {
-			return fmt.Errorf("after_shutdown assertion %d path: %w", i+1, err)
+			return fmt.Errorf("%s %d path: %w", kind, i+1, err)
 		}
 		if !strings.HasPrefix(*assertion.Path.Equals, "{{WORK_DIR}}/") {
-			return fmt.Errorf("after_shutdown assertion %d path must begin with {{WORK_DIR}}/", i+1)
+			return fmt.Errorf("%s %d path must begin with {{WORK_DIR}}/", kind, i+1)
+		}
+		if assertion.Absent {
+			if assertion.Body != nil {
+				return fmt.Errorf("%s %d body must not be set when absent is true", kind, i+1)
+			}
+			continue
 		}
 		if assertion.Body == nil {
-			return fmt.Errorf("after_shutdown assertion %d body is required", i+1)
+			return fmt.Errorf("%s %d body is required", kind, i+1)
 		}
 		if err := assertion.Body.validate(matcherBody); err != nil {
-			return fmt.Errorf("after_shutdown assertion %d body: %w", i+1, err)
+			return fmt.Errorf("%s %d body: %w", kind, i+1, err)
 		}
+	}
+	return nil
+}
+
+func validateCaseActions(actions []CaseAction) error {
+	for i, action := range actions {
+		configured := 0
+		if action.Remove != "" {
+			configured++
+		}
+		if action.Rename != nil {
+			configured++
+		}
+		if action.Signal != "" {
+			configured++
+		}
+		if action.Wait != 0 {
+			configured++
+		}
+		if configured != 1 {
+			return fmt.Errorf("action %d must configure exactly one of remove, rename, signal, or wait", i+1)
+		}
+		switch {
+		case action.Remove != "":
+			if err := validateWorkDirActionPath(action.Remove); err != nil {
+				return fmt.Errorf("action %d remove: %w", i+1, err)
+			}
+		case action.Rename != nil:
+			if err := validateWorkDirActionPath(action.Rename.From); err != nil {
+				return fmt.Errorf("action %d rename from: %w", i+1, err)
+			}
+			if err := validateWorkDirActionPath(action.Rename.To); err != nil {
+				return fmt.Errorf("action %d rename to: %w", i+1, err)
+			}
+		case action.Signal != "":
+			if action.Signal != "SIGUSR1" {
+				return fmt.Errorf("action %d signal: only SIGUSR1 is supported", i+1)
+			}
+		case action.Wait != 0:
+			if action.Wait < 0 {
+				return fmt.Errorf("action %d wait must be positive", i+1)
+			}
+		}
+	}
+	return nil
+}
+
+func validateWorkDirActionPath(path string) error {
+	if !strings.HasPrefix(path, "{{WORK_DIR}}/") {
+		return errors.New("path must begin with {{WORK_DIR}}/")
 	}
 	return nil
 }

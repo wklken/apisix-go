@@ -818,7 +818,12 @@ The original checked state was not supported by the manifests. This audit compar
 - [x] `forward-auth` — all 28 pinned blocks across three sources map exactly once to standalone schema, header propagation/spoof resistance, allow/deny, degradation/error, `$post_arg`, CRLF/no-auth, bounded-body 413, chunked re-framing, GET/POST framing, and absent-header clearing behavior. Raw framing assertions combine required bytes with explicit forbidden-header patterns, so they cannot pass from fixture-generated claims. Package/race/corpus, full real-process, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [x] `multi-auth` — all 38 pinned blocks across two sources map exactly once to 13 real standalone groups and 38 requests covering ordered Basic/Key/JWT/HMAC alternatives, exact all-failed diagnostics, silent later success, configured token locations and hiding, invalid nested/cardinality reloads with last-good retention, JWT failures, anonymous failures, and exactly-once consumer chaining. Failed body-validating probes replay a bounded captured prefix plus unread source so later alternatives and upstream receive the full body; probe diagnostics are request-scoped and emitted only if every alternative fails. Affected auth/context package and race tests, full real-process and focused race, sensitive repeats, corpus, scoped lint, build, post-integration gates, and task review pass.
 - [x] `wolf-rbac` — all 44 owned pinned blocks (`wolf-rbac.t` 1–42 plus `security-warning2.t` 19–20) map exactly once to real standalone schema, public API, token/header, permission/retry, JSON/raw/102-field password, Vault/env, duplicate-appid consumer replacement, TLS, trusted-IP, and HTTP-warning behavior. The duplicate lifecycle retains the original same-appid consumer, appends the Echo consumer, waits boundedly for the newer credential index, then proves exactly one final permission and upstream request before Echo rewriting. Package/race, full real-process, sensitive and lifecycle repeats, confidentiality assertions, scoped lint, build, post-integration gates, and task review pass.
-- [ ] `authz-keycloak` — one allow decision per source replaces discovery/token/UMA, lazy paths, permissions, client credentials, timeout/TLS, and provider failures.
+- [x] `authz-keycloak` — all 45 pinned blocks map exactly once to real
+  direct/discovery authorization, service-account token, relative-endpoint,
+  denial/diagnostic, secret-reference, and verified/unverified TLS cases.
+  Package/Store/data-encryption/registry, race, exact real-process,
+  pinned-source, corpus, scoped lint, build, post-integration, and task-review
+  gates pass.
 - [x] `cas-auth` — all 24 CAS-owned blocks across `cas-auth.t` and `security-warning.t` map exactly once to real standalone login/validation/session/logout, multi-SP/SLO, schema, redirect/signature/callback, initiation, isolation, and warning behavior using captured cookies and exact provider requests. A real changed-resource reload preserves the old session; rejected and forged tickets cannot create/cross scopes; the process-local session store is a mutex-protected 10,000-entry one-hour expirable LRU with refresh, expiry, and eviction coverage. Package/race/corpus, full real-process, sensitive repeats, store stress, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `saml-auth` — four broad cases claim schema validation, signed ACS, multi-SP sessions, login/logout, and callback failures without preserving those distinct stateful behaviors.
 - [x] `feishu-auth` — all 14 pinned blocks map exactly once to real standalone redirect, query/header code, token POST, userinfo Bearer, signed-cookie reuse/expiry, custom-location, secret-rotation/removal, forged-header clearing, and encrypted-fallback behavior. Distinct readiness routes prevent stale snapshots from satisfying reload probes; exact upstream counts prove accepted versus terminal rejected paths. The encrypted case uses ciphertext standalone resources, decrypts fallback arrays at runtime, and excludes plaintext from child configs/logs; removing the decrypted route debug dump closes the RED-proven secret leak. Package/race, full real-process and focused race, sensitive repeats, corpus, scoped lint, build, post-integration gates, and task review pass.
@@ -860,12 +865,28 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 9 — HTTP and Cloud Loggers
 
-- [ ] `http-logger` — one `/probe` delivery per source does not assert JSON/newline/custom formats, request/response bodies and truncation, batching/retry, metadata, or exact sink payloads.
+- [x] `http-logger` — all 114 pinned blocks across seven sources map exactly
+  once to standalone schema, sink, body/truncation/compression, TLS/auth,
+  route/global/consumer metadata, nested-format, batching/retry, lifecycle,
+  and invalid-configuration behavior. Package/resource/route, race, exact
+  real-process, pinned-source, corpus, scoped lint, build, post-integration,
+  and task-review gates pass.
 - [x] `clickhouse-logger` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates required/default/schema configuration, ClickHouse user/key/database headers, JSONEachRow SQL bodies, single and multiple endpoints, deterministic pending-entry overflow against a cancellable slow sink, request/response body capture and expressions, plugin metadata formats, and child-scoped `$ENV://` user resolution including empty values. Package, race, strict corpus, environment isolation, real-process, scoped lint, diff, build, post-integration, and task-review gates pass.
 - [ ] `google-cloud-logging` — generic delivery omits OAuth/JWT exchange, monitored-resource/log fields, batching, credentials, endpoint, and error handling.
-- [ ] `loggly` — generic delivery omits token/tag endpoint construction, format/body fields, batching, timeout, and failure behavior.
+- [x] `loggly` — all 22 pinned blocks map exactly once to real standalone
+  schema, UDP RFC5424, token/tag, severity, body/expression, metadata,
+  HTTP-bulk, encryption-at-rest, and buffered-config isolation cases. The
+  reviewed implementation preserves request-host framing and strips internal
+  fields; generic standalone encryption recursively covers registered
+  containers and plugin metadata, and typed bbolt assertions reject trailing
+  data. Package/shared config/store, race, exact real-process, source/corpus,
+  scoped lint, build, post-integration, and task-review gates pass.
 - [x] `loki-logger` — all 22 pinned blocks map exactly once to real standalone cases. The corpus validates schema branches, tenant and authorization headers, custom endpoints, rich nested default records, static/dynamic/post-upstream labels, stable request timestamps, route and metadata format precedence, additive non-clobber extras, exact stream/value grouping and cardinality, three-request label isolation, and deterministic pending-entry overflow. Internal batch state uses a typed envelope so user fields cannot collide. Package, race, strict semantic matcher, repeated real-process, scoped lint, build, post-integration, and task-review gates pass.
-- [ ] `datadog` — package-level metadata defaults/schema and exact DogStatsD 8192-byte coalescing versus 8193-byte ordered fallback are TDD-tested, task-reviewed, integrated, and race-clean. The 13-block manifest remains incomplete: block 11 requires the shared embedded-wildcard route prerequisite above so `/articles/*/comments` both matches with APISIX arbitrary-depth semantics and remains the exact plugin path tag; the other source-specific metric/tag/cardinality scenarios must then replace the stale generic six-datagram case.
+- [x] `datadog` — all 13 pinned blocks map exactly once to real plugin-metadata
+  endpoint, ordered/coalesced DogStatsD, upstream-latency, tag, runtime update,
+  and invalid-resource cases. Package/route/logger-batch/Store/config/server,
+  race, exact real-process, pinned-source, corpus, repeated metadata, scoped
+  lint, build, post-integration, and task-review gates pass.
 - [ ] `elasticsearch-logger` — generic delivery omits index/type/auth configuration, bulk framing, log formats, batching/retry, and response failures.
 - [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
 - [ ] `sls-logger` — generic delivery omits Aliyun signing, project/logstore endpoint, structured log groups, credentials, batching, and failures.
@@ -882,7 +903,11 @@ The original checked state was not supported by the manifests. This audit compar
   pinned-source, corpus, scoped lint, build, post-integration, and task-review
   gates pass.
 - [x] `udp-logger` — all 14 pinned blocks map exactly once to standalone schema, delivery-failure, live two-sink reload, metadata, and exact request/response-body cases. Default records expose the APISIX-shaped access-log fields with explicit Go-native size approximations; custom records resolve post-downstream and append route/service context. Parsed RFC3339 and strict RFC 6901 network assertions, package/race/corpus, full real-process, reload `-count=10`, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
-- [ ] `syslog` — one generic transport write replaces RFC framing/facility/severity/tag, TCP/UDP/TLS modes, batching, and failures.
+- [x] `syslog` — all 21 pinned blocks map exactly once to exact RFC5424
+  TCP/UDP/TLS, buffering/flush/drop, retry, metadata, body-capture,
+  empty/custom/nested format, and route/service context cases. Package,
+  logger-batch, Store/config/server, race, exact real-process, pinned-source,
+  corpus, scoped lint, build, post-integration, and task-review gates pass.
 - [ ] `kafka-logger` — one produce per source omits topic/key/partition, metadata negotiation, SASL/TLS, body truncation, formats, batching/retry, and broker failures.
 - [x] `file-logger` — all 44 pinned blocks across three sources map exactly once
   to real standalone schema, file append/cache/reopen, live `SIGUSR1`, exact
@@ -1172,7 +1197,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 10 remaining (28 listed)
+### Medium — 9 remaining (28 listed)
 
 - [x] `datadog`
 - [x] `basic-auth`
@@ -1189,7 +1214,7 @@ Execution waves:
 - [x] `batch-requests`
 - [x] `http-logger`
 - [ ] `google-cloud-logging`
-- [ ] `loggly`
+- [x] `loggly`
 - [ ] `elasticsearch-logger`
 - [ ] `sls-logger`
 - [ ] `tencent-cloud-cls`
@@ -1354,7 +1379,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 11 remaining (19 at replan)
+### Medium — 10 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1416,7 +1441,14 @@ already-implemented branch.
   The approved range also adds route-label context and deterministic repeated
   fixture bodies. Its post-integration package/resource/route, race,
   real-process, pinned-source, corpus, scoped lint, build, and diff gates pass.
-- [ ] `loggly`
+- [x] `loggly` — all 22 pinned blocks are source-complete with exact
+  standalone schema, RFC5424 UDP, HTTP bulk, metadata/route formatting,
+  request/response body expressions, severity maps, plaintext-token runtime
+  use plus ciphertext-at-rest proof, and per-config buffered isolation.
+  Request-host framing and strict typed bbolt decoding close the independent
+  review findings; generic container and plugin-metadata encryption preserves
+  the runtime plaintext contract. Its post-integration package/config/store,
+  race, real-process, source/corpus, scoped lint, build, and diff gates pass.
 - [ ] `elasticsearch-logger`
 - [ ] `google-cloud-logging`
 - [ ] `sls-logger`

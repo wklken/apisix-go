@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,36 @@ func TestHandlerRedirectsWhenAccessDeniedRedirectURIConfigured(t *testing.T) {
 	}
 	if rr.Header().Get("Location") != "/login" {
 		t.Fatalf("Location = %q, want /login", rr.Header().Get("Location"))
+	}
+}
+
+func TestHandlerReturnsTLSVerificationDiagnosticWithoutCallingUpstream(t *testing.T) {
+	keycloak := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("untrusted TLS provider handler should not be called")
+	}))
+	t.Cleanup(keycloak.Close)
+
+	p := newTestPlugin(t, Config{
+		TokenEndpoint: keycloak.URL + "/token",
+		ClientID:      "apisix",
+		Permissions:   []string{"orders#view"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil)
+	req.Header.Set("Authorization", "Bearer jwt")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "certificate") {
+		t.Fatalf("body = %q, want certificate verification diagnostic", body)
+	}
+	if body := rr.Body.String(); strings.Contains(body, "Bearer jwt") {
+		t.Fatalf("body exposed bearer token: %q", body)
 	}
 }
 
@@ -374,6 +405,59 @@ func TestServiceAccountTokenIsSharedByEndpointAndClientID(t *testing.T) {
 	}
 }
 
+func TestServiceAccountTokenIsIsolatedByClientSecret(t *testing.T) {
+	var clientCredentialsRequests int
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if grantType := r.PostForm.Get("grant_type"); grantType != "client_credentials" {
+			t.Fatalf("grant_type = %q, want client_credentials", grantType)
+		}
+		clientCredentialsRequests++
+		switch r.PostForm.Get("client_secret") {
+		case "secret-a":
+			_, _ = w.Write([]byte(`{"access_token":"sa-token-a","expires_in":300}`))
+		case "secret-b":
+			_, _ = w.Write([]byte(`{"access_token":"sa-token-b","expires_in":300}`))
+		default:
+			t.Fatalf("client_secret = %q, want secret-a or secret-b", r.PostForm.Get("client_secret"))
+		}
+	}))
+	t.Cleanup(keycloak.Close)
+
+	first := newTestPlugin(t, Config{
+		TokenEndpoint:   keycloak.URL + "/token",
+		ClientID:        "apisix",
+		ClientSecret:    "secret-a",
+		CacheTTLSeconds: 60,
+	})
+	second := newTestPlugin(t, Config{
+		TokenEndpoint:   keycloak.URL + "/token",
+		ClientID:        "apisix",
+		ClientSecret:    "secret-b",
+		CacheTTLSeconds: 60,
+	})
+	firstCacheKey := first.serviceAccountCacheKey(keycloak.URL + "/token")
+	secondCacheKey := second.serviceAccountCacheKey(keycloak.URL + "/token")
+	if firstCacheKey == secondCacheKey {
+		t.Fatal("service account cache keys are equal for different client secrets")
+	}
+	if strings.Contains(firstCacheKey, "secret-a") || strings.Contains(secondCacheKey, "secret-b") {
+		t.Fatalf("service account cache key exposes client secret: %q / %q", firstCacheKey, secondCacheKey)
+	}
+
+	if token, err := first.serviceAccountAccessToken(); err != nil || token != "sa-token-a" {
+		t.Fatalf("first serviceAccountAccessToken() = %q, %v; want sa-token-a, nil", token, err)
+	}
+	if token, err := second.serviceAccountAccessToken(); err != nil || token != "sa-token-b" {
+		t.Fatalf("second serviceAccountAccessToken() = %q, %v; want sa-token-b, nil", token, err)
+	}
+	if clientCredentialsRequests != 2 {
+		t.Fatalf("client credentials requests = %d, want 2", clientCredentialsRequests)
+	}
+}
+
 func TestDiscoveryIsSharedUntilCacheTTLExpires(t *testing.T) {
 	var discoveryRequests int
 	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -401,6 +485,34 @@ func TestDiscoveryIsSharedUntilCacheTTLExpires(t *testing.T) {
 	}
 	if discoveryRequests != 1 {
 		t.Fatalf("discovery requests = %d, want 1", discoveryRequests)
+	}
+}
+
+func TestDiscoveryResolvesRelativeEndpointsAgainstDiscoveryOrigin(t *testing.T) {
+	keycloak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token_endpoint":                 "/token",
+			"resource_registration_endpoint": "/resources",
+		})
+	}))
+	t.Cleanup(keycloak.Close)
+
+	p := newTestPlugin(t, Config{
+		Discovery: keycloak.URL + "/realms/test/.well-known/uma2-configuration",
+		ClientID:  "apisix",
+	})
+	discovery, err := p.discover()
+	if err != nil {
+		t.Fatalf("discover() error = %v", err)
+	}
+	if discovery.TokenEndpoint != keycloak.URL+"/token" {
+		t.Fatalf("token_endpoint = %q, want fixture origin", discovery.TokenEndpoint)
+	}
+	if discovery.ResourceRegistrationEndpoint != keycloak.URL+"/resources" {
+		t.Fatalf(
+			"resource_registration_endpoint = %q, want fixture origin",
+			discovery.ResourceRegistrationEndpoint,
+		)
 	}
 }
 
@@ -454,5 +566,53 @@ func TestPostInitAppliesKeepaliveAndTLSOptions(t *testing.T) {
 	}
 	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatalf("TLSClientConfig = %#v, want InsecureSkipVerify", transport.TLSClientConfig)
+	}
+}
+
+func TestPostInitResolvesEnvironmentClientSecret(t *testing.T) {
+	t.Setenv("AUTHZ_KEYCLOAK_CLIENT_SECRET", "environment-secret")
+
+	p := newTestPlugin(t, Config{
+		TokenEndpoint: "http://keycloak.example.com/token",
+		ClientID:      "apisix",
+		ClientSecret:  "$ENV://AUTHZ_KEYCLOAK_CLIENT_SECRET",
+	})
+
+	if p.config.ClientSecret != "environment-secret" {
+		t.Fatalf("client_secret = %q, want resolved environment value", p.config.ClientSecret)
+	}
+}
+
+func TestPostInitRedactsClientSecretResolutionError(t *testing.T) {
+	const secretReference = "$ENV://AUTHZ_KEYCLOAK_MISSING_SECRET"
+	old, existed := os.LookupEnv("AUTHZ_KEYCLOAK_MISSING_SECRET")
+	if err := os.Unsetenv("AUTHZ_KEYCLOAK_MISSING_SECRET"); err != nil {
+		t.Fatalf("Unsetenv() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv("AUTHZ_KEYCLOAK_MISSING_SECRET", old)
+		} else {
+			_ = os.Unsetenv("AUTHZ_KEYCLOAK_MISSING_SECRET")
+		}
+	})
+
+	p := &Plugin{config: Config{
+		TokenEndpoint: "http://keycloak.example.com/token",
+		ClientID:      "apisix",
+		ClientSecret:  secretReference,
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want secret resolution failure")
+	}
+	if got := err.Error(); got != "resolve authz-keycloak client_secret reference: credential unavailable" {
+		t.Fatalf("PostInit() error = %q, want redacted deterministic diagnostic", got)
+	}
+	if strings.Contains(err.Error(), secretReference) {
+		t.Fatalf("PostInit() error exposed secret reference: %v", err)
 	}
 }

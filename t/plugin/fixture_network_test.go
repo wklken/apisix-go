@@ -47,6 +47,13 @@ type networkFixture struct {
 	wg        sync.WaitGroup
 }
 
+const defaultZeroPacketObservation = 250 * time.Millisecond
+
+func isExactZeroUDPFixture(spec FixtureSpec) bool {
+	return spec.Kind == "udp" && spec.Count != nil &&
+		spec.Count.AtLeast == 0 && spec.Count.AtMost == 0
+}
+
 func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
 	fixture := &networkFixture{
 		kind:     spec.Kind,
@@ -327,6 +334,12 @@ func (f *networkFixture) close() {
 
 func (f *networkFixture) assert(t *testing.T, spec FixtureSpec) {
 	t.Helper()
+	if isExactZeroUDPFixture(spec) {
+		if err := f.zeroPacketAssertionError(spec); err != nil {
+			t.Error(err)
+		}
+		return
+	}
 	for i, expected := range spec.NetworkExpect {
 		select {
 		case received := <-f.received:
@@ -346,6 +359,53 @@ func (f *networkFixture) assert(t *testing.T, spec FixtureSpec) {
 	case extra := <-f.received:
 		t.Errorf("fixture %s received unexpected extra payload %q", spec.Name, extra)
 	default:
+	}
+}
+
+func (f *networkFixture) zeroPacketAssertionError(spec FixtureSpec) error {
+	observation := spec.Count.Timeout
+	if observation == 0 {
+		observation = defaultZeroPacketObservation
+	}
+	timer := time.NewTimer(observation)
+	defer timer.Stop()
+
+	for {
+		select {
+		case err := <-f.errors:
+			return fmt.Errorf(
+				"fixture %s expected zero UDP packets during %s: %w",
+				spec.Name,
+				observation,
+				err,
+			)
+		case extra := <-f.received:
+			return fmt.Errorf(
+				"fixture %s expected zero UDP packets during %s, received %q",
+				spec.Name,
+				observation,
+				extra,
+			)
+		case <-timer.C:
+			select {
+			case err := <-f.errors:
+				return fmt.Errorf(
+					"fixture %s expected zero UDP packets during %s: %w",
+					spec.Name,
+					observation,
+					err,
+				)
+			case extra := <-f.received:
+				return fmt.Errorf(
+					"fixture %s expected zero UDP packets during %s, received %q",
+					spec.Name,
+					observation,
+					extra,
+				)
+			default:
+				return nil
+			}
+		}
 	}
 }
 
@@ -653,6 +713,58 @@ func TestHarnessRunsUDPFixture(t *testing.T) {
 		t.Fatalf("UDP response = %q, want %q", got, response)
 	}
 	fixture.assert(t, spec)
+}
+
+func TestUDPZeroPacketAssertionRejectsDelayedPacket(t *testing.T) {
+	spec := FixtureSpec{
+		Name:  "sink",
+		Kind:  "udp",
+		Count: &FixtureCountAssertion{AtLeast: 0, AtMost: 0, Timeout: 100 * time.Millisecond},
+	}
+	fixture, err := startNetworkFixture(spec)
+	if err != nil {
+		t.Fatalf("start UDP fixture: %v", err)
+	}
+	defer fixture.close()
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		connection, dialErr := net.Dial("udp", fixture.address())
+		if dialErr != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_, _ = connection.Write([]byte("late-datagram"))
+	}()
+
+	assertionErr := fixture.(*networkFixture).zeroPacketAssertionError(spec)
+	if assertionErr == nil || !strings.Contains(assertionErr.Error(), "received more than 0 expected payloads") {
+		t.Fatalf("assertion error = %v, want delayed UDP packet rejection", assertionErr)
+	}
+}
+
+func TestUDPZeroPacketAssertionObservesConfiguredWindow(t *testing.T) {
+	const observationWindow = 40 * time.Millisecond
+	spec := FixtureSpec{
+		Name:  "sink",
+		Kind:  "udp",
+		Count: &FixtureCountAssertion{AtLeast: 0, AtMost: 0, Timeout: observationWindow},
+	}
+	fixture, err := startNetworkFixture(spec)
+	if err != nil {
+		t.Fatalf("start UDP fixture: %v", err)
+	}
+	defer fixture.close()
+
+	started := time.Now()
+	assertionErr := fixture.(*networkFixture).zeroPacketAssertionError(spec)
+	elapsed := time.Since(started)
+	if assertionErr != nil {
+		t.Fatalf("assertion error = %v, want exact zero packets", assertionErr)
+	}
+	if elapsed < observationWindow {
+		t.Fatalf("zero-packet assertion returned after %s, want at least %s", elapsed, observationWindow)
+	}
 }
 
 func TestMatchNetworkAssertionJSONFields(t *testing.T) {

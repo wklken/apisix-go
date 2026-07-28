@@ -2201,7 +2201,7 @@ func runCase(t *testing.T, spec Case) {
 		}
 	}
 	for _, fixtureSpec := range spec.Fixtures {
-		if len(fixtureSpec.NetworkExpect) > 0 {
+		if fixtureAssertionAfterShutdown(fixtureSpec) {
 			continue
 		}
 		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
@@ -2213,7 +2213,7 @@ func runCase(t *testing.T, spec Case) {
 	}
 	stopped = true
 	for _, fixtureSpec := range spec.Fixtures {
-		if len(fixtureSpec.NetworkExpect) == 0 {
+		if !fixtureAssertionAfterShutdown(fixtureSpec) {
 			continue
 		}
 		namedFixtures[fixtureSpec.Name].assert(t, fixtureSpec)
@@ -2239,6 +2239,54 @@ func runCase(t *testing.T, spec Case) {
 				t.Errorf("child logs: %v\n%s", err, logs)
 			}
 		}
+	}
+}
+
+func fixtureAssertionAfterShutdown(spec FixtureSpec) bool {
+	return len(spec.NetworkExpect) > 0 || isExactZeroUDPFixture(spec)
+}
+
+func TestFixtureAssertionAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		spec FixtureSpec
+		want bool
+	}{
+		{
+			name: "exact-zero UDP waits for child shutdown",
+			spec: FixtureSpec{
+				Kind:  "udp",
+				Count: &FixtureCountAssertion{AtLeast: 0, AtMost: 0},
+			},
+			want: true,
+		},
+		{
+			name: "network expectation keeps existing post-shutdown assertion",
+			spec: FixtureSpec{
+				Kind: "udp",
+				NetworkExpect: []NetworkAssertion{{
+					Payload: &Matcher{Equals: new("metric")},
+				}},
+			},
+			want: true,
+		},
+		{
+			name: "HTTP fixture remains asserted before child shutdown",
+			spec: FixtureSpec{
+				Kind: "http",
+			},
+			want: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := fixtureAssertionAfterShutdown(tt.spec); got != tt.want {
+				t.Fatalf("fixtureAssertionAfterShutdown() = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }
 

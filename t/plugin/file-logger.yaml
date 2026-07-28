@@ -210,40 +210,66 @@ cases:
           - path: {equals: '{{WORK_DIR}}/missing/file.log'}
             absent: true
 
-  - name: route-log-format-wins-over-metadata
-    source: {file: t/plugin/file-logger.t, tests: [6, 7, 8, 9]}
+  - name: route-log-format-without-metadata
+    source: {file: t/plugin/file-logger.t, tests: [6, 7]}
     config:
-      plugin_metadata:
-        - id: file-logger
-          log_format: {host: $host}
       routes:
-        - id: file-route-format
+        - id: file-route-format-no-metadata
           uri: /hello
           plugins:
             file-logger:
-              path: '{{WORK_DIR}}/route-format.log'
+              path: '{{WORK_DIR}}/route-format-no-metadata.log'
               log_format: {host: $host, client_ip: $remote_addr}
           upstream: *primary_upstream
     fixtures:
       - name: primary
         kind: http
         expect: [{path: {matches: "^/"}}]
-        count: {at_least: 2, at_most: 2}
+        count: {at_least: 1, at_most: 1}
         respond: [{status: 200, body: "hello world\n"}]
     steps:
       - name: block-seven-route-format-includes-client-ip
         input: {path: /hello}
         output: {status: 200, body: {equals: "hello world\n"}}
+        file_assertions:
+          - path: {equals: '{{WORK_DIR}}/route-format-no-metadata.log'}
+            body: {matches: '^\{[^\n]*"host":"127\.0\.0\.1"[^\n]*\}\n$'}
+          - path: {equals: '{{WORK_DIR}}/route-format-no-metadata.log'}
+            body: {matches: '^\{[^\n]*"client_ip":"127\.0\.0\.1"[^\n]*\}\n$'}
+          - path: {equals: '{{WORK_DIR}}/route-format-no-metadata.log'}
+            body: {matches: '^\{[^\n]*"route_id":"file-route-format-no-metadata"[^\n]*\}\n$'}
+
+  - name: route-log-format-wins-over-metadata
+    source: {file: t/plugin/file-logger.t, tests: [8, 9]}
+    config:
+      plugin_metadata:
+        - id: file-logger
+          log_format: {host: $host}
+      routes:
+        - id: file-route-format-with-metadata
+          uri: /hello
+          plugins:
+            file-logger:
+              path: '{{WORK_DIR}}/route-format-with-metadata.log'
+              log_format: {host: $host, client_ip: $remote_addr}
+          upstream: *primary_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {matches: "^/"}}]
+        count: {at_least: 1, at_most: 1}
+        respond: [{status: 200, body: "hello world\n"}]
+    steps:
       - name: block-nine-route-format-still-wins-over-metadata
         input: {path: /hello}
         output: {status: 200, body: {equals: "hello world\n"}}
         file_assertions:
-          - path: {equals: '{{WORK_DIR}}/route-format.log'}
-            body: {matches: '(?s)^(?:\{[^\n]*"host":"127\.0\.0\.1"[^\n]*\}\n){2}$'}
-          - path: {equals: '{{WORK_DIR}}/route-format.log'}
-            body: {matches: '(?s)^(?:\{[^\n]*"client_ip":"127\.0\.0\.1"[^\n]*\}\n){2}$'}
-          - path: {equals: '{{WORK_DIR}}/route-format.log'}
-            body: {matches: '(?s)^(?:\{[^\n]*"route_id":"file-route-format"[^\n]*\}\n){2}$'}
+          - path: {equals: '{{WORK_DIR}}/route-format-with-metadata.log'}
+            body: {matches: '^\{[^\n]*"host":"127\.0\.0\.1"[^\n]*\}\n$'}
+          - path: {equals: '{{WORK_DIR}}/route-format-with-metadata.log'}
+            body: {matches: '^\{[^\n]*"client_ip":"127\.0\.0\.1"[^\n]*\}\n$'}
+          - path: {equals: '{{WORK_DIR}}/route-format-with-metadata.log'}
+            body: {matches: '^\{[^\n]*"route_id":"file-route-format-with-metadata"[^\n]*\}\n$'}
 
   - name: nested-format-and-depth-limit
     source: {file: t/plugin/file-logger.t, tests: [10, 11, 12]}

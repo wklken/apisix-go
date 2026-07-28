@@ -205,24 +205,54 @@ func TestMetricLinesUseDogStatsDFormat(t *testing.T) {
 	p.metadata.ConstantTags = []string{"source:apisix"}
 
 	lines := p.metricLines(metricEntry{
-		LatencyMS:     12,
-		ApisixLatency: 12,
-		IngressSize:   7,
-		EgressSize:    5,
-		Status:        204,
+		LatencyMS:       12,
+		UpstreamLatency: 7,
+		ApisixLatency:   12,
+		IngressSize:     7,
+		EgressSize:      5,
+		Status:          204,
 	})
 
 	want := []string{
 		"apisix.request.counter:1|c|#source:apisix,response_status:204,response_status_class:2xx",
 		"apisix.request.latency:12|h|#source:apisix,response_status:204,response_status_class:2xx",
+		"apisix.upstream.latency:7|h|#source:apisix,response_status:204,response_status_class:2xx",
 		"apisix.apisix.latency:12|h|#source:apisix,response_status:204,response_status_class:2xx",
 		"apisix.ingress.size:7|ms|#source:apisix,response_status:204,response_status_class:2xx",
 		"apisix.egress.size:5|ms|#source:apisix,response_status:204,response_status_class:2xx",
 	}
-	for _, line := range want {
-		if !contains(lines, line) {
-			t.Fatalf("lines = %v, want %q", lines, line)
-		}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("lines = %v, want exact ordered lines %v", lines, want)
+	}
+}
+
+func TestMetricLinesAlwaysIncludeUpstreamLatency(t *testing.T) {
+	p := newTestPlugin(t, Config{})
+
+	lines := p.metricLines(metricEntry{})
+	if len(lines) != 6 {
+		t.Fatalf("metric lines = %d, want six including zero upstream latency", len(lines))
+	}
+	if !strings.HasPrefix(lines[2], "apisix.upstream.latency:0|h|") {
+		t.Fatalf("third metric line = %q, want zero upstream latency", lines[2])
+	}
+}
+
+func TestPostInitPreservesExplicitRetryDelayZero(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{"retry_delay": 0}, p.Config()); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	t.Cleanup(p.Stop)
+
+	if p.config.RetryDelay != 0 {
+		t.Fatalf("retry_delay = %d, want explicit zero", p.config.RetryDelay)
 	}
 }
 
@@ -346,7 +376,7 @@ func TestSendCoalescesMetricsWithinDogStatsDDatagramLimit(t *testing.T) {
 }
 
 func TestSendFallsBackToPerMetricDatagramsAboveDogStatsDLimit(t *testing.T) {
-	addr, received := startUDPServer(t, 5)
+	addr, received := startUDPServer(t, 6)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split udp addr: %v", err)
@@ -380,7 +410,7 @@ func TestSendFallsBackToPerMetricDatagramsAboveDogStatsDLimit(t *testing.T) {
 
 	p.Send(entry)
 
-	if got := collectMessages(t, received, 5); !slices.Equal(got, p.metricLines(entry)) {
+	if got := collectMessages(t, received, 6); !slices.Equal(got, p.metricLines(entry)) {
 		t.Fatalf("UDP datagrams = %v, want one datagram per metric %v", got, p.metricLines(entry))
 	}
 }
@@ -392,7 +422,7 @@ func TestSendUsesExactDogStatsDDatagramBoundary(t *testing.T) {
 		datagrams int
 	}{
 		{name: "8192 bytes coalesces", payload: maxDatagramSize, datagrams: 1},
-		{name: "8193 bytes falls back", payload: maxDatagramSize + 1, datagrams: 5},
+		{name: "8193 bytes falls back", payload: maxDatagramSize + 1, datagrams: 6},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			addr, received := startUDPServer(t, tt.datagrams)
@@ -493,7 +523,7 @@ func TestSendWritesUDPMetrics(t *testing.T) {
 		Status:        200,
 	})
 
-	messages := collectMetricLines(t, received, 1, 5)
+	messages := collectMetricLines(t, received, 1, 6)
 	if !containsPrefix(messages, "apisix.request.counter:1|c|#") {
 		t.Fatalf("messages = %v, want request counter", messages)
 	}
@@ -527,7 +557,7 @@ func TestHandlerCapturesStatusAndSizes(t *testing.T) {
 		_, _ = w.Write([]byte("reply"))
 	})).ServeHTTP(rr, req)
 
-	messages := collectMetricLines(t, received, 1, 5)
+	messages := collectMetricLines(t, received, 1, 6)
 	if !containsLinePart(messages, "response_status:201") {
 		t.Fatalf("messages = %v, want response_status tag", messages)
 	}
@@ -595,7 +625,7 @@ func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
-	messages := collectMetricLines(t, received, 1, 5)
+	messages := collectMetricLines(t, received, 1, 6)
 	if !containsLinePart(messages, "path:/orders/:id") {
 		t.Fatalf("messages = %v, want matched URI path tag", messages)
 	}
@@ -633,7 +663,7 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
-	messages := collectMetricLines(t, received, 1, 5)
+	messages := collectMetricLines(t, received, 1, 6)
 	for _, tag := range []string{
 		"route_name:orders-route",
 		"service_name:orders-service",
@@ -667,9 +697,9 @@ func TestHandlerBatchesMetricsUntilBatchMaxSize(t *testing.T) {
 	}
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
-	messages := collectMetricLines(t, received, 2, 10)
-	if len(messages) != 10 {
-		t.Fatalf("messages = %d, want 10 for two five-metric entries", len(messages))
+	messages := collectMetricLines(t, received, 2, 12)
+	if len(messages) != 12 {
+		t.Fatalf("messages = %d, want 12 for two six-metric entries", len(messages))
 	}
 }
 

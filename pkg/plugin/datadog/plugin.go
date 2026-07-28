@@ -146,6 +146,7 @@ type Config struct {
 	BufferDuration  int      `json:"buffer_duration,omitempty"`
 	InactiveTimeout int      `json:"inactive_timeout,omitempty"`
 	preferNameSet   bool
+	retryDelaySet   bool
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
@@ -159,7 +160,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		BatchName       string   `json:"name,omitempty"`
 		BatchMaxSize    int      `json:"batch_max_size,omitempty"`
 		MaxRetryCount   int      `json:"max_retry_count,omitempty"`
-		RetryDelay      int      `json:"retry_delay,omitempty"`
+		RetryDelay      *int     `json:"retry_delay,omitempty"`
 		BufferDuration  int      `json:"buffer_duration,omitempty"`
 		InactiveTimeout int      `json:"inactive_timeout,omitempty"`
 	}
@@ -181,7 +182,10 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.BatchName = decoded.BatchName
 	c.BatchMaxSize = decoded.BatchMaxSize
 	c.MaxRetryCount = decoded.MaxRetryCount
-	c.RetryDelay = decoded.RetryDelay
+	if decoded.RetryDelay != nil {
+		c.RetryDelay = *decoded.RetryDelay
+		c.retryDelaySet = true
+	}
 	c.BufferDuration = decoded.BufferDuration
 	c.InactiveTimeout = decoded.InactiveTimeout
 	return nil
@@ -234,7 +238,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
 	if p.config.BufferDuration == 0 {
@@ -255,6 +259,7 @@ func (p *Plugin) PostInit() error {
 		BatchMaxSize:    p.config.BatchMaxSize,
 		MaxRetryCount:   p.config.MaxRetryCount,
 		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
+		RetryDelaySet:   p.config.retryDelaySet,
 		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
 		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
 		RouteID:         p.RouteID,
@@ -349,13 +354,13 @@ func (p *Plugin) metricLines(entry metricEntry) []string {
 	lines := []string{
 		p.metricLine("request.counter", "1", "c", tags),
 		p.metricLine("request.latency", strconv.FormatInt(entry.LatencyMS, 10), "h", tags),
+		p.metricLine("upstream.latency", strconv.FormatInt(entry.UpstreamLatency, 10), "h", tags),
+	}
+	lines = append(lines,
 		p.metricLine("apisix.latency", strconv.FormatInt(entry.ApisixLatency, 10), "h", tags),
 		p.metricLine("ingress.size", strconv.FormatInt(entry.IngressSize, 10), "ms", tags),
 		p.metricLine("egress.size", strconv.FormatInt(entry.EgressSize, 10), "ms", tags),
-	}
-	if entry.UpstreamLatency > 0 {
-		lines = append(lines, p.metricLine("upstream.latency", strconv.FormatInt(entry.UpstreamLatency, 10), "h", tags))
-	}
+	)
 	return lines
 }
 

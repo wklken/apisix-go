@@ -985,7 +985,19 @@ func (f *FixtureSpec) validate() error {
 		return fmt.Errorf("%s fixture must not configure expect_requests", f.Kind)
 	}
 	if f.Count != nil {
-		return fmt.Errorf("%s fixture does not support count assertions", f.Kind)
+		if f.Kind != "udp" {
+			return fmt.Errorf("%s fixture does not support count assertions", f.Kind)
+		}
+		if f.Count.AtLeast != 0 || f.Count.AtMost != 0 {
+			return errors.New("UDP fixture count assertion only supports exact zero packets")
+		}
+		if f.Count.Timeout < 0 || f.Count.Timeout > 5*time.Second {
+			return errors.New("count: timeout must be between 0 and 5s")
+		}
+		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
+			return errors.New("exact-zero UDP fixture must not configure network expectations or responses")
+		}
+		return nil
 	}
 	if len(f.Expect) > 0 || len(f.Respond) > 0 {
 		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)

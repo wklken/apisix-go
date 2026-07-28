@@ -587,6 +587,26 @@ func TestManifestRejectsUDPFixtureClose(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsZeroPacketUDPFixture(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: http.StatusOK},
+	}}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name:  "sink",
+		Kind:  "udp",
+		Count: &FixtureCountAssertion{AtLeast: 0, AtMost: 0},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v, want exact-zero UDP fixture acceptance", err)
+	}
+}
+
 func TestManifestMultipleSources(t *testing.T) {
 	body := "ok"
 	manifest := &Manifest{

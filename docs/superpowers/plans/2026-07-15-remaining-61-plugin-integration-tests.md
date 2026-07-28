@@ -874,7 +874,13 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 10 — Network, Kafka, File, and Error Loggers
 
-- [ ] `tcp-logger` — one generic TCP write replaces framing/newlines, custom formats, body truncation, batch flush, reconnect, TLS, and failure cases.
+- [x] `tcp-logger` — all 17 pinned blocks map exactly once to real standalone
+  schema, plain/TLS delivery, exact TLS retry, reconnect, metadata
+  set/update/clear, service-context, body-capture, and nested-format cases.
+  Custom fields use APISIX-compatible five-level truncation and diagnostics;
+  explicit zero retry delay is preserved. Package, race, exact real-process,
+  pinned-source, corpus, scoped lint, build, post-integration, and task-review
+  gates pass.
 - [x] `udp-logger` — all 14 pinned blocks map exactly once to standalone schema, delivery-failure, live two-sink reload, metadata, and exact request/response-body cases. Default records expose the APISIX-shaped access-log fields with explicit Go-native size approximations; custom records resolve post-downstream and append route/service context. Parsed RFC3339 and strict RFC 6901 network assertions, package/race/corpus, full real-process, reload `-count=10`, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `syslog` — one generic transport write replaces RFC framing/facility/severity/tag, TCP/UDP/TLS modes, batching, and failures.
 - [ ] `kafka-logger` — one produce per source omits topic/key/partition, metadata negotiation, SASL/TLS, body truncation, formats, batching/retry, and broker failures.
@@ -1310,8 +1316,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 31 manifests
-are task-review-approved and 30 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 32 manifests
+are task-review-approved and 29 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1340,7 +1346,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 17 remaining (19 at replan)
+### Medium — 16 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1358,7 +1364,11 @@ already-implemented branch.
 - [ ] `saml-auth`
 - [ ] `ai-aws-content-moderation`
 - [ ] `datadog` — waits for the embedded-wildcard route prerequisite.
-- [ ] `tcp-logger`
+- [x] `tcp-logger` — all 17 blocks are source-complete with exact plain/TLS
+  delivery and retry behavior, metadata lifecycle, runtime service context,
+  body capture, APISIX-compatible nested custom fields, and explicit-zero
+  logger-batch configuration. Its post-integration package, race,
+  real-process, pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `syslog` — follows the reviewed TCP Logger network lifecycle.
 - [ ] `http-logger` — owns the serialized `logger_batch` ordering contract.
 - [ ] `loggly`

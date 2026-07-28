@@ -241,8 +241,11 @@ func TestApplyStandaloneSnapshotPublishesOnlySuccessfulRouteChanges(t *testing.T
 			want:   []string{"sync", "streams"},
 		},
 		{
-			name: "metadata-only snapshot preserves handlers",
-			want: []string{"sync"},
+			name: "metadata-only snapshot publishes HTTP handler",
+			result: config.StandaloneReloadResult{
+				ChangedHTTPRouteBuckets: []string{"plugin_metadata"},
+			},
+			want: []string{"sync", "routes"},
 		},
 		{
 			name: "global-rule snapshot publishes HTTP handler",

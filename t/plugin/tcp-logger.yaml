@@ -115,11 +115,12 @@ cases:
           plugins:
             tcp-logger:
               batch_max_size: 1
-              host: 127.0.0.1
+              host: '{{FIXTURE.sink.HOST}}'
               max_retry_count: 2
-              port: 1
-              retry_delay: 1
-              timeout: 20
+              port: '{{FIXTURE.sink.PORT}}'
+              retry_delay: 0
+              timeout: 100
+              tls: true
           upstream:
             nodes:
               '{{FIXTURE.primary.ADDR}}': 1
@@ -131,6 +132,16 @@ cases:
         respond:
           - body: hello world
             status: 200
+      - kind: tcp
+        name: sink
+        network_expect:
+          - payload_base64: {matches: '^FgM'}
+          - payload_base64: {matches: '^FgM'}
+          - payload_base64: {matches: '^FgM'}
+        network_respond:
+          - {close: true}
+          - {close: true}
+          - {close: true}
     steps:
       - name: proxy-response-survives-three-delivery-attempts
         input:
@@ -139,9 +150,8 @@ cases:
         output:
           body: {equals: hello world}
           logs:
-            matches: 'logger batch processor \[tcp logger\] exceeded max_retry_count \[2\], dropping 1 entries: failed to connect to TCP server: host\[127\.0\.0\.1\] port\[1\]'
+            matches: 'logger batch processor \[tcp logger\] exceeded max_retry_count \[2\], dropping 1 entries: failed to connect to TCP server: host\[127\.0\.0\.1\] port\[[0-9]+\]'
           status: 200
-        wait: 3s
 
   - name: live-update-switches-tcp-destination
     source:
@@ -264,30 +274,25 @@ cases:
         matches: 'validate plugin tcp-logger metadata:.*log_format.*expected object.*got string'
       status: 404
 
-  - name: metadata-custom-log-format-is-delivered
+  - name: metadata-add-and-clear-rebuilds-existing-route
     source:
       file: t/plugin/tcp-logger.t
-      tests: [9, 10]
+      tests: [9, 10, 11]
     config:
-      plugin_metadata:
-        - id: tcp-logger
-          log_format:
-            '@timestamp': '$time_iso8601'
-            case name: plugin_metadata
-            client_ip: '$remote_addr'
-            host: '$host'
-      routes:
-        - id: tcp-logger-plugin-metadata
-          plugins:
-            tcp-logger:
-              batch_max_size: 1
-              host: '{{FIXTURE.sink.HOST}}'
-              inactive_timeout: 1
-              port: '{{FIXTURE.sink.PORT}}'
+      services:
+        - id: tcp-logger-service
           upstream:
             nodes:
               '{{FIXTURE.primary.ADDR}}': 1
             type: roundrobin
+      routes:
+        - id: tcp-logger-metadata-lifecycle
+          plugins:
+            tcp-logger:
+              batch_max_size: 1
+              host: '{{FIXTURE.sink.HOST}}'
+              port: '{{FIXTURE.sink.PORT}}'
+          service_id: tcp-logger-service
           uri: /hello
     fixtures:
       - kind: http
@@ -295,20 +300,37 @@ cases:
         respond:
           - body: hello world
             status: 200
+          - body: hello world
+            status: 200
+          - body: hello world
+            status: 200
       - kind: tcp
         name: sink
         network_expect:
           - json_fields:
+              - {path: /request/method, value: {equals: GET}}
+              - {path: /response/status, value: {equals: '200'}}
+              - {path: /route_id, value: {equals: tcp-logger-metadata-lifecycle}}
+              - {path: /service_id, value: {equals: tcp-logger-service}}
+          - json_fields:
               - {path: /case name, value: {equals: plugin_metadata}}
-              - {path: /host, value: {equals: localhost}}
-              - {path: /client_ip, value: {equals: 127.0.0.1}}
+              - {path: /request snapshot/host, value: {equals: localhost}}
+              - {path: /request snapshot/client/ip, value: {equals: 127.0.0.1}}
+              - {path: /response snapshot/status, value: {equals: '200'}}
               - {path: /@timestamp, rfc3339: true}
-              - {path: /route_id, value: {equals: tcp-logger-plugin-metadata}}
-              - {path: /service_id, value: {equals: ''}}
+              - {path: /route_id, value: {equals: tcp-logger-metadata-lifecycle}}
+              - {path: /service_id, value: {equals: tcp-logger-service}}
+          - json_fields:
+              - {path: /request/method, value: {equals: GET}}
+              - {path: /response/status, value: {equals: '200'}}
+              - {path: /route_id, value: {equals: tcp-logger-metadata-lifecycle}}
+              - {path: /service_id, value: {equals: tcp-logger-service}}
         network_respond:
-          - payload: ''
+          - {close: true}
+          - {close: true}
+          - {close: true}
     steps:
-      - name: custom-metadata-format-reaches-tcp-sink
+      - name: existing-route-starts-with-default-format
         input:
           headers:
             Host: localhost
@@ -318,45 +340,90 @@ cases:
           body: {equals: hello world}
           status: 200
         wait: 1s
-
-  - name: empty-metadata-format-restores-default-log
-    source:
-      file: t/plugin/tcp-logger.t
-      tests: [11]
-    config:
-      plugin_metadata:
-        - id: tcp-logger
-          log_format: {}
-      routes:
-        - id: tcp-logger-empty-metadata
-          plugins:
-            tcp-logger:
-              batch_max_size: 1
-              host: '{{FIXTURE.sink.HOST}}'
-              port: '{{FIXTURE.sink.PORT}}'
-          upstream:
-            nodes:
-              '{{FIXTURE.primary.ADDR}}': 1
-            type: roundrobin
-          uri: /hello
-    fixtures:
-      - kind: http
-        name: primary
-        respond:
-          - body: hello world
-            status: 200
-      - kind: tcp
-        name: sink
-        network_expect:
-          - json_fields:
-              - {path: /request/method, value: {equals: GET}}
-              - {path: /response/status, value: {equals: '200'}}
-              - {path: /route_id, value: {equals: tcp-logger-empty-metadata}}
-        network_respond:
-          - payload: ''
-    steps:
-      - name: request-uses-default-format-after-empty-metadata
+      - name: metadata-adds-nested-format-to-existing-route
+        config:
+          plugin_metadata:
+            - id: tcp-logger
+              log_format:
+                '@timestamp': '$time_iso8601'
+                case name: plugin_metadata
+                request snapshot:
+                  client:
+                    ip: '$remote_addr'
+                  host: '$host'
+                response snapshot:
+                  status: '$status'
+          services:
+            - id: tcp-logger-service
+              upstream:
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+          routes:
+            - id: tcp-logger-metadata-lifecycle
+              plugins:
+                tcp-logger:
+                  batch_max_size: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
+              service_id: tcp-logger-service
+              uri: /hello
+            - id: tcp-logger-metadata-probe
+              plugins:
+                mocking:
+                  response_example: ready
+                  response_status: 205
+              uri: /reload-probe
+        config_probe:
+          input:
+            path: /reload-probe
+          output:
+            status: 205
+        config_timeout: 2s
         input:
+          headers:
+            Host: localhost
+          method: GET
+          path: /hello
+        output:
+          body: {equals: hello world}
+          status: 200
+        wait: 1s
+      - name: metadata-clear-restores-default-on-existing-route
+        config:
+          plugin_metadata:
+            - id: tcp-logger
+              log_format: {}
+          services:
+            - id: tcp-logger-service
+              upstream:
+                nodes:
+                  '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+          routes:
+            - id: tcp-logger-metadata-lifecycle
+              plugins:
+                tcp-logger:
+                  batch_max_size: 1
+                  host: '{{FIXTURE.sink.HOST}}'
+                  port: '{{FIXTURE.sink.PORT}}'
+              service_id: tcp-logger-service
+              uri: /hello
+            - id: tcp-logger-metadata-probe
+              plugins:
+                mocking:
+                  response_example: ready
+                  response_status: 204
+              uri: /reload-probe
+        config_probe:
+          input:
+            path: /reload-probe
+          output:
+            status: 204
+        config_timeout: 2s
+        input:
+          headers:
+            Host: localhost
           method: GET
           path: /hello
         output:
@@ -403,9 +470,9 @@ cases:
               - {path: /vip, value: {equals: 127.0.0.1}}
               - {path: /status, value: {equals: '200'}}
               - {path: /route_id, value: {equals: tcp-logger-route-format}}
-              - {path: /service_id, value: {equals: ''}}
             forbidden_matches:
               - 'metadata should lose'
+              - '"service_id"'
         network_respond:
           - payload: ''
     steps:

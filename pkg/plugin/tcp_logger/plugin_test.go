@@ -90,6 +90,26 @@ func TestPostInitAppliesBatchDefaults(t *testing.T) {
 	}
 }
 
+func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"host":        "127.0.0.1",
+		"port":        9,
+		"retry_delay": 0,
+	}, p.Config()); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+	if p.config.RetryDelay != 0 {
+		t.Fatalf("retry_delay = %d, want explicit zero preserved", p.config.RetryDelay)
+	}
+}
+
 func TestHandlerBatchesTCPLogs(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port := splitAddr(t, addr)
@@ -223,7 +243,7 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 		Port:         mustAtoi(t, port),
 		Timeout:      1000,
 		BatchMaxSize: 1,
-		LogFormat: map[string]string{
+		LogFormat: map[string]any{
 			"status":     "$status",
 			"consumer":   "$consumer_name",
 			"route_id":   "configured-route",
@@ -253,6 +273,76 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 	}
 	if payload["service_id"] != "resolved-service" {
 		t.Fatalf("service_id = %#v, want appended service context", payload["service_id"])
+	}
+}
+
+func TestHandlerResolvesNestedCustomFormat(t *testing.T) {
+	addr, received := startTCPServer(t)
+	host, port := splitAddr(t, addr)
+
+	var cfg Config
+	if err := util.Parse(map[string]any{
+		"host":           host,
+		"port":           mustAtoi(t, port),
+		"timeout":        1000,
+		"batch_max_size": 1,
+		"log_format": map[string]any{
+			"request": map[string]any{
+				"host": "$host",
+				"client": map[string]any{
+					"ip": "$remote_addr",
+				},
+			},
+			"response": map[string]any{
+				"status": "$status",
+			},
+		},
+	}, &cfg); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	p := newTestPlugin(t, cfg)
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req.Host = "gateway.example"
+	req.RemoteAddr = "192.0.2.12:54321"
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForTCPPayload(t, received)
+	assertNestedField(t, payload, "request", "host", "gateway.example")
+	request := payload["request"].(map[string]any)
+	assertNestedField(t, request, "client", "ip", "192.0.2.12")
+	assertNestedField(t, payload, "response", "status", float64(http.StatusCreated))
+}
+
+func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
+	addr, received := startTCPServer(t)
+	host, port := splitAddr(t, addr)
+
+	p := newTestPlugin(t, Config{
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		Timeout:      1000,
+		BatchMaxSize: 1,
+		LogFormat: map[string]any{
+			"case": "no-service",
+		},
+	})
+	p.SetRouteContext("route-without-service", "127.0.0.1:9080")
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	req = apisixctx.WithApisixVars(req, map[string]string{})
+	req = apisixctx.WithRequestVars(req)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	payload := waitForTCPPayload(t, received)
+	if _, ok := payload["service_id"]; ok {
+		t.Fatalf("service_id = %#v, want field omitted without service context", payload["service_id"])
 	}
 }
 

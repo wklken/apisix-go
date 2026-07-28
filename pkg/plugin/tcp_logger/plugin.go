@@ -120,10 +120,7 @@ const metadataSchema = `
   "type": "object",
   "properties": {
     "log_format": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      }
+      "type": "object"
     },
     "max_pending_entries": {
       "type": "integer",
@@ -133,28 +130,30 @@ const metadataSchema = `
 }`
 
 type pluginMetadata struct {
-	LogFormat         map[string]string `json:"log_format"`
-	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
+	LogFormat         map[string]any `json:"log_format"`
+	MaxPendingEntries int            `json:"max_pending_entries,omitempty"`
 }
 
 type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
+
+	logFormat map[string]any
 }
 
 type Config struct {
-	Host                string            `json:"host"`
-	Port                int               `json:"port"`
-	TLS                 bool              `json:"tls,omitempty"`
-	Timeout             int               `json:"timeout,omitempty"`
-	TLSOptions          *string           `json:"tls_options,omitempty"`
-	LogFormat           map[string]string `json:"log_format,omitempty"`
-	IncludeReqBody      bool              `json:"include_req_body,omitempty"`
-	IncludeReqBodyExpr  []any             `json:"include_req_body_expr,omitempty"`
-	IncludeRespBody     bool              `json:"include_resp_body,omitempty"`
-	IncludeRespBodyExpr []any             `json:"include_resp_body_expr,omitempty"`
-	MaxReqBodyBytes     int               `json:"max_req_body_bytes,omitempty"`
-	MaxRespBodyBytes    int               `json:"max_resp_body_bytes,omitempty"`
+	Host                string         `json:"host"`
+	Port                int            `json:"port"`
+	TLS                 bool           `json:"tls,omitempty"`
+	Timeout             int            `json:"timeout,omitempty"`
+	TLSOptions          *string        `json:"tls_options,omitempty"`
+	LogFormat           map[string]any `json:"log_format,omitempty"`
+	IncludeReqBody      bool           `json:"include_req_body,omitempty"`
+	IncludeReqBodyExpr  []any          `json:"include_req_body_expr,omitempty"`
+	IncludeRespBody     bool           `json:"include_resp_body,omitempty"`
+	IncludeRespBodyExpr []any          `json:"include_resp_body_expr,omitempty"`
+	MaxReqBodyBytes     int            `json:"max_req_body_bytes,omitempty"`
+	MaxRespBodyBytes    int            `json:"max_resp_body_bytes,omitempty"`
 
 	BatchMaxSize      int `json:"batch_max_size,omitempty"`
 	MaxRetryCount     int `json:"max_retry_count,omitempty"`
@@ -163,7 +162,24 @@ type Config struct {
 	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 
-	addr string
+	addr          string
+	retryDelaySet bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config Config
+
+	var parsed config
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Config(parsed)
+	_, c.retryDelaySet = fields["retry_delay"]
+	return nil
 }
 
 func (p *Plugin) Config() any {
@@ -197,7 +213,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
 	if p.config.BufferDuration == 0 {
@@ -209,9 +225,9 @@ func (p *Plugin) PostInit() error {
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
 	if len(p.config.LogFormat) == 0 {
-		p.LogFormat = metadata.LogFormat
+		p.logFormat = metadata.LogFormat
 	} else {
-		p.LogFormat = p.config.LogFormat
+		p.logFormat = p.config.LogFormat
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -224,6 +240,7 @@ func (p *Plugin) PostInit() error {
 		BatchMaxSize:      p.config.BatchMaxSize,
 		MaxRetryCount:     p.config.MaxRetryCount,
 		RetryDelay:        time.Duration(p.config.RetryDelay) * time.Second,
+		RetryDelaySet:     p.config.retryDelaySet,
 		BufferDuration:    time.Duration(p.config.BufferDuration) * time.Second,
 		InactiveTimeout:   time.Duration(p.config.InactiveTimeout) * time.Second,
 		MaxPendingEntries: p.config.MaxPendingEntries,
@@ -256,10 +273,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		metrics := httpsnoop.CaptureMetrics(next, writer, r)
 		var logFields map[string]any
-		if len(p.LogFormat) > 0 {
-			logFields = resolveTCPLogFormat(r, request, p.LogFormat)
+		if len(p.logFormat) > 0 {
+			logFields = resolveTCPLogFormat(r, request, p.logFormat)
 			logFields["route_id"] = p.RouteID
-			logFields["service_id"] = apisixString(r, "$service_id")
+			if serviceID := apisixString(r, "$service_id"); serviceID != "" {
+				logFields["service_id"] = serviceID
+			}
 		} else {
 			logFields = p.defaultAccessLog(r, request, metrics, w.Header())
 		}
@@ -304,21 +323,32 @@ func captureAccessRequest(r *http.Request, started time.Time, serverAddr string)
 	}
 }
 
-func resolveTCPLogFormat(r *http.Request, request accessRequest, format map[string]string) map[string]any {
+func resolveTCPLogFormat(r *http.Request, request accessRequest, format map[string]any) map[string]any {
 	fields := make(map[string]any, len(format))
 	for key, value := range format {
-		switch value {
-		case "$host":
-			fields[key] = request.host
-		case "$remote_addr":
-			fields[key] = request.clientIP
-		case "$time_iso8601":
-			fields[key] = request.started.Format(time.RFC3339)
-		default:
-			fields[key] = apisixlog.GetField(r, value)
-		}
+		fields[key] = resolveTCPLogFormatNode(r, request, value)
 	}
 	return fields
+}
+
+func resolveTCPLogFormatNode(r *http.Request, request accessRequest, value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return resolveTCPLogFormat(r, request, typed)
+	case string:
+		switch typed {
+		case "$host":
+			return request.host
+		case "$remote_addr":
+			return request.clientIP
+		case "$time_iso8601":
+			return request.started.Format(time.RFC3339)
+		default:
+			return apisixlog.GetField(r, typed)
+		}
+	default:
+		return typed
+	}
 }
 
 func (p *Plugin) defaultAccessLog(

@@ -23,6 +23,7 @@ type Config struct {
 	BatchMaxSize      int
 	MaxRetryCount     int
 	RetryDelay        time.Duration
+	RetryDelaySet     bool
 	BufferDuration    time.Duration
 	InactiveTimeout   time.Duration
 	MaxPendingEntries int
@@ -243,7 +244,7 @@ func (c *Config) applyDefaults() {
 	if c.BatchMaxSize <= 0 {
 		c.BatchMaxSize = DefaultBatchMaxSize
 	}
-	if c.RetryDelay <= 0 {
+	if c.RetryDelay < 0 || c.RetryDelay == 0 && !c.RetryDelaySet {
 		c.RetryDelay = DefaultRetryDelay
 	}
 	if c.BufferDuration <= 0 {

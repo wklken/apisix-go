@@ -90,7 +90,7 @@ func TestRouteReloadBucketSemantics(t *testing.T) {
 		{bucket: "stream_routes", stream: true},
 		{bucket: "global_rules", http: true},
 		{bucket: "plugin_configs", http: true},
-		{bucket: "plugin_metadata"},
+		{bucket: "plugin_metadata", http: true},
 		{bucket: "consumers"},
 	}
 

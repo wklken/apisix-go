@@ -199,7 +199,8 @@ plugin_metadata:
 	if err != nil {
 		t.Fatalf("ReloadSnapshot() error = %v", err)
 	}
-	if got, want := result.ChangedHTTPRouteBuckets, []string{"routes", "upstreams"}; !reflect.DeepEqual(got, want) {
+	if got, want := result.ChangedHTTPRouteBuckets,
+		[]string{"routes", "upstreams", "plugin_metadata"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("changed HTTP route buckets = %v, want %v", got, want)
 	}
 	if got, want := result.ChangedStreamBuckets, []string{"upstreams"}; !reflect.DeepEqual(got, want) {
@@ -229,7 +230,8 @@ plugin_metadata:
 	if err != nil {
 		t.Fatalf("updated ReloadSnapshot() error = %v", err)
 	}
-	if got, want := result.ChangedHTTPRouteBuckets, []string{"routes"}; !reflect.DeepEqual(got, want) {
+	if got, want := result.ChangedHTTPRouteBuckets,
+		[]string{"routes", "plugin_metadata"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("updated changed HTTP route buckets = %v, want %v", got, want)
 	}
 	if len(result.ChangedStreamBuckets) != 0 {
@@ -240,7 +242,7 @@ plugin_metadata:
 	}
 }
 
-func TestStandaloneReloadSnapshotDoesNotReportMetadataOnlyChangeAsRouteChange(t *testing.T) {
+func TestStandaloneReloadSnapshotReportsMetadataOnlyChangeAsRouteChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	initial := `plugin_metadata:
   - id: metadata-1
@@ -270,12 +272,15 @@ func TestStandaloneReloadSnapshotDoesNotReportMetadataOnlyChangeAsRouteChange(t 
 	if err != nil {
 		t.Fatalf("updated ReloadSnapshot() error = %v", err)
 	}
-	if len(result.ChangedHTTPRouteBuckets) != 0 || len(result.ChangedStreamBuckets) != 0 {
+	if got, want := result.ChangedHTTPRouteBuckets, []string{"plugin_metadata"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf(
-			"metadata-only changed buckets = HTTP %v stream %v, want none",
-			result.ChangedHTTPRouteBuckets,
-			result.ChangedStreamBuckets,
+			"metadata-only changed HTTP buckets = %v, want %v",
+			got,
+			want,
 		)
+	}
+	if len(result.ChangedStreamBuckets) != 0 {
+		t.Fatalf("metadata-only changed stream buckets = %v, want none", result.ChangedStreamBuckets)
 	}
 	if got := len(events); got != 1 {
 		t.Fatalf("metadata event count = %d, want 1", got)

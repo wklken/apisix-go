@@ -355,6 +355,43 @@ func TestWildcardDispatcherKeepsMethodScopesSeparate(t *testing.T) {
 	}
 }
 
+func TestRouteDispatcherSelectsSamePatternByHost(t *testing.T) {
+	t.Parallel()
+
+	router := chi.NewRouter()
+	register := func(hosts []string, status int) {
+		t.Helper()
+		handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(status)
+		})
+		if err := registerRouteWithHosts(router, nil, "/*", hosts, handler); err != nil {
+			t.Fatalf("register hosts %v: %v", hosts, err)
+		}
+	}
+	register([]string{"sp1.local"}, http.StatusCreated)
+	register([]string{"*.example.local"}, http.StatusAccepted)
+	register([]string{"sp2.local"}, http.StatusNoContent)
+
+	for _, assertion := range []struct {
+		host string
+		want int
+	}{
+		{host: "sp1.local", want: http.StatusCreated},
+		{host: "sp1.local:9080", want: http.StatusCreated},
+		{host: "api.example.local", want: http.StatusAccepted},
+		{host: "sp2.local", want: http.StatusNoContent},
+		{host: "other.local", want: http.StatusNotFound},
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/uri", nil)
+		request.Host = assertion.host
+		router.ServeHTTP(response, request)
+		if response.Code != assertion.want {
+			t.Fatalf("Host %s status = %d, want %d", assertion.host, response.Code, assertion.want)
+		}
+	}
+}
+
 func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 	t.Parallel()
 

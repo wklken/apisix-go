@@ -3,6 +3,7 @@ package pluginintegration
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
 	cgzip "compress/gzip"
 	"context"
 	"crypto"
@@ -10,6 +11,7 @@ import (
 	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // HMAC-SHA1 is part of the pinned APISIX compatibility contract.
 	"crypto/sha256"
 	"crypto/sha512"
@@ -47,7 +49,9 @@ import (
 	"time"
 
 	brotlidec "github.com/andybalholm/brotli"
+	"github.com/beevik/etree"
 	"github.com/crewjam/saml"
+	dsig "github.com/russellhaering/goxmldsig"
 	apisixcmd "github.com/wklken/apisix-go/cmd"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/net/http2"
@@ -56,6 +60,8 @@ import (
 const helperProcessEnv = "APISIX_GO_INTEGRATION_HELPER"
 
 const environmentHelperProcessEnv = "APISIX_GO_CASE_ENVIRONMENT_HELPER"
+
+const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 
 func TestPluginIntegration(t *testing.T) {
 	files, err := filepath.Glob("*.yaml")
@@ -319,6 +325,24 @@ func TestTamperSAMLSignatureRejectsUnsignedResponse(t *testing.T) {
 	}
 }
 
+func TestAPISIXDialAddressPreservesLogicalRequestAuthority(t *testing.T) {
+	httpAddress := "127.0.0.1:19080"
+	tlsAddress := "127.0.0.1:19443"
+	for _, test := range []struct {
+		requested string
+		want      string
+	}{
+		{requested: httpAddress, want: httpAddress},
+		{requested: tlsAddress, want: tlsAddress},
+		{requested: "sp1.local:80", want: httpAddress},
+		{requested: "sp2.local:443", want: tlsAddress},
+	} {
+		if got := apisixDialAddress(test.requested, httpAddress, tlsAddress); got != test.want {
+			t.Fatalf("apisixDialAddress(%q) = %q, want %q", test.requested, got, test.want)
+		}
+	}
+}
+
 func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	config := map[string]any{"routes": []any{}}
@@ -336,6 +360,17 @@ func TestWriteStandaloneConfigUpdateIncludesEndMarker(t *testing.T) {
 	if !strings.HasSuffix(string(data), "#END\n") {
 		t.Fatalf("standalone config update = %q, want #END marker", data)
 	}
+}
+
+func apisixDialAddress(requestedAddress, httpAddress, tlsAddress string) string {
+	if requestedAddress == tlsAddress {
+		return tlsAddress
+	}
+	_, port, err := net.SplitHostPort(requestedAddress)
+	if err == nil && port == "443" && tlsAddress != "" {
+		return tlsAddress
+	}
+	return httpAddress
 }
 
 func TestWaitForAppliedStateRetriesUntilProbePasses(t *testing.T) {
@@ -2127,6 +2162,11 @@ func runCase(t *testing.T, spec Case) {
 	}
 
 	transport := &http.Transport{DisableCompression: true, ForceAttemptHTTP2: enableHTTP2}
+	dialer := &net.Dialer{}
+	transport.DialContext = func(ctx context.Context, network, requestedAddress string) (net.Conn, error) {
+		targetAddress := apisixDialAddress(requestedAddress, apisixAddress, tlsAddress)
+		return dialer.DialContext(ctx, network, targetAddress)
+	}
 	if spec.TLS != nil {
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // integration certificate is generated per case
@@ -2310,7 +2350,7 @@ func runCase(t *testing.T, spec Case) {
 func nonSAMLResponseActions(actions []CaseAction) []CaseAction {
 	filtered := make([]CaseAction, 0, len(actions))
 	for _, action := range actions {
-		if action.SAMLResponse == nil {
+		if action.SAMLResponse == nil && action.SAMLLogout == nil {
 			filtered = append(filtered, action)
 		}
 	}
@@ -2320,7 +2360,7 @@ func nonSAMLResponseActions(actions []CaseAction) []CaseAction {
 func samlResponseActions(actions []CaseAction) []CaseAction {
 	filtered := make([]CaseAction, 0, len(actions))
 	for _, action := range actions {
-		if action.SAMLResponse != nil {
+		if action.SAMLResponse != nil || action.SAMLLogout != nil {
 			filtered = append(filtered, action)
 		}
 	}
@@ -2416,6 +2456,10 @@ func executeCaseActions(
 			if err := executeSAMLResponseAction(*action.SAMLResponse, capturedValues); err != nil {
 				return fmt.Errorf("action %d saml_response: %w", i+1, err)
 			}
+		case action.SAMLLogout != nil:
+			if err := executeSAMLLogoutAction(*action.SAMLLogout, capturedValues); err != nil {
+				return fmt.Errorf("action %d saml_logout: %w", i+1, err)
+			}
 		default:
 			return fmt.Errorf("action %d is empty", i+1)
 		}
@@ -2476,6 +2520,9 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 		requestState.Request.AssertionConsumerServiceURL == "" {
 		return errors.New("SAML authorization request is missing issuer or assertion consumer URL")
 	}
+	if err := validateSPAuthenticationRequest(request, requestState.RequestBuffer, action.SPCertificate); err != nil {
+		return fmt.Errorf("validate signed SP authentication request: %w", err)
+	}
 	if action.RequestIDOverride != "" {
 		requestState.Request.ID = action.RequestIDOverride
 	}
@@ -2525,6 +2572,214 @@ func executeSAMLResponseAction(action SAMLResponseAction, captured map[string]st
 	}
 	captured[action.ResponseCapture] = url.QueryEscape(form.SAMLResponse)
 	captured[action.RelayStateCapture] = url.QueryEscape(form.RelayState)
+	return nil
+}
+
+func executeSAMLLogoutAction(action SAMLLogoutAction, captured map[string]string) error {
+	if captured == nil {
+		return errors.New("no captured response values are available")
+	}
+	redirect := captured[action.RedirectCapture]
+	if redirect == "" {
+		return fmt.Errorf("redirect capture %q has not been recorded", action.RedirectCapture)
+	}
+	redirectURL, err := url.Parse(redirect)
+	if err != nil {
+		return fmt.Errorf("parse SAML logout redirect: %w", err)
+	}
+
+	field := "SAMLRequest"
+	if action.Kind == "response" {
+		field = "SAMLResponse"
+	}
+	rawXML, err := decodeSAMLRedirectMessage(redirectURL.Query().Get(field))
+	if err != nil {
+		return fmt.Errorf("decode %s: %w", field, err)
+	}
+	if err := validateSignedSAMLFixtureXML(rawXML, action.SPCertificate); err != nil {
+		return fmt.Errorf("validate signed SP %s: %w", field, err)
+	}
+
+	idp, err := samlFixtureSigner(
+		action.IDPURI,
+		action.IDPCertificate,
+		action.IDPPrivateKey,
+	)
+	if err != nil {
+		return err
+	}
+	relayState := redirectURL.Query().Get("RelayState")
+	switch action.Kind {
+	case "request":
+		var request saml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &request); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutRequest: %w", err)
+		}
+		if request.ID == "" {
+			return errors.New("SP LogoutRequest has no ID")
+		}
+		captured[action.InputRequestIDCapture] = request.ID
+		output, err := idp.MakeLogoutRequest(action.Destination, action.NameID)
+		if err != nil {
+			return fmt.Errorf("make IdP LogoutRequest: %w", err)
+		}
+		captured[action.OutputRequestIDCapture] = output.ID
+		captured[action.OutputCapture] = strings.TrimPrefix(output.Redirect(relayState).RequestURI(), "/")
+	case "finish":
+		var request saml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &request); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutRequest: %w", err)
+		}
+		if request.ID == "" {
+			return errors.New("SP LogoutRequest has no ID")
+		}
+		output, err := idp.MakeLogoutResponse(action.Destination, request.ID)
+		if err != nil {
+			return fmt.Errorf("make IdP LogoutResponse: %w", err)
+		}
+		captured[action.OutputCapture] = strings.TrimPrefix(output.Redirect(relayState).RequestURI(), "/")
+	case "response":
+		var response saml.LogoutResponse
+		if err := xml.Unmarshal(rawXML, &response); err != nil {
+			return fmt.Errorf("unmarshal SP LogoutResponse: %w", err)
+		}
+		expectedRequestID := captured[action.ExpectedRequestIDCapture]
+		if expectedRequestID == "" || response.InResponseTo != expectedRequestID {
+			return fmt.Errorf(
+				"SP LogoutResponse InResponseTo = %q, want captured request ID %q",
+				response.InResponseTo,
+				expectedRequestID,
+			)
+		}
+		responseTo := captured[action.ResponseToRequestIDCapture]
+		if responseTo == "" {
+			return fmt.Errorf(
+				"response-to request ID capture %q has not been recorded",
+				action.ResponseToRequestIDCapture,
+			)
+		}
+		output, err := idp.MakeLogoutResponse(action.Destination, responseTo)
+		if err != nil {
+			return fmt.Errorf("make IdP LogoutResponse: %w", err)
+		}
+		captured[action.OutputCapture] = strings.TrimPrefix(output.Redirect(relayState).RequestURI(), "/")
+	default:
+		return fmt.Errorf("unsupported SAML logout action kind %q", action.Kind)
+	}
+	return nil
+}
+
+func samlFixtureSigner(entityID string, certificatePEM string, privateKeyPEM string) (*saml.ServiceProvider, error) {
+	pair, err := tls.X509KeyPair([]byte(certificatePEM), []byte(privateKeyPEM))
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, fmt.Errorf("parse IdP signing key pair: %w", err)
+	}
+	certificate, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("parse IdP certificate: %w", err)
+	}
+	key, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("IdP private key does not implement crypto.Signer")
+	}
+	return &saml.ServiceProvider{
+		EntityID:        entityID,
+		Key:             key,
+		Certificate:     certificate,
+		SignatureMethod: samlRSASHA256Method,
+		IDPMetadata:     &saml.EntityDescriptor{EntityID: "fixture-peer"},
+	}, nil
+}
+
+func decodeSAMLRedirectMessage(value string) ([]byte, error) {
+	if value == "" {
+		return nil, errors.New("SAML Redirect value is required")
+	}
+	compressed, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64: %w", err)
+	}
+	reader := flate.NewReader(bytes.NewReader(compressed))
+	defer func() {
+		_ = reader.Close()
+	}()
+	rawXML, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("inflate XML: %w", err)
+	}
+	if len(rawXML) > 1<<20 {
+		return nil, errors.New("SAML Redirect value exceeds the 1 MiB limit")
+	}
+	return rawXML, nil
+}
+
+func validateSignedSAMLFixtureXML(rawXML []byte, certificatePEM string) error {
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SP certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SP certificate: %w", err)
+	}
+	document := etree.NewDocument()
+	if err := document.ReadFromBytes(rawXML); err != nil {
+		return fmt.Errorf("parse signed XML: %w", err)
+	}
+	context := dsig.NewDefaultValidationContext(&dsig.MemoryX509CertificateStore{
+		Roots: []*x509.Certificate{certificate},
+	})
+	if _, err := context.Validate(document.Root()); err != nil {
+		return fmt.Errorf("verify XML signature: %w", err)
+	}
+	return nil
+}
+
+func validateSPAuthenticationRequest(request *http.Request, rawXML []byte, certificatePEM string) error {
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return errors.New("SP certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse SP certificate: %w", err)
+	}
+	if request.Method == http.MethodGet {
+		signatureValue := request.URL.Query().Get("Signature")
+		if signatureValue == "" || request.URL.Query().Get("SigAlg") != samlRSASHA256Method {
+			return errors.New("Redirect binding requires rsa-sha256 SigAlg and Signature")
+		}
+		signature, err := base64.StdEncoding.DecodeString(signatureValue)
+		if err != nil {
+			return fmt.Errorf("decode Redirect signature: %w", err)
+		}
+		signedQuery := request.URL.RawQuery
+		if index := strings.LastIndex(signedQuery, "&Signature="); index >= 0 {
+			signedQuery = signedQuery[:index]
+		} else {
+			return errors.New("Redirect signature is not the final query parameter")
+		}
+		publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("SP certificate does not contain an RSA public key")
+		}
+		digest := sha256.Sum256([]byte(signedQuery))
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+			return fmt.Errorf("verify Redirect signature: %w", err)
+		}
+		return nil
+	}
+
+	document := etree.NewDocument()
+	if err := document.ReadFromBytes(rawXML); err != nil {
+		return fmt.Errorf("parse POST XML: %w", err)
+	}
+	context := dsig.NewDefaultValidationContext(&dsig.MemoryX509CertificateStore{
+		Roots: []*x509.Certificate{certificate},
+	})
+	if _, err := context.Validate(document.Root()); err != nil {
+		return fmt.Errorf("verify POST XML signature: %w", err)
+	}
 	return nil
 }
 
@@ -2730,6 +2985,7 @@ func probeHTTPInput(
 		}
 		if strings.EqualFold(name, "Host") {
 			request.Host = value
+			request.URL.Host = value
 			continue
 		}
 		request.Header.Set(name, value)
@@ -2878,6 +3134,7 @@ func runHTTPInput(
 		}
 		if strings.EqualFold(name, "Host") {
 			request.Host = value
+			request.URL.Host = value
 			continue
 		}
 		request.Header.Set(name, value)

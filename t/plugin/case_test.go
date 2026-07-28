@@ -65,6 +65,57 @@ func TestManifestRejectsConcurrentStepWithResponseCaptures(t *testing.T) {
 	}
 }
 
+func TestManifestRejectsConcurrentStepWithBodyCaptures(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:        "parallel-body-capture",
+		Repeat:      2,
+		Concurrency: 2,
+		Input:       HTTPInput{Path: "/capture"},
+		Output: HTTPOutput{
+			Status: 200,
+			BodyCaptures: map[string]BodyCapture{
+				"id": {Matches: `^(.+)$`},
+			},
+		},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "concurrency must not be combined with output captures") {
+		t.Fatalf("validate() error = %v, want concurrent body capture rejection", err)
+	}
+}
+
+func TestManifestRejectsTopLevelBodyCaptureWithSteps(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{
+		BodyCaptures: map[string]BodyCapture{"id": {Matches: `^(.+)$`}},
+	}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/capture"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "steps and fixtures must not be mixed") {
+		t.Fatalf("validate() error = %v, want top-level body capture rejection", err)
+	}
+}
+
+func TestConfigProbeRejectsBodyCaptures(t *testing.T) {
+	err := validateConfigProbeOutput(HTTPOutput{
+		Status:       200,
+		BodyCaptures: map[string]BodyCapture{"id": {Matches: `^(.+)$`}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "supports only") {
+		t.Fatalf("validateConfigProbeOutput() error = %v, want body capture rejection", err)
+	}
+}
+
 func TestManifestAcceptsNetworkJSONFields(t *testing.T) {
 	const manifestYAML = `source:
   repository: https://github.com/apache/apisix

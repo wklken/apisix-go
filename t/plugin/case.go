@@ -114,6 +114,7 @@ type CaseAction struct {
 	Signal       string              `yaml:"signal,omitempty"`
 	Wait         time.Duration       `yaml:"wait,omitempty"`
 	SAMLResponse *SAMLResponseAction `yaml:"saml_response,omitempty"`
+	SAMLLogout   *SAMLLogoutAction   `yaml:"saml_logout,omitempty"`
 }
 
 type FileRenameAction struct {
@@ -132,10 +133,29 @@ type SAMLResponseAction struct {
 	RelayStateCapture      string `yaml:"relay_state_capture"`
 	IDPCertificate         string `yaml:"idp_certificate"`
 	IDPPrivateKey          string `yaml:"idp_private_key"`
+	SPCertificate          string `yaml:"sp_certificate"`
 	NameID                 string `yaml:"name_id"`
 	UserName               string `yaml:"user_name,omitempty"`
 	RequestIDOverride      string `yaml:"request_id_override,omitempty"`
 	TamperSignature        bool   `yaml:"tamper_signature,omitempty"`
+}
+
+// SAMLLogoutAction validates one SP logout message and emits the next signed
+// IdP message in the four-hop single-logout exchange.
+type SAMLLogoutAction struct {
+	Kind                       string `yaml:"kind"`
+	RedirectCapture            string `yaml:"redirect_capture"`
+	OutputCapture              string `yaml:"output_capture"`
+	InputRequestIDCapture      string `yaml:"input_request_id_capture,omitempty"`
+	OutputRequestIDCapture     string `yaml:"output_request_id_capture,omitempty"`
+	ExpectedRequestIDCapture   string `yaml:"expected_request_id_capture,omitempty"`
+	ResponseToRequestIDCapture string `yaml:"response_to_request_id_capture,omitempty"`
+	Destination                string `yaml:"destination"`
+	IDPURI                     string `yaml:"idp_uri"`
+	IDPCertificate             string `yaml:"idp_certificate"`
+	IDPPrivateKey              string `yaml:"idp_private_key"`
+	SPCertificate              string `yaml:"sp_certificate"`
+	NameID                     string `yaml:"name_id,omitempty"`
 }
 
 type ConfigProbe struct {
@@ -573,6 +593,7 @@ func (c *Case) hasScenario() bool {
 		len(c.Output.MonotonicHeaders) > 0 ||
 		len(c.Output.DifferentHeaders) > 0 ||
 		len(c.Output.Captures) > 0 ||
+		len(c.Output.BodyCaptures) > 0 ||
 		len(c.Files) > 0 ||
 		len(c.Steps) > 0 ||
 		c.TLS != nil ||
@@ -619,7 +640,7 @@ func (c *Case) validateScenario() error {
 			c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
 			c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 || len(c.Output.UniqueHeaders) > 0 ||
 			len(c.Output.MonotonicHeaders) > 0 || len(c.Output.DifferentHeaders) > 0 ||
-			len(c.Output.Captures) > 0 {
+			len(c.Output.Captures) > 0 || len(c.Output.BodyCaptures) > 0 {
 			return errors.New("steps and fixtures must not be mixed with input, upstream, or output")
 		}
 		if len(c.Steps) == 0 {
@@ -664,7 +685,8 @@ func (c *Case) validateScenario() error {
 			if step.Concurrency > 0 && len(step.Config) > 0 {
 				return fmt.Errorf("step %q concurrency must not be combined with config update", step.Name)
 			}
-			if step.Concurrency > 0 && len(step.Output.Captures) > 0 {
+			if step.Concurrency > 0 &&
+				(len(step.Output.Captures) > 0 || len(step.Output.BodyCaptures) > 0) {
 				return fmt.Errorf("step %q concurrency must not be combined with output captures", step.Name)
 			}
 			if step.Concurrency > 0 && (len(step.Actions) > 0 || len(step.FileAssertions) > 0) {
@@ -752,7 +774,7 @@ func validateConfigProbeOutput(output HTTPOutput) error {
 	if output.Logs != nil || output.SaveBodyLength != "" || output.BodyLengthLessThan != "" ||
 		output.BodyLengthLessThanValue != nil || output.ElapsedAtLeast > 0 || output.ElapsedLessThan > 0 ||
 		len(output.UniqueHeaders) > 0 || len(output.MonotonicHeaders) > 0 ||
-		len(output.DifferentHeaders) > 0 || len(output.Captures) > 0 {
+		len(output.DifferentHeaders) > 0 || len(output.Captures) > 0 || len(output.BodyCaptures) > 0 {
 		return errors.New("output supports only status, headers, body, gzip_body, and brotli_body")
 	}
 	return nil
@@ -1325,9 +1347,12 @@ func validateCaseActions(actions []CaseAction) error {
 		if action.SAMLResponse != nil {
 			configured++
 		}
+		if action.SAMLLogout != nil {
+			configured++
+		}
 		if configured != 1 {
 			return fmt.Errorf(
-				"action %d must configure exactly one of remove, rename, signal, wait, or saml_response",
+				"action %d must configure exactly one of remove, rename, signal, wait, saml_response, or saml_logout",
 				i+1,
 			)
 		}
@@ -1357,12 +1382,36 @@ func validateCaseActions(actions []CaseAction) error {
 				(strings.TrimSpace(saml.IDPURI) != "" && strings.TrimSpace(saml.SAMLRequestCapture) != "" && strings.TrimSpace(saml.RelayStateInputCapture) != "")
 			if !redirectSource || strings.TrimSpace(saml.ResponseCapture) == "" ||
 				strings.TrimSpace(saml.RelayStateCapture) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
-				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.NameID) == "" {
+				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.SPCertificate) == "" ||
+				strings.TrimSpace(saml.NameID) == "" {
 				return fmt.Errorf(
 					"action %d saml_response requires redirect_capture, response_capture, relay_state_capture, "+
-						"idp_certificate, idp_private_key, and name_id",
+						"idp_certificate, idp_private_key, sp_certificate, and name_id",
 					i+1,
 				)
+			}
+		case action.SAMLLogout != nil:
+			saml := action.SAMLLogout
+			commonMissing := strings.TrimSpace(saml.RedirectCapture) == "" ||
+				strings.TrimSpace(saml.OutputCapture) == "" || strings.TrimSpace(saml.Destination) == "" ||
+				strings.TrimSpace(saml.IDPURI) == "" || strings.TrimSpace(saml.IDPCertificate) == "" ||
+				strings.TrimSpace(saml.IDPPrivateKey) == "" || strings.TrimSpace(saml.SPCertificate) == ""
+			switch {
+			case commonMissing:
+				return fmt.Errorf("action %d saml_logout requires redirect_capture, output_capture, destination, "+
+					"idp_uri, idp_certificate, idp_private_key, and sp_certificate", i+1)
+			case saml.Kind == "request" &&
+				(strings.TrimSpace(saml.InputRequestIDCapture) == "" ||
+					strings.TrimSpace(saml.OutputRequestIDCapture) == "" || strings.TrimSpace(saml.NameID) == ""):
+				return fmt.Errorf("action %d saml_logout request requires input_request_id_capture, "+
+					"output_request_id_capture, and name_id", i+1)
+			case saml.Kind == "response" &&
+				(strings.TrimSpace(saml.ExpectedRequestIDCapture) == "" ||
+					strings.TrimSpace(saml.ResponseToRequestIDCapture) == ""):
+				return fmt.Errorf("action %d saml_logout response requires expected_request_id_capture and "+
+					"response_to_request_id_capture", i+1)
+			case saml.Kind != "request" && saml.Kind != "response" && saml.Kind != "finish":
+				return fmt.Errorf("action %d saml_logout kind must be request, response, or finish", i+1)
 			}
 		}
 	}

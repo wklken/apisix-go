@@ -1,6 +1,8 @@
 package saml_auth
 
 import (
+	"bytes"
+	"compress/flate"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rand"
@@ -11,16 +13,22 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/beevik/etree"
 	"github.com/crewjam/saml"
+	dsig "github.com/russellhaering/goxmldsig"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -35,6 +43,7 @@ const (
 	name     = "saml-auth"
 
 	requestCookiePrefix = "SAML_REQUEST_"
+	logoutCookiePrefix  = "SAML_LOGOUT_"
 	sessionCookiePrefix = "SAML_SESSION_"
 	stateLifetime       = 10 * time.Minute
 	sessionLifetime     = 24 * time.Hour
@@ -127,6 +136,11 @@ type requestState struct {
 	ExpiresAt   int64  `json:"expires_at"`
 }
 
+type logoutState struct {
+	RequestID string `json:"request_id"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
 type externalUser struct {
 	NameID     string              `json:"name_id,omitempty"`
 	Attributes map[string][]string `json:"attributes,omitempty"`
@@ -160,8 +174,14 @@ func (p *Plugin) Config() any {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == callbackPath(p.config.LogoutCallbackURI) {
-			p.deleteCookie(w, sessionCookieName(p.sessionFingerprint()))
-			http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
+			switch {
+			case r.FormValue("SAMLRequest") != "":
+				p.handleLogoutRequest(w, r)
+			case r.FormValue("SAMLResponse") != "":
+				p.handleLogoutResponse(w, r)
+			default:
+				http.Error(w, util.BuildMessageResponse("invalid saml logout message"), http.StatusUnauthorized)
+			}
 			return
 		}
 
@@ -250,6 +270,7 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	assertion, err := sp.ParseResponse(r, []string{state.RequestID})
 	if err != nil {
+		logger.Errorf("saml authenticate failed: %v", samlAuthenticationDiagnostic(err))
 		http.Error(w, util.BuildMessageResponse("saml authentication failed"), http.StatusInternalServerError)
 		return
 	}
@@ -269,6 +290,14 @@ func (p *Plugin) handleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, location, http.StatusFound)
 }
 
+func samlAuthenticationDiagnostic(err error) error {
+	var invalidResponse *saml.InvalidResponseError
+	if errors.As(err, &invalidResponse) && invalidResponse.PrivateErr != nil {
+		return invalidResponse.PrivateErr
+	}
+	return err
+}
+
 func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 	user, ok := p.sessionUser(r)
 	if !ok {
@@ -282,12 +311,103 @@ func (p *Plugin) logout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
 		return
 	}
-	redirectURL, err := sp.MakeRedirectLogoutRequest(user.NameID, p.config.LogoutRedirectURI)
+	logoutRequest, err := sp.MakeLogoutRequest(p.config.IDPURI, user.NameID)
 	if err != nil {
 		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
 		return
 	}
+	stateID := randomState()
+	stateCookie, err := p.logoutCookie(stateID, logoutState{
+		RequestID: logoutRequest.ID,
+		ExpiresAt: time.Now().Add(stateLifetime).Unix(),
+	})
+	if err != nil {
+		http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
+		return
+	}
+	http.SetCookie(w, stateCookie)
+	redirectURL := logoutRequest.Redirect(stateID)
 	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+}
+
+func (p *Plugin) handleLogoutRequest(w http.ResponseWriter, r *http.Request) {
+	sp, err := p.serviceProvider(r)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
+		return
+	}
+	logoutRequest, err := p.validateLogoutRequest(r, sp)
+	if err != nil {
+		logger.Errorf("saml logout request failed: %v", samlAuthenticationDiagnostic(err))
+		http.Error(w, util.BuildMessageResponse("invalid saml logout request"), http.StatusUnauthorized)
+		return
+	}
+
+	p.deleteCookie(w, sessionCookieName(p.sessionFingerprint()))
+	redirectURL, err := sp.MakeRedirectLogoutResponse(logoutRequest.ID, r.FormValue("RelayState"))
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("saml logout failed"), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+}
+
+func (p *Plugin) handleLogoutResponse(w http.ResponseWriter, r *http.Request) {
+	stateID := r.FormValue("RelayState")
+	state, ok := p.logoutState(r, stateID)
+	if !ok {
+		http.Error(w, util.BuildMessageResponse("invalid saml logout state"), http.StatusUnauthorized)
+		return
+	}
+	sp, err := p.serviceProvider(r)
+	if err != nil {
+		http.Error(w, util.BuildMessageResponse("create saml object failed"), http.StatusInternalServerError)
+		return
+	}
+	if err := sp.ValidateLogoutResponseRequest(r); err != nil {
+		logger.Errorf("saml logout response failed: %v", samlAuthenticationDiagnostic(err))
+		http.Error(w, util.BuildMessageResponse("invalid saml logout response"), http.StatusUnauthorized)
+		return
+	}
+	response, err := decodeLogoutResponse(r.URL.String())
+	if err != nil || response.InResponseTo != state.RequestID {
+		http.Error(w, util.BuildMessageResponse("invalid saml logout correlation"), http.StatusUnauthorized)
+		return
+	}
+
+	p.deleteCookie(w, sessionCookieName(p.sessionFingerprint()))
+	p.deleteCookie(w, logoutCookieName(p.sessionFingerprint(), stateID))
+	http.Redirect(w, r, p.config.LogoutRedirectURI, http.StatusFound)
+}
+
+func (p *Plugin) validateLogoutRequest(r *http.Request, sp *saml.ServiceProvider) (saml.LogoutRequest, error) {
+	rawXML, err := decodeSAMLMessage(r, "SAMLRequest")
+	if err != nil {
+		return saml.LogoutRequest{}, err
+	}
+	validatedXML, err := validateSignedSAMLXML(rawXML, p.config.IDPCert)
+	if err != nil {
+		return saml.LogoutRequest{}, err
+	}
+	var request saml.LogoutRequest
+	if err := xml.Unmarshal(validatedXML, &request); err != nil {
+		return saml.LogoutRequest{}, fmt.Errorf("decode logout request: %w", err)
+	}
+	switch {
+	case request.ID == "" || request.Version != "2.0":
+		return saml.LogoutRequest{}, errors.New("logout request has invalid ID or version")
+	case request.Destination != sp.SloURL.String():
+		return saml.LogoutRequest{}, fmt.Errorf("logout request Destination does not match %q", sp.SloURL.String())
+	case request.Issuer == nil || request.Issuer.Value != p.config.IDPURI:
+		return saml.LogoutRequest{}, fmt.Errorf("logout request issuer does not match %q", p.config.IDPURI)
+	case request.IssueInstant.Add(saml.MaxIssueDelay).Before(time.Now()):
+		return saml.LogoutRequest{}, errors.New("logout request has expired")
+	case request.IssueInstant.After(time.Now().Add(saml.MaxClockSkew)):
+		return saml.LogoutRequest{}, errors.New("logout request IssueInstant is in the future")
+	case request.NotOnOrAfter != nil && request.NotOnOrAfter.Add(saml.MaxClockSkew).Before(time.Now()):
+		return saml.LogoutRequest{}, errors.New("logout request NotOnOrAfter has expired")
+	}
+	return request, nil
 }
 
 func (p *Plugin) serviceProvider(r *http.Request) (*saml.ServiceProvider, error) {
@@ -411,6 +531,44 @@ func (p *Plugin) requestState(r *http.Request, stateID string) (requestState, bo
 	}
 	if state.ExpiresAt <= time.Now().Unix() || state.RequestID == "" {
 		return requestState{}, false
+	}
+	return state, true
+}
+
+func (p *Plugin) logoutCookie(stateID string, state logoutState) (*http.Cookie, error) {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Cookie{
+		Name:     logoutCookieName(p.sessionFingerprint(), stateID),
+		Value:    p.signValue(payload),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   p.forceSecureCookies(),
+		SameSite: p.sameSiteMode(),
+		MaxAge:   int(stateLifetime.Seconds()),
+	}, nil
+}
+
+func (p *Plugin) logoutState(r *http.Request, stateID string) (logoutState, bool) {
+	if stateID == "" {
+		return logoutState{}, false
+	}
+	cookie, err := r.Cookie(logoutCookieName(p.sessionFingerprint(), stateID))
+	if err != nil || cookie.Value == "" {
+		return logoutState{}, false
+	}
+	payload, ok := p.verifySignedValue(cookie.Value)
+	if !ok {
+		return logoutState{}, false
+	}
+	var state logoutState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return logoutState{}, false
+	}
+	if state.ExpiresAt <= time.Now().Unix() || state.RequestID == "" {
+		return logoutState{}, false
 	}
 	return state, true
 }
@@ -594,8 +752,103 @@ func requestCookieName(fingerprint string, stateID string) string {
 	return requestCookiePrefix + fingerprint + "_" + stateID
 }
 
+func logoutCookieName(fingerprint string, stateID string) string {
+	return logoutCookiePrefix + fingerprint + "_" + stateID
+}
+
 func sessionCookieName(fingerprint string) string {
 	return sessionCookiePrefix + fingerprint
+}
+
+func decodeLogoutResponse(rawURL string) (saml.LogoutResponse, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return saml.LogoutResponse{}, fmt.Errorf("parse logout response URL: %w", err)
+	}
+	rawXML, err := decodeSAMLRedirectValue(parsed.Query().Get("SAMLResponse"))
+	if err != nil {
+		return saml.LogoutResponse{}, err
+	}
+	var response saml.LogoutResponse
+	if err := xml.Unmarshal(rawXML, &response); err != nil {
+		return saml.LogoutResponse{}, fmt.Errorf("decode logout response: %w", err)
+	}
+	return response, nil
+}
+
+func decodeSAMLMessage(r *http.Request, field string) ([]byte, error) {
+	if value := r.URL.Query().Get(field); value != "" {
+		return decodeSAMLRedirectValue(value)
+	}
+	if err := r.ParseForm(); err != nil {
+		return nil, fmt.Errorf("parse SAML form: %w", err)
+	}
+	value := r.PostForm.Get(field)
+	if value == "" {
+		return nil, fmt.Errorf("%s is required", field)
+	}
+	rawXML, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", field, err)
+	}
+	if len(rawXML) > 1<<20 {
+		return nil, fmt.Errorf("%s exceeds the 1 MiB limit", field)
+	}
+	return rawXML, nil
+}
+
+func decodeSAMLRedirectValue(value string) ([]byte, error) {
+	if value == "" {
+		return nil, errors.New("SAML Redirect value is required")
+	}
+	compressed, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode SAML Redirect value: %w", err)
+	}
+	reader := flate.NewReader(bytes.NewReader(compressed))
+	defer func() {
+		_ = reader.Close()
+	}()
+	rawXML, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("inflate SAML Redirect value: %w", err)
+	}
+	if len(rawXML) > 1<<20 {
+		return nil, errors.New("SAML Redirect value exceeds the 1 MiB limit")
+	}
+	return rawXML, nil
+}
+
+func validateSignedSAMLXML(rawXML []byte, certificatePEM string) ([]byte, error) {
+	block, _ := pem.Decode([]byte(certificatePEM))
+	if block == nil {
+		return nil, errors.New("SAML signing certificate is not PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse SAML signing certificate: %w", err)
+	}
+	document := etree.NewDocument()
+	if err := document.ReadFromBytes(rawXML); err != nil {
+		return nil, fmt.Errorf("parse signed SAML XML: %w", err)
+	}
+	if document.Root() == nil {
+		return nil, errors.New("signed SAML XML has no root element")
+	}
+	context := dsig.NewDefaultValidationContext(&dsig.MemoryX509CertificateStore{
+		Roots: []*x509.Certificate{certificate},
+	})
+	validated, err := context.Validate(document.Root())
+	if err != nil {
+		return nil, fmt.Errorf("verify SAML XML signature: %w", err)
+	}
+	validatedDocument := etree.NewDocument()
+	validatedDocument.SetRoot(validated)
+	validatedXML, err := validatedDocument.WriteToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("serialize validated SAML XML: %w", err)
+	}
+	return validatedXML, nil
 }
 
 func randomState() string {

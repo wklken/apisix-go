@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/crewjam/saml"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -140,9 +143,149 @@ func TestLogoutDeletesSessionAndRedirectsToIDP(t *testing.T) {
 	if location := rr.Header().Get("Location"); !strings.Contains(location, "SAMLRequest=") {
 		t.Fatalf("Location = %q, want SAML logout request", location)
 	}
+	redirectURL, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse logout redirect: %v", err)
+	}
+	relayState := redirectURL.Query().Get("RelayState")
+	if relayState == "" {
+		t.Fatal("logout redirect did not contain RelayState")
+	}
+	if stateCookie := findSetCookie(
+		rr.Result().Cookies(),
+		logoutCookieName(p.sessionFingerprint(), relayState),
+	); stateCookie == nil {
+		t.Fatal("logout redirect did not set correlated state cookie")
+	}
 	deleted := findSetCookie(rr.Result().Cookies(), sessionCookieName(p.sessionFingerprint()))
 	if deleted == nil || deleted.MaxAge != -1 {
 		t.Fatalf("session delete cookie = %#v, want MaxAge=-1", deleted)
+	}
+}
+
+func TestUnsignedLogoutCallbackIsRejectedWithoutClearingSession(t *testing.T) {
+	p := newTestPlugin(t, testConfig(t))
+	session, err := p.sessionCookie(externalUser{NameID: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/logout/callback", nil)
+	req.AddCookie(session)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if deleted := findSetCookie(rr.Result().Cookies(), sessionCookieName(p.sessionFingerprint())); deleted != nil {
+		t.Fatalf("unsigned callback deleted session: %#v", deleted)
+	}
+}
+
+func TestSignedLogoutRequestClearsSessionAndReturnsCorrelatedResponse(t *testing.T) {
+	cfg := testConfig(t)
+	p := newTestPlugin(t, cfg)
+	session, err := p.sessionCookie(externalUser{NameID: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	idp := testSAMLSigner(t, cfg.IDPURI, cfg.SPIssuer, cfg.IDPCert, cfg.SPPrivateKey)
+	logoutRequest, err := idp.MakeLogoutRequest(cfg.LogoutCallbackURI, "alice@example.com")
+	if err != nil {
+		t.Fatalf("MakeLogoutRequest() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, logoutRequest.Redirect("idp-relay").String(), nil)
+	req.AddCookie(session)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rr.Code)
+	}
+	response, err := decodeLogoutResponse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("decode logout response: %v", err)
+	}
+	if response.InResponseTo != logoutRequest.ID {
+		t.Fatalf("InResponseTo = %q, want %q", response.InResponseTo, logoutRequest.ID)
+	}
+	if response.Destination != cfg.IDPURI {
+		t.Fatalf("Destination = %q, want %q", response.Destination, cfg.IDPURI)
+	}
+	if deleted := findSetCookie(rr.Result().Cookies(), sessionCookieName(p.sessionFingerprint())); deleted == nil {
+		t.Fatal("valid IdP logout request did not clear session")
+	}
+}
+
+func TestTamperedLogoutRequestIsRejectedWithoutClearingSession(t *testing.T) {
+	cfg := testConfig(t)
+	p := newTestPlugin(t, cfg)
+	session, err := p.sessionCookie(externalUser{NameID: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	idp := testSAMLSigner(t, cfg.IDPURI, cfg.SPIssuer, cfg.IDPCert, cfg.SPPrivateKey)
+	logoutRequest, err := idp.MakeLogoutRequest(cfg.LogoutCallbackURI, "alice@example.com")
+	if err != nil {
+		t.Fatalf("MakeLogoutRequest() error = %v", err)
+	}
+	logoutRequest.NameID.Value = "mallory@example.com"
+
+	req := httptest.NewRequest(http.MethodGet, logoutRequest.Redirect("idp-relay").String(), nil)
+	req.AddCookie(session)
+	rr := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if deleted := findSetCookie(rr.Result().Cookies(), sessionCookieName(p.sessionFingerprint())); deleted != nil {
+		t.Fatalf("tampered logout request deleted session: %#v", deleted)
+	}
+}
+
+func TestLogoutResponseRequiresStoredRequestCorrelation(t *testing.T) {
+	cfg := testConfig(t)
+	p := newTestPlugin(t, cfg)
+	session, err := p.sessionCookie(externalUser{NameID: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+	start := httptest.NewRequest(http.MethodGet, "http://example.com/logout", nil)
+	start.AddCookie(session)
+	startRecorder := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(startRecorder, start)
+	redirectURL, err := url.Parse(startRecorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse logout redirect: %v", err)
+	}
+	relayState := redirectURL.Query().Get("RelayState")
+	stateCookie := findSetCookie(
+		startRecorder.Result().Cookies(),
+		logoutCookieName(p.sessionFingerprint(), relayState),
+	)
+	if stateCookie == nil {
+		t.Fatal("logout state cookie was not set")
+	}
+
+	idp := testSAMLSigner(t, cfg.IDPURI, cfg.SPIssuer, cfg.IDPCert, cfg.SPPrivateKey)
+	wrongResponse, err := idp.MakeLogoutResponse(cfg.LogoutCallbackURI, "wrong-request-id")
+	if err != nil {
+		t.Fatalf("MakeLogoutResponse() error = %v", err)
+	}
+	callback := httptest.NewRequest(http.MethodGet, wrongResponse.Redirect(relayState).String(), nil)
+	callback.AddCookie(stateCookie)
+	callbackRecorder := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(callbackRecorder, callback)
+
+	if callbackRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", callbackRecorder.Code)
 	}
 }
 
@@ -208,6 +351,20 @@ func TestCallbackParserFailureReturnsAuthenticationFailure(t *testing.T) {
 	}
 }
 
+func TestSAMLAuthenticationDiagnosticExcludesResponseMaterial(t *testing.T) {
+	diagnostic := errors.New("signature verification failed")
+	err := &saml.InvalidResponseError{
+		PrivateErr: diagnostic,
+		Response:   `<Response><Assertion>secret</Assertion></Response>`,
+	}
+	if got := samlAuthenticationDiagnostic(err); !errors.Is(got, diagnostic) {
+		t.Fatalf("diagnostic = %v, want private parser error", got)
+	}
+	if strings.Contains(samlAuthenticationDiagnostic(err).Error(), "secret") {
+		t.Fatal("diagnostic leaked SAML response material")
+	}
+}
+
 func testConfig(t *testing.T) Config {
 	t.Helper()
 
@@ -248,6 +405,28 @@ func testCertificate(t *testing.T) (string, string) {
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	return string(certPEM), string(keyPEM)
+}
+
+func testSAMLSigner(
+	t *testing.T,
+	entityID string,
+	peerEntityID string,
+	certPEM string,
+	keyPEM string,
+) *saml.ServiceProvider {
+	t.Helper()
+
+	cert, key, err := parseKeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("parseKeyPair() error = %v", err)
+	}
+	return &saml.ServiceProvider{
+		EntityID:        entityID,
+		Key:             key,
+		Certificate:     cert,
+		SignatureMethod: rsaSHA256Method,
+		IDPMetadata:     &saml.EntityDescriptor{EntityID: peerEntityID},
+	}
 }
 
 func findSetCookie(cookies []*http.Cookie, name string) *http.Cookie {

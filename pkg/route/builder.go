@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -116,12 +117,22 @@ func convertURI(uri string) (string, error) {
 }
 
 func registerRoute(mux *chi.Mux, methods []string, uri string, handler http.Handler) error {
+	return registerRouteWithHosts(mux, methods, uri, nil, handler)
+}
+
+func registerRouteWithHosts(
+	mux *chi.Mux,
+	methods []string,
+	uri string,
+	hosts []string,
+	handler http.Handler,
+) error {
 	converted, err := convertURI(uri)
 	if err != nil {
 		return err
 	}
-	if strings.ContainsRune(uri, '*') {
-		registerWildcardRoute(mux, methods, converted, uri, handler)
+	if strings.ContainsRune(uri, '*') || len(hosts) > 0 {
+		registerWildcardRoute(mux, methods, converted, uri, hosts, handler)
 		return nil
 	}
 	if len(methods) == 0 {
@@ -143,6 +154,7 @@ type wildcardRoute struct {
 	method   string
 	pattern  string
 	embedded bool
+	hosts    []string
 	handler  http.Handler
 }
 
@@ -155,6 +167,7 @@ func registerWildcardRoute(
 	methods []string,
 	converted string,
 	pattern string,
+	hosts []string,
 	handler http.Handler,
 ) {
 	dispatcher := existingWildcardDispatcher(mux, converted)
@@ -169,6 +182,7 @@ func registerWildcardRoute(
 			method:   "*",
 			pattern:  pattern,
 			embedded: embedded,
+			hosts:    hosts,
 			handler:  handler,
 		})
 		return
@@ -183,6 +197,7 @@ func registerWildcardRoute(
 			method:   strings.ToUpper(method),
 			pattern:  pattern,
 			embedded: embedded,
+			hosts:    hosts,
 			handler:  handler,
 		})
 	}
@@ -204,27 +219,65 @@ func existingWildcardDispatcher(mux *chi.Mux, pattern string) *wildcardDispatche
 
 func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	pathMatched := false
+	hostMatched := false
 	for _, embedded := range []bool{true, false} {
-		for _, exactMethod := range []bool{true, false} {
-			for _, route := range slices.Backward(d.routes) {
-				if route.embedded != embedded || !matchesWildcardRoute(route.pattern, request.URL.Path) {
-					continue
+		for _, hostRank := range []int{2, 1, 0} {
+			for _, exactMethod := range []bool{true, false} {
+				for _, route := range slices.Backward(d.routes) {
+					if route.embedded != embedded || !matchesRoutePath(route.pattern, request.URL.Path) {
+						continue
+					}
+					pathMatched = true
+					if routeHostRank(route.hosts, request.Host) != hostRank {
+						continue
+					}
+					hostMatched = true
+					if (exactMethod && route.method != request.Method) ||
+						(!exactMethod && route.method != "*") {
+						continue
+					}
+					route.handler.ServeHTTP(writer, request)
+					return
 				}
-				pathMatched = true
-				if (exactMethod && route.method != request.Method) ||
-					(!exactMethod && route.method != "*") {
-					continue
-				}
-				route.handler.ServeHTTP(writer, request)
-				return
 			}
 		}
 	}
-	if pathMatched {
+	if pathMatched && hostMatched {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	http.NotFound(writer, request)
+}
+
+func matchesRoutePath(pattern string, requestPath string) bool {
+	if !strings.ContainsRune(pattern, '*') {
+		return pattern == requestPath
+	}
+	return matchesWildcardRoute(pattern, requestPath)
+}
+
+func routeHostRank(patterns []string, requestHost string) int {
+	if len(patterns) == 0 {
+		return 0
+	}
+	host := requestHost
+	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
+		host = parsedHost
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	best := -1
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
+		if pattern == host {
+			return 2
+		}
+		if strings.ContainsAny(pattern, "*?[") {
+			if matched, _ := path.Match(pattern, host); matched {
+				best = 1
+			}
+		}
+	}
+	return best
 }
 
 func matchesWildcardRoute(pattern string, path string) bool {
@@ -311,7 +364,7 @@ func (b *Builder) Build() *chi.Mux {
 		logger.Infof("methods: %v, uris: %v", methods, uris)
 		// add route to mux
 		for _, uri := range uris {
-			if err = registerRoute(mux, methods, uri, handler); err != nil {
+			if err = registerRouteWithHosts(mux, methods, uri, r.Hosts, handler); err != nil {
 				logger.Warnf("convert uri fail: %w", err)
 				continue
 			}

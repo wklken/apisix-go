@@ -1324,8 +1324,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 34 manifests
-are task-review-approved and 27 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 35 manifests
+are task-review-approved and 26 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1354,7 +1354,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 14 remaining (19 at replan)
+### Medium — 13 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1385,7 +1385,15 @@ already-implemented branch.
   service failures. The Store resolver owns copied bbolt values and redacted
   diagnostics. Its post-integration package, Store, race, real-process,
   pinned-source, corpus, scoped lint, build, and diff gates pass.
-- [ ] `datadog` — waits for the embedded-wildcard route prerequisite.
+- [x] `datadog` — all 13 pinned blocks are source-complete with real
+  plugin-metadata endpoint configuration, ordered/coalesced DogStatsD metrics,
+  exact optional upstream latency, tags, runtime metadata updates, and strict
+  zero-packet invalid-resource assertions after child shutdown. The shared
+  route prerequisite now preserves embedded-wildcard siblings and catch-all
+  precedence with method-isolated dispatch. Burst UDP assertion failures cannot
+  block fixture shutdown. Its post-integration package, route, logger-batch,
+  Store/config/server, race, real-process, pinned-source, corpus, repeated
+  metadata, scoped lint, build, and diff gates pass.
 - [x] `tcp-logger` — all 17 blocks are source-complete with exact plain/TLS
   delivery and retry behavior, metadata lifecycle, runtime service context,
   body capture, APISIX-compatible nested custom fields, and explicit-zero

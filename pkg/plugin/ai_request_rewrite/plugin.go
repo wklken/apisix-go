@@ -12,6 +12,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -23,6 +24,8 @@ type Plugin struct {
 	client    *http.Client
 	now       func() time.Time
 	gcpTokens gcpTokenApplier
+	warn      func(string)
+	logError  func(string)
 }
 
 type gcpTokenApplier interface {
@@ -232,6 +235,12 @@ func (p *Plugin) PostInit() error {
 	if p.gcpTokens == nil {
 		p.gcpTokens = ai_auth.NewGCPTokenSource()
 	}
+	if p.warn == nil {
+		p.warn = func(message string) { logger.Warn(message) }
+	}
+	if p.logError == nil {
+		p.logError = func(message string) { logger.Error(message) }
+	}
 	return nil
 }
 
@@ -243,6 +252,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if len(bytes.TrimSpace(body)) == 0 {
+			p.warn("missing request body")
 			base.WriteJSONMessage(w, http.StatusBadRequest, "missing request body")
 			return
 		}
@@ -317,6 +327,8 @@ func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error
 		return nil, fmt.Errorf("failed to read LLM response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		message := fmt.Sprintf("LLM service returned error status: %d", resp.StatusCode)
+		p.logError(message)
 		return nil, fmt.Errorf("LLM service returned error status: %d", resp.StatusCode)
 	}
 

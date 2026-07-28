@@ -15,7 +15,7 @@ func TestValidatedPluginMetadataCacheIsOwnedByStore(t *testing.T) {
 	first := &Store{validatedPluginMetadata: newValidatedPluginMetadataCache()}
 	second := &Store{validatedPluginMetadata: newValidatedPluginMetadataCache()}
 
-	first.validatedPluginMetadata.put("batch-requests", []byte(`{"max_body_size":128}`))
+	first.validatedPluginMetadata.publish("batch-requests", []byte(`{"max_body_size":128}`), 1)
 
 	if _, ok := second.validatedPluginMetadata.get("batch-requests"); ok {
 		t.Fatal("second Store observed first Store's validated metadata")
@@ -28,8 +28,8 @@ func TestValidatedPluginMetadataCacheIsOwnedByStore(t *testing.T) {
 
 func TestValidatedPluginMetadataCacheDeletionRestoresEmptyState(t *testing.T) {
 	cache := newValidatedPluginMetadataCache()
-	cache.put("batch-requests", []byte(`{"max_body_size":128}`))
-	cache.delete("batch-requests")
+	cache.publish("batch-requests", []byte(`{"max_body_size":128}`), 1)
+	cache.delete("batch-requests", 2)
 
 	if _, ok := cache.get("batch-requests"); ok {
 		t.Fatal("deleted metadata remains in last-good cache")
@@ -90,14 +90,93 @@ func TestValidatedPluginMetadataCacheConcurrentAccess(t *testing.T) {
 	for i := range 100 {
 		group.Go(func() {
 			id := strconv.Itoa(i % 4)
-			cache.put(id, []byte(strconv.Itoa(i)))
+			cache.publish(id, []byte(strconv.Itoa(i)), i)
 			_, _ = cache.get(id)
 			if i%3 == 0 {
-				cache.delete(id)
+				cache.delete(id, i)
 			}
 		})
 	}
 	group.Wait()
+}
+
+func TestGetValidatedPluginMetadataRejectsOutOfOrderPublication(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "metadata-order.db"), 0o600, nil)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	storage := &Store{
+		db:                      db,
+		validatedPluginMetadata: newValidatedPluginMetadataCache(),
+	}
+	storage.InitBuckets()
+
+	validate := func(metadata map[string]any) error {
+		value, _ := metadata["max_body_size"].(float64)
+		if value <= 0 {
+			return fmt.Errorf("max_body_size must be positive")
+		}
+		return nil
+	}
+
+	writePluginMetadataForTest(t, storage, []byte(`{"max_body_size":256}`))
+	oldValidationStarted := make(chan struct{})
+	resumeOldValidation := make(chan struct{})
+	oldDone := make(chan struct{})
+	var oldTarget struct {
+		MaxBodySize int `json:"max_body_size"`
+	}
+	var oldUsedLastGood bool
+	var oldErr error
+	go func() {
+		defer close(oldDone)
+		oldUsedLastGood, oldErr = storage.getValidatedPluginMetadata(
+			"batch-requests",
+			func(metadata map[string]any) error {
+				close(oldValidationStarted)
+				<-resumeOldValidation
+				return validate(metadata)
+			},
+			&oldTarget,
+		)
+	}()
+	<-oldValidationStarted
+
+	writePluginMetadataForTest(t, storage, []byte(`{"max_body_size":64}`))
+	var restrictiveTarget struct {
+		MaxBodySize int `json:"max_body_size"`
+	}
+	usedLastGood, err := storage.getValidatedPluginMetadata(
+		"batch-requests",
+		validate,
+		&restrictiveTarget,
+	)
+	if err != nil || usedLastGood || restrictiveTarget.MaxBodySize != 64 {
+		t.Fatalf("newer restrictive metadata = (%v, %v, %d), want (false, nil, 64)",
+			usedLastGood, err, restrictiveTarget.MaxBodySize)
+	}
+
+	close(resumeOldValidation)
+	<-oldDone
+	if oldErr != nil || oldUsedLastGood || oldTarget.MaxBodySize != 64 {
+		t.Fatalf("resumed old metadata = (%v, %v, %d), want current (false, nil, 64)",
+			oldUsedLastGood, oldErr, oldTarget.MaxBodySize)
+	}
+
+	writePluginMetadataForTest(t, storage, []byte(`{"max_body_size":0}`))
+	var fallbackTarget struct {
+		MaxBodySize int `json:"max_body_size"`
+	}
+	usedLastGood, err = storage.getValidatedPluginMetadata(
+		"batch-requests",
+		validate,
+		&fallbackTarget,
+	)
+	if err == nil || !usedLastGood || fallbackTarget.MaxBodySize != 64 {
+		t.Fatalf("invalid metadata fallback = (%v, %v, %d), want (true, error, 64)",
+			usedLastGood, err, fallbackTarget.MaxBodySize)
+	}
 }
 
 func writePluginMetadataForTest(t *testing.T, storage *Store, value []byte) {

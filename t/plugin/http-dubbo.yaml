@@ -27,7 +27,7 @@ cases:
         network_expect:
           - payload_base64: {equals: 2rvGAAAAAAAAAAABAAABICIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdFBvSm8iCiJMb3JnL2FwYWNoZS9kdWJiby9iYWNrZW5kL1BvSm87Igp7ImFCb29sZWFuIjp0cnVlLCJhQnl0ZSI6MSwiYURvdWJsZSI6MS4xLCJhRmxvYXQiOjEuMiwiYUludCI6MiwiYUxvbmciOjMsImFTaG9ydCI6NCwiYVN0cmluZyI6ImFhIiwiYWNoYXJhY3RlciI6ImEiLCJzdHJpbmdNYXAiOnsia2V5IjoidmFsdWUifSwic3RyaW5ncyI6WyJhYSIsImJiIl19Cnt9Cg==}
         network_respond:
-          - payload_base64: 2rvGFAAAAAAAAAABAAAAqTEKeyJhQm9vbGVhbiI6dHJ1ZSwiYUJ5dGUiOjEsImFEb3VibGUiOjEuMSwiYUZsb2F0IjoxLjIsImFJbnQiOjIsImFMb25nIjozLCJhU2hvcnQiOjQsImFTdHJpbmciOiJhYSIsImFjaGFyYWN0ZXIiOiJhIiwic3RyaW5nTWFwIjp7ImtleSI6InZhbHVlIn0sInN0cmluZ3MiOlsiYWEiLCJiYiJdfQo=
+          - payload_base64: 2rsGFAAAAAAAAAABAAAAqTEKeyJhQm9vbGVhbiI6dHJ1ZSwiYUJ5dGUiOjEsImFEb3VibGUiOjEuMSwiYUZsb2F0IjoxLjIsImFJbnQiOjIsImFMb25nIjozLCJhU2hvcnQiOjQsImFTdHJpbmciOiJhYSIsImFjaGFyYWN0ZXIiOiJhIiwic3RyaW5nTWFwIjp7ImtleSI6InZhbHVlIn0sInN0cmluZ3MiOlsiYWEiLCJiYiJdfQo=
     steps:
       - name: pojo-is-serialized-to-dubbo-and-returned
         input:
@@ -60,7 +60,7 @@ cases:
         network_expect:
           - payload_base64: {equals: 2rvGAAAAAAAAAAABAAABJCIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdFBvSm9zIgoiW0xvcmcvYXBhY2hlL2R1YmJvL2JhY2tlbmQvUG9KbzsiClt7ImFCb29sZWFuIjp0cnVlLCJhQnl0ZSI6MSwiYURvdWJsZSI6MS4xLCJhRmxvYXQiOjEuMiwiYUludCI6MiwiYUxvbmciOjMsImFTaG9ydCI6NCwiYVN0cmluZyI6ImFhIiwiYWNoYXJhY3RlciI6ImEiLCJzdHJpbmdNYXAiOnsia2V5IjoidmFsdWUifSwic3RyaW5ncyI6WyJhYSIsImJiIl19XQp7fQo=}
         network_respond:
-          - payload_base64: 2rvGFAAAAAAAAAABAAAAqzEKW3siYUJvb2xlYW4iOnRydWUsImFCeXRlIjoxLCJhRG91YmxlIjoxLjEsImFGbG9hdCI6MS4yLCJhSW50IjoyLCJhTG9uZyI6MywiYVNob3J0Ijo0LCJhU3RyaW5nIjoiYWEiLCJhY2hhcmFjdGVyIjoiYSIsInN0cmluZ01hcCI6eyJrZXkiOiJ2YWx1ZSJ9LCJzdHJpbmdzIjpbImFhIiwiYmIiXX1dCg==
+          - payload_base64: 2rsGFAAAAAAAAAABAAAAqzEKW3siYUJvb2xlYW4iOnRydWUsImFCeXRlIjoxLCJhRG91YmxlIjoxLjEsImFGbG9hdCI6MS4yLCJhSW50IjoyLCJhTG9uZyI6MywiYVNob3J0Ijo0LCJhU3RyaW5nIjoiYWEiLCJhY2hhcmFjdGVyIjoiYSIsInN0cmluZ01hcCI6eyJrZXkiOiJ2YWx1ZSJ9LCJzdHJpbmdzIjpbImFhIiwiYmIiXX1dCg==
     steps:
       - name: pojo-array-is-serialized-to-dubbo-and-returned
         input:
@@ -116,11 +116,11 @@ cases:
         network_expect:
           - payload_base64: {equals: 2rvGAAAAAAAAAAABAAAAWiIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdFZvaWQiCiIiCnt9Cg==}
         network_respond:
-          - payload_base64: 2rvGFAAAAAAAAAABAAAAAjIK
+          - payload_base64: 2rsGFAAAAAAAAAABAAAAAjIK
     steps:
       - name: void-response-is-returned-without-body
         input: {method: GET, path: /t}
-        output: {status: 200}
+        output: {status: 200, body: {equals: ''}}
 
   - name: upstream-failure-returns-internal-server-error
     source: {file: t/plugin/http-dubbo.t, tests: [5]}
@@ -143,7 +143,7 @@ cases:
         network_expect:
           - payload_base64: {equals: 2rvGAAAAAAAAAAABAAAAXSIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdEZhaWx1cmUiCiIiCnt9Cg==}
         network_respond:
-          - payload_base64: 2rvGFAAAAAAAAAABAAAAAjAK
+          - payload_base64: 2rsGFAAAAAAAAAABAAAAQTAKeyJAdHlwZSI6ImphdmEubGFuZy5SdW50aW1lRXhjZXB0aW9uIiwibWVzc2FnZSI6InRlc3RGYWlsdXJlIn0K
     steps:
       - name: upstream-failure-is-internal-server-error
         input: {method: GET, path: /t}

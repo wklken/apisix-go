@@ -131,7 +131,9 @@ func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Confi
 	result := serveDubboAttempt(r, target, cfg)
 	reportDubboOutcome(r, result)
 	if result.err != nil {
-		logger.Errorf("%s", result.err)
+		if result.logConnectFailure {
+			logger.Errorf("%s", result.err)
+		}
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
@@ -169,7 +171,9 @@ func ServeDubboWithRetries(
 	}
 
 	if result.err != nil {
-		logger.Errorf("%s", result.err)
+		if result.logConnectFailure {
+			logger.Errorf("%s", result.err)
+		}
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
@@ -177,10 +181,11 @@ func ServeDubboWithRetries(
 }
 
 type dubboAttemptResult struct {
-	status    int
-	body      string
-	err       error
-	retryable bool
+	status            int
+	body              string
+	err               error
+	retryable         bool
+	logConnectFailure bool
 }
 
 func reportDubboOutcome(r *http.Request, result dubboAttemptResult) {
@@ -209,9 +214,15 @@ func serveDubboAttempt(r *http.Request, target string, cfg Config) dubboAttemptR
 		target,
 	)
 	if err != nil {
+		logConnectFailure := r.Context().Err() == nil
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			logConnectFailure = false
+		}
 		return dubboAttemptResult{
-			err:       fmt.Errorf("failed to connect to upstream: %w", err),
-			retryable: true,
+			err:               fmt.Errorf("failed to connect to upstream: %w", err),
+			retryable:         true,
+			logConnectFailure: logConnectFailure,
 		}
 	}
 	defer func() { _ = conn.Close() }()

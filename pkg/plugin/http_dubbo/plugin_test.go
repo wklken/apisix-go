@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -189,8 +191,29 @@ func TestServeDubboReturnsApplicationExceptionPayload(t *testing.T) {
 	}
 }
 
+func TestDubboFrameUsesFastJSONResponseHeader(t *testing.T) {
+	payload := "1\nvalue\n"
+	frame := dubboFrame(payload)
+
+	if !bytes.Equal(frame[:4], []byte{0xda, 0xbb, 0x06, 20}) {
+		t.Fatalf("header first bytes = % x, want Dubbo FastJSON response header", frame[:4])
+	}
+	if got := binary.BigEndian.Uint64(frame[4:12]); got != 1 {
+		t.Fatalf("request id = %d, want 1", got)
+	}
+	if got := binary.BigEndian.Uint32(frame[12:16]); got != uint32(len(payload)) {
+		t.Fatalf("payload length = %d, want %d", got, len(payload))
+	}
+	if got := string(frame[16:]); got != payload {
+		t.Fatalf("payload = %q, want %q", got, payload)
+	}
+}
+
 func TestServeDubboReturnsInternalServerErrorForUnexpectedResponseStatus(t *testing.T) {
-	upstream, _ := startDubboTestServer(t, dubboFrame("0\n"))
+	upstream, _ := startDubboTestServer(
+		t,
+		dubboFrame("0\n{\"@type\":\"java.lang.RuntimeException\",\"message\":\"testFailure\"}\n"),
+	)
 	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
 	rr := httptest.NewRecorder()
@@ -342,6 +365,81 @@ func TestServeDubboReturnsBadGatewayOnOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestServeDubboLogsOnlyConnectionFailures(t *testing.T) {
+	if logCase := os.Getenv("APISIX_HTTP_DUBBO_LOG_CASE"); logCase != "" {
+		runDubboLogCase(t, logCase)
+		return
+	}
+
+	tests := []struct {
+		name      string
+		logCase   string
+		message   string
+		wantMatch bool
+	}{
+		{name: "dial failure", logCase: "dial", message: "failed to connect to upstream", wantMatch: true},
+		{name: "request construction", logCase: "construction", message: "failed to build Dubbo request"},
+		{name: "malformed response", logCase: "malformed", message: "failed to read Dubbo response"},
+		{name: "read timeout", logCase: "timeout", message: "failed to read Dubbo response"},
+		{name: "cancellation", logCase: "cancellation", message: "failed to connect to upstream"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=^TestServeDubboLogsOnlyConnectionFailures$")
+			command.Env = append(os.Environ(), "APISIX_HTTP_DUBBO_LOG_CASE="+test.logCase)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("run log helper: %v\n%s", err, output)
+			}
+			if got := strings.Contains(string(output), test.message); got != test.wantMatch {
+				t.Fatalf("log contains %q = %t, want %t\n%s", test.message, got, test.wantMatch, output)
+			}
+		})
+	}
+}
+
+func runDubboLogCase(t *testing.T, logCase string) {
+	t.Helper()
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello", ReadTimeout: 5})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	target := ""
+
+	switch logCase {
+	case "dial":
+		target = closedTCPAddress(t)
+	case "construction":
+		req = httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`not-json`))
+		target = closedTCPAddress(t)
+	case "malformed":
+		target, _ = startDubboTestServer(t, []byte("not-a-dubbo-frame"))
+	case "timeout":
+		target, _ = startSilentDubboServer(t)
+	case "cancellation":
+		ctx, cancel := context.WithCancel(req.Context())
+		cancel()
+		req = req.WithContext(ctx)
+		target, _ = startSilentDubboServer(t)
+	default:
+		t.Fatalf("unknown log case %q", logCase)
+	}
+
+	ServeDubbo(httptest.NewRecorder(), req, target, p.config)
+}
+
+func closedTCPAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for closed address: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	return address
+}
+
 func startDubboTestServer(t *testing.T, response []byte) (string, <-chan []byte) {
 	t.Helper()
 
@@ -420,7 +518,7 @@ func readDubboFrameForTest(conn net.Conn) []byte {
 
 func dubboFrame(payload string) []byte {
 	frame := make([]byte, 16+len(payload))
-	frame[0], frame[1] = 0xda, 0xbb
+	frame[0], frame[1], frame[2] = 0xda, 0xbb, 0x06
 	frame[3] = 20
 	binary.BigEndian.PutUint64(frame[4:12], 1)
 	binary.BigEndian.PutUint32(frame[12:16], uint32(len(payload)))

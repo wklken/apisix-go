@@ -918,6 +918,29 @@ reselection, and `traffic-split5.t` requires body-preserving `post_arg_*`
 resolution. These are cross-cutting proxy-health behaviors, not a safe passive
 health or manifest-only substitution. `batch-requests` remains Medium.
 
+The next routing and filesystem audits fixed their exact acceptance surfaces.
+`batch-requests` has 46 blocks across `batch-requests.t`,
+`batch-requests2.t`, and `batch-requests-grpc.t`; its lane must preserve
+strict pipeline validation, body-file and metadata limits, custom public URI,
+partial-timeout response cardinality, and a real standalone `protos` plus
+grpc-transcode/h2c request mixed with HTTP. A fake HTTP substitute for the five
+gRPC blocks is not equivalent. `file-logger` has 44 blocks across
+`file-logger-reopen.t`, `file-logger.t`, and `file-logger2.t`; it owns cached
+file descriptors plus live `SIGUSR1` reopen, nested and extra log formats,
+pre-DNS node fields, metadata precedence, and request/response body behavior.
+Its filesystem-lifecycle owner must land before `log-rotate`.
+
+The `log-rotate` audit confirms 17 blocks across `log-rotate.t`,
+`log-rotate2.t`, and `log-rotate3.t`. It remains Medium but requires a
+deduplicated background timer, hot-disable lifecycle, automatic flush/reopen
+after partial missing files, wall-clock alignment, compression-content and
+retention assertions, explicit-zero configuration, custom runtime log paths,
+and disabled-access-log behavior. Request-triggered rotation, child restart,
+manual reopen signals inside a rotate case, precreated archives, or assertions
+limited to the current file are not equivalent. Its bounded owner starts only
+after the reviewed File Logger writer registry and adds workdir-confined
+archive glob/count/content/signature assertions as needed.
+
 The `wolf-rbac` audit corrected its source surface from 42 blocks in one file
 to 44 blocks across two files: all of `wolf-rbac.t` plus Wolf-specific
 `security-warning2.t` tests 19–20. The eight Wolf public-endpoint dispatch cases

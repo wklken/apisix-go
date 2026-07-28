@@ -163,19 +163,25 @@ func encryptPath(current any, segments []string, keyring []string) error {
 			}
 			return nil
 		}
-		child, ok := value[segment]
-		if !ok {
+		keys := matchingMapKeys(value, segment)
+		if len(keys) == 0 {
 			return nil
 		}
-		if len(segments) == 1 {
-			encrypted, err := encryptValue(child, keyring)
-			if err != nil {
+		for _, key := range keys {
+			child := value[key]
+			if len(segments) == 1 {
+				encrypted, err := encryptValue(child, keyring)
+				if err != nil {
+					return err
+				}
+				value[key] = encrypted
+				continue
+			}
+			if err := encryptPath(child, segments[1:], keyring); err != nil {
 				return err
 			}
-			value[segment] = encrypted
-			return nil
 		}
-		return encryptPath(child, segments[1:], keyring)
+		return nil
 	case []any:
 		if segment != "*" {
 			return nil
@@ -265,15 +271,18 @@ func decryptPath(current any, segments []string, resolver Resolver) {
 			}
 			return
 		}
-		child, ok := value[segment]
-		if !ok {
+		keys := matchingMapKeys(value, segment)
+		if len(keys) == 0 {
 			return
 		}
-		if len(segments) == 1 {
-			value[segment] = decryptValue(child, resolver)
-			return
+		for _, key := range keys {
+			child := value[key]
+			if len(segments) == 1 {
+				value[key] = decryptValue(child, resolver)
+				continue
+			}
+			decryptPath(child, segments[1:], resolver)
 		}
-		decryptPath(child, segments[1:], resolver)
 	case []any:
 		if segment != "*" {
 			return
@@ -282,6 +291,16 @@ func decryptPath(current any, segments []string, resolver Resolver) {
 			decryptPath(child, segments[1:], resolver)
 		}
 	}
+}
+
+func matchingMapKeys(value map[string]any, segment string) []string {
+	keys := make([]string, 0, 1)
+	for key := range value {
+		if strings.EqualFold(key, segment) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func decryptValue(value any, resolver Resolver) any {

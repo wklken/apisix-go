@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/samber/lo"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -52,7 +53,7 @@ const schema = `
     },
     "fail_mode": {
       "type": "string",
-      "enum": ["skip", "error"],
+      "enum": ["skip", "warn", "error"],
       "default": "skip"
     }
   }
@@ -85,7 +86,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.FailMode == "" {
 		p.config.FailMode = "skip"
 	}
-	if p.config.FailMode != "skip" && p.config.FailMode != "error" {
+	if p.config.FailMode != "skip" && p.config.FailMode != "warn" && p.config.FailMode != "error" {
 		return fmt.Errorf("invalid fail_mode: %s", p.config.FailMode)
 	}
 
@@ -115,22 +116,25 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		var bodyTab map[string]any
 		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			if p.config.FailMode == "skip" && !isJSONRequest(r) {
-				logger.Info("ai-prompt-guard skipped")
-				next.ServeHTTP(w, r)
-				return
-			}
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			p.handleUnsupported(
+				w,
+				r,
+				next,
+				"request body is not valid JSON: "+err.Error(),
+				err.Error(),
+			)
 			return
 		}
 
 		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 		if err != nil || protocol == ai_protocols.Passthrough {
-			if p.config.FailMode == "error" {
-				base.WriteJSONMessage(w, http.StatusBadRequest, "Request format not recognized by ai-prompt-guard")
-				return
-			}
-			next.ServeHTTP(w, r)
+			p.handleUnsupported(
+				w,
+				r,
+				next,
+				"request body does not match any supported AI protocol",
+				"Request format not recognized by ai-prompt-guard",
+			)
 			return
 		}
 
@@ -161,9 +165,39 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func isJSONRequest(r *http.Request) bool {
-	contentType := r.Header.Get("Content-Type")
-	return contentType == "" || strings.HasPrefix(strings.ToLower(contentType), "application/json")
+func (p *Plugin) handleUnsupported(
+	w http.ResponseWriter,
+	r *http.Request,
+	next http.Handler,
+	reason string,
+	errorMessage string,
+) {
+	if p.config.FailMode == "error" {
+		base.WriteJSONMessage(w, http.StatusBadRequest, errorMessage)
+		return
+	}
+
+	message := name + " skipped: " + sanitizeUnsupportedReason(reason)
+	if p.config.FailMode == "warn" {
+		logger.Warn(message)
+	} else {
+		logger.Info(message)
+	}
+	next.ServeHTTP(w, r)
+}
+
+func sanitizeUnsupportedReason(reason string) string {
+	const maxReasonLength = 256
+	safe := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, reason)
+	if len(safe) > maxReasonLength {
+		safe = safe[:maxReasonLength]
+	}
+	return safe
 }
 
 func extractMessages(protocol ai_protocols.Protocol, body map[string]any) []ai_protocols.Message {

@@ -251,18 +251,51 @@ func TestHandlerDeniesStructuredResponsesInputText(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsInvalidJSONBody(t *testing.T) {
-	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}})
+func TestHandlerAppliesFailModeToInvalidJSONBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		failMode   string
+		wantStatus int
+		wantNext   bool
+	}{
+		{name: "default skip", wantStatus: http.StatusNoContent, wantNext: true},
+		{name: "warn", failMode: "warn", wantStatus: http.StatusNoContent, wantNext: true},
+		{name: "error", failMode: "error", wantStatus: http.StatusBadRequest},
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`not-json`))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}, FailMode: tt.failMode})
+			req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`not-json`))
+			rr := httptest.NewRecorder()
+			nextCalled := false
+
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("response code = %d, want %d", rr.Code, tt.wantStatus)
+			}
+			if nextCalled != tt.wantNext {
+				t.Fatalf("next called = %v, want %v", nextCalled, tt.wantNext)
+			}
+		})
+	}
+}
+
+func TestHandlerLeavesUnsupportedJSONUncheckedInWarnMode(t *testing.T) {
+	p := newTestPlugin(t, Config{DenyPatterns: []string{`secret`}, FailMode: "warn"})
+	req := httptest.NewRequest(http.MethodPost, "/anything", strings.NewReader(`{"foo":"bar"}`))
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler was called for invalid JSON")
+		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("response code = %d, want 400", rr.Code)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want 204", rr.Code)
 	}
 }
 

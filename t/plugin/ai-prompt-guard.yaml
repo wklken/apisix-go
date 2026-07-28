@@ -275,67 +275,133 @@ cases:
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"badword"}]}' }
         output: {status: 400, body: {equals: '{"message":"Request contains prohibited content"}'}}
 
-  - name: unrecognized-json-defaults-to-skip
+  - name: unrecognized-json-fail-modes
     source:
-      tests: [30, 31]
-    config:
-      routes:
-        - id: ai-prompt-guard-skip-json
-          uri: /hello
-          plugins:
-            ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
-          upstream: *primary_upstream
-    fixtures:
-      - <<: *primary_fixture
-        expect:
-          - method: POST
-            path: {equals: /hello}
-            body: {matches: '"foo":"badword"'}
-    steps:
-      - name: unrecognized-json-reaches-upstream
-        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"badword"}' }
-        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      tests: [30, 31, 32, 33]
+    variants:
+      - name: default-skip-reaches-upstream
+        config:
+          routes:
+            - id: ai-prompt-guard-skip-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                body: {matches: '"foo":"badword"'}
+        steps:
+          - name: unrecognized-json-reaches-upstream
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"badword"}' }
+            output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}}
+      - name: warn-reaches-upstream-and-logs-warning
+        config:
+          routes:
+            - id: ai-prompt-guard-warn-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: warn}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                body: {matches: '"foo":"badword"'}
+        steps:
+          - name: unrecognized-json-reaches-upstream-with-warning
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"badword"}' }
+            output:
+              status: 200
+              headers: {X-Fixture: {equals: primary}}
+              body: {equals: upstream ok}
+              logs: {matches: '"level":"warn".*"msg":"ai-prompt-guard skipped: request body does not match any supported AI protocol"'}
+      - name: error-rejects-request
+        config:
+          routes:
+            - id: ai-prompt-guard-error-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: error}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect_requests: 0
+            expect: []
+        steps:
+          - name: unrecognized-json-is-rejected
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"bar"}' }
+            output: {status: 400, body: {equals: '{"message":"Request format not recognized by ai-prompt-guard"}'}}
 
-  - name: unrecognized-json-error-mode
-    source:
-      tests: [32, 33]
-    config:
-      routes:
-        - id: ai-prompt-guard-error-json
-          uri: /hello
-          plugins:
-            ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: error}
-          upstream: *primary_upstream
-    fixtures:
-      - <<: *primary_fixture
-        expect_requests: 0
-        expect: []
-    steps:
-      - name: unrecognized-json-is-rejected
-        input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"foo":"bar"}' }
-        output: {status: 400, body: {equals: '{"message":"Request format not recognized by ai-prompt-guard"}'}}
-
-  - name: non-json-defaults-to-skip
+  - name: invalid-json-fail-modes
     source:
       tests: [34, 35]
-    config:
-      routes:
-        - id: ai-prompt-guard-skip-non-json
-          uri: /hello
-          plugins:
-            ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
-          upstream: *primary_upstream
-    fixtures:
-      - <<: *primary_fixture
-        expect:
-          - method: POST
-            path: {equals: /hello}
-            headers: {Content-Type: {matches: multipart/form-data}}
-            body: {equals: name=alice&action=upload}
-    steps:
-      - name: non-json-body-reaches-upstream
-        input: {method: POST, path: /hello, headers: {Content-Type: multipart/form-data}, body: name=alice&action=upload}
-        output: {status: 200, headers: {X-Fixture: {equals: primary}}, body: {equals: upstream ok}, logs: {matches: 'ai-prompt-guard skipped'}}
+    variants:
+      - name: default-skip-reaches-upstream
+        config:
+          routes:
+            - id: ai-prompt-guard-skip-invalid-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword]}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                headers: {Content-Type: {matches: multipart/form-data}}
+                body: {equals: name=alice&action=upload}
+        steps:
+          - name: invalid-json-reaches-upstream
+            input: {method: POST, path: /hello, headers: {Content-Type: multipart/form-data}, body: name=alice&action=upload}
+            output:
+              status: 200
+              headers: {X-Fixture: {equals: primary}}
+              body: {equals: upstream ok}
+              logs: {matches: '"level":"info".*"msg":"ai-prompt-guard skipped: request body is not valid JSON:'}
+      - name: warn-reaches-upstream-and-logs-warning
+        config:
+          routes:
+            - id: ai-prompt-guard-warn-invalid-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: warn}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect:
+              - method: POST
+                path: {equals: /hello}
+                headers: {Content-Type: {equals: application/json}}
+                body: {equals: name=alice&action=upload}
+        steps:
+          - name: malformed-json-reaches-upstream-with-warning
+            input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: name=alice&action=upload}
+            output:
+              status: 200
+              headers: {X-Fixture: {equals: primary}}
+              body: {equals: upstream ok}
+              logs: {matches: '"level":"warn".*"msg":"ai-prompt-guard skipped: request body is not valid JSON:'}
+      - name: error-rejects-request
+        config:
+          routes:
+            - id: ai-prompt-guard-error-invalid-json
+              uri: /hello
+              plugins:
+                ai-prompt-guard: {match_all_roles: true, deny_patterns: [badword], fail_mode: error}
+              upstream: *primary_upstream
+        fixtures:
+          - <<: *primary_fixture
+            expect_requests: 0
+            expect: []
+        steps:
+          - name: malformed-json-is-rejected-regardless-of-content-type
+            input: {method: POST, path: /hello, headers: {Content-Type: text/plain}, body: name=alice&action=upload}
+            output: {status: 400, body: {matches: '^\{"message":"json: invalid character'}}
 
   - name: structured-history-content
     source:

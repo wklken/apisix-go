@@ -1658,8 +1658,8 @@ func TestNewAIAWSContentModerationUsesOfficialPluginName(t *testing.T) {
 	if got := p.GetName(); got != "ai-aws-content-moderation" {
 		t.Fatalf("plugin name = %q, want ai-aws-content-moderation", got)
 	}
-	if got := p.GetPriority(); got != 1050 {
-		t.Fatalf("priority = %d, want 1050", got)
+	if got := p.GetPriority(); got != 1031 {
+		t.Fatalf("priority = %d, want 1031", got)
 	}
 	config := map[string]any{
 		"comprehend": map[string]any{

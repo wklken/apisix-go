@@ -425,6 +425,7 @@ cases:
 
   - name: unresolved-environment-reference-fails-closed
     source: {file: t/plugin/key-auth.t, tests: [33, 34]}
+    environment_unset: [KEYAUTH_UNRESOLVED_SECRET]
     config:
       consumers:
         - username: jack

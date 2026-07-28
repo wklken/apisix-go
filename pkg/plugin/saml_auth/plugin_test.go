@@ -3,9 +3,11 @@ package saml_auth
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"encoding/xml"
 	"errors"
@@ -121,6 +123,41 @@ func TestExistingSessionPassesRequestAndSetsUserInfoHeader(t *testing.T) {
 	}
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", rr.Code)
+	}
+}
+
+func TestSessionFromDifferentIDPEntityIsRejected(t *testing.T) {
+	firstConfig := testConfig(t)
+	firstConfig.IDPEntityID = "https://idp.example.com/realms/first"
+	first := newTestPlugin(t, firstConfig)
+	cookie, err := first.sessionCookie(externalUser{NameID: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("sessionCookie() error = %v", err)
+	}
+
+	secondConfig := firstConfig
+	secondConfig.IDPEntityID = "https://idp.example.com/realms/second"
+	second := newTestPlugin(t, secondConfig)
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	second.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("session from the previous IdP entity reached the upstream")
+	})).ServeHTTP(response, request)
+
+	if response.Code != http.StatusFound {
+		t.Fatalf("status = %d, want authentication redirect 302", response.Code)
+	}
+}
+
+func TestOmittedIDPEntityKeepsLegacySessionFingerprint(t *testing.T) {
+	cfg := testConfig(t)
+	p := newTestPlugin(t, cfg)
+	legacy := sha256.Sum256([]byte(cfg.SPIssuer + "|" + cfg.IDPURI + "|" + cfg.LoginCallbackURI))
+	want := hex.EncodeToString(legacy[:])[:16]
+
+	if got := p.sessionFingerprint(); got != want {
+		t.Fatalf("session fingerprint = %q, want legacy value %q", got, want)
 	}
 }
 
@@ -406,6 +443,31 @@ func TestIDPEntityIDDefaultsToEndpointForCompatibility(t *testing.T) {
 	cfg := testConfig(t)
 	if got := cfg.idpEntityID(); got != cfg.IDPURI {
 		t.Fatalf("idpEntityID() = %q, want compatibility endpoint %q", got, cfg.IDPURI)
+	}
+}
+
+func TestSignedRedirectPreservesEndpointQueryAndCanonicalSignature(t *testing.T) {
+	cfg := testConfig(t)
+	signer := testSAMLSigner(t, cfg.SPIssuer, cfg.idpEntityID(), cfg.SPCert, cfg.SPPrivateKey)
+	redirect, err := signedSAMLRedirectURL(
+		cfg.IDPURI+"?tenant=a",
+		"SAMLRequest",
+		[]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"/>`),
+		"original",
+		signer.Key,
+	)
+	if err != nil {
+		t.Fatalf("signedSAMLRedirectURL() error = %v", err)
+	}
+	if got := redirect.Query().Get("tenant"); got != "a" {
+		t.Fatalf("tenant query = %q, want preserved value a", got)
+	}
+	if err := verifySAMLRedirectSignature(redirect.RawQuery, "SAMLRequest", cfg.SPCert); err != nil {
+		t.Fatalf("verify redirect signature: %v", err)
+	}
+	tampered := strings.Replace(redirect.RawQuery, "RelayState=original", "RelayState=tampered", 1)
+	if err := verifySAMLRedirectSignature(tampered, "SAMLRequest", cfg.SPCert); err == nil {
+		t.Fatal("tampered RelayState passed Redirect signature verification")
 	}
 }
 

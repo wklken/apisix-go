@@ -131,7 +131,7 @@ func registerRouteWithHosts(
 	if err != nil {
 		return err
 	}
-	if strings.ContainsRune(uri, '*') || len(hosts) > 0 {
+	if strings.ContainsRune(uri, '*') || len(hosts) > 0 || !strings.ContainsRune(uri, ':') {
 		registerWildcardRoute(mux, methods, converted, uri, hosts, handler)
 		return nil
 	}

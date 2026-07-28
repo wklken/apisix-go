@@ -746,7 +746,11 @@ func (p *Plugin) verifySignedValue(signed string) ([]byte, bool) {
 }
 
 func (p *Plugin) sessionFingerprint() string {
-	sum := sha256.Sum256([]byte(p.config.SPIssuer + "|" + p.config.IDPURI + "|" + p.config.LoginCallbackURI))
+	identity := p.config.SPIssuer + "|" + p.config.IDPURI + "|" + p.config.LoginCallbackURI
+	if p.config.IDPEntityID != "" {
+		identity += "|" + p.config.idpEntityID()
+	}
+	sum := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(sum[:])[:16]
 }
 
@@ -939,7 +943,10 @@ func signedSAMLRedirectURL(
 	if err != nil {
 		return nil, err
 	}
-	redirect.RawQuery = signedQuery + "&Signature=" +
+	if redirect.RawQuery != "" {
+		redirect.RawQuery += "&"
+	}
+	redirect.RawQuery += signedQuery + "&Signature=" +
 		url.QueryEscape(base64.StdEncoding.EncodeToString(signature))
 	return redirect, nil
 }

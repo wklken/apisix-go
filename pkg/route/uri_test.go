@@ -392,6 +392,54 @@ func TestRouteDispatcherSelectsSamePatternByHost(t *testing.T) {
 	}
 }
 
+func TestRouteDispatcherKeepsExactHostFallbackInBothRegistrationOrders(t *testing.T) {
+	t.Parallel()
+
+	for _, hostSpecificFirst := range []bool{true, false} {
+		name := "hostless-first"
+		if hostSpecificFirst {
+			name = "host-specific-first"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			router := chi.NewRouter()
+			register := func(hosts []string, status int) {
+				t.Helper()
+				handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					writer.WriteHeader(status)
+				})
+				if err := registerRouteWithHosts(router, nil, "/login/callback", hosts, handler); err != nil {
+					t.Fatalf("register hosts %v: %v", hosts, err)
+				}
+			}
+			if hostSpecificFirst {
+				register([]string{"sp1.local"}, http.StatusCreated)
+				register(nil, http.StatusAccepted)
+			} else {
+				register(nil, http.StatusAccepted)
+				register([]string{"sp1.local"}, http.StatusCreated)
+			}
+
+			for _, assertion := range []struct {
+				host string
+				want int
+			}{
+				{host: "sp1.local", want: http.StatusCreated},
+				{host: "unrelated.local", want: http.StatusAccepted},
+			} {
+				response := httptest.NewRecorder()
+				request := httptest.NewRequest(http.MethodGet, "/login/callback", nil)
+				request.Host = assertion.host
+				router.ServeHTTP(response, request)
+				if response.Code != assertion.want {
+					t.Fatalf("Host %s status = %d, want %d", assertion.host, response.Code, assertion.want)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 	t.Parallel()
 

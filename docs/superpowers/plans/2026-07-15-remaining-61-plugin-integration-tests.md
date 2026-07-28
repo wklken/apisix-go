@@ -1172,9 +1172,9 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 15 remaining (28 listed)
+### Medium — 10 remaining (28 listed)
 
-- [ ] `datadog`
+- [x] `datadog`
 - [x] `basic-auth`
 - [x] `hmac-auth`
 - [x] `forward-auth`
@@ -1187,7 +1187,7 @@ Execution waves:
 - [x] `proxy-mirror`
 - [ ] `workflow`
 - [x] `batch-requests`
-- [ ] `http-logger`
+- [x] `http-logger`
 - [ ] `google-cloud-logging`
 - [ ] `loggly`
 - [ ] `elasticsearch-logger`
@@ -1238,7 +1238,7 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 17 remaining (18 listed)
+### Hard — 14 remaining (18 listed)
 
 - [x] `key-auth`
 - [ ] `jwt-auth`
@@ -1354,7 +1354,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 12 remaining (19 at replan)
+### Medium — 11 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1408,7 +1408,14 @@ already-implemented branch.
   package, logger-batch, Store/config/server, race, real-process,
   pinned-source, corpus, Datadog shared-harness regression, scoped lint, build,
   and diff gates pass.
-- [ ] `http-logger` — owns the serialized `logger_batch` ordering contract.
+- [x] `http-logger` — all 114 pinned blocks across seven source files are
+  source-complete with real standalone sinks, upstreams, requests, exact
+  payloads, body truncation/compression, TLS/auth, route/global/consumer
+  metadata, nested formats and final status, batching/retry, unchanged-
+  processor stale/capacity lifecycle, and explicit invalid configurations.
+  The approved range also adds route-label context and deterministic repeated
+  fixture bodies. Its post-integration package/resource/route, race,
+  real-process, pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `loggly`
 - [ ] `elasticsearch-logger`
 - [ ] `google-cloud-logging`

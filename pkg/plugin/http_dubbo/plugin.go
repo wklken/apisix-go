@@ -131,7 +131,7 @@ func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Confi
 	result := serveDubboAttempt(r, target, cfg)
 	reportDubboOutcome(r, result)
 	if result.err != nil {
-		if result.logConnectFailure {
+		if result.logConnectFailure && r.Context().Err() == nil {
 			logger.Errorf("%s", result.err)
 		}
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
@@ -157,7 +157,7 @@ func ServeDubboWithRetries(
 	for attempt := 0; attempt < attempts; attempt++ {
 		target, err := nextTarget()
 		if err != nil {
-			result.err = fmt.Errorf("failed to select upstream target: %w", err)
+			result = dubboAttemptResult{err: fmt.Errorf("failed to select upstream target: %w", err)}
 			break
 		}
 		result = serveDubboAttempt(r, target, cfg)
@@ -171,7 +171,7 @@ func ServeDubboWithRetries(
 	}
 
 	if result.err != nil {
-		if result.logConnectFailure {
+		if result.logConnectFailure && r.Context().Err() == nil {
 			logger.Errorf("%s", result.err)
 		}
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())

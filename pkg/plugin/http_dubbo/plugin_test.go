@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -382,6 +384,16 @@ func TestServeDubboLogsOnlyConnectionFailures(t *testing.T) {
 		{name: "malformed response", logCase: "malformed", message: "failed to read Dubbo response"},
 		{name: "read timeout", logCase: "timeout", message: "failed to read Dubbo response"},
 		{name: "cancellation", logCase: "cancellation", message: "failed to connect to upstream"},
+		{
+			name:    "selection error after dial failure",
+			logCase: "selection-error-after-dial",
+			message: "failed to select upstream target",
+		},
+		{
+			name:    "cancellation after dial marker",
+			logCase: "cancellation-after-marker",
+			message: "failed to connect to upstream",
+		},
 	}
 
 	for _, test := range tests {
@@ -420,11 +432,40 @@ func runDubboLogCase(t *testing.T, logCase string) {
 		cancel()
 		req = req.WithContext(ctx)
 		target, _ = startSilentDubboServer(t)
+	case "selection-error-after-dial":
+		attempt := 0
+		ServeDubboWithRetries(httptest.NewRecorder(), req, func() (string, error) {
+			attempt++
+			if attempt == 1 {
+				return closedTCPAddress(t), nil
+			}
+			return "", errors.New("selector failed")
+		}, p.config, 1)
+		return
+	case "cancellation-after-marker":
+		ctx, cancel := context.WithCancel(req.Context())
+		req = req.WithContext(ctx)
+		req = pxy.WithHealthReporter(req, cancelingHealthReporter{cancel: cancel})
+		pxy.SetSelectedTarget(req, "dubbo://closed")
+		ServeDubboWithRetries(httptest.NewRecorder(), req, func() (string, error) {
+			return closedTCPAddress(t), nil
+		}, p.config, 1)
+		return
 	default:
 		t.Fatalf("unknown log case %q", logCase)
 	}
 
 	ServeDubbo(httptest.NewRecorder(), req, target, p.config)
+}
+
+type cancelingHealthReporter struct {
+	cancel context.CancelFunc
+}
+
+func (r cancelingHealthReporter) ReportHTTP(string, int) {}
+
+func (r cancelingHealthReporter) ReportTCPFailure(string, bool) {
+	r.cancel()
 }
 
 func closedTCPAddress(t *testing.T) string {

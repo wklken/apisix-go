@@ -862,7 +862,15 @@ The original checked state was not supported by the manifests. This audit compar
 
 - [ ] `ai-aws-content-moderation` — one request per source omits real SigV4 assertions, encrypted credentials, threshold/category decisions, endpoint/TLS, replay, and rejection behavior.
 - [x] `ai-prompt-decorator` — all 17 pinned blocks map exactly once to real Chat Completions and Responses API requests. Standalone cases assert prepend, append, both, request-to-request isolation, invalid empty configuration, instructions creation/prepend, string/array input append, combined transformations, and the Chat regression with semantic upstream JSON. The shared `json_equals` matcher preserves arbitrary numeric precision, defines mathematical number equality, preserves array order, ignores object-key order, rejects malformed JSON and non-body scopes, and expands iteration placeholders. Package, matcher/corpus, full tests, real-process, scoped lint/build, post-integration, and task-review gates pass.
-- [ ] `ai-prompt-guard` — one allow/deny probe replaces pattern/case/role combinations, custom rejection, malformed requests, and streaming behavior.
+- [x] `ai-prompt-guard` — all 44 pinned blocks map exactly once to 18 real
+  standalone cases/variants covering schema and invalid regex, allow/deny
+  combinations, case sensitivity, roles/history, Chat/Responses content
+  shapes, custom rejection, malformed/unsupported bodies, and pass-through
+  behavior with exact zero-upstream assertions. `fail_mode` supports
+  source-compatible `skip`, `warn`, and `error` for every decode/protocol
+  failure, and structured Responses input text is guarded. Package, race,
+  exact real-process, corpus, scoped lint, build, post-integration, and
+  task-review gates pass.
 - [ ] `ai-rag` — one generic provider request omits embedding/retrieval exchanges, constructed context/prompt, headers, failures, and streaming.
 - [ ] `ai-rate-limiting` — one quota probe per source omits token estimation, windows/counters, consumer isolation, expressions, headers, and rejection transitions.
 - [ ] `ai-request-rewrite` — one rewritten request per source omits message/prompt variants, variables, provider formats, body preservation, malformed JSON, and schema rejection.
@@ -881,10 +889,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 25 task-review-approved and 36 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 26 task-review-approved and 35 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 36 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 35 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -1096,7 +1104,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 18 remaining (28 listed)
+### Medium — 17 remaining (28 listed)
 
 - [ ] `datadog`
 - [x] `basic-auth`
@@ -1123,7 +1131,7 @@ Execution waves:
 - [ ] `log-rotate`
 - [ ] `skywalking`
 - [ ] `ai-aws-content-moderation`
-- [ ] `ai-prompt-guard`
+- [x] `ai-prompt-guard`
 - [ ] `ai-rag`
 - [ ] `ai-request-rewrite`
 
@@ -1245,8 +1253,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 25 manifests
-are task-review-approved and 36 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 26 manifests
+are task-review-approved and 35 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1255,9 +1263,9 @@ ordering. They classify the intrinsic implementation and review risk exposed by
 the pinned source cases, not merely the number of commands left to land an
 already-implemented branch.
 
-### Easy — 4 manifests
+### Easy — 3 remaining (4 at replan)
 
-- [ ] `ai-prompt-guard` — 44 blocks; existing HTTP/JSON fixtures and package
+- [x] `ai-prompt-guard` — 44 blocks; existing HTTP/JSON fixtures and package
   behavior cover the needed schema, pattern, role, malformed-body, and
   pass-through cases.
 - [ ] `ai-rag` — 17 blocks; two deterministic HTTP exchanges, auth/header

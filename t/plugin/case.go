@@ -132,8 +132,8 @@ type FixtureCountAssertion struct {
 }
 
 type GRPCMessage struct {
-	MessageBase64 string `yaml:"message_base64"`
-	Status        string `yaml:"status,omitempty"`
+	MessageBase64 *string `yaml:"message_base64"`
+	Status        string  `yaml:"status,omitempty"`
 }
 
 type NetworkAssertion struct {
@@ -979,10 +979,10 @@ func (c FixtureCountAssertion) validate() error {
 }
 
 func (g GRPCMessage) validate(withStatus bool) error {
-	if g.MessageBase64 == "" {
+	if g.MessageBase64 == nil {
 		return errors.New("message_base64 is required")
 	}
-	if _, err := base64.StdEncoding.DecodeString(g.MessageBase64); err != nil {
+	if _, err := base64.StdEncoding.DecodeString(*g.MessageBase64); err != nil {
 		return fmt.Errorf("message_base64: %w", err)
 	}
 	if !withStatus && g.Status != "" {

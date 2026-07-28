@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,6 +34,24 @@ const (
 
 const schema = `{"type":"object"}`
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "max_body_size": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 1048576
+    },
+    "max_pipeline_items": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "default": 1000
+    }
+  }
+}
+`
+
 type Config struct{}
 
 type Limits struct {
@@ -43,7 +62,7 @@ type Limits struct {
 type Request struct {
 	Query    map[string]string `json:"query,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
-	Timeout  int               `json:"timeout,omitempty"`
+	Timeout  *int              `json:"timeout,omitempty"`
 	Pipeline []PipelineRequest `json:"pipeline"`
 }
 
@@ -72,6 +91,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 	return nil
 }
 
@@ -119,8 +139,25 @@ func handleBatchRequest(
 		return nil, http.StatusBadRequest, fmt.Errorf("no request body, you should give at least one pipeline setting")
 	}
 
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
+	}
+	if err := validateDecodedRequestTypes(decoded); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
+	}
+
 	var req Request
-	if err := json.Unmarshal(body, &req); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
 		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %w", body, err)
 	}
 	if err := validateRequest(req, limits); err != nil {
@@ -128,15 +165,51 @@ func handleBatchRequest(
 	}
 
 	timeout := defaultTimeout
-	if req.Timeout > 0 {
-		timeout = time.Duration(req.Timeout) * time.Millisecond
+	if req.Timeout != nil {
+		timeout = time.Duration(*req.Timeout) * time.Millisecond
 	}
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	for _, item := range req.Pipeline {
-		responses = append(responses, dispatchPipelineRequest(dispatcher, r, req, item, timeout))
+		response := dispatchPipelineRequest(dispatcher, r, req, item, timeout)
+		responses = append(responses, response)
+		if response.Status == http.StatusGatewayTimeout {
+			break
+		}
 	}
 	return responses, http.StatusOK, nil
+}
+
+func validateDecodedRequestTypes(decoded any) error {
+	request, ok := decoded.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if timeout, exists := request["timeout"]; exists {
+		number, ok := timeout.(float64)
+		if !ok || number != math.Trunc(number) {
+			return fmt.Errorf(`property "timeout" validation failed: expected integer`)
+		}
+	}
+	pipeline, ok := request["pipeline"].([]any)
+	if !ok {
+		return nil
+	}
+	for i, rawItem := range pipeline {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		if sslVerify, exists := item["ssl_verify"]; exists {
+			if _, ok := sslVerify.(bool); !ok {
+				return fmt.Errorf(
+					`property "pipeline" validation failed: item %d property "ssl_verify" expected boolean`,
+					i+1,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]byte, error) {
@@ -148,6 +221,9 @@ func readLimitedBody(w http.ResponseWriter, r *http.Request, maxSize int64) ([]b
 }
 
 func validateRequest(req Request, limits Limits) error {
+	if req.Timeout != nil && *req.Timeout < 1 {
+		return fmt.Errorf("timeout must be at least 1 millisecond")
+	}
 	if len(req.Pipeline) == 0 {
 		return fmt.Errorf("pipeline must contain at least one request")
 	}

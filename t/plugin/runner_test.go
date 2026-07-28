@@ -1404,7 +1404,7 @@ func writeFixtureResponse(w http.ResponseWriter, context context.Context, respon
 		w.Header().Set(name, value)
 	}
 	if response.GRPC != nil {
-		message, err := base64.StdEncoding.DecodeString(response.GRPC.MessageBase64)
+		message, err := base64.StdEncoding.DecodeString(*response.GRPC.MessageBase64)
 		if err != nil {
 			http.Error(w, "invalid fixture gRPC message", http.StatusInternalServerError)
 			return
@@ -2441,7 +2441,7 @@ func runHTTPInput(
 		body = strings.Repeat(input.BodyRepeat.Value, input.BodyRepeat.Count) + input.BodyRepeat.Suffix
 	}
 	if input.GRPC != nil {
-		message, decodeErr := base64.StdEncoding.DecodeString(input.GRPC.MessageBase64)
+		message, decodeErr := base64.StdEncoding.DecodeString(*input.GRPC.MessageBase64)
 		if decodeErr != nil {
 			t.Errorf("decode client gRPC message: %v", decodeErr)
 			return decodeErr
@@ -2891,7 +2891,7 @@ func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, bo
 		}
 	}
 	if expected.GRPC != nil {
-		if err := matchUnaryGRPCFrame([]byte(body), expected.GRPC.MessageBase64); err != nil {
+		if err := matchUnaryGRPCFrame([]byte(body), *expected.GRPC.MessageBase64); err != nil {
 			t.Errorf("response gRPC frame: %v", err)
 		}
 		status := response.Trailer.Get("Grpc-Status")
@@ -3061,7 +3061,7 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 		}
 	}
 	if expected.GRPC != nil {
-		if err := matchUnaryGRPCFrame([]byte(received.body), expected.GRPC.MessageBase64); err != nil {
+		if err := matchUnaryGRPCFrame([]byte(received.body), *expected.GRPC.MessageBase64); err != nil {
 			t.Errorf("upstream gRPC frame: %v", err)
 		}
 	}

@@ -664,6 +664,73 @@ cases:
 	}
 }
 
+func TestManifestAcceptsExplicitEmptyGRPCMessage(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: empty-grpc-message
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: grpc
+        kind: h2c
+        expect:
+          - grpc:
+              message_base64: ""
+        respond:
+          - grpc:
+              message_base64: CgJvaw==
+    steps:
+      - name: probe
+        input:
+          path: /probe
+        output:
+          status: 200
+`)
+
+	if _, err := loadManifest("empty-grpc-message.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestManifestRejectsOmittedGRPCMessage(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: missing-grpc-message
+    source:
+      tests: [1]
+    config:
+      routes: []
+    fixtures:
+      - name: grpc
+        kind: h2c
+        expect:
+          - grpc: {}
+        respond:
+          - grpc:
+              message_base64: CgJvaw==
+    steps:
+      - name: probe
+        input:
+          path: /probe
+        output:
+          status: 200
+`)
+
+	if _, err := loadManifest("missing-grpc-message.yaml", data); err == nil {
+		t.Fatal("loadManifest() error = nil, want omitted gRPC message rejection")
+	}
+}
+
 func TestManifestRejectsInvalidHTTPFixtureResponseDelay(t *testing.T) {
 	for _, test := range []struct {
 		name  string

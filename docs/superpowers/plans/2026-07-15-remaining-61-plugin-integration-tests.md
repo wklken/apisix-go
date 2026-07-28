@@ -904,7 +904,15 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 12 — Bounded AI Plugins
 
-- [ ] `ai-aws-content-moderation` — one request per source omits real SigV4 assertions, encrypted credentials, threshold/category decisions, endpoint/TLS, replay, and rejection behavior.
+- [x] `ai-aws-content-moderation` — all 23 pinned blocks across three sources
+  map exactly once to real standalone Vault/environment/literal credentials,
+  exact SigV4 request shape and session-token signing, prompt-only protocol
+  extraction, category/toxicity precedence, protocol-shaped denial, selected
+  AI instance failure modes, provider pass-through, and Comprehend failures.
+  Secret resolution copies bbolt values inside their read transaction and
+  diagnostics do not expose credentials. Package, Store, race, exact
+  real-process, pinned-source, corpus, scoped lint, build, post-integration,
+  and task-review gates pass.
 - [x] `ai-prompt-decorator` — all 17 pinned blocks map exactly once to real Chat Completions and Responses API requests. Standalone cases assert prepend, append, both, request-to-request isolation, invalid empty configuration, instructions creation/prepend, string/array input append, combined transformations, and the Chat regression with semantic upstream JSON. The shared `json_equals` matcher preserves arbitrary numeric precision, defines mathematical number equality, preserves array order, ignores object-key order, rejects malformed JSON and non-body scopes, and expands iteration placeholders. Package, matcher/corpus, full tests, real-process, scoped lint/build, post-integration, and task-review gates pass.
 - [x] `ai-prompt-guard` — all 44 pinned blocks map exactly once to 18 real
   standalone cases/variants covering schema and invalid regex, allow/deny
@@ -1164,7 +1172,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 17 remaining (28 listed)
+### Medium — 15 remaining (28 listed)
 
 - [ ] `datadog`
 - [x] `basic-auth`
@@ -1185,12 +1193,12 @@ Execution waves:
 - [ ] `elasticsearch-logger`
 - [ ] `sls-logger`
 - [ ] `tencent-cloud-cls`
-- [ ] `tcp-logger`
+- [x] `tcp-logger`
 - [ ] `syslog`
 - [x] `file-logger`
 - [ ] `log-rotate`
 - [ ] `skywalking`
-- [ ] `ai-aws-content-moderation`
+- [x] `ai-aws-content-moderation`
 - [x] `ai-prompt-guard`
 - [x] `ai-rag`
 - [x] `ai-request-rewrite`
@@ -1316,8 +1324,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 32 manifests
-are task-review-approved and 29 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 33 manifests
+are task-review-approved and 28 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1346,7 +1354,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 16 remaining (19 at replan)
+### Medium — 15 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1362,7 +1370,13 @@ already-implemented branch.
   pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `authz-keycloak`
 - [ ] `saml-auth`
-- [ ] `ai-aws-content-moderation`
+- [x] `ai-aws-content-moderation` — all 23 blocks are source-complete with
+  real Vault/environment/literal credentials, exact SigV4 and session-token
+  signing, prompt-only moderation, threshold/category precedence,
+  protocol-shaped denial, selected-instance modes, provider pass-through, and
+  service failures. The Store resolver owns copied bbolt values and redacted
+  diagnostics. Its post-integration package, Store, race, real-process,
+  pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `datadog` — waits for the embedded-wildcard route prerequisite.
 - [x] `tcp-logger` — all 17 blocks are source-complete with exact plain/TLS
   delivery and retry behavior, metadata lifecycle, runtime service context,

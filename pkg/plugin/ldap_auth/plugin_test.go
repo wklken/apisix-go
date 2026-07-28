@@ -13,6 +13,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/store"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 var (
@@ -164,6 +165,57 @@ func TestHandlerRejectsInvalidAuthorizationHeader(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsAuthorizationDiagnostics(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		diagnostic string
+	}{
+		{
+			name:       "invalid scheme",
+			header:     "Bad_header Zm9vOmZvbwo=",
+			diagnostic: "Invalid authorization header format",
+		},
+		{
+			name:       "invalid base64",
+			header:     "Basic aca_a",
+			diagnostic: "Failed to decode authentication header: aca_a",
+		},
+		{
+			name:       "missing password",
+			header:     "Basic Zm9v",
+			diagnostic: "Split authorization err: invalid decoded data: foo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, func(username, password string, cfg Config) error {
+				t.Fatal("LDAP authenticator should not be called")
+				return nil
+			})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			var diagnostics []string
+			req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+				diagnostics = append(diagnostics, message)
+			})
+			req.Header.Set("Authorization", tt.header)
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("invalid authorization reached downstream")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rr.Code)
+			}
+			if len(diagnostics) != 1 || diagnostics[0] != tt.diagnostic {
+				t.Fatalf("diagnostics = %v, want [%q]", diagnostics, tt.diagnostic)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsFailedLDAPBind(t *testing.T) {
 	addLDAPConsumer(t, "bad-ldap-user", "cn=bob,dc=example,dc=org")
 	p := newTestPlugin(t, func(username, password string, cfg Config) error {
@@ -183,6 +235,30 @@ func TestHandlerRejectsFailedLDAPBind(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsLDAPBindFailureDiagnostic(t *testing.T) {
+	p := newTestPlugin(t, func(username, password string, cfg Config) error {
+		return errors.New("LDAP Result Code 49 \"Invalid Credentials\": The supplied credential is invalid")
+	})
+	req := ldapRequest("bob", "wrong")
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("failed LDAP bind reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 ||
+		diagnostics[0] != `ldap-auth failed: LDAP Result Code 49 "Invalid Credentials": The supplied credential is invalid` {
+		t.Fatalf("diagnostics = %v, want LDAP bind failure detail", diagnostics)
+	}
+}
+
 func TestHandlerRejectsMissingRelatedConsumer(t *testing.T) {
 	p := newTestPlugin(t, func(username, password string, cfg Config) error {
 		return nil
@@ -198,6 +274,95 @@ func TestHandlerRejectsMissingRelatedConsumer(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Invalid user authorization") {
 		t.Fatalf("body = %q, want invalid user authorization message", rr.Body.String())
+	}
+}
+
+func TestHandlerRecordsMissingConsumerDiagnostic(t *testing.T) {
+	setupStore(t)
+	p := newTestPlugin(t, func(username, password string, cfg Config) error {
+		return nil
+	})
+	req := ldapRequest("missing-diagnostic", "secret")
+	var diagnostics []string
+	req = ctx.WithAuthProbeDiagnosticRecorder(req, func(message string) {
+		diagnostics = append(diagnostics, message)
+	})
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing LDAP consumer reached downstream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if len(diagnostics) != 1 || diagnostics[0] != "failed to find user: invalid user" {
+		t.Fatalf("diagnostics = %v, want missing-user detail", diagnostics)
+	}
+}
+
+func TestHandlerWritesExactJSONAuthorizationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		request func() *http.Request
+		auth    ldapAuthenticator
+		body    string
+	}{
+		{
+			name: "missing authorization",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			},
+			auth: func(username, password string, cfg Config) error {
+				t.Fatal("LDAP authenticator should not be called")
+				return nil
+			},
+			body: `{"message":"Missing authorization in request"}`,
+		},
+		{
+			name: "invalid authorization",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+				req.Header.Set("Authorization", "Basic not-base64")
+				return req
+			},
+			auth: func(username, password string, cfg Config) error {
+				t.Fatal("LDAP authenticator should not be called")
+				return nil
+			},
+			body: `{"message":"Invalid authorization in request"}`,
+		},
+		{
+			name: "invalid user authorization",
+			request: func() *http.Request {
+				return ldapRequest("alice", "wrong")
+			},
+			auth: func(username, password string, cfg Config) error {
+				return errors.New("invalid credentials")
+			},
+			body: `{"message":"Invalid user authorization"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(t, tt.auth)
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("authorization failure reached downstream")
+			})).ServeHTTP(rr, tt.request())
+
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rr.Code)
+			}
+			if got := rr.Body.String(); got != tt.body {
+				t.Fatalf("body = %q, want %q", got, tt.body)
+			}
+			if got := rr.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", got)
+			}
+		})
 	}
 }
 
@@ -230,6 +395,45 @@ func TestLDAPDialURLUsesLDAPSForHostAddressWhenTLSIsEnabled(t *testing.T) {
 				t.Fatalf("ldapDialURL() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRealmSchemaMatchesUpstreamChallengeConstraints(t *testing.T) {
+	p := newTestPlugin(t, nil)
+	valid := []string{
+		"ldap",
+		"my-ldap-realm",
+		strings.Repeat("a", 128),
+		" !#$%&'()*+,-./:;<=>?@[]^_`{|}~",
+	}
+	for _, realm := range valid {
+		config := map[string]any{
+			"base_dn":  "dc=example,dc=org",
+			"ldap_uri": "ldap://127.0.0.1:389",
+			"realm":    realm,
+		}
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			t.Errorf("realm %q should validate: %v", realm, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		strings.Repeat("a", 129),
+		`bad"realm`,
+		`bad\realm`,
+		"bad\nrealm",
+		"bad\x7frealm",
+	}
+	for _, realm := range invalid {
+		config := map[string]any{
+			"base_dn":  "dc=example,dc=org",
+			"ldap_uri": "ldap://127.0.0.1:389",
+			"realm":    realm,
+		}
+		if err := util.Validate(config, p.GetSchema()); err == nil {
+			t.Errorf("realm %q should be rejected", realm)
+		}
 	}
 }
 

@@ -805,7 +805,15 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 6 — External Authentication and Authorization
 
-- [ ] `ldap-auth` — each source file is represented by one successful bind; realm, bind/search mapping, TLS, schema, and authentication failure behavior remain.
+- [x] `ldap-auth` — all 35 pinned blocks across the two sources map exactly
+  once to real standalone cases. Consumer/route schema, malformed and
+  case-insensitive Basic authorization, failed and successful direct binds,
+  default/custom realms, unverified/trusted/untrusted LDAPS, and Vault plus
+  environment secret resolution are asserted. Authorization payloads are
+  excluded from cumulative logs, and the verification-enabled no-CA control
+  proves an always-insecure TLS implementation cannot pass. Package/Store,
+  race, fixture, exact real-process, pinned-source, corpus, scoped lint, build,
+  post-integration, and independent review gates pass.
 - [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
 - [x] `forward-auth` — all 28 pinned blocks across three sources map exactly once to standalone schema, header propagation/spoof resistance, allow/deny, degradation/error, `$post_arg`, CRLF/no-auth, bounded-body 413, chunked re-framing, GET/POST framing, and absent-header clearing behavior. Raw framing assertions combine required bytes with explicit forbidden-header patterns, so they cannot pass from fixture-generated claims. Package/race/corpus, full real-process, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [x] `multi-auth` — all 38 pinned blocks across two sources map exactly once to 13 real standalone groups and 38 requests covering ordered Basic/Key/JWT/HMAC alternatives, exact all-failed diagnostics, silent later success, configured token locations and hiding, invalid nested/cardinality reloads with last-good retention, JWT failures, anonymous failures, and exactly-once consumer chaining. Failed body-validating probes replay a bounded captured prefix plus unread source so later alternatives and upstream receive the full body; probe diagnostics are request-scoped and emitted only if every alternative fails. Affected auth/context package and race tests, full real-process and focused race, sensitive repeats, corpus, scoped lint, build, post-integration gates, and task review pass.
@@ -1220,7 +1228,7 @@ Execution waves:
 
 - [x] `key-auth`
 - [ ] `jwt-auth`
-- [ ] `ldap-auth`
+- [x] `ldap-auth`
 - [ ] `openid-connect`
 - [ ] `authz-keycloak`
 - [ ] `saml-auth`
@@ -1302,8 +1310,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 30 manifests
-are task-review-approved and 31 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 31 manifests
+are task-review-approved and 30 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1332,7 +1340,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 18 remaining (19 at replan)
+### Medium — 17 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1340,8 +1348,12 @@ already-implemented branch.
   domain-node behavior, and deterministic unresolved-secret isolation. Its
   post-integration package/Store, race, harness, exact real-process, corpus,
   scoped lint, build, and diff gates pass.
-- [ ] `ldap-auth` — extend the existing direct-bind fixture for failure, realm,
-  and LDAPS behavior without inventing unsupported LDAP-search parity.
+- [x] `ldap-auth` — all 35 pinned direct-bind blocks are source-complete with
+  strict consumer/route schemas, redacted authorization diagnostics,
+  case-insensitive Basic parsing, exact realm behavior, real LDAP bind bytes,
+  trusted/untrusted LDAPS controls, and real Vault/environment references. Its
+  post-integration package/Store, race, fixture, exact real-process,
+  pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `authz-keycloak`
 - [ ] `saml-auth`
 - [ ] `ai-aws-content-moderation`

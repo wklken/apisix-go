@@ -199,21 +199,22 @@ type Metadata struct {
 }
 
 type metricEntry struct {
-	LatencyMS       int64
-	UpstreamLatency int64
-	ApisixLatency   int64
-	IngressSize     int64
-	EgressSize      int64
-	Status          int
-	RouteID         string
-	RouteName       string
-	ServiceID       string
-	ServiceName     string
-	ConsumerName    string
-	BalancerIP      string
-	Path            string
-	Method          string
-	Scheme          string
+	LatencyMS          int64
+	UpstreamLatency    int64
+	HasUpstreamLatency bool
+	ApisixLatency      int64
+	IngressSize        int64
+	EgressSize         int64
+	Status             int
+	RouteID            string
+	RouteName          string
+	ServiceID          string
+	ServiceName        string
+	ConsumerName       string
+	BalancerIP         string
+	Path               string
+	Method             string
+	Scheme             string
 }
 
 func (p *Plugin) Config() any {
@@ -282,23 +283,24 @@ func (p *Plugin) Stop() {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		captured := httpsnoop.CaptureMetrics(next, w, r)
-		upstreamLatency := requestInt64Var(r, "$upstream_latency")
+		upstreamLatency, hasUpstreamLatency := requestInt64Var(r, "$upstream_latency")
 		entry := metricEntry{
-			LatencyMS:       captured.Duration.Milliseconds(),
-			UpstreamLatency: upstreamLatency,
-			ApisixLatency:   apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
-			IngressSize:     requestSize(r),
-			EgressSize:      captured.Written,
-			Status:          captured.Code,
-			RouteID:         apisixStringVar(r, "$route_id"),
-			RouteName:       apisixStringVar(r, "$route_name"),
-			ServiceID:       apisixStringVar(r, "$service_id"),
-			ServiceName:     apisixStringVar(r, "$service_name"),
-			ConsumerName:    consumerName(r),
-			BalancerIP:      apisixStringVar(r, "$balancer_ip"),
-			Path:            matchedPath(r),
-			Method:          r.Method,
-			Scheme:          requestScheme(r),
+			LatencyMS:          captured.Duration.Milliseconds(),
+			UpstreamLatency:    upstreamLatency,
+			HasUpstreamLatency: hasUpstreamLatency,
+			ApisixLatency:      apisixLatency(captured.Duration.Milliseconds(), upstreamLatency),
+			IngressSize:        requestSize(r),
+			EgressSize:         captured.Written,
+			Status:             captured.Code,
+			RouteID:            apisixStringVar(r, "$route_id"),
+			RouteName:          apisixStringVar(r, "$route_name"),
+			ServiceID:          apisixStringVar(r, "$service_id"),
+			ServiceName:        apisixStringVar(r, "$service_name"),
+			ConsumerName:       consumerName(r),
+			BalancerIP:         apisixStringVar(r, "$balancer_ip"),
+			Path:               matchedPath(r),
+			Method:             r.Method,
+			Scheme:             requestScheme(r),
 		}
 		p.BatchProcessor.Push(map[string]any{"entry": entry})
 	}
@@ -354,7 +356,12 @@ func (p *Plugin) metricLines(entry metricEntry) []string {
 	lines := []string{
 		p.metricLine("request.counter", "1", "c", tags),
 		p.metricLine("request.latency", strconv.FormatInt(entry.LatencyMS, 10), "h", tags),
-		p.metricLine("upstream.latency", strconv.FormatInt(entry.UpstreamLatency, 10), "h", tags),
+	}
+	if entry.HasUpstreamLatency {
+		lines = append(
+			lines,
+			p.metricLine("upstream.latency", strconv.FormatInt(entry.UpstreamLatency, 10), "h", tags),
+		)
 	}
 	lines = append(lines,
 		p.metricLine("apisix.latency", strconv.FormatInt(entry.ApisixLatency, 10), "h", tags),
@@ -445,16 +452,16 @@ func matchedPath(r *http.Request) string {
 	return r.URL.Path
 }
 
-func requestInt64Var(r *http.Request, key string) int64 {
+func requestInt64Var(r *http.Request, key string) (int64, bool) {
 	switch value := ctx.GetRequestVar(r, key).(type) {
 	case int64:
-		return value
+		return value, true
 	case int:
-		return int64(value)
+		return int64(value), true
 	case float64:
-		return int64(value)
+		return int64(value), true
 	default:
-		return 0
+		return 0, false
 	}
 }
 

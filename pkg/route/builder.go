@@ -119,10 +119,15 @@ func registerRoute(mux *chi.Mux, methods []string, uri string, handler http.Hand
 	if err != nil {
 		return err
 	}
-	if strings.Contains(uri, "/*/") {
-		handler = embeddedWildcardHandler(uri, handler)
-	}
 	if len(methods) == 0 {
+		if strings.Contains(uri, "/*/") {
+			registerEmbeddedWildcard(mux, "*", converted, uri, handler)
+			return nil
+		}
+		if dispatcher := existingEmbeddedWildcardDispatcher(mux, "*", converted); dispatcher != nil {
+			dispatcher.fallback = handler
+			return nil
+		}
 		mux.Handle(converted, handler)
 		return nil
 	}
@@ -132,24 +137,93 @@ func registerRoute(mux *chi.Mux, methods []string, uri string, handler http.Hand
 			continue
 		}
 		logger.Debugf("add route: %s %s", method, converted)
+		if strings.Contains(uri, "/*/") {
+			registerEmbeddedWildcard(mux, method, converted, uri, handler)
+			continue
+		}
+		if dispatcher := existingEmbeddedWildcardDispatcher(mux, method, converted); dispatcher != nil {
+			dispatcher.fallback = handler
+			continue
+		}
 		mux.Method(method, converted, handler)
 	}
 	return nil
 }
 
-func embeddedWildcardHandler(pattern string, next http.Handler) http.Handler {
+type embeddedWildcardRoute struct {
+	pattern string
+	handler http.Handler
+}
+
+type embeddedWildcardDispatcher struct {
+	routes   []embeddedWildcardRoute
+	fallback http.Handler
+}
+
+func registerEmbeddedWildcard(
+	mux *chi.Mux,
+	method string,
+	converted string,
+	pattern string,
+	handler http.Handler,
+) {
+	if dispatcher := existingEmbeddedWildcardDispatcher(mux, method, converted); dispatcher != nil {
+		dispatcher.routes = append(dispatcher.routes, embeddedWildcardRoute{pattern: pattern, handler: handler})
+		return
+	}
+
+	dispatcher := &embeddedWildcardDispatcher{
+		routes: []embeddedWildcardRoute{{pattern: pattern, handler: handler}},
+	}
+	if existing := existingRouteHandler(mux, method, converted); existing != nil {
+		dispatcher.fallback = existing
+	}
+	if method == "*" {
+		mux.Handle(converted, dispatcher)
+		return
+	}
+	mux.Method(method, converted, dispatcher)
+}
+
+func existingEmbeddedWildcardDispatcher(
+	mux *chi.Mux,
+	method string,
+	pattern string,
+) *embeddedWildcardDispatcher {
+	handler := existingRouteHandler(mux, method, pattern)
+	dispatcher, _ := handler.(*embeddedWildcardDispatcher)
+	return dispatcher
+}
+
+func existingRouteHandler(mux *chi.Mux, method string, pattern string) http.Handler {
+	for _, route := range mux.Routes() {
+		if route.Pattern == pattern {
+			return route.Handlers[strings.ToUpper(method)]
+		}
+	}
+	return nil
+}
+
+func (d *embeddedWildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	for _, route := range d.routes {
+		if matchesEmbeddedWildcard(route.pattern, request.URL.Path) {
+			route.handler.ServeHTTP(writer, request)
+			return
+		}
+	}
+	if d.fallback != nil {
+		d.fallback.ServeHTTP(writer, request)
+		return
+	}
+	http.NotFound(writer, request)
+}
+
+func matchesEmbeddedWildcard(pattern string, path string) bool {
 	wildcard := strings.IndexByte(pattern, '*')
 	prefix := pattern[:wildcard]
 	suffix := pattern[wildcard+1:]
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		path := request.URL.Path
-		if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) ||
-			len(path) <= len(prefix)+len(suffix) {
-			http.NotFound(writer, request)
-			return
-		}
-		next.ServeHTTP(writer, request)
-	})
+	return strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix) &&
+		len(path) > len(prefix)+len(suffix)
 }
 
 type Builder struct {

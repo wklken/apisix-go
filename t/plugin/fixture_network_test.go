@@ -139,7 +139,7 @@ func (f *networkFixture) serveTCP() {
 				return
 			default:
 			}
-			f.errors <- fmt.Errorf("accept TCP fixture connection: %w", err)
+			f.reportError(fmt.Errorf("accept TCP fixture connection: %w", err))
 			return
 		}
 		f.wg.Go(func() {
@@ -158,13 +158,13 @@ func (f *networkFixture) handleTCPConnection(connection net.Conn) {
 		_ = connection.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		payload, err := readUntilIdle(connection)
 		if err != nil {
-			f.errors <- fmt.Errorf("read TCP fixture payload %d: %w", index+1, err)
+			f.reportError(fmt.Errorf("read TCP fixture payload %d: %w", index+1, err))
 			return
 		}
 		f.received <- payload
 		response, err := networkResponseBytes(f.respond[index])
 		if err != nil {
-			f.errors <- fmt.Errorf("decode TCP fixture response %d: %w", index+1, err)
+			f.reportError(fmt.Errorf("decode TCP fixture response %d: %w", index+1, err))
 			return
 		}
 		if f.respond[index].Delay > 0 {
@@ -172,7 +172,7 @@ func (f *networkFixture) handleTCPConnection(connection net.Conn) {
 		}
 		if len(response) > 0 {
 			if _, err := connection.Write(response); err != nil {
-				f.errors <- fmt.Errorf("write TCP fixture response %d: %w", index+1, err)
+				f.reportError(fmt.Errorf("write TCP fixture response %d: %w", index+1, err))
 				return
 			}
 		}
@@ -193,26 +193,26 @@ func (f *networkFixture) serveUDP() {
 				return
 			default:
 			}
-			f.errors <- fmt.Errorf("read UDP fixture packet: %w", err)
+			f.reportError(fmt.Errorf("read UDP fixture packet: %w", err))
 			return
 		}
 		index := f.nextResponse()
 		if index >= len(f.expect) {
-			f.errors <- fmt.Errorf("UDP fixture received more than %d expected payloads", len(f.expect))
+			f.reportError(fmt.Errorf("UDP fixture received more than %d expected payloads", len(f.expect)))
 			continue
 		}
 		payload := append([]byte(nil), buffer[:count]...)
 		f.received <- payload
 		response, err := networkResponseBytes(f.respond[index])
 		if err != nil {
-			f.errors <- fmt.Errorf("decode UDP fixture response %d: %w", index+1, err)
+			f.reportError(fmt.Errorf("decode UDP fixture response %d: %w", index+1, err))
 			continue
 		}
 		if f.respond[index].Delay > 0 {
 			time.Sleep(f.respond[index].Delay)
 		}
 		if _, err := f.packet.WriteTo(response, address); err != nil {
-			f.errors <- fmt.Errorf("write UDP fixture response %d: %w", index+1, err)
+			f.reportError(fmt.Errorf("write UDP fixture response %d: %w", index+1, err))
 		}
 	}
 }
@@ -221,18 +221,18 @@ func (f *networkFixture) serveGRPCRequest(writer http.ResponseWriter, request *h
 	index := f.nextResponse()
 	payload, err := io.ReadAll(request.Body)
 	if err != nil {
-		f.errors <- fmt.Errorf("read gRPC fixture payload %d: %w", index+1, err)
+		f.reportError(fmt.Errorf("read gRPC fixture payload %d: %w", index+1, err))
 		return
 	}
 	f.received <- payload
 	if index >= len(f.respond) {
-		f.errors <- fmt.Errorf("gRPC fixture received more than %d expected payloads", len(f.expect))
+		f.reportError(fmt.Errorf("gRPC fixture received more than %d expected payloads", len(f.expect)))
 		writer.WriteHeader(http.StatusNotFound)
 		return
 	}
 	response, err := networkResponseBytes(f.respond[index])
 	if err != nil {
-		f.errors <- fmt.Errorf("decode gRPC fixture response %d: %w", index+1, err)
+		f.reportError(fmt.Errorf("decode gRPC fixture response %d: %w", index+1, err))
 		writer.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -249,6 +249,14 @@ func (f *networkFixture) nextResponse() int {
 	index := f.next
 	f.next++
 	return index
+}
+
+func (f *networkFixture) reportError(err error) {
+	select {
+	case f.errors <- err:
+	case <-f.done:
+	default:
+	}
 }
 
 func readUntilIdle(connection net.Conn) ([]byte, error) {
@@ -764,6 +772,51 @@ func TestUDPZeroPacketAssertionObservesConfiguredWindow(t *testing.T) {
 	}
 	if elapsed < observationWindow {
 		t.Fatalf("zero-packet assertion returned after %s, want at least %s", elapsed, observationWindow)
+	}
+}
+
+func TestUDPZeroPacketBurstFailsWithoutBlockingShutdown(t *testing.T) {
+	spec := FixtureSpec{
+		Name:  "sink",
+		Kind:  "udp",
+		Count: &FixtureCountAssertion{AtLeast: 0, AtMost: 0, Timeout: 100 * time.Millisecond},
+	}
+	named, err := startNetworkFixture(spec)
+	if err != nil {
+		t.Fatalf("start UDP fixture: %v", err)
+	}
+	fixture := named.(*networkFixture)
+
+	connection, err := net.Dial("udp", fixture.address())
+	if err != nil {
+		fixture.close()
+		t.Fatalf("dial UDP fixture: %v", err)
+	}
+	for range 8 {
+		if _, err = connection.Write([]byte("unexpected")); err != nil {
+			_ = connection.Close()
+			fixture.close()
+			t.Fatalf("write UDP burst: %v", err)
+		}
+	}
+	_ = connection.Close()
+
+	assertionErr := fixture.zeroPacketAssertionError(spec)
+	if assertionErr == nil || !strings.Contains(assertionErr.Error(), "received more than 0 expected payloads") {
+		fixture.close()
+		t.Fatalf("assertion error = %v, want burst rejection", assertionErr)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	closed := make(chan struct{})
+	go func() {
+		fixture.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("UDP fixture shutdown blocked after an unexpected packet burst")
 	}
 }
 

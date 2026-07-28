@@ -5,11 +5,13 @@ sources:
     tests: 13
 
 cases:
-  - name: metadata-schema-defaults-are-accepted-and-used
+  - name: metadata-schema-endpoint-is-accepted-and-used
     source: {file: t/plugin/datadog.t, tests: [1]}
     config:
       plugin_metadata:
         - id: datadog
+          host: '{{FIXTURE.sink.HOST}}'
+          port: '{{FIXTURE.sink.PORT}}'
       routes:
         - id: datadog-metadata-defaults
           name: metadata-defaults
@@ -17,8 +19,6 @@ cases:
           plugins:
             datadog:
               batch_max_size: 1
-              host: '{{FIXTURE.sink.HOST}}'
-              port: '{{FIXTURE.sink.PORT}}'
               retry_delay: 0
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
@@ -33,7 +33,7 @@ cases:
               matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
         network_respond: [{payload: ''}]
     steps:
-      - name: metadata-defaults-drive-real-delivery
+      - name: metadata-endpoint-drives-real-delivery
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
 

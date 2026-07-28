@@ -1194,7 +1194,7 @@ Execution waves:
 - [ ] `sls-logger`
 - [ ] `tencent-cloud-cls`
 - [x] `tcp-logger`
-- [ ] `syslog`
+- [x] `syslog`
 - [x] `file-logger`
 - [ ] `log-rotate`
 - [ ] `skywalking`
@@ -1244,7 +1244,7 @@ Execution waves:
 - [ ] `jwt-auth`
 - [x] `ldap-auth`
 - [ ] `openid-connect`
-- [ ] `authz-keycloak`
+- [x] `authz-keycloak`
 - [ ] `saml-auth`
 - [ ] `limit-conn`
 - [ ] `limit-count`

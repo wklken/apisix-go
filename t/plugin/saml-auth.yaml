@@ -122,7 +122,7 @@ cases:
     - name: saml-auth-redirect-login
       source:
           file: t/plugin/saml-auth.t
-          tests: [1, 2, 3, 4, 5, 6, 7]
+          tests: [1, 7]
       config:
           routes:
               - id: saml-auth-redirect-login
@@ -215,6 +215,115 @@ cases:
                 status: 401
                 body:
                     matches: invalid callback state
+
+    - name: saml-auth-schema-rejects-invalid-route-config
+      source:
+          file: t/plugin/saml-auth.t
+          tests: [2, 3, 4, 5, 6]
+      variants:
+          - name: missing-sp-issuer
+            config:
+                routes:
+                    - id: saml-auth-missing-sp-issuer
+                      uri: /probe
+                      plugins:
+                          saml-auth:
+                              idp_uri: https://idp.example.test/sso
+                              idp_cert: *saml_cert
+                              login_callback_uri: /login/callback
+                              logout_uri: /logout
+                              logout_callback_uri: /logout/callback
+                              logout_redirect_uri: /logged-out
+                              sp_cert: *saml_cert
+                              sp_private_key: *saml_key
+                              secret: integration-secret
+            input: {path: /probe}
+            output:
+                status: 404
+                logs: {matches: 'saml-auth-missing-sp-issuer.*saml-auth.*sp_issuer'}
+          - name: missing-idp-uri
+            config:
+                routes:
+                    - id: saml-auth-missing-idp-uri
+                      uri: /probe
+                      plugins:
+                          saml-auth:
+                              sp_issuer: integration-sp
+                              idp_cert: *saml_cert
+                              login_callback_uri: /login/callback
+                              logout_uri: /logout
+                              logout_callback_uri: /logout/callback
+                              logout_redirect_uri: /logged-out
+                              sp_cert: *saml_cert
+                              sp_private_key: *saml_key
+                              secret: integration-secret
+            input: {path: /probe}
+            output:
+                status: 404
+                logs: {matches: 'saml-auth-missing-idp-uri.*saml-auth.*idp_uri'}
+          - name: invalid-binding
+            config:
+                routes:
+                    - id: saml-auth-invalid-binding
+                      uri: /probe
+                      plugins:
+                          saml-auth:
+                              sp_issuer: integration-sp
+                              idp_uri: https://idp.example.test/sso
+                              idp_cert: *saml_cert
+                              login_callback_uri: /login/callback
+                              logout_uri: /logout
+                              logout_callback_uri: /logout/callback
+                              logout_redirect_uri: /logged-out
+                              sp_cert: *saml_cert
+                              sp_private_key: *saml_key
+                              auth_protocol_binding_method: HTTP-INVALID
+                              secret: integration-secret
+            input: {path: /probe}
+            output:
+                status: 404
+                logs: {matches: 'saml-auth-invalid-binding.*saml-auth.*auth_protocol_binding_method'}
+          - name: missing-secret
+            config:
+                routes:
+                    - id: saml-auth-missing-secret
+                      uri: /probe
+                      plugins:
+                          saml-auth:
+                              sp_issuer: integration-sp
+                              idp_uri: https://idp.example.test/sso
+                              idp_cert: *saml_cert
+                              login_callback_uri: /login/callback
+                              logout_uri: /logout
+                              logout_callback_uri: /logout/callback
+                              logout_redirect_uri: /logged-out
+                              sp_cert: *saml_cert
+                              sp_private_key: *saml_key
+            input: {path: /probe}
+            output:
+                status: 404
+                logs: {matches: 'saml-auth-missing-secret.*saml-auth.*secret'}
+          - name: too-short-secret
+            config:
+                routes:
+                    - id: saml-auth-too-short-secret
+                      uri: /probe
+                      plugins:
+                          saml-auth:
+                              sp_issuer: integration-sp
+                              idp_uri: https://idp.example.test/sso
+                              idp_cert: *saml_cert
+                              login_callback_uri: /login/callback
+                              logout_uri: /logout
+                              logout_callback_uri: /logout/callback
+                              logout_redirect_uri: /logged-out
+                              sp_cert: *saml_cert
+                              sp_private_key: *saml_key
+                              secret: short
+            input: {path: /probe}
+            output:
+                status: 404
+                logs: {matches: 'saml-auth-too-short-secret.*saml-auth.*secret'}
 
 sources:
     - repository: https://github.com/apache/apisix

@@ -214,6 +214,42 @@ func TestHandlerBuildsDefaultAccessLogAndAddsRouteIDToCustomFormat(t *testing.T)
 	}
 }
 
+func TestHandlerUsesRequestHostInRFC5424Envelope(t *testing.T) {
+	addr, received := startUDPServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split udp addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		CustomerToken: "token",
+		Host:          host,
+		Port:          mustAtoi(t, port),
+		Timeout:       1000,
+		BatchMaxSize:  1,
+		LogFormat:     map[string]string{"marker": "request-host"},
+	})
+	p.RouteID = "route-1"
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/orders", nil)
+	req.Host = "127.0.0.1"
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+
+	select {
+	case message := <-received:
+		if !strings.Contains(message, " 127.0.0.1 apisix ") {
+			t.Fatalf("message = %q, want request host in RFC5424 envelope", message)
+		}
+		if !strings.HasSuffix(message, ` {"marker":"request-host","route_id":"route-1"}`) {
+			t.Fatalf("message = %q, want internal host field omitted from payload", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UDP log message")
+	}
+}
+
 func TestSendWritesUDPMessage(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)

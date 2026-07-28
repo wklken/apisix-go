@@ -29,6 +29,7 @@ const (
 	priority          = 411
 	name              = "loggly"
 	version           = "apisix-go"
+	logglyHostField   = "\x00loggly_host"
 	logglyStatusField = "\x00loggly_status"
 )
 
@@ -328,6 +329,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code) {
 			base.NestedLogMap(logFields, "response")["body"] = recorder.Body()
 		}
+		logFields[logglyHostField] = request.host
 		logFields[logglyStatusField] = metrics.Code
 
 		_ = p.Fire(logFields)
@@ -607,9 +609,13 @@ func (p *Plugin) buildMessage(log map[string]any) string {
 		payload = []byte(`{}`)
 	}
 
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		hostname = "-"
+	hostname, _ := log[logglyHostField].(string)
+	if hostname == "" {
+		var err error
+		hostname, err = os.Hostname()
+		if err != nil || hostname == "" {
+			hostname = "-"
+		}
 	}
 
 	return strings.Join([]string{
@@ -641,12 +647,14 @@ func messageSeverity(defaultSeverity string, severityMap map[string]string, log 
 }
 
 func logglyPayload(entry map[string]any) map[string]any {
-	if _, ok := entry[logglyStatusField]; !ok {
+	_, hasHost := entry[logglyHostField]
+	_, hasStatus := entry[logglyStatusField]
+	if !hasHost && !hasStatus {
 		return entry
 	}
-	payload := make(map[string]any, len(entry)-1)
+	payload := make(map[string]any, len(entry))
 	for key, value := range entry {
-		if key != logglyStatusField {
+		if key != logglyHostField && key != logglyStatusField {
 			payload[key] = value
 		}
 	}

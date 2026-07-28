@@ -655,6 +655,13 @@ func matchFileBboltJSON(
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("decode stored JSON: %w", err)
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("decode stored JSON: trailing JSON value")
+		}
+		return fmt.Errorf("decode stored JSON trailing data: %w", err)
+	}
 	for pointer, expected := range assertion.Fields {
 		actual, err := resolveJSONPointer(document, pointer)
 		if err != nil {
@@ -1193,6 +1200,37 @@ func TestHarnessAssertsTypedBboltJSONAfterShutdown(t *testing.T) {
 			ForbiddenMatches: []string{"plaintext"},
 		},
 	}}, map[string]string{"{{WORK_DIR}}": workDir})
+}
+
+func TestMatchFileBboltJSONRejectsTrailingJSON(t *testing.T) {
+	workDir := t.TempDir()
+	path := filepath.Join(workDir, "apisix-go-store.db")
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("open bbolt fixture: %v", err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucket([]byte("routes"))
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte("route-1"), []byte(`{"id":"route-1"}{"trailing":true}`))
+	})
+	if err != nil {
+		t.Fatalf("write bbolt fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close bbolt fixture: %v", err)
+	}
+
+	err = matchFileBboltJSON(path, FileBboltJSONAssertion{
+		Bucket: "routes",
+		Key:    "route-1",
+		Fields: map[string]string{"/id": "route-1"},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "trailing") {
+		t.Fatalf("matchFileBboltJSON() error = %v, want trailing JSON rejection", err)
+	}
 }
 
 func TestHarnessAssertsAbsentFileMidCase(t *testing.T) {

@@ -157,7 +157,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: &two_exact_messages {matches: '^<14>1 [0-9T:.+-]+Z [^ ]+ apisix [0-9]+ - \[test-token@41058 tag="apisix"\] \{"path":"/opentracing","route_id":"1"\}$'}
+          - payload: &two_exact_messages {matches: '^<14>1 [0-9T:.+-]+Z 127\.0\.0\.1 apisix [0-9]+ - \[test-token@41058 tag="apisix"\] \{"path":"/opentracing","route_id":"1"\}$'}
           - payload: *two_exact_messages
         network_respond: [{payload: ''}, {payload: ''}]
     steps:
@@ -179,7 +179,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[token-1@41058 tag="abc" tag="def"\] \{"case":"tags","route_id":"loggly-tags"\}$'}
+          - payload: {matches: '^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="abc" tag="def"\] \{"case":"tags","route_id":"loggly-tags"\}$'}
         network_respond: [{payload: ''}]
     steps:
       - {name: exact-tags, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
@@ -199,7 +199,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '^<10>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"case":"severity","route_id":"loggly-crit"\}$'}
+          - payload: {matches: '^<10>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"case":"severity","route_id":"loggly-crit"\}$'}
         network_respond: [{payload: ''}]
     steps:
       - {name: exact-prival, input: {path: /opentracing}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
@@ -220,11 +220,11 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^<10>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"apisix_latency":[0-9.]+,"client_ip":"127\.0\.0\.1","latency":[0-9.]+,"request":\{.*"method":"GET".*"uri":"/opentracing".*\},"response":\{.*"status":200.*\},"route_id":"1","server":\{.*"version":"apisix-go".*\},"service_id":"","start_time":[0-9.]+,"upstream":"127\.0\.0\.1:[0-9]+","upstream_latency":[0-9.]+\}$'
+              matches: '(?s)^<10>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"apisix_latency":[0-9.]+,"client_ip":"127\.0\.0\.1","latency":[0-9.]+,"request":\{.*"method":"GET".*"uri":"/opentracing".*\},"response":\{.*"status":200.*\},"route_id":"1","server":\{.*"version":"apisix-go".*\},"service_id":"","start_time":[0-9.]+,"upstream":"127\.0\.0\.1:[0-9]+","upstream_latency":[0-9.]+\}$'
             forbidden_matches: ['"body":']
         network_respond: [{payload: ''}]
     steps:
-      - {name: full-default-log, input: {path: /opentracing, headers: {Host: localhost}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+      - {name: full-default-log, input: {path: /opentracing, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: response-body-is-included
     source: {file: t/plugin/loggly.t, tests: [8]}
@@ -241,7 +241,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '(?s)^<14>1 .* \[tok@41058 tag="apisix"\] \{.*"response":\{"body":"opentracing\\n".*"status":200.*\}.*"route_id":"loggly-response-body".*\}$'}
+          - payload: {matches: '(?s)^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{.*"response":\{"body":"opentracing\\n".*"status":200.*\}.*"route_id":"loggly-response-body".*\}$'}
         network_respond: [{payload: ''}]
     steps:
       - {name: response-and-log-preserve-body, input: {path: /opentracing}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
@@ -266,7 +266,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '(?s)^<14>1 .* \[tok@41058 tag="apisix"\] \{.*"request":\{.*"querystring":\{"bar":"bar"\}.*\},"response":\{"body":"opentracing\\n".*"status":200.*\}.*\}$'}
+          - payload: {matches: '(?s)^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{.*"request":\{.*"querystring":\{"bar":"bar"\}.*\},"response":\{"body":"opentracing\\n".*"status":200.*\}.*\}$'}
         network_respond: [{payload: ''}]
     steps:
       - {name: matching-query-includes-response-body, input: {path: '/opentracing?bar=bar'}, output: {status: 200, body: {equals: "opentracing\n"}}, wait: 1s}
@@ -291,7 +291,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '(?s)^<14>1 .* \[tok@41058 tag="apisix"\] \{.*"querystring":\{"foo":"bar"\}.*"response":\{.*"status":200.*\}.*\}$'}
+          - payload: {matches: '(?s)^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{.*"querystring":\{"foo":"bar"\}.*"response":\{.*"status":200.*\}.*\}$'}
             forbidden_matches: ['"body":"opentracing']
         network_respond: [{payload: ''}]
     steps:
@@ -386,11 +386,11 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"localhost","route_id":"1"\}$'}
+          - payload: {matches: '^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"127\.0\.0\.1","route_id":"1"\}$'}
             forbidden_matches: ['"request":', '"response":']
         network_respond: [{payload: ''}]
     steps:
-      - {name: metadata-format-is-used, input: {path: '/opentracing?foo=bar', headers: {Host: localhost}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+      - {name: metadata-format-is-used, input: {path: '/opentracing?foo=bar', headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: http-bulk-endpoint-body-and-tags
     source: {file: t/plugin/loggly.t, tests: [15]}
@@ -454,7 +454,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '^<9>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
+          - payload: {matches: '^<9>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
         network_respond: [{payload: ''}]
     steps:
       - {name: alert-prival, input: {path: /loggly/410}, output: {status: 410, body: {equals: "expired link\n"}}, wait: 1s}
@@ -474,7 +474,7 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '^<11>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
+          - payload: {matches: '^<11>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"route_id":"1"\}$'}
         network_respond: [{payload: ''}]
     steps:
       - {name: err-prival, input: {path: /loggly/503}, output: {status: 503, body: {equals: "service temporarily unavailable\n"}}, wait: 1s}
@@ -499,11 +499,11 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: {matches: '^<14>1 [^ ]+ [^ ]+ apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"localhost","route_id":"1"\}$'}
+          - payload: {matches: '^<14>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[tok@41058 tag="apisix"\] \{"client":"127\.0\.0\.1","host":"127\.0\.0\.1","route_id":"1"\}$'}
             forbidden_matches: ['metadata_only']
         network_respond: [{payload: ''}]
     steps:
-      - {name: route-format-is-live, input: {path: /opentracing, headers: {Host: localhost}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
+      - {name: route-format-is-live, input: {path: /opentracing, headers: {Host: 127.0.0.1}}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 
   - name: route-log-format-hit
     source: {file: t/plugin/loggly.t, tests: [20]}

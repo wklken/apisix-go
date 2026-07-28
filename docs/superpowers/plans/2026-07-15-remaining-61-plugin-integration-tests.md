@@ -878,7 +878,15 @@ The original checked state was not supported by the manifests. This audit compar
   failure, and structured Responses input text is guarded. Package, race,
   exact real-process, corpus, scoped lint, build, post-integration, and
   task-review gates pass.
-- [ ] `ai-rag` — one generic provider request omits embedding/retrieval exchanges, constructed context/prompt, headers, failures, and streaming.
+- [x] `ai-rag` — all 17 pinned blocks map exactly once to real standalone
+  embedding and vector-search exchanges, provider auth/header/body assertions,
+  Chat and Responses RAG injection, exact validation and provider failures,
+  TLS verification defaults, and disabled-verification cases. The source cases
+  also exposed and fixed ordinary upstream `pass_host` semantics, validation,
+  standard-port formatting, and IPv6-safe node authorities while preserving
+  traffic-split and proxy-rewrite precedence. Package, route, race, exact
+  real-process, corpus, scoped lint, build, post-integration, and task-review
+  gates pass.
 - [ ] `ai-rate-limiting` — one quota probe per source omits token estimation, windows/counters, consumer isolation, expressions, headers, and rejection transitions.
 - [x] `ai-request-rewrite` — all 19 pinned blocks map exactly once to real
   standalone cases covering provider/schema validation, default OpenAI,
@@ -902,10 +910,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 ## Corrected Self-Review Results
 
-- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 28 task-review-approved and 33 remaining.
+- **Inventory:** The ledger contains the exact 61 unique manifests from Tasks 4-13: 29 task-review-approved and 32 remaining.
 - **Behavioral placeholders:** Thirty manifests use a generic source-file case pattern; the named manifests were separately checked for claimed blocks that have no behaviorally equivalent request or assertion.
 - **Harness gaps:** Task 3 protocol coverage and Task 13 streaming/disconnect primitives remain unchecked and are listed before the plugin ledger.
-- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 33 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
+- **Completion boundary:** Task 14 and PR readiness remain unchecked until all 32 remaining manifests, the strengthened semantic gate, and the complete repository gates pass.
 
 ## Recheck: 2026-07-18
 
@@ -1145,7 +1153,7 @@ Execution waves:
 - [ ] `skywalking`
 - [ ] `ai-aws-content-moderation`
 - [x] `ai-prompt-guard`
-- [ ] `ai-rag`
+- [x] `ai-rag`
 - [x] `ai-request-rewrite`
 
 Execution waves:
@@ -1266,8 +1274,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-28
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 28 manifests
-are task-review-approved and 33 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 29 manifests
+are task-review-approved and 32 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1276,14 +1284,17 @@ ordering. They classify the intrinsic implementation and review risk exposed by
 the pinned source cases, not merely the number of commands left to land an
 already-implemented branch.
 
-### Easy — 1 remaining (4 at replan)
+### Easy — 0 remaining (4 at replan)
 
 - [x] `ai-prompt-guard` — 44 blocks; existing HTTP/JSON fixtures and package
   behavior cover the needed schema, pattern, role, malformed-body, and
   pass-through cases.
-- [ ] `ai-rag` — 17 blocks; two deterministic HTTP exchanges, auth/header
-  assertions, Responses API context injection, failures, and TLS defaults fit
-  the current harness.
+- [x] `ai-rag` — all 17 blocks are source-complete with deterministic
+  embedding/vector fixtures, exact Chat and Responses transformations,
+  provider failures and logs, TLS defaults, and meaningful upstream Host
+  assertions. The approved range includes the shared `pass_host` route fix and
+  passed its post-integration package, route, race, real-process, corpus, lint,
+  and build gates.
 - [x] `ai-request-rewrite` — all 19 blocks are source-complete. Default
   provider endpoints are observed through local CONNECT fixtures, successful
   rewrites preserve the pinned `/anything` request/replay contract, provider

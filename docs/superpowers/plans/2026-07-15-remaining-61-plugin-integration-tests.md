@@ -941,6 +941,19 @@ limited to the current file are not equivalent. Its bounded owner starts only
 after the reviewed File Logger writer registry and adds workdir-confined
 archive glob/count/content/signature assertions as needed.
 
+The `http-logger` audit confirms 114 blocks across seven sources:
+`http-logger-json.t`, `http-logger-large-body.t`,
+`http-logger-log-format.t`, `http-logger-new-line.t`, `http-logger.t`,
+`http-logger2.t`, and `http-logger3.t`. It stays Medium because the existing
+HTTP/TLS/reload/shutdown foundations are sufficient, but starts only after
+File Logger: both need nested/default formatting, bounded body capture, and
+depth handling. HTTP Logger then exclusively owns its typed HTTP sink
+assertions and any `logger_batch` serialization required to prove that a later
+batch cannot overtake an in-flight or retrying earlier batch. Every sink must
+assert request count, endpoint, content type, batch cardinality, ordering, and
+the relevant payload fields or absences; seven generic `/probe` deliveries are
+not completion evidence.
+
 The `wolf-rbac` audit corrected its source surface from 42 blocks in one file
 to 44 blocks across two files: all of `wolf-rbac.t` plus Wolf-specific
 `security-warning2.t` tests 19–20. The eight Wolf public-endpoint dispatch cases

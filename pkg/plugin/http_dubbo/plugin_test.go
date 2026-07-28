@@ -189,6 +189,19 @@ func TestServeDubboReturnsApplicationExceptionPayload(t *testing.T) {
 	}
 }
 
+func TestServeDubboReturnsInternalServerErrorForUnexpectedResponseStatus(t *testing.T) {
+	upstream, _ := startDubboTestServer(t, dubboFrame("0\n"))
+	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
+	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
+	rr := httptest.NewRecorder()
+
+	p.ServeDubbo(rr, req, upstream)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
+	}
+}
+
 func TestServeDubboReturnsBadGatewayOnTCPFailure(t *testing.T) {
 	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))

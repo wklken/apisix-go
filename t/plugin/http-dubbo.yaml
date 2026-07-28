@@ -1,42 +1,150 @@
-cases:
-    - config:
-        routes:
-            - id: http-dubbo-source-1
-              plugins:
-                http-dubbo:
-                    method: echo
-                    service_name: integration.Service
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: dubbo
-          name: primary
-          network_expect:
-            - payload_base64: {matches: '^2rvG'}
-          network_respond:
-            - payload_base64: 2rsAFAAAAAAAAAABAAAACzEKcmVzcG9uc2UK
-      name: http-dubbo-source-1
-      source:
-        file: t/plugin/http-dubbo.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: dubbo-request-is-serialized-and-decoded
-          output:
-            body: {equals: response}
-            status: 200
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/http-dubbo.t
-      tests: 5
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/http-dubbo.t
+    tests: 5
+
+cases:
+  - name: pojo-serialized-request-and-response
+    source: {file: t/plugin/http-dubbo.t, tests: [1]}
+    config:
+      routes:
+        - id: http-dubbo-pojo
+          uri: /t
+          plugins:
+            http-dubbo:
+              service_name: org.apache.dubbo.backend.DubboSerializationTestService
+              params_type_desc: Lorg/apache/dubbo/backend/PoJo;
+              serialized: true
+              method: testPoJo
+              service_version: 1.0.0
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.backend.ADDR}}': 1}
+    fixtures:
+      - name: backend
+        kind: dubbo
+        network_expect:
+          - payload_base64: {equals: 2rvGAAAAAAAAAAABAAABICIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdFBvSm8iCiJMb3JnL2FwYWNoZS9kdWJiby9iYWNrZW5kL1BvSm87Igp7ImFCb29sZWFuIjp0cnVlLCJhQnl0ZSI6MSwiYURvdWJsZSI6MS4xLCJhRmxvYXQiOjEuMiwiYUludCI6MiwiYUxvbmciOjMsImFTaG9ydCI6NCwiYVN0cmluZyI6ImFhIiwiYWNoYXJhY3RlciI6ImEiLCJzdHJpbmdNYXAiOnsia2V5IjoidmFsdWUifSwic3RyaW5ncyI6WyJhYSIsImJiIl19Cnt9Cg==}
+        network_respond:
+          - payload_base64: 2rvGFAAAAAAAAAABAAAAqTEKeyJhQm9vbGVhbiI6dHJ1ZSwiYUJ5dGUiOjEsImFEb3VibGUiOjEuMSwiYUZsb2F0IjoxLjIsImFJbnQiOjIsImFMb25nIjozLCJhU2hvcnQiOjQsImFTdHJpbmciOiJhYSIsImFjaGFyYWN0ZXIiOiJhIiwic3RyaW5nTWFwIjp7ImtleSI6InZhbHVlIn0sInN0cmluZ3MiOlsiYWEiLCJiYiJdfQo=
+    steps:
+      - name: pojo-is-serialized-to-dubbo-and-returned
+        input:
+          method: POST
+          path: /t
+          body: '{"aBoolean":true,"aByte":1,"aDouble":1.1,"aFloat":1.2,"aInt":2,"aLong":3,"aShort":4,"aString":"aa","acharacter":"a","stringMap":{"key":"value"},"strings":["aa","bb"]}'
+        output:
+          status: 200
+          body: {equals: '{"aBoolean":true,"aByte":1,"aDouble":1.1,"aFloat":1.2,"aInt":2,"aLong":3,"aShort":4,"aString":"aa","acharacter":"a","stringMap":{"key":"value"},"strings":["aa","bb"]}'}
+
+  - name: pojo-array-serialized-request-and-response
+    source: {file: t/plugin/http-dubbo.t, tests: [2]}
+    config:
+      routes:
+        - id: http-dubbo-pojos
+          uri: /t
+          plugins:
+            http-dubbo:
+              service_name: org.apache.dubbo.backend.DubboSerializationTestService
+              params_type_desc: '[Lorg/apache/dubbo/backend/PoJo;'
+              serialized: true
+              method: testPoJos
+              service_version: 1.0.0
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.backend.ADDR}}': 1}
+    fixtures:
+      - name: backend
+        kind: dubbo
+        network_expect:
+          - payload_base64: {equals: 2rvGAAAAAAAAAAABAAABJCIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdFBvSm9zIgoiW0xvcmcvYXBhY2hlL2R1YmJvL2JhY2tlbmQvUG9KbzsiClt7ImFCb29sZWFuIjp0cnVlLCJhQnl0ZSI6MSwiYURvdWJsZSI6MS4xLCJhRmxvYXQiOjEuMiwiYUludCI6MiwiYUxvbmciOjMsImFTaG9ydCI6NCwiYVN0cmluZyI6ImFhIiwiYWNoYXJhY3RlciI6ImEiLCJzdHJpbmdNYXAiOnsia2V5IjoidmFsdWUifSwic3RyaW5ncyI6WyJhYSIsImJiIl19XQp7fQo=}
+        network_respond:
+          - payload_base64: 2rvGFAAAAAAAAAABAAAAqzEKW3siYUJvb2xlYW4iOnRydWUsImFCeXRlIjoxLCJhRG91YmxlIjoxLjEsImFGbG9hdCI6MS4yLCJhSW50IjoyLCJhTG9uZyI6MywiYVNob3J0Ijo0LCJhU3RyaW5nIjoiYWEiLCJhY2hhcmFjdGVyIjoiYSIsInN0cmluZ01hcCI6eyJrZXkiOiJ2YWx1ZSJ9LCJzdHJpbmdzIjpbImFhIiwiYmIiXX1dCg==
+    steps:
+      - name: pojo-array-is-serialized-to-dubbo-and-returned
+        input:
+          method: POST
+          path: /t
+          body: '[{"aBoolean":true,"aByte":1,"aDouble":1.1,"aFloat":1.2,"aInt":2,"aLong":3,"aShort":4,"aString":"aa","acharacter":"a","stringMap":{"key":"value"},"strings":["aa","bb"]}]'
+        output:
+          status: 200
+          body: {equals: '[{"aBoolean":true,"aByte":1,"aDouble":1.1,"aFloat":1.2,"aInt":2,"aLong":3,"aShort":4,"aString":"aa","acharacter":"a","stringMap":{"key":"value"},"strings":["aa","bb"]}]'}
+
+  - name: connect-timeout-returns-bad-gateway
+    source: {file: t/plugin/http-dubbo.t, tests: [3]}
+    config:
+      routes:
+        - id: http-dubbo-timeout
+          uri: /t
+          plugins:
+            http-dubbo:
+              service_name: org.apache.dubbo.backend.DubboSerializationTestService
+              params_type_desc: '[Lorg/apache/dubbo/backend/PoJo;'
+              serialized: true
+              method: testPoJos
+              service_version: 1.0.0
+              connect_timeout: 100
+              read_timeout: 100
+              send_timeout: 100
+          upstream:
+            type: roundrobin
+            nodes: {'127.0.0.1:30881': 1}
+    input: {method: GET, path: /t}
+    output:
+      status: 502
+      logs: {matches: failed to connect to upstream}
+
+  - name: void-response
+    source: {file: t/plugin/http-dubbo.t, tests: [4]}
+    config:
+      routes:
+        - id: http-dubbo-void
+          uri: /t
+          plugins:
+            http-dubbo:
+              service_name: org.apache.dubbo.backend.DubboSerializationTestService
+              serialized: true
+              method: testVoid
+              service_version: 1.0.0
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.backend.ADDR}}': 1}
+    fixtures:
+      - name: backend
+        kind: dubbo
+        network_expect:
+          - payload_base64: {equals: 2rvGAAAAAAAAAAABAAAAWiIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdFZvaWQiCiIiCnt9Cg==}
+        network_respond:
+          - payload_base64: 2rvGFAAAAAAAAAABAAAAAjIK
+    steps:
+      - name: void-response-is-returned-without-body
+        input: {method: GET, path: /t}
+        output: {status: 200}
+
+  - name: upstream-failure-returns-internal-server-error
+    source: {file: t/plugin/http-dubbo.t, tests: [5]}
+    config:
+      routes:
+        - id: http-dubbo-failure
+          uri: /t
+          plugins:
+            http-dubbo:
+              service_name: org.apache.dubbo.backend.DubboSerializationTestService
+              serialized: true
+              method: testFailure
+              service_version: 1.0.0
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.backend.ADDR}}': 1}
+    fixtures:
+      - name: backend
+        kind: dubbo
+        network_expect:
+          - payload_base64: {equals: 2rvGAAAAAAAAAAABAAAAXSIyLjAuMiIKIm9yZy5hcGFjaGUuZHViYm8uYmFja2VuZC5EdWJib1NlcmlhbGl6YXRpb25UZXN0U2VydmljZSIKIjEuMC4wIgoidGVzdEZhaWx1cmUiCiIiCnt9Cg==}
+        network_respond:
+          - payload_base64: 2rvGFAAAAAAAAAABAAAAAjAK
+    steps:
+      - name: upstream-failure-is-internal-server-error
+        input: {method: GET, path: /t}
+        output: {status: 500}

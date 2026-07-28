@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
 )
@@ -130,6 +131,7 @@ func ServeDubbo(w http.ResponseWriter, r *http.Request, target string, cfg Confi
 	result := serveDubboAttempt(r, target, cfg)
 	reportDubboOutcome(r, result)
 	if result.err != nil {
+		logger.Errorf("%s", result.err)
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
@@ -167,6 +169,7 @@ func ServeDubboWithRetries(
 	}
 
 	if result.err != nil {
+		logger.Errorf("%s", result.err)
 		base.WriteJSONMessage(w, dubboErrorStatus(r.Context(), result.err), result.err.Error())
 		return
 	}
@@ -437,7 +440,7 @@ func readDubboResponse(conn net.Conn) (int, string, error) {
 		}
 		return http.StatusOK, strings.TrimSuffix(strings.TrimSuffix(body, "\n"), "\r"), nil
 	default:
-		return 0, "", fmt.Errorf("unexpected Dubbo body status %q", bodyStatus)
+		return http.StatusInternalServerError, "", nil
 	}
 }
 

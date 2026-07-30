@@ -53,10 +53,11 @@ func TestDecryptPluginConfigsPreservesAIRateLimitingRedisPassword(t *testing.T) 
 }
 
 func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
-	key := "qeddd145sfvddff3"
+	key := "edd1c9f0985e76a2"
+	ciphertextShapedPlaintext := "OqkDYcQx4FvgBsxFCybRzg=="
 	configs := map[string]any{
 		"ai-rate-limiting": map[string]any{
-			"redis_password":    "redis-secret",
+			"redis_password":    ciphertextShapedPlaintext,
 			"sentinel_password": "sentinel-secret",
 		},
 		"basic-auth": map[string]any{"password": "basic-secret"},
@@ -68,7 +69,7 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 	}
 	config := configs["ai-rate-limiting"].(map[string]any)
 	for field, plaintext := range map[string]string{
-		"redis_password":    "redis-secret",
+		"redis_password":    ciphertextShapedPlaintext,
 		"sentinel_password": "sentinel-secret",
 	} {
 		ciphertext, ok := config[field].(string)
@@ -100,13 +101,14 @@ func TestEncryptPluginConfigsEncryptsRegisteredFieldsAtRest(t *testing.T) {
 }
 
 func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.T) {
-	key := "qeddd145sfvddff3"
+	key := "edd1c9f0985e76a2"
 	alreadyEncrypted := encryptForTest(t, key, "already-encrypted")
+	ciphertextShapedPlaintext := "OqkDYcQx4FvgBsxFCybRzg=="
 	configs := map[string]any{
 		"ai-proxy": map[string]any{"auth": map[string]any{
 			"header": map[string]any{
-				"Authorization": "Bearer secret",
-				"X-Encrypted":   alreadyEncrypted,
+				"Authorization": ciphertextShapedPlaintext,
+				"X-Encrypted":   "$encrypted://" + alreadyEncrypted,
 			},
 		}},
 		"feishu-auth": map[string]any{
@@ -118,7 +120,7 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 		t.Fatalf("EncryptPluginConfigs() error = %v", err)
 	}
 	header := configs["ai-proxy"].(map[string]any)["auth"].(map[string]any)["header"].(map[string]any)
-	if header["Authorization"] == "Bearer secret" {
+	if header["Authorization"] == ciphertextShapedPlaintext {
 		t.Fatal("ai-proxy.auth.header.Authorization remained plaintext")
 	}
 	if header["X-Encrypted"] != alreadyEncrypted {
@@ -130,7 +132,7 @@ func TestEncryptPluginConfigsRecursivelyEncryptsRegisteredContainers(t *testing.
 	}
 
 	DecryptPluginConfigs(configs, []string{key})
-	if header["Authorization"] != "Bearer secret" || header["X-Encrypted"] != "already-encrypted" {
+	if header["Authorization"] != ciphertextShapedPlaintext || header["X-Encrypted"] != "already-encrypted" {
 		t.Fatalf("ai-proxy runtime header = %#v, want plaintext leaves", header)
 	}
 	if fallbacks[0] != "old-secret-1" || fallbacks[1] != "old-secret-2" {
@@ -167,6 +169,21 @@ func TestEncryptPluginConfigsEncryptsElasticsearchAuthorizationHeaderAtRest(t *t
 				t.Fatalf("runtime %s = %v, want plaintext", headerName, headers[headerName])
 			}
 		})
+	}
+}
+
+func TestEncryptRegisteredFieldRejectsInvalidExplicitCiphertext(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	configs := map[string]any{
+		"ai-rate-limiting": map[string]any{"redis_password": "$encrypted://not-base64"},
+	}
+	if err := EncryptPluginConfigs(configs, []string{key}); err == nil {
+		t.Fatal("EncryptPluginConfigs() accepted invalid explicit ciphertext")
+	}
+
+	metadata := map[string]any{"master_apikey": "$encrypted://not-base64"}
+	if err := EncryptPluginMetadata("azure-functions", metadata, []string{key}); err == nil {
+		t.Fatal("EncryptPluginMetadata() accepted invalid explicit ciphertext")
 	}
 }
 

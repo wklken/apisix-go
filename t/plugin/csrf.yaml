@@ -290,7 +290,7 @@ cases:
           uri: /hello
           plugins:
             csrf:
-              key: mt39FazQccyMqt4ctoRV7w==
+              key: $encrypted://mt39FazQccyMqt4ctoRV7w==
               expires: 1000000000
           upstream: *fixture_route
     input:

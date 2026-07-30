@@ -193,14 +193,17 @@ func TestStandaloneFileWatcherEncryptsAIRateLimitingPasswordsBeforeStoreEvents(t
 }
 
 func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *testing.T) {
-	const key = "qeddd145sfvddff3"
+	const (
+		key                       = "edd1c9f0985e76a2"
+		ciphertextShapedPlaintext = "OqkDYcQx4FvgBsxFCybRzg=="
+	)
 	data_encryption.Configure(true, []string{key})
 	t.Cleanup(func() { data_encryption.Configure(false, nil) })
 
 	path := filepath.Join(t.TempDir(), "apisix.yaml")
 	content := `plugin_metadata:
   - id: azure-functions
-    master_apikey: master-plaintext
+    master_apikey: ` + ciphertextShapedPlaintext + `
     master_clientid: master-client
 #END
 `
@@ -218,7 +221,7 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 	storage.Sync()
 
 	raw := storage.GetFromBucket("plugin_metadata", []byte("azure-functions"))
-	if strings.Contains(string(raw), "master-plaintext") {
+	if strings.Contains(string(raw), ciphertextShapedPlaintext) {
 		t.Fatalf("stored plugin metadata contains plaintext secret: %s", raw)
 	}
 	var stored map[string]any
@@ -230,8 +233,8 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 		t.Fatalf("stored master_apikey = %T, want ciphertext string", stored["master_apikey"])
 	}
 	if decrypted, err := data_encryption.Decrypt(ciphertext, []string{key}); err != nil ||
-		decrypted != "master-plaintext" {
-		t.Fatalf("Decrypt(master_apikey) = (%q, %v), want master-plaintext", decrypted, err)
+		decrypted != ciphertextShapedPlaintext {
+		t.Fatalf("Decrypt(master_apikey) = (%q, %v), want %q", decrypted, err, ciphertextShapedPlaintext)
 	}
 
 	var runtimeMetadata struct {
@@ -241,7 +244,7 @@ func TestStandaloneFileWatcherEncryptsPluginMetadataBeforeRuntimeDecryption(t *t
 	if err := store.GetPluginMetadata("azure-functions", &runtimeMetadata); err != nil {
 		t.Fatalf("GetPluginMetadata() error = %v", err)
 	}
-	if runtimeMetadata.MasterAPIKey != "master-plaintext" ||
+	if runtimeMetadata.MasterAPIKey != ciphertextShapedPlaintext ||
 		runtimeMetadata.MasterClientID != "master-client" {
 		t.Fatalf("runtime plugin metadata = %#v, want decrypted secret", runtimeMetadata)
 	}

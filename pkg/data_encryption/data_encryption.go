@@ -11,6 +11,8 @@ import (
 	"sync"
 )
 
+const encryptedValuePrefix = "$encrypted://"
+
 var runtimeConfig struct {
 	sync.RWMutex
 	enabled bool
@@ -201,8 +203,14 @@ func encryptValue(value any, keyring []string) (any, error) {
 		if typed == "" {
 			return typed, nil
 		}
-		if _, err := Decrypt(typed, keyring); err == nil {
-			return typed, nil
+		if ciphertext, ok := strings.CutPrefix(typed, encryptedValuePrefix); ok {
+			if ciphertext == "" {
+				return nil, ErrInvalidCiphertext
+			}
+			if _, err := Decrypt(ciphertext, keyring); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrInvalidCiphertext, err)
+			}
+			return ciphertext, nil
 		}
 		return Encrypt(typed, keyring[0])
 	case map[string]any:

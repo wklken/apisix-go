@@ -634,8 +634,8 @@ cases:
           plugins:
             feishu-auth:
               app_id: "123"
-              app_secret: v4h4Y9wGygE5KgQl2LqB0A==
-              secret: c1ElaJjP0tvbFd/NPoqVHp2aAyWHc9iiq0MQrMuHxM0=
+              app_secret: $encrypted://v4h4Y9wGygE5KgQl2LqB0A==
+              secret: $encrypted://c1ElaJjP0tvbFd/NPoqVHp2aAyWHc9iiq0MQrMuHxM0=
               auth_redirect_uri: https://example.com
               access_token_url: "{{FIXTURE.feishu.URL}}/token"
               userinfo_url: "{{FIXTURE.feishu.URL}}/userinfo"
@@ -692,10 +692,10 @@ cases:
               plugins:
                 feishu-auth:
                   app_id: "123"
-                  app_secret: v4h4Y9wGygE5KgQl2LqB0A==
-                  secret: VBzPrEUYJ4aCiMen6pWeTTuzPkVclGfhgCeZ2mQweHA=
+                  app_secret: $encrypted://v4h4Y9wGygE5KgQl2LqB0A==
+                  secret: $encrypted://VBzPrEUYJ4aCiMen6pWeTTuzPkVclGfhgCeZ2mQweHA=
                   secret_fallbacks:
-                    - c1ElaJjP0tvbFd/NPoqVHp2aAyWHc9iiq0MQrMuHxM0=
+                    - $encrypted://c1ElaJjP0tvbFd/NPoqVHp2aAyWHc9iiq0MQrMuHxM0=
                   auth_redirect_uri: https://example.com
                   access_token_url: "{{FIXTURE.feishu.URL}}/token"
                   userinfo_url: "{{FIXTURE.feishu.URL}}/userinfo"

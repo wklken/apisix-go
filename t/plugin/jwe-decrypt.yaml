@@ -127,8 +127,8 @@ cases:
         - username: jack
           plugins:
             jwe-decrypt:
-              key: XU29sA3FEVF68hGcdPo7sg==
-              secret: f9pGB0Dt4gYNCLKiINPfVSviKjQs2zfkBCT4+XZ3mDABZkJTr0orzYRD5CptDKMc
+              key: $encrypted://XU29sA3FEVF68hGcdPo7sg==
+              secret: $encrypted://f9pGB0Dt4gYNCLKiINPfVSviKjQs2zfkBCT4+XZ3mDABZkJTr0orzYRD5CptDKMc
       routes:
         - id: jwe-decrypt-encrypted-consumer
           uri: /encrypted-consumer

@@ -285,7 +285,7 @@ cases:
               callback_url: "{{APISIX_URL}}/anything/callback"
               endpoint_addr: "{{FIXTURE.casdoor.URL}}"
               client_id: 7ceb9b7fda4a9061ec1c
-              client_secret: YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
+              client_secret: $encrypted://YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
     fixtures:
       - name: casdoor
         kind: http

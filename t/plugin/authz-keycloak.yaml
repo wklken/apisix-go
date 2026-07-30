@@ -757,7 +757,7 @@ cases:
           plugins:
             authz-keycloak:
               client_id: course_management
-              client_secret: YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
+              client_secret: $encrypted://YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
               token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
               password_grant_token_generation_incoming_uri: /api/token
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}

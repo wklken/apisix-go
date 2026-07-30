@@ -398,13 +398,14 @@ cases:
 
   - name: multi-endpoint-random-selection
     source: {file: t/plugin/elasticsearch-logger.t, tests: [14]}
+    environment: {GODEBUG: randautoseed=0}
     config:
       routes:
         - id: multi-endpoint-selection
           uri: /hello
           plugins:
             elasticsearch-logger:
-              endpoint_addrs: ['{{FIXTURE.sink.URL}}', 'http://localhost:{{FIXTURE.sink.PORT}}']
+              endpoint_addrs: ['{{FIXTURE.firstSink.URL}}', '{{FIXTURE.secondSink.URL}}']
               field: {index: services}
               batch_max_size: 1
               inactive_timeout: 1
@@ -417,15 +418,19 @@ cases:
           - {method: GET, path: {equals: /hello}}
         count: {at_least: 12, at_most: 12, timeout: 2s}
         respond: [{status: 200, body: hello world}]
-      - name: sink
+      - name: firstSink
+        kind: http
+        expect:
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
+        respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
+      - name: secondSink
         kind: http
         expect:
           - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
           - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
           - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}
           - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-selection"\}\n$'}}

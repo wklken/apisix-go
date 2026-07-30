@@ -29,13 +29,7 @@ func TestStandaloneManifestMapsExactUpstreamBlocks(t *testing.T) {
 			File   string `yaml:"file"`
 			Tests  int    `yaml:"tests"`
 		} `yaml:"source"`
-		Cases []struct {
-			Name     string         `yaml:"name"`
-			Source   manifestSource `yaml:"source"`
-			Config   map[string]any `yaml:"config"`
-			Fixtures []any          `yaml:"fixtures"`
-			Steps    []any          `yaml:"steps"`
-		} `yaml:"cases"`
+		Cases []manifestCase `yaml:"cases"`
 	}
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
@@ -73,11 +67,75 @@ func TestStandaloneManifestMapsExactUpstreamBlocks(t *testing.T) {
 			t.Errorf("case %d %q has no real request step", number, testCase.Name)
 		}
 	}
+	assertDeterministicMultiEndpointCase(t, manifest.Cases[13])
 }
 
 type manifestSource struct {
 	File  string `yaml:"file"`
 	Tests []int  `yaml:"tests"`
+}
+
+type manifestCase struct {
+	Name        string            `yaml:"name"`
+	Source      manifestSource    `yaml:"source"`
+	Environment map[string]string `yaml:"environment"`
+	Config      map[string]any    `yaml:"config"`
+	Fixtures    []manifestFixture `yaml:"fixtures"`
+	Steps       []any             `yaml:"steps"`
+}
+
+type manifestFixture struct {
+	Name   string `yaml:"name"`
+	Expect []struct {
+		Method string `yaml:"method"`
+	} `yaml:"expect"`
+}
+
+func assertDeterministicMultiEndpointCase(t *testing.T, testCase manifestCase) {
+	t.Helper()
+
+	if testCase.Environment["GODEBUG"] != "randautoseed=0" {
+		t.Fatalf("source block 14 GODEBUG = %q, want deterministic randautoseed=0", testCase.Environment["GODEBUG"])
+	}
+	routes := testCase.Config["routes"].([]any)
+	route := routes[0].(map[string]any)
+	plugins := route["plugins"].(map[string]any)
+	logger := plugins["elasticsearch-logger"].(map[string]any)
+	endpoints := logger["endpoint_addrs"].([]any)
+	if len(endpoints) != 2 ||
+		endpoints[0] != "{{FIXTURE.firstSink.URL}}" ||
+		endpoints[1] != "{{FIXTURE.secondSink.URL}}" {
+		t.Fatalf("source block 14 endpoint_addrs = %v, want two distinct fixture URLs", endpoints)
+	}
+
+	fixtures := make(map[string]manifestFixture, len(testCase.Fixtures))
+	for _, fixture := range testCase.Fixtures {
+		fixtures[fixture.Name] = fixture
+	}
+	first, firstOK := fixtures["firstSink"]
+	second, secondOK := fixtures["secondSink"]
+	if !firstOK || !secondOK {
+		t.Fatalf("source block 14 fixtures = %v, want firstSink and secondSink", fixtures)
+	}
+	gets, posts := 0, 0
+	for _, fixture := range []manifestFixture{first, second} {
+		fixturePosts := 0
+		for _, expectation := range fixture.Expect {
+			switch expectation.Method {
+			case "GET":
+				gets++
+			case "POST":
+				posts++
+				fixturePosts++
+			}
+		}
+		if fixturePosts == 0 {
+			t.Fatalf("source block 14 fixture %s has no bulk POST expectation", fixture.Name)
+		}
+	}
+	if gets != 1 || posts != 12 {
+		t.Fatalf("source block 14 sink expectations = %d GET + %d POST, want 1 GET + 12 POST", gets, posts)
+	}
 }
 
 func assertNoYAMLAliasesOrMerges(t *testing.T, node *yaml.Node) {

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -53,6 +55,8 @@ const (
 	maxVaryVariants   = 64
 	diskCleanupPeriod = time.Minute
 )
+
+var registerPurgeMethodOnce sync.Once
 
 var identityVars = map[string]struct{}{
 	"$consumer_name":      {},
@@ -524,6 +528,9 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Init() error {
+	registerPurgeMethodOnce.Do(func() {
+		chi.RegisterMethod(purgeMethod)
+	})
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
@@ -1052,6 +1059,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if !p.cacheableMethod(r.Method) {
+			if p.config.CacheStrategy == "memory" {
+				w.Header().Set(cacheStatusHeader, "MISS")
+			} else {
+				w.Header().Set(cacheStatusHeader, "BYPASS")
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

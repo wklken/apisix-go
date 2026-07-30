@@ -849,7 +849,14 @@ The original checked state was not supported by the manifests. This audit compar
 - [ ] `limit-count` — repeated three-request probes omit much of the 252-block fixed/sliding window, delayed-sync, Sentinel/Cluster, group sharing, metadata, reset header, and state-transition matrix.
 - [ ] `limit-req` — simple burst probes omit delay versus `nodelay`, atomic Redis concurrency, shared routes, variable errors, authentication, degradation, and HTTP/2 cases.
 - [ ] `graphql-limit-count` — one generic GraphQL quota request replaces fragments, cost/depth calculation, local/Redis/Cluster state, quota transitions, and schema rejection.
-- [ ] `proxy-cache` — disk and memory MISS/HIT only; bypass/no-cache, expiry/TTL, Cache-Control, Set-Cookie, Vary, PURGE, consumer isolation, invalid zones, and persistence remain.
+- [x] `proxy-cache` — all 76 pinned disk and memory blocks map exactly once to
+  independent standalone cases covering schema and zone validation, MISS/HIT,
+  bypass/no-cache, expiry and Cache-Control directives, Set-Cookie/private
+  responses, Vary variants, PURGE, consumer isolation, invalid zones, and
+  on-disk persistence. The plugin now registers PURGE with Chi and reports the
+  APISIX-compatible unsupported-method cache status for disk and memory
+  strategies. Package/race, exact real-process normal/race, source/corpus and
+  isolated target-plugin gates, scoped lint, build, and diff checks pass.
 - [ ] `graphql-proxy-cache` — three MISS/HIT probes omit method/body/variables keying, invalid GraphQL requests, mutation bypass, purge failures, Vary, route/host isolation, and consumer isolation.
 
 #### Task 8 — Routing, Workflow, Batch, and Dubbo
@@ -1422,8 +1429,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 48 manifests
-are integrated and verified and 13 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 49 manifests
+are integrated and verified and 12 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1573,7 +1580,8 @@ already-implemented branch.
   post-integration package/config/data-encryption/Store, race, real-process,
   pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `graphql-limit-count` — blocked on the Hard Redis owner.
-- [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
+- [ ] `graphql-proxy-cache` — the `proxy-cache` prerequisite is complete; its
+  48 pinned GraphQL cache blocks remain to be converted and verified.
 - [x] `workflow` — all 42 pinned blocks are independent, source-complete,
   alias-free standalone cases with unconditional and conditional rule
   evaluation, ordered fallthrough, isolated limiter state, schema rejection,
@@ -1581,7 +1589,7 @@ already-implemented branch.
   `limit-conn` assertions. Package/race, exact real-process normal/race,
   source/corpus/target, scoped lint, build, and diff gates pass.
 
-### Hard — 10 remaining (15 at replan)
+### Hard — 9 remaining (15 at replan)
 
 - [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
@@ -1615,7 +1623,12 @@ already-implemented branch.
 - [ ] `limit-conn`
 - [ ] `limit-count`
 - [ ] `limit-req`
-- [ ] `proxy-cache`
+- [x] `proxy-cache` — all 76 pinned disk and memory blocks are independent,
+  source-complete, alias-free standalone cases covering schema/zones, cache
+  status transitions, bypass/no-cache, TTL and Cache-Control, Set-Cookie,
+  Vary, PURGE, consumer isolation, invalid zones, and persistence.
+  Package/race, exact real-process normal/race, source/corpus and isolated
+  target-plugin gates, scoped lint, build, and diff checks pass.
 - [ ] `traffic-split`
 - [ ] `rocketmq-logger`
 - [ ] `kafka-logger`

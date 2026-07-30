@@ -253,6 +253,13 @@ type responseRecorder struct {
 	wroteHeader bool
 }
 
+type quotaResponseWriter struct {
+	http.ResponseWriter
+	plugin      *Plugin
+	request     *http.Request
+	wroteHeader bool
+}
+
 func WithPickedAIInstanceName(r *http.Request, name string) *http.Request {
 	return ai_runtime.WithSelectedInstanceName(r, name)
 }
@@ -412,7 +419,13 @@ func (p *Plugin) resolveSecret(field, value string) (string, error) {
 }
 
 func (p *Plugin) SetResourceContext(route resource.Route, service resource.Service) {
-	p.resourceScope = "route:" + route.ID + ":service:" + service.ID
+	p.resourceScope = fmt.Sprintf(
+		"resource:%d:%s:%d:%s",
+		len(route.ID),
+		route.ID,
+		len(service.ID),
+		service.ID,
+	)
 }
 
 func (p *Plugin) refreshConfigIdentity() {
@@ -479,10 +492,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if state := ai_runtime.FromRequest(r); state != nil && state.Streaming() {
-			for _, q := range quotas {
-				p.writeQuotaHeaders(w.Header(), q)
-			}
-			next.ServeHTTP(w, r)
+			writer := &quotaResponseWriter{ResponseWriter: w, plugin: p, request: r}
+			next.ServeHTTP(writer, r)
+			writer.writeQuotaHeaders()
 			if len(p.config.Rules) == 0 {
 				if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
 					quotas = finalQuotas
@@ -499,9 +511,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		recorder := newResponseRecorder()
-		for _, q := range quotas {
-			p.writeQuotaHeaders(recorder.header, q)
-		}
 		next.ServeHTTP(recorder, r)
 		if len(p.config.Rules) == 0 {
 			if finalQuotas, ok, err := p.quotasForRequest(r); err == nil && ok {
@@ -509,6 +518,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			} else if err == nil {
 				quotas = nil
 			}
+		}
+		for _, q := range quotas {
+			p.writeQuotaHeaders(recorder.header, q)
 		}
 		usedTokens := p.responseTokenCostForRequest(r, recorder.body.Bytes())
 		if usedTokens > 0 {
@@ -519,6 +531,41 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		recorder.writeTo(w)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (w *quotaResponseWriter) WriteHeader(statusCode int) {
+	w.writeQuotaHeaders()
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *quotaResponseWriter) Write(body []byte) (int, error) {
+	w.writeQuotaHeaders()
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *quotaResponseWriter) Flush() {
+	w.writeQuotaHeaders()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *quotaResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *quotaResponseWriter) writeQuotaHeaders() {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	quotas, ok, err := w.plugin.quotasForRequest(w.request)
+	if err != nil || !ok {
+		return
+	}
+	for _, q := range quotas {
+		w.plugin.writeQuotaHeaders(w.Header(), q)
+	}
 }
 
 func (p *Plugin) firstRejectedQuota(quotas []quota) int {
@@ -998,7 +1045,7 @@ func (p *Plugin) snapshot(q quota) (int64, int64) {
 func (p *Plugin) redisKey(q quota) string {
 	scope := p.resourceScope
 	if scope == "" {
-		scope = "route::service:"
+		scope = "resource:0::0:"
 	}
 	return "apisix-go:ai-rate-limiting:" + scope + ":config:" + p.configIdentity + ":" + q.key
 }

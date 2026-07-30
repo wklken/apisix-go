@@ -254,8 +254,19 @@ func TestRedisCounterKeyIncludesResourceAndConfigurationIdentity(t *testing.T) {
 	if firstKey == reloaded.redisKey(q) {
 		t.Fatalf("changed configuration retained Redis key %q", firstKey)
 	}
-	if !strings.Contains(firstKey, "route:route-1") || !strings.Contains(firstKey, "service:service-1") {
-		t.Fatalf("Redis key = %q, want route and service identity", firstKey)
+
+	collisionA := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	collisionA.SetResourceContext(resource.Route{ID: "a:service:b"}, resource.Service{ID: "c"})
+	collisionB := newTestPlugin(t, Config{Limit: 10, TimeWindow: 60}, time.Now)
+	collisionB.SetResourceContext(resource.Route{ID: "a"}, resource.Service{ID: "b:service:c"})
+	if collisionA.redisKey(q) == collisionB.redisKey(q) {
+		t.Fatalf(
+			"delimiter-containing resource IDs share Redis counter key %q",
+			collisionA.redisKey(q),
+		)
+	}
+	if !strings.Contains(firstKey, "resource:7:route-1:9:service-1") {
+		t.Fatalf("Redis key = %q, want length-prefixed route and service identity", firstKey)
 	}
 }
 
@@ -562,6 +573,141 @@ func TestAIProxyMultiPublishesInstanceBeforeRateLimitPreflight(t *testing.T) {
 	}
 	if upstreamCalls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1", upstreamCalls.Load())
+	}
+}
+
+func TestAIProxyMultiFallbackPublishesOnlyFinalInstanceHeaders(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failed.Close()
+	success := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"total_tokens":3}}`))
+	}))
+	defer success.Close()
+
+	proxy := newFallbackMultiProxy(t, failed.URL, success.URL)
+	rate := newTestPlugin(t, Config{Instances: []InstanceLimit{
+		{Name: "model-a", Limit: 10, TimeWindow: 60},
+		{Name: "model-b", Limit: 20, TimeWindow: 60},
+	}}, time.Now)
+	handler := ai_runtime.EnableTerminal(proxy.Handler(rate.Handler(ai_runtime.TerminalHandler(http.HandlerFunc(func(
+		http.ResponseWriter,
+		*http.Request,
+	) {
+		t.Fatal("ordinary upstream called for AI request")
+	})))))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newMultiProxyRequest(false))
+	if response.Code != http.StatusOK {
+		t.Fatalf("response status = %d, want 200", response.Code)
+	}
+	assertFinalInstanceHeaders(t, response.Header(), "model-b", "20")
+	if got := rate.counters["instance:model-b"].used; got != 3 {
+		t.Fatalf("model-b used tokens = %d, want 3", got)
+	}
+	if got := rate.counters["instance:model-a"].used; got != 0 {
+		t.Fatalf("retryable model-a used tokens = %d, want 0", got)
+	}
+}
+
+func TestAIProxyMultiStreamingFallbackPublishesOnlyFinalInstanceHeaders(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failed.Close()
+	streamBody := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
+	success := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(streamBody))
+	}))
+	defer success.Close()
+
+	proxy := newFallbackMultiProxy(t, failed.URL, success.URL)
+	rate := newTestPlugin(t, Config{Instances: []InstanceLimit{
+		{Name: "model-a", Limit: 10, TimeWindow: 60},
+		{Name: "model-b", Limit: 20, TimeWindow: 60},
+	}}, time.Now)
+	handler := ai_runtime.EnableTerminal(proxy.Handler(rate.Handler(ai_runtime.TerminalHandler(http.HandlerFunc(func(
+		http.ResponseWriter,
+		*http.Request,
+	) {
+		t.Fatal("ordinary upstream called for streaming AI request")
+	})))))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newMultiProxyRequest(true))
+	if response.Code != http.StatusOK || response.Body.String() != streamBody {
+		t.Fatalf("response = (%d, %q), want exact successful stream", response.Code, response.Body.String())
+	}
+	if !response.Flushed {
+		t.Fatal("streaming fallback response was not flushed")
+	}
+	assertFinalInstanceHeaders(t, response.Header(), "model-b", "20")
+	if got := rate.counters["instance:model-b"].used; got != 6 {
+		t.Fatalf("model-b used tokens = %d, want 6", got)
+	}
+	if got := rate.counters["instance:model-a"].used; got != 0 {
+		t.Fatalf("retryable model-a stream used tokens = %d, want 0", got)
+	}
+}
+
+func newFallbackMultiProxy(t *testing.T, failedURL, successURL string) *ai_proxy_multi.Plugin {
+	t.Helper()
+	proxy := &ai_proxy_multi.Plugin{}
+	if err := proxy.Init(); err != nil {
+		t.Fatalf("proxy Init() error = %v", err)
+	}
+	*proxy.Config().(*ai_proxy_multi.Config) = ai_proxy_multi.Config{
+		FallbackStrategy: "http_5xx",
+		MaxRetries:       new(1),
+		Instances: []ai_proxy_multi.Instance{
+			{
+				Name: "model-a", Provider: "openai-compatible", Priority: 10, Weight: 1,
+				Override: ai_proxy_multi.Override{Endpoint: failedURL + "/v1/chat/completions"},
+			},
+			{
+				Name: "model-b", Provider: "openai-compatible", Priority: 0, Weight: 1,
+				Override: ai_proxy_multi.Override{Endpoint: successURL + "/v1/chat/completions"},
+			},
+		},
+	}
+	if err := proxy.PostInit(); err != nil {
+		t.Fatalf("proxy PostInit() error = %v", err)
+	}
+	return proxy
+}
+
+func newMultiProxyRequest(streaming bool) *http.Request {
+	body := `{"messages":[{"role":"user","content":"ping"}]}`
+	if streaming {
+		body = `{"messages":[{"role":"user","content":"ping"}],"stream":true}`
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request = apisixctx.WithRequestVars(request)
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+func assertFinalInstanceHeaders(t *testing.T, header http.Header, instance, remaining string) {
+	t.Helper()
+	for _, suffix := range []string{"Limit", "Remaining", "Reset"} {
+		if got := header.Get("X-AI-RateLimit-" + suffix + "-model-a"); got != "" {
+			t.Fatalf("initial model-a %s header = %q, want absent", suffix, got)
+		}
+	}
+	if got := header.Get("X-AI-RateLimit-Limit-" + instance); got != remaining {
+		t.Fatalf("final instance limit header = %q, want %q", got, remaining)
+	}
+	if got := header.Get("X-AI-RateLimit-Remaining-" + instance); got != remaining {
+		t.Fatalf("final instance remaining header = %q, want %q", got, remaining)
+	}
+	if got := header.Get("X-AI-RateLimit-Reset-" + instance); got != "60" {
+		t.Fatalf("final instance reset header = %q, want 60", got)
 	}
 }
 

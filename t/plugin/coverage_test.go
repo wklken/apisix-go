@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 var (
@@ -144,6 +146,16 @@ func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *tes
 	if err != nil {
 		t.Fatalf("read %s: %v", manifestFile, err)
 	}
+	if strings.Contains(string(data), "<<:") {
+		t.Fatalf("%s contains YAML merge keys", manifestFile)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode %s syntax tree: %v", manifestFile, err)
+	}
+	if node := firstYAMLAnchorOrAlias(&document); node != nil {
+		t.Fatalf("%s contains YAML anchor or alias %q", manifestFile, node.Value)
+	}
 	manifest, err := loadManifest(manifestFile, data)
 	if err != nil {
 		t.Fatalf("load %s: %v", manifestFile, err)
@@ -195,6 +207,18 @@ func TestAIRateLimitingManifestMapsExactlyOnePinnedBlockPerBehavioralCase(t *tes
 			t.Fatalf("%s mapped through test %d, want through test %d", file, got-1, want-1)
 		}
 	}
+}
+
+func firstYAMLAnchorOrAlias(node *yaml.Node) *yaml.Node {
+	if node.Anchor != "" || node.Kind == yaml.AliasNode {
+		return node
+	}
+	for _, child := range node.Content {
+		if found := firstYAMLAnchorOrAlias(child); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 func TestSourceCoverage(t *testing.T) {

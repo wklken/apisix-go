@@ -893,7 +893,15 @@ The original checked state was not supported by the manifests. This audit compar
   and invalid-resource cases. Package/route/logger-batch/Store/config/server,
   race, exact real-process, pinned-source, corpus, repeated metadata, scoped
   lint, build, post-integration, and task-review gates pass.
-- [ ] `elasticsearch-logger` — generic delivery omits index/type/auth configuration, bulk framing, log formats, batching/retry, and response failures.
+- [x] `elasticsearch-logger` — all 27 pinned blocks map exactly once to
+  independent standalone cases covering schema variants, version discovery,
+  index/type compatibility, password and Authorization-header authentication,
+  deterministic multi-endpoint delivery, bulk NDJSON framing, metadata and
+  route log formats, request/response body capture, and sink failures.
+  Plaintext credentials are encrypted at rest with case-insensitive
+  Authorization matching. Package/config/data-encryption/Store, race, exact
+  real-process, pinned-source, no-alias, corpus, scoped lint, build, and diff
+  gates pass.
 - [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
 - [ ] `sls-logger` — generic delivery omits Aliyun signing, project/logstore endpoint, structured log groups, credentials, batching, and failures.
 - [x] `splunk-hec-logging` — all 17 pinned blocks map exactly once to real standalone cases. The corpus validates schema diagnostics, non-blocking HEC auth failures, exact token/channel/content headers, rich and custom event envelopes, post-upstream variable resolution, three-event concatenated batching, keepalive configuration, standalone ciphertext decryption, additive non-clobber metadata extras, and deterministic pending-entry overflow. Package, race, strict corpus, repeated sensitive real-process, scoped lint, build, post-integration, and task-review gates pass.
@@ -963,7 +971,16 @@ The original checked state was not supported by the manifests. This audit compar
   traffic-split and proxy-rewrite precedence. Package, route, race, exact
   real-process, corpus, scoped lint, build, post-integration, and task-review
   gates pass.
-- [ ] `ai-rate-limiting` — one quota probe per source omits token estimation, windows/counters, consumer isolation, expressions, headers, and rejection transitions.
+- [x] `ai-rate-limiting` — all 58 pinned blocks across three source files map
+  exactly once to independent standalone cases. The corpus covers consumer
+  isolation, global/instance/rule quotas, token strategies and expressions,
+  windows, headers, rejection transitions, local/Redis/Sentinel state,
+  encrypted credentials, selected-instance fallback, and streaming charging.
+  Final-instance headers and counters are isolated after fallback, Redis
+  resource keys are collision-safe, and explicit ciphertext markers remove
+  plaintext ambiguity. Package/config/data-encryption/Store, race, exact
+  real-process, pinned-source, no-alias, corpus, scoped lint, build, and diff
+  gates pass.
 - [x] `ai-request-rewrite` — all 19 pinned blocks map exactly once to real
   standalone cases covering provider/schema validation, default OpenAI,
   DeepSeek, and AIMLAPI endpoint selection through offline CONNECT fixtures,
@@ -1203,7 +1220,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 9 remaining (28 listed)
+### Medium — 8 remaining (28 listed)
 
 - [x] `datadog`
 - [x] `basic-auth`
@@ -1221,7 +1238,7 @@ Execution waves:
 - [x] `http-logger`
 - [ ] `google-cloud-logging`
 - [x] `loggly`
-- [ ] `elasticsearch-logger`
+- [x] `elasticsearch-logger`
 - [ ] `sls-logger`
 - [ ] `tencent-cloud-cls`
 - [x] `tcp-logger`
@@ -1269,7 +1286,7 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 13 remaining (18 listed)
+### Hard — 12 remaining (18 listed)
 
 - [x] `key-auth`
 - [ ] `jwt-auth`
@@ -1287,7 +1304,7 @@ Execution waves:
 - [ ] `kafka-logger`
 - [ ] `error-log-logger`
 - [ ] `opentelemetry`
-- [ ] `ai-rate-limiting`
+- [x] `ai-rate-limiting`
 - [ ] `ai-proxy`
 
 Execution waves:
@@ -1352,11 +1369,11 @@ Execution waves:
   Workers must report these exact baseline failures separately and may not
   claim `go test ./...` or repository lint passed until they are resolved.
 
-## Current Remaining-Work Analysis: 2026-07-28
+## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 36 manifests
-are task-review-approved and 25 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 41 manifests
+are integrated and verified and 20 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1385,7 +1402,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 9 remaining (19 at replan)
+### Medium — 7 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1464,12 +1481,27 @@ already-implemented branch.
   review findings; generic container and plugin-metadata encryption preserves
   the runtime plaintext contract. Its post-integration package/config/store,
   race, real-process, source/corpus, scoped lint, build, and diff gates pass.
-- [ ] `elasticsearch-logger`
+- [x] `elasticsearch-logger` — all 27 pinned blocks are source-complete with
+  independent standalone routes, upstreams, authenticated/versioned sinks,
+  exact bulk requests, deterministic delivery across both configured
+  endpoints, index/type compatibility, log formats, body capture, and
+  plaintext-to-ciphertext-at-rest assertions for passwords and Authorization
+  headers. Its post-integration package/config/data-encryption/Store, race,
+  real-process, pinned-source, no-alias, corpus, scoped lint, build, and diff
+  gates pass.
 - [ ] `google-cloud-logging`
 - [ ] `sls-logger`
 - [ ] `tencent-cloud-cls`
 - [ ] `error-log-logger` — follows Kafka plus HTTP/SkyWalking sink contracts.
-- [ ] `ai-rate-limiting`
+- [x] `ai-rate-limiting` — all 58 pinned blocks are source-complete as
+  independent, alias-free standalone cases covering consumer isolation,
+  global/instance/rule quotas, token strategies and expressions, windows,
+  headers, rejection transitions, local/Redis/Sentinel state, encrypted
+  credentials, selected-instance fallback, and streaming charging. Final
+  fallback headers/counters, collision-safe Redis resource keys, and explicit
+  ciphertext markers close the independent-review findings. Its
+  post-integration package/config/data-encryption/Store, race, real-process,
+  pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `graphql-limit-count` — blocked on the Hard Redis owner.
 - [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
 - [ ] `workflow` — blocked on the limiter owners.

@@ -281,6 +281,59 @@ func TestHandlerIncludesRequestAndResponseBody(t *testing.T) {
 	}
 }
 
+func TestHandlerDefaultAccessLogIncludesRequestResponseAndRouteID(t *testing.T) {
+	addr, received := startTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split tls addr: %v", err)
+	}
+
+	p := newTestPlugin(t, Config{
+		Host:            host,
+		Port:            mustAtoi(t, port),
+		Project:         "project-a",
+		Logstore:        "store-a",
+		AccessKeyID:     "id",
+		AccessKeySecret: "secret",
+		Timeout:         1000,
+		BatchMaxSize:    1,
+	})
+	p.RouteID = "route-a"
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?region=west", nil)
+	req.Header.Set("X-Request-ID", "request-a")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Upstream", "orders")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})).ServeHTTP(rr, req)
+
+	select {
+	case message := <-received:
+		payload := extractJSONPayload(t, message)
+		if payload["route_id"] != "route-a" {
+			t.Fatalf("payload route_id = %#v, want route-a", payload["route_id"])
+		}
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want object", payload["request"])
+		}
+		if request["method"] != http.MethodGet || request["uri"] != "/orders?region=west" {
+			t.Fatalf("payload request = %#v, want GET /orders?region=west", request)
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want object", payload["response"])
+		}
+		if response["status"] != float64(http.StatusCreated) {
+			t.Fatalf("payload response status = %#v, want %d", response["status"], http.StatusCreated)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TLS log message")
+	}
+}
+
 func TestHandlerIncludesBodiesWhenExpressionsMatch(t *testing.T) {
 	addr, received := startTLSServer(t)
 	host, port, err := net.SplitHostPort(addr)
@@ -379,11 +432,19 @@ func TestHandlerSkipsBodiesWhenExpressionsDoNotMatch(t *testing.T) {
 	select {
 	case message := <-received:
 		payload := extractJSONPayload(t, message)
-		if _, ok := payload["request"]; ok {
-			t.Fatalf("payload request = %#v, want no request body", payload["request"])
+		request, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload request = %#v, want default request object", payload["request"])
 		}
-		if _, ok := payload["response"]; ok {
-			t.Fatalf("payload response = %#v, want no response body", payload["response"])
+		if _, ok := request["body"]; ok {
+			t.Fatalf("payload request body = %#v, want absent", request["body"])
+		}
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			t.Fatalf("payload response = %#v, want default response object", payload["response"])
+		}
+		if _, ok := response["body"]; ok {
+			t.Fatalf("payload response body = %#v, want absent", response["body"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for TLS log message")
@@ -432,6 +493,21 @@ func TestSchemaAcceptsBatchFields(t *testing.T) {
 	}
 	if err := util.Validate(config, p.GetSchema()); err != nil {
 		t.Fatalf("schema rejected batch fields: %v", err)
+	}
+}
+
+func TestMetadataSchemaRejectsNonObjectLogFormat(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if p.GetMetadataSchema() == "" {
+		t.Fatal("metadata schema is empty")
+	}
+
+	config := map[string]any{"log_format": "bad plugin metadata"}
+	if err := util.Validate(config, p.GetMetadataSchema()); err == nil {
+		t.Fatal("metadata schema accepted a non-object log_format")
 	}
 }
 

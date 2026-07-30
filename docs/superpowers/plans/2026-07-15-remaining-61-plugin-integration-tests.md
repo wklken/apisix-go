@@ -912,9 +912,21 @@ The original checked state was not supported by the manifests. This audit compar
   real-process, pinned-source, no-alias, corpus, scoped lint, build, and diff
   gates pass.
 - [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
-- [ ] `sls-logger` — generic delivery omits Aliyun signing, project/logstore endpoint, structured log groups, credentials, batching, and failures.
+- [x] `sls-logger` — all 17 pinned blocks map exactly once to independent
+  standalone cases covering schema failures, TLS RFC5424 delivery,
+  project/logstore credentials, ordered batching, subsecond timestamps,
+  metadata and route formats, route removal, encrypted secret storage,
+  request/response bodies, and metadata validation. The real default-access
+  case exposed and fixed missing request/response fields and route identity;
+  metadata schema validation now rejects invalid formats. Package, race, exact
+  real-process, source/corpus/target, scoped lint, and diff gates pass.
 - [x] `splunk-hec-logging` — all 17 pinned blocks map exactly once to real standalone cases. The corpus validates schema diagnostics, non-blocking HEC auth failures, exact token/channel/content headers, rich and custom event envelopes, post-upstream variable resolution, three-event concatenated batching, keepalive configuration, standalone ciphertext decryption, additive non-clobber metadata extras, and deterministic pending-entry overflow. Package, race, strict corpus, repeated sensitive real-process, scoped lint, build, post-integration, and task-review gates pass.
-- [ ] `tencent-cloud-cls` — generic delivery omits CLS signing, topic/endpoint, protobuf/log payload semantics, credentials, batching, and failures.
+- [x] `tencent-cloud-cls` — all 22 pinned blocks map exactly once to
+  independent standalone cases covering schema branches, HTTP failures, exact
+  CLS protobuf/signature semantics, metadata and route formats, route removal,
+  encrypted credentials at rest, DNS failures, request/response bodies, and
+  verified HTTPS. Package, race, exact real-process, source/corpus/target,
+  scoped lint, and diff gates pass.
 
 #### Task 10 — Network, Kafka, File, and Error Loggers
 
@@ -941,7 +953,13 @@ The original checked state was not supported by the manifests. This audit compar
   synchronous final-lease shutdown. Package, race, full exact real-process,
   combined Batch compatibility, corpus, scoped lint, build, post-integration,
   and task-review gates pass.
-- [ ] `log-rotate` — generic file assertions omit size/time rotation, retention counts, reopen lifecycle, metadata/config changes, and exact rotated contents.
+- [x] `log-rotate` — all 17 pinned blocks across three sources map exactly
+  once to independent standalone cases covering interval and size rotation,
+  current/history stability, concurrent triggering, hot disable, compression,
+  aligned rotation time, retention, custom paths, and disabled access logs.
+  The real-process cases exposed and fixed stale cached file descriptors after
+  rotation and loss of explicit `max_kept: 0`. Package, race, exact
+  real-process, source/corpus/target, scoped lint, build, and diff gates pass.
 - [ ] `error-log-logger` — four pass-through requests configure `{}` and do not test log levels, metadata initialization/update/removal, or ClickHouse/Kafka/SkyWalking delivery.
 - [x] `skywalking-logger` — all 15 pinned blocks map exactly once to real standalone cases. The corpus validates minimal/full/missing-endpoint schema paths, exact SkyWalking envelope arrays and nested JSON records, hostname service instances, valid and malformed `sw8` trace context, metadata and route format precedence with route/service identity, exact request/response body capture, and deterministic pending-entry overflow. A typed semantic matcher enforces envelope cardinality, trace presence/absence, and nested payload fields. Package, race, strict corpus, repeated real-process, scoped lint, build, post-integration Loki compatibility, and task-review gates pass.
 
@@ -1381,8 +1399,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 42 manifests
-are integrated and verified and 19 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 45 manifests
+are integrated and verified and 16 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1507,8 +1525,20 @@ already-implemented branch.
   retry/flush/stop behavior, and schema rejection. Normal and race exact
   real-process runs, pinned-source/corpus/target gates, scoped lint, build, and
   diff checks pass.
-- [ ] `sls-logger`
-- [ ] `tencent-cloud-cls`
+- [x] `sls-logger` — all 17 pinned blocks are independent, alias-free
+  standalone cases with real TLS syslog delivery, exact project/logstore
+  framing, schema and metadata failures, ordered batches, timestamps, route
+  removal, encrypted secret storage, custom formats, and body capture. Default
+  records now include request/response context and route identity while
+  preserving optional ResponseWriter interfaces. Package/race, exact
+  real-process normal/race, source/corpus/target, scoped lint, and diff gates
+  pass.
+- [x] `tencent-cloud-cls` — all 22 pinned blocks are independent, alias-free
+  standalone cases with exact signed protobuf delivery, HTTP and DNS failures,
+  metadata and route precedence, route removal, encrypted secret storage, body
+  capture, and verified TLS. A dedicated readiness route isolates hot-delete
+  assertions from startup probes. Package/race, exact real-process
+  normal/race, source/corpus/target, scoped lint, and diff gates pass.
 - [ ] `error-log-logger` — follows Kafka plus HTTP/SkyWalking sink contracts.
 - [x] `ai-rate-limiting` — all 58 pinned blocks are source-complete as
   independent, alias-free standalone cases covering consumer isolation,
@@ -1534,7 +1564,13 @@ already-implemented branch.
   lifecycle, and filesystem assertions. The rereview gap was fixed by isolating
   source blocks 6–7 without metadata from blocks 8–9 with metadata precedence;
   the corrected range is integrated and passed its post-integration gates.
-- [ ] `log-rotate`
+- [x] `log-rotate` — all 17 pinned blocks across three sources are
+  independent, alias-free standalone cases for interval/size rotation,
+  compression, aligned scheduling, retention including explicit zero,
+  concurrent ticks, hot disable, missing paths, custom names, and disabled
+  access logging. Rotation now reopens cached file writers and preserves
+  explicit `max_kept: 0`. Package/race, exact real-process normal/race,
+  source/corpus/target, scoped lint, build, and diff gates pass.
 - [ ] `skywalking`
 - [ ] `jwt-auth`
 - [ ] `openid-connect`

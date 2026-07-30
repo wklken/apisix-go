@@ -1,10 +1,16 @@
 package log_rotate
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/plugin/file_logger"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -125,6 +131,99 @@ func TestRotateCompressesRotatedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(plain); !os.IsNotExist(err) {
 		t.Fatalf("plain rotated file stat err = %v, want removed after compression", err)
+	}
+}
+
+func TestRotateReopensFileLoggerAfterCurrentPathIsRecreated(t *testing.T) {
+	dir := t.TempDir()
+	access := filepath.Join(dir, "access.log")
+
+	filePlugin := &file_logger.Plugin{}
+	if err := filePlugin.Init(); err != nil {
+		t.Fatalf("file logger Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"path":       access,
+		"log_format": map[string]any{"path": "$uri"},
+	}, filePlugin.Config()); err != nil {
+		t.Fatalf("parse file logger config: %v", err)
+	}
+	if err := filePlugin.PostInit(); err != nil {
+		t.Fatalf("file logger PostInit() error = %v", err)
+	}
+	t.Cleanup(filePlugin.Stop)
+
+	handler := filePlugin.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/before", nil))
+
+	rotatePlugin := newTestPlugin(t, Config{
+		AccessLog:       access,
+		ErrorLog:        filepath.Join(dir, "missing-error.log"),
+		EnableAccessLog: new(true),
+		MaxSize:         1,
+		MaxKept:         10,
+	})
+	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
+	if err := rotatePlugin.Rotate(now); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/after", nil))
+	current, err := os.ReadFile(access)
+	if err != nil {
+		t.Fatalf("read current access log: %v", err)
+	}
+	if !strings.Contains(string(current), `"/after"`) {
+		t.Fatalf("current access log = %q, want post-rotation request", current)
+	}
+	if strings.Contains(string(current), `"/before"`) {
+		t.Fatalf("current access log = %q, want pre-rotation request only in rotated history", current)
+	}
+}
+
+func TestExplicitZeroMaxKeptPrunesAllHistory(t *testing.T) {
+	dir := t.TempDir()
+	errorLog := filepath.Join(dir, "error.log")
+	if err := os.WriteFile(errorLog, []byte("error"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"error_log": errorLog,
+		"max_size":  1,
+		"max_kept":  0,
+	}, p.Config()); err != nil {
+		t.Fatalf("parse log-rotate config: %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
+	if err := p.Rotate(now); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	rotated := filepath.Join(dir, "2026-07-06_13-14-15__error.log")
+	if _, err := os.Stat(rotated); !os.IsNotExist(err) {
+		t.Fatalf("rotated history stat error = %v, want max_kept 0 to remove it", err)
+	}
+	if info, err := os.Stat(errorLog); err != nil || info.Size() != 0 {
+		t.Fatalf("current error log stat = %+v/%v, want recreated empty file", info, err)
+	}
+}
+
+func TestNextRotateTimeAlignsToIntervalBoundary(t *testing.T) {
+	now := time.Date(2026, 7, 6, 13, 14, 15, 0, time.UTC)
+	got := nextRotateTime(now, time.Hour)
+	want := time.Date(2026, 7, 6, 14, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("nextRotateTime() = %s, want %s", got, want)
 	}
 }
 

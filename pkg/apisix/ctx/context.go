@@ -35,7 +35,17 @@ const (
 	authProbeDiagnosticKey  ContextKey = "auth_probe_diagnostic_recorder"
 	consumerOverridesKey    ContextKey = "consumer_plugin_overrides"
 	beforeProxyHooksKey     ContextKey = "before_proxy_hooks"
+	trustedProxyKey         ContextKey = "trusted_proxy"
 )
+
+func WithTrustedProxy(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), trustedProxyKey, true))
+}
+
+func IsTrustedProxy(r *http.Request) bool {
+	trusted, _ := r.Context().Value(trustedProxyKey).(bool)
+	return trusted
+}
 
 func WithBeforeProxyHook(r *http.Request, hook BeforeProxyHook) *http.Request {
 	registered, _ := r.Context().Value(beforeProxyHooksKey).(*beforeProxyHooks)

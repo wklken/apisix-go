@@ -6,6 +6,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestLoadManifestRejectsUnknownField(t *testing.T) {
@@ -399,6 +405,77 @@ func TestManifestAcceptsTCPFixture(t *testing.T) {
 	if err := manifest.validate(); err != nil {
 		t.Fatalf("validate() error = %v", err)
 	}
+}
+
+func TestKafkaFixtureConfigValidation(t *testing.T) {
+	t.Run("accepts explicit topics metadata error and SASL", func(t *testing.T) {
+		spec := FixtureSpec{
+			Name: "kafka",
+			Kind: "kafka",
+			NetworkExpect: []NetworkAssertion{{
+				Payload: &Matcher{Equals: new("record")},
+			}},
+			NetworkRespond: []NetworkResponse{{}},
+			Kafka: &KafkaFixtureConfig{
+				Topics:            []string{"integration"},
+				MetadataErrorCode: 3,
+				SASL: &KafkaSASLFixtureConfig{
+					Mechanism: "SCRAM-SHA-256",
+					Username:  "admin",
+					Password:  "secret",
+				},
+			},
+		}
+		if err := spec.validate(); err != nil {
+			t.Fatalf("validate Kafka fixture: %v", err)
+		}
+	})
+
+	t.Run("rejects Kafka config on another fixture kind", func(t *testing.T) {
+		spec := FixtureSpec{
+			Name:  "tcp",
+			Kind:  "tcp",
+			Kafka: &KafkaFixtureConfig{Topics: []string{"integration"}},
+			Count: &FixtureCountAssertion{AtMost: 0},
+		}
+		if err := spec.validate(); err == nil {
+			t.Fatal("validate non-Kafka fixture with kafka config = nil, want error")
+		}
+	})
+
+	t.Run("rejects unsupported SASL mechanism", func(t *testing.T) {
+		spec := FixtureSpec{
+			Name: "kafka",
+			Kind: "kafka",
+			NetworkExpect: []NetworkAssertion{{
+				Payload: &Matcher{Equals: new("record")},
+			}},
+			NetworkRespond: []NetworkResponse{{}},
+			Kafka: &KafkaFixtureConfig{SASL: &KafkaSASLFixtureConfig{
+				Mechanism: "SCRAM-SHA-1",
+				Username:  "admin",
+				Password:  "secret",
+			}},
+		}
+		if err := spec.validate(); err == nil {
+			t.Fatal("validate Kafka fixture with unsupported SASL mechanism = nil, want error")
+		}
+	})
+
+	t.Run("accepts authentication-only failure fixture", func(t *testing.T) {
+		spec := FixtureSpec{
+			Name: "kafka",
+			Kind: "kafka",
+			Kafka: &KafkaFixtureConfig{SASL: &KafkaSASLFixtureConfig{
+				Mechanism: "PLAIN",
+				Username:  "admin",
+				Password:  "secret",
+			}},
+		}
+		if err := spec.validate(); err != nil {
+			t.Fatalf("validate authentication-only Kafka fixture: %v", err)
+		}
+	})
 }
 
 func TestManifestRejectsInvalidNetworkForbiddenMatch(t *testing.T) {
@@ -1598,13 +1675,19 @@ func TestHTTPAssertionAllowsOnlyOneTypedBodyAssertion(t *testing.T) {
 	body := &Matcher{Equals: new("payload")}
 	loki := &LokiPushAssertion{}
 	skyWalking := &SkyWalkingLogsAssertion{}
+	otlpTraces := &OTLPTracesAssertion{}
 	tests := []struct {
 		name      string
 		assertion HTTPAssertion
 	}{
 		{name: "body and Loki", assertion: HTTPAssertion{Body: body, LokiPush: loki}},
 		{name: "body and SkyWalking", assertion: HTTPAssertion{Body: body, SkyWalkingLogs: skyWalking}},
+		{name: "body and OTLP traces", assertion: HTTPAssertion{Body: body, OTLPTraces: otlpTraces}},
 		{name: "Loki and SkyWalking", assertion: HTTPAssertion{LokiPush: loki, SkyWalkingLogs: skyWalking}},
+		{
+			name:      "SkyWalking and OTLP traces",
+			assertion: HTTPAssertion{SkyWalkingLogs: skyWalking, OTLPTraces: otlpTraces},
+		},
 	}
 
 	for _, test := range tests {
@@ -1615,6 +1698,126 @@ func TestHTTPAssertionAllowsOnlyOneTypedBodyAssertion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOTLPTracesAssertionMatchesDecodedResourcesSpansAndAttributes(t *testing.T) {
+	body := marshalOTLPFixture(t,
+		[]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		[]byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20},
+	)
+	assertion := OTLPTracesAssertion{
+		SpanCount:      2,
+		UniqueTraceIDs: true,
+		Spans: []OTLPSpanAssertion{
+			{
+				Name:    Matcher{Equals: new("GET /orders")},
+				Scope:   &Matcher{Equals: new("github.com/riandyrn/otelchi")},
+				Kind:    "server",
+				TraceID: &Matcher{Equals: new("0102030405060708090a0b0c0d0e0f10")},
+				SpanID:  &Matcher{Matches: new(`^[0-9a-f]{16}$`)},
+				ResourceAttributes: map[string]OTLPAttributeAssertion{
+					"service.name": {Type: "string", Matcher: Matcher{Equals: new("gateway")}},
+				},
+				Attributes: map[string]OTLPAttributeAssertion{
+					"http.status_code": {Type: "int", Matcher: Matcher{Equals: new("200")}},
+					"http.method":      {Type: "string", Matcher: Matcher{Equals: new("GET")}},
+				},
+			},
+			{
+				Name:    Matcher{Equals: new("GET /orders")},
+				Scope:   &Matcher{Equals: new("github.com/riandyrn/otelchi")},
+				Kind:    "server",
+				TraceID: &Matcher{Equals: new("1112131415161718191a1b1c1d1e1f20")},
+				SpanID:  &Matcher{Matches: new(`^[0-9a-f]{16}$`)},
+				ResourceAttributes: map[string]OTLPAttributeAssertion{
+					"service.name": {Type: "string", Matcher: Matcher{Equals: new("gateway")}},
+				},
+				Attributes: map[string]OTLPAttributeAssertion{
+					"http.status_code": {Type: "int", Matcher: Matcher{Equals: new("200")}},
+				},
+			},
+		},
+	}
+
+	if err := assertion.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if err := assertion.match(body); err != nil {
+		t.Fatalf("match() error = %v", err)
+	}
+}
+
+func TestOTLPTracesAssertionRejectsMalformedPayloadTypeMismatchAndSharedTrace(t *testing.T) {
+	body := marshalOTLPFixture(t,
+		[]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		[]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+	)
+	assertion := OTLPTracesAssertion{
+		SpanCount:      2,
+		UniqueTraceIDs: true,
+		Spans: []OTLPSpanAssertion{{
+			Name: Matcher{Equals: new("GET /orders")},
+			Attributes: map[string]OTLPAttributeAssertion{
+				"http.status_code": {Type: "string", Matcher: Matcher{Equals: new("200")}},
+			},
+		}},
+	}
+
+	if err := assertion.match("\x00not-protobuf"); err == nil || !strings.Contains(err.Error(), "decode OTLP") {
+		t.Fatalf("malformed match error = %v, want decode failure", err)
+	}
+	if err := assertion.match(body); err == nil || !strings.Contains(err.Error(), "unique trace IDs") {
+		t.Fatalf("shared trace match error = %v, want unique trace rejection", err)
+	}
+	assertion.UniqueTraceIDs = false
+	if err := assertion.match(body); err == nil || !strings.Contains(err.Error(), `attribute "http.status_code" type`) {
+		t.Fatalf("type mismatch error = %v, want attribute type rejection", err)
+	}
+}
+
+func marshalOTLPFixture(t *testing.T, traceIDs ...[]byte) string {
+	t.Helper()
+	spans := make([]*tracepb.Span, 0, len(traceIDs))
+	for i, traceID := range traceIDs {
+		spans = append(spans, &tracepb.Span{
+			TraceId: traceID,
+			SpanId:  []byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, byte(0x28 + i)},
+			Name:    "GET /orders",
+			Kind:    tracepb.Span_SPAN_KIND_SERVER,
+			Attributes: []*commonpb.KeyValue{
+				{
+					Key: "http.status_code",
+					Value: &commonpb.AnyValue{
+						Value: &commonpb.AnyValue_IntValue{IntValue: 200},
+					},
+				},
+				{
+					Key: "http.method",
+					Value: &commonpb.AnyValue{
+						Value: &commonpb.AnyValue_StringValue{StringValue: "GET"},
+					},
+				},
+			},
+		})
+	}
+	payload, err := proto.Marshal(&collectortracepb.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{{
+			Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{{
+				Key: "service.name",
+				Value: &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: "gateway"},
+				},
+			}}},
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Scope: &commonpb.InstrumentationScope{Name: "github.com/riandyrn/otelchi"},
+				Spans: spans,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal OTLP fixture: %v", err)
+	}
+	return string(payload)
 }
 
 func TestMatcherSupportsSemanticJSON(t *testing.T) {

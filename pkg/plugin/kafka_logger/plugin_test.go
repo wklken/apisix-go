@@ -17,11 +17,25 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type captureSender struct {
 	mu       sync.Mutex
 	messages []kafkaMessage
+}
+
+type closeTrackingSender struct {
+	closeCount int
+}
+
+func (s *closeTrackingSender) Send(context.Context, kafkaMessage) error {
+	return nil
+}
+
+func (s *closeTrackingSender) Close() error {
+	s.closeCount++
+	return nil
 }
 
 func (s *captureSender) Send(ctx context.Context, message kafkaMessage) error {
@@ -133,6 +147,21 @@ func TestNewWriterLeavesTopicForPerMessageRouting(t *testing.T) {
 	defer func() { _ = writer.Close() }()
 	if writer.Topic != "" {
 		t.Fatalf("writer topic = %q, want empty for per-message topic", writer.Topic)
+	}
+}
+
+func TestStopClosesKafkaSenderAfterFlushingBatchProcessor(t *testing.T) {
+	sender := &closeTrackingSender{}
+	p := newTestPlugin(t, Config{
+		BrokerList: map[string]int{"127.0.0.1": 9092},
+		KafkaTopic: "apisix-logs",
+	}, sender)
+
+	p.Stop()
+	p.Stop()
+
+	if sender.closeCount != 1 {
+		t.Fatalf("Kafka sender close count = %d, want 1", sender.closeCount)
 	}
 }
 
@@ -523,6 +552,25 @@ func TestNewWriterUsesBrokerSASLConfig(t *testing.T) {
 	}
 	if got := transport.SASL.Name(); got != "SCRAM-SHA-512" {
 		t.Fatalf("writer SASL mechanism = %q, want SCRAM-SHA-512", got)
+	}
+}
+
+func TestSchemaAcceptsAPIVersionTwoAndRejectsThree(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	base := map[string]any{
+		"broker_list": map[string]any{"127.0.0.1": 9092},
+		"kafka_topic": "integration",
+	}
+	base["api_version"] = 2
+	if err := util.Validate(base, p.GetSchema()); err != nil {
+		t.Fatalf("validate api_version 2: %v", err)
+	}
+	base["api_version"] = 3
+	if err := util.Validate(base, p.GetSchema()); err == nil {
+		t.Fatal("validate api_version 3 = nil, want enum rejection")
 	}
 }
 

@@ -21,6 +21,18 @@ func TestAttachConsumerSetsUpstreamUsernameHeader(t *testing.T) {
 	}
 }
 
+func TestWithTrustedProxyMarksOnlyDerivedRequest(t *testing.T) {
+	original := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	trusted := WithTrustedProxy(original)
+
+	if IsTrustedProxy(original) {
+		t.Fatal("original request is marked as trusted")
+	}
+	if !IsTrustedProxy(trusted) {
+		t.Fatal("derived request is not marked as trusted")
+	}
+}
+
 func TestBeforeProxyHooksRunInRegistrationOrder(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/original", nil)
 	var calls []string

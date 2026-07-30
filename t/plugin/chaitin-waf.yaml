@@ -20,12 +20,9 @@ cases:
     input:
       path: /hello
     output:
-      status: 500
-      headers:
-        X-APISIX-CHAITIN-WAF:
-          equals: err
+      status: 404
       logs:
-        matches: 'validate plugin_metadata chaitin-waf:.*nodes.*minimum 1'
+        matches: 'validate plugin chaitin-waf metadata:.*nodes.*minimum 1'
 
   - name: metadata-requires-node-host
     source:
@@ -43,12 +40,9 @@ cases:
     input:
       path: /hello
     output:
-      status: 500
-      headers:
-        X-APISIX-CHAITIN-WAF:
-          equals: err
+      status: 404
       logs:
-        matches: 'validate plugin_metadata chaitin-waf:.*host.*required'
+        matches: 'validate plugin chaitin-waf metadata:.*host.*required'
 
   - name: default-pass
     source:

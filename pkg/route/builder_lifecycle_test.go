@@ -620,6 +620,146 @@ func TestInitPluginsStrictAppliesMetaErrorResponse(t *testing.T) {
 	}
 }
 
+func TestServiceKafkaLoggerInstanceIsSharedWhileRouteInstancesRemainIndependent(t *testing.T) {
+	builder := NewBuilder(nil)
+	t.Cleanup(builder.Stop)
+	config := map[string]resource.PluginConfig{
+		"kafka-logger": map[string]any{
+			"broker_list":   map[string]any{"127.0.0.1": 9092},
+			"kafka_topic":   "integration",
+			"producer_type": "sync",
+		},
+	}
+	service := resource.Service{ID: "shared-kafka-service", Plugins: config}
+
+	first, err := builder.initServicePluginsStrict(config, pluginRouteContext{
+		routeID: "route-one",
+		route:   resource.Route{ID: "route-one"},
+		service: service,
+	})
+	if err != nil {
+		t.Fatalf("initialize first service plugins: %v", err)
+	}
+	second, err := builder.initServicePluginsStrict(config, pluginRouteContext{
+		routeID: "route-two",
+		route:   resource.Route{ID: "route-two"},
+		service: service,
+	})
+	if err != nil {
+		t.Fatalf("initialize second service plugins: %v", err)
+	}
+	if first[0] != second[0] {
+		t.Fatal("service-level kafka-logger instances differ, want one shared processor")
+	}
+	if got := len(builder.stoppers); got != 1 {
+		t.Fatalf("stoppers after shared service config = %d, want 1", got)
+	}
+
+	changedConfig := map[string]resource.PluginConfig{
+		"kafka-logger": map[string]any{
+			"broker_list":   map[string]any{"127.0.0.1": 9092},
+			"kafka_topic":   "integration-v2",
+			"producer_type": "sync",
+		},
+	}
+	changed, err := builder.initServicePluginsStrict(changedConfig, pluginRouteContext{
+		routeID: "route-three",
+		route:   resource.Route{ID: "route-three"},
+		service: resource.Service{ID: service.ID, Plugins: changedConfig},
+	})
+	if err != nil {
+		t.Fatalf("initialize changed service plugins: %v", err)
+	}
+	if first[0] == changed[0] {
+		t.Fatal("changed service kafka-logger config reused the old sender")
+	}
+	if got := len(builder.stoppers); got != 2 {
+		t.Fatalf("stoppers after service config change = %d, want old and new instances", got)
+	}
+
+	routeContext := builder.pluginRouteContext(resource.Route{ID: "route-local"})
+	routeFirst, err := builder.initPluginsStrict(config, routeContext)
+	if err != nil {
+		t.Fatalf("initialize first route plugins: %v", err)
+	}
+	routeSecond, err := builder.initPluginsStrict(config, routeContext)
+	if err != nil {
+		t.Fatalf("initialize second route plugins: %v", err)
+	}
+	if routeFirst[0] == routeSecond[0] {
+		t.Fatal("route-level kafka-logger instances are shared, want independent route ownership")
+	}
+	builder.Stop()
+	builder.Stop()
+}
+
+func TestServiceNonLoggerInstancesKeepPerRouteResourceContext(t *testing.T) {
+	receivedRoutes := make(chan string, 2)
+	opaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := apisixjson.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode OPA request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		input, _ := body["input"].(map[string]any)
+		route, _ := input["route"].(map[string]any)
+		routeID, _ := route["id"].(string)
+		receivedRoutes <- routeID
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
+	}))
+	t.Cleanup(opaServer.Close)
+
+	builder := NewBuilder(nil)
+	config := map[string]resource.PluginConfig{
+		"opa": map[string]any{
+			"host":       opaServer.URL,
+			"policy":     "http/authz",
+			"with_route": true,
+		},
+	}
+	service := resource.Service{ID: "shared-opa-service", Plugins: config}
+
+	first, err := builder.initServicePluginsStrict(config, pluginRouteContext{
+		routeID: "route-one",
+		route:   resource.Route{ID: "route-one"},
+		service: service,
+	})
+	if err != nil {
+		t.Fatalf("initialize first service plugins: %v", err)
+	}
+	second, err := builder.initServicePluginsStrict(config, pluginRouteContext{
+		routeID: "route-two",
+		route:   resource.Route{ID: "route-two"},
+		service: service,
+	})
+	if err != nil {
+		t.Fatalf("initialize second service plugins: %v", err)
+	}
+	if first[0] == second[0] {
+		t.Fatal("service-level OPA instances are shared, want per-route resource context")
+	}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	first[0].Handler(next).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/one", nil),
+	)
+	second[0].Handler(next).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://gateway.test/two", nil),
+	)
+
+	for i, want := range []string{"route-one", "route-two"} {
+		if got := <-receivedRoutes; got != want {
+			t.Fatalf("OPA request %d route id = %q, want %q", i+1, got, want)
+		}
+	}
+}
+
 func TestInitPluginsStrictRejectsUnknownPlugin(t *testing.T) {
 	builder := NewBuilder(nil)
 	plugins, err := builder.initPluginsStrict(

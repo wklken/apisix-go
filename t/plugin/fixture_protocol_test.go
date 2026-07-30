@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,12 +23,18 @@ import (
 	"github.com/segmentio/kafka-go/protocol/produce"
 	"github.com/segmentio/kafka-go/protocol/saslauthenticate"
 	"github.com/segmentio/kafka-go/protocol/saslhandshake"
+	"github.com/segmentio/kafka-go/sasl"
+	kafkaplain "github.com/segmentio/kafka-go/sasl/plain"
+	kafkascram "github.com/segmentio/kafka-go/sasl/scram"
+	xdgscram "github.com/xdg-go/scram"
 )
 
 type kafkaFixture struct {
 	listener      net.Listener
 	expect        []NetworkAssertion
+	config        *KafkaFixtureConfig
 	received      chan []byte
+	records       chan kafkaFixtureRecord
 	errors        chan error
 	done          chan struct{}
 	closeOnce     sync.Once
@@ -38,16 +45,28 @@ type kafkaFixture struct {
 	wg            sync.WaitGroup
 }
 
+type kafkaFixtureRecord struct {
+	payload   []byte
+	timestamp time.Time
+	partition int32
+}
+
 func startKafkaFixture(spec FixtureSpec) (namedFixture, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen Kafka fixture: %w", err)
 	}
+	recordExpectCount := 0
+	if spec.Kafka != nil {
+		recordExpectCount = len(spec.Kafka.RecordExpect)
+	}
 	fixture := &kafkaFixture{
 		listener:    listener,
 		expect:      spec.NetworkExpect,
+		config:      spec.Kafka,
 		received:    make(chan []byte, len(spec.NetworkExpect)+1),
-		errors:      make(chan error, len(spec.NetworkExpect)+1),
+		records:     make(chan kafkaFixtureRecord, recordExpectCount+1),
+		errors:      make(chan error, len(spec.NetworkExpect)+recordExpectCount+1),
 		done:        make(chan struct{}),
 		connections: make(map[net.Conn]struct{}),
 	}
@@ -87,6 +106,7 @@ func (f *kafkaFixture) serveConnection(connection net.Conn) {
 	defer func() { _ = connection.Close() }()
 	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
 	reader := bufio.NewReader(connection)
+	session := &kafkaSASLSession{}
 	for {
 		version, correlation, _, message, err := protocol.ReadRequest(reader)
 		if err != nil {
@@ -95,12 +115,12 @@ func (f *kafkaFixture) serveConnection(connection net.Conn) {
 			}
 			return
 		}
-		response, payload, err := f.responseFor(message)
+		response, payload, err := f.responseFor(message, session)
 		if err != nil {
 			f.errors <- err
 			return
 		}
-		if len(payload) > 0 {
+		if len(payload) > 0 && (len(f.expect) > 0 || !f.hasRecordExpectations()) {
 			f.received <- payload
 		}
 		if err := protocol.WriteResponse(connection, version, correlation, response); err != nil {
@@ -110,7 +130,15 @@ func (f *kafkaFixture) serveConnection(connection net.Conn) {
 	}
 }
 
-func (f *kafkaFixture) responseFor(message protocol.Message) (protocol.Message, []byte, error) {
+type kafkaSASLSession struct {
+	mechanism string
+	scram     *xdgscram.ServerConversation
+}
+
+func (f *kafkaFixture) responseFor(
+	message protocol.Message,
+	session *kafkaSASLSession,
+) (protocol.Message, []byte, error) {
 	switch request := message.(type) {
 	case *apiversions.Request:
 		return &apiversions.Response{ApiKeys: []apiversions.ApiKeyResponse{
@@ -121,27 +149,33 @@ func (f *kafkaFixture) responseFor(message protocol.Message) (protocol.Message, 
 			{ApiKey: int16(protocol.SaslAuthenticate), MinVersion: 0, MaxVersion: 1},
 		}}, nil, nil
 	case *saslhandshake.Request:
-		return &saslhandshake.Response{Mechanisms: []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"}}, nil, nil
+		return f.saslHandshakeResponse(request, session)
 	case *saslauthenticate.Request:
-		return &saslauthenticate.Response{}, nil, nil
+		return f.saslAuthenticateResponse(request, session)
 	case *metadata.Request:
 		topics := request.TopicNames
 		if len(topics) == 0 {
-			topics = []string{"apisix", "integration"}
+			topics = f.metadataTopics()
 		}
 		responseTopics := make([]metadata.ResponseTopic, 0, len(topics))
 		for _, topic := range topics {
 			if topic == "" {
 				continue
 			}
-			responseTopics = append(responseTopics, metadata.ResponseTopic{
-				Name: topic,
-				Partitions: []metadata.ResponsePartition{{
-					PartitionIndex: 0,
+			partitions := make([]metadata.ResponsePartition, 0, f.partitionCount())
+			for partition := range f.partitionCount() {
+				partitions = append(partitions, metadata.ResponsePartition{
+					ErrorCode:      f.metadataErrorCode(),
+					PartitionIndex: int32(partition),
 					LeaderID:       0,
 					ReplicaNodes:   []int32{0},
 					IsrNodes:       []int32{0},
-				}},
+				})
+			}
+			responseTopics = append(responseTopics, metadata.ResponseTopic{
+				ErrorCode:  f.metadataErrorCode(),
+				Name:       topic,
+				Partitions: partitions,
 			})
 		}
 		return &metadata.Response{
@@ -151,10 +185,20 @@ func (f *kafkaFixture) responseFor(message protocol.Message) (protocol.Message, 
 			Topics:       responseTopics,
 		}, nil, nil
 	case *produce.Request:
-		payload, err := kafkaProducePayload(request)
+		records, err := kafkaProduceRecords(request)
 		if err != nil {
 			return nil, nil, err
 		}
+		if f.hasRecordExpectations() {
+			for _, record := range records {
+				f.records <- record
+			}
+		}
+		payloads := make([][]byte, 0, len(records))
+		for _, record := range records {
+			payloads = append(payloads, record.payload)
+		}
+		payload := bytes.Join(payloads, nil)
 		response := &produce.Response{}
 		for _, topic := range request.Topics {
 			partitions := make([]produce.ResponsePartition, 0, len(topic.Partitions))
@@ -172,8 +216,118 @@ func (f *kafkaFixture) responseFor(message protocol.Message) (protocol.Message, 
 	}
 }
 
-func kafkaProducePayload(request *produce.Request) ([]byte, error) {
-	var payload []byte
+func (f *kafkaFixture) metadataTopics() []string {
+	if f.config != nil && len(f.config.Topics) > 0 {
+		return append([]string(nil), f.config.Topics...)
+	}
+	return []string{"apisix", "integration"}
+}
+
+func (f *kafkaFixture) hasRecordExpectations() bool {
+	return f.config != nil && len(f.config.RecordExpect) > 0
+}
+
+func (f *kafkaFixture) metadataErrorCode() int16 {
+	if f.config == nil {
+		return 0
+	}
+	return f.config.MetadataErrorCode
+}
+
+func (f *kafkaFixture) partitionCount() int {
+	if f.config != nil && f.config.Partitions > 0 {
+		return f.config.Partitions
+	}
+	return 1
+}
+
+func (f *kafkaFixture) saslHandshakeResponse(
+	request *saslhandshake.Request,
+	session *kafkaSASLSession,
+) (protocol.Message, []byte, error) {
+	mechanisms := []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"}
+	if f.config == nil || f.config.SASL == nil {
+		session.mechanism = request.Mechanism
+		return &saslhandshake.Response{Mechanisms: mechanisms}, nil, nil
+	}
+	if request.Mechanism != f.config.SASL.Mechanism {
+		return &saslhandshake.Response{ErrorCode: 33, Mechanisms: []string{f.config.SASL.Mechanism}}, nil, nil
+	}
+	session.mechanism = request.Mechanism
+	if request.Mechanism == "SCRAM-SHA-256" || request.Mechanism == "SCRAM-SHA-512" {
+		conversation, err := newKafkaSCRAMConversation(f.config.SASL)
+		if err != nil {
+			return nil, nil, err
+		}
+		session.scram = conversation
+	}
+	return &saslhandshake.Response{Mechanisms: []string{request.Mechanism}}, nil, nil
+}
+
+func (f *kafkaFixture) saslAuthenticateResponse(
+	request *saslauthenticate.Request,
+	session *kafkaSASLSession,
+) (protocol.Message, []byte, error) {
+	if f.config == nil || f.config.SASL == nil {
+		return &saslauthenticate.Response{}, nil, nil
+	}
+	switch session.mechanism {
+	case "PLAIN":
+		parts := bytes.Split(request.AuthBytes, []byte{0})
+		if len(parts) != 3 ||
+			string(parts[1]) != f.config.SASL.Username ||
+			string(parts[2]) != f.config.SASL.Password {
+			return kafkaSASLFailure(), nil, nil
+		}
+		return &saslauthenticate.Response{}, nil, nil
+	case "SCRAM-SHA-256", "SCRAM-SHA-512":
+		if session.scram == nil {
+			return kafkaSASLFailure(), nil, nil
+		}
+		response, err := session.scram.Step(string(request.AuthBytes))
+		if err != nil {
+			return kafkaSASLFailure(), nil, nil
+		}
+		return &saslauthenticate.Response{AuthBytes: []byte(response)}, nil, nil
+	default:
+		return kafkaSASLFailure(), nil, nil
+	}
+}
+
+func kafkaSASLFailure() *saslauthenticate.Response {
+	return &saslauthenticate.Response{
+		ErrorCode:    58,
+		ErrorMessage: "SASL authentication failed",
+	}
+}
+
+func newKafkaSCRAMConversation(config *KafkaSASLFixtureConfig) (*xdgscram.ServerConversation, error) {
+	hash := xdgscram.SHA256
+	if config.Mechanism == "SCRAM-SHA-512" {
+		hash = xdgscram.SHA512
+	}
+	client, err := hash.NewClient(config.Username, config.Password, "")
+	if err != nil {
+		return nil, err
+	}
+	credentials := client.GetStoredCredentials(xdgscram.KeyFactors{
+		Salt:  "apisix-go-kafka-fixture",
+		Iters: 4096,
+	})
+	server, err := hash.NewServer(func(username string) (xdgscram.StoredCredentials, error) {
+		if username != config.Username {
+			return xdgscram.StoredCredentials{}, fmt.Errorf("unknown SCRAM username %q", username)
+		}
+		return credentials, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return server.NewConversation(), nil
+}
+
+func kafkaProduceRecords(request *produce.Request) ([]kafkaFixtureRecord, error) {
+	var records []kafkaFixtureRecord
 	for _, topic := range request.Topics {
 		for _, partition := range topic.Partitions {
 			if partition.RecordSet.Records == nil {
@@ -191,11 +345,15 @@ func kafkaProducePayload(request *produce.Request) ([]byte, error) {
 				if err != nil {
 					return nil, fmt.Errorf("read Kafka record value: %w", err)
 				}
-				payload = append(payload, value...)
+				records = append(records, kafkaFixtureRecord{
+					payload:   value,
+					timestamp: record.Time,
+					partition: partition.Partition,
+				})
 			}
 		}
 	}
-	return payload, nil
+	return records, nil
 }
 
 func (f *kafkaFixture) nextOffset() int {
@@ -248,6 +406,48 @@ func (f *kafkaFixture) assert(t *testing.T, spec FixtureSpec) {
 			default:
 			}
 			t.Errorf("fixture %s did not receive expected payload %d", spec.Name, i+1)
+		}
+	}
+	if spec.Kafka != nil {
+		observedPartitions := make(map[int32]struct{}, len(spec.Kafka.RecordExpect))
+		for i, expected := range spec.Kafka.RecordExpect {
+			select {
+			case record := <-f.records:
+				if err := matchNetworkAssertion(expected.NetworkAssertion, record.payload); err != nil {
+					t.Errorf("fixture %s record %d: %v", spec.Name, i+1, err)
+				}
+				if expected.TimestampPositive && record.timestamp.UnixMilli() <= 0 {
+					t.Errorf(
+						"fixture %s record %d timestamp = %s, want positive",
+						spec.Name,
+						i+1,
+						record.timestamp,
+					)
+				}
+				if expected.Partition != nil && record.partition != int32(*expected.Partition) {
+					t.Errorf(
+						"fixture %s record %d partition = %d, want %d",
+						spec.Name,
+						i+1,
+						record.partition,
+						*expected.Partition,
+					)
+				}
+				observedPartitions[record.partition] = struct{}{}
+			case <-time.After(3 * time.Second):
+				t.Errorf("fixture %s did not receive expected record %d", spec.Name, i+1)
+			}
+		}
+		if extra := len(f.records); extra > 0 {
+			t.Errorf("fixture %s received %d unexpected extra records", spec.Name, extra)
+		}
+		if want := spec.Kafka.DistinctPartitionCount; want > 0 && len(observedPartitions) != want {
+			t.Errorf(
+				"fixture %s distinct record partitions = %d, want %d",
+				spec.Name,
+				len(observedPartitions),
+				want,
+			)
 		}
 	}
 	select {
@@ -439,6 +639,211 @@ func TestKafkaFixtureAcceptsProduceMessage(t *testing.T) {
 		t.Fatalf("close Kafka writer: %v", err)
 	}
 	fixture.assert(t, spec)
+}
+
+func TestKafkaFixtureRecordAssertionsIgnoreProduceBatchBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		batches [][]string
+	}{
+		{name: "single batch", batches: [][]string{{"record-one", "record-two", "record-three"}}},
+		{name: "two batches", batches: [][]string{{"record-one", "record-two"}, {"record-three"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			spec := FixtureSpec{
+				Name: "kafka",
+				Kind: "kafka",
+				Kafka: &KafkaFixtureConfig{RecordExpect: []KafkaRecordAssertion{
+					{NetworkAssertion: NetworkAssertion{Payload: &Matcher{Equals: new("record-one")}}},
+					{NetworkAssertion: NetworkAssertion{Payload: &Matcher{Equals: new("record-two")}}},
+					{
+						NetworkAssertion:  NetworkAssertion{Payload: &Matcher{Equals: new("record-three")}},
+						TimestampPositive: true,
+					},
+				}},
+			}
+			fixture, err := startKafkaFixture(spec)
+			if err != nil {
+				t.Fatalf("start Kafka fixture: %v", err)
+			}
+			defer fixture.close()
+
+			for _, batch := range test.batches {
+				writer := &kafka.Writer{
+					Addr:         kafka.TCP(fixture.address()),
+					Topic:        "integration",
+					BatchSize:    len(batch),
+					RequiredAcks: 1,
+					ReadTimeout:  2 * time.Second,
+					WriteTimeout: 2 * time.Second,
+				}
+				messages := make([]kafka.Message, 0, len(batch))
+				for _, record := range batch {
+					messages = append(messages, kafka.Message{Value: []byte(record)})
+				}
+				if err := writer.WriteMessages(context.Background(), messages...); err != nil {
+					t.Fatalf("write Kafka messages: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("close Kafka writer: %v", err)
+				}
+			}
+
+			fixture.assert(t, spec)
+		})
+	}
+}
+
+func TestKafkaFixtureUsesConfiguredMetadataTopics(t *testing.T) {
+	spec := FixtureSpec{
+		Name:  "kafka",
+		Kind:  "kafka",
+		Kafka: &KafkaFixtureConfig{Topics: []string{"custom-topic"}},
+		NetworkExpect: []NetworkAssertion{{
+			Payload: &Matcher{Equals: new("custom-record")},
+		}},
+		NetworkRespond: []NetworkResponse{{}},
+	}
+	fixture, err := startKafkaFixture(spec)
+	if err != nil {
+		t.Fatalf("start Kafka fixture: %v", err)
+	}
+	defer fixture.close()
+	writer := &kafka.Writer{
+		Addr:         kafka.TCP(fixture.address()),
+		Topic:        "custom-topic",
+		BatchSize:    1,
+		RequiredAcks: 1,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+	}
+	if err := writer.WriteMessages(context.Background(), kafka.Message{Value: []byte("custom-record")}); err != nil {
+		t.Fatalf("write Kafka message: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close Kafka writer: %v", err)
+	}
+	fixture.assert(t, spec)
+}
+
+func TestKafkaFixtureReturnsConfiguredMetadataError(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "kafka",
+		Kind: "kafka",
+		Kafka: &KafkaFixtureConfig{
+			Topics:            []string{"integration"},
+			MetadataErrorCode: 3,
+		},
+	}
+	fixture, err := startKafkaFixture(spec)
+	if err != nil {
+		t.Fatalf("start Kafka fixture: %v", err)
+	}
+	defer fixture.close()
+	writer := &kafka.Writer{
+		Addr:         kafka.TCP(fixture.address()),
+		Topic:        "integration",
+		BatchSize:    1,
+		RequiredAcks: 1,
+		ReadTimeout:  500 * time.Millisecond,
+		WriteTimeout: 500 * time.Millisecond,
+	}
+	err = writer.WriteMessages(context.Background(), kafka.Message{Value: []byte("must-fail")})
+	_ = writer.Close()
+	if err == nil || !strings.Contains(err.Error(), "Unknown Topic Or Partition") {
+		t.Fatalf("write Kafka message error = %v, want Unknown Topic Or Partition", err)
+	}
+}
+
+func TestKafkaFixtureValidatesSASLCredentials(t *testing.T) {
+	tests := []struct {
+		name      string
+		mechanism string
+		client    func(password string) (sasl.Mechanism, error)
+	}{
+		{
+			name:      "PLAIN",
+			mechanism: "PLAIN",
+			client: func(password string) (sasl.Mechanism, error) {
+				return kafkaplain.Mechanism{Username: "admin", Password: password}, nil
+			},
+		},
+		{
+			name:      "SCRAM-SHA-256",
+			mechanism: "SCRAM-SHA-256",
+			client: func(password string) (sasl.Mechanism, error) {
+				return kafkascram.Mechanism(kafkascram.SHA256, "admin", password)
+			},
+		},
+		{
+			name:      "SCRAM-SHA-512",
+			mechanism: "SCRAM-SHA-512",
+			client: func(password string) (sasl.Mechanism, error) {
+				return kafkascram.Mechanism(kafkascram.SHA512, "admin", password)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, credential := range []struct {
+				name      string
+				password  string
+				wantError bool
+			}{
+				{name: "correct", password: "secret"},
+				{name: "incorrect", password: "wrong", wantError: true},
+			} {
+				t.Run(credential.name, func(t *testing.T) {
+					spec := FixtureSpec{
+						Name: "kafka",
+						Kind: "kafka",
+						Kafka: &KafkaFixtureConfig{
+							Topics: []string{"integration"},
+							SASL: &KafkaSASLFixtureConfig{
+								Mechanism: test.mechanism,
+								Username:  "admin",
+								Password:  "secret",
+							},
+						},
+					}
+					if !credential.wantError {
+						spec.NetworkExpect = []NetworkAssertion{{Payload: &Matcher{Equals: new("authenticated")}}}
+						spec.NetworkRespond = []NetworkResponse{{}}
+					}
+					fixture, err := startKafkaFixture(spec)
+					if err != nil {
+						t.Fatalf("start Kafka fixture: %v", err)
+					}
+					defer fixture.close()
+					mechanism, err := test.client(credential.password)
+					if err != nil {
+						t.Fatalf("create client mechanism: %v", err)
+					}
+					writer := &kafka.Writer{
+						Addr:         kafka.TCP(fixture.address()),
+						Topic:        "integration",
+						BatchSize:    1,
+						RequiredAcks: 1,
+						ReadTimeout:  2 * time.Second,
+						WriteTimeout: 2 * time.Second,
+						Transport:    &kafka.Transport{SASL: mechanism},
+					}
+					err = writer.WriteMessages(context.Background(), kafka.Message{Value: []byte("authenticated")})
+					_ = writer.Close()
+					if credential.wantError {
+						if err == nil {
+							t.Fatal("write Kafka message with incorrect credential = nil, want error")
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("write Kafka message: %v", err)
+					}
+					fixture.assert(t, spec)
+				})
+			}
+		})
+	}
 }
 
 func TestDubboFixtureReturnsResponseFrame(t *testing.T) {

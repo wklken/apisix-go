@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -25,6 +26,7 @@ type Plugin struct {
 	base.BaseLoggerPlugin
 	config Config
 	sender kafkaSender
+	stop   sync.Once
 }
 
 const (
@@ -176,6 +178,11 @@ const schema = `
       "minimum": 1,
       "default": 30
     },
+    "api_version": {
+      "type": "integer",
+      "default": 1,
+      "enum": [0, 1, 2]
+    },
     "batch_max_size": {
       "type": "integer",
       "minimum": 1,
@@ -253,6 +260,7 @@ type Config struct {
 	ProducerMaxBuffering int `json:"producer_max_buffering,omitempty"`
 	ProducerTimeLinger   int `json:"producer_time_linger,omitempty"`
 	MetaRefreshInterval  int `json:"meta_refresh_interval,omitempty"`
+	APIVersion           int `json:"api_version,omitempty"`
 
 	BatchMaxSize      int `json:"batch_max_size,omitempty"`
 	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
@@ -299,6 +307,12 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.applyDefaults()
+	if err := validateBodyExpression("include_req_body_expr", p.config.IncludeReqBodyExpr); err != nil {
+		return err
+	}
+	if err := validateBodyExpression("include_resp_body_expr", p.config.IncludeRespBodyExpr); err != nil {
+		return err
+	}
 	if err := p.resolveSecrets(); err != nil {
 		return err
 	}
@@ -333,6 +347,33 @@ func (p *Plugin) PostInit() error {
 		ServerAddr:        p.ServerAddr,
 	}, p.SendBatch)
 	return nil
+}
+
+func validateBodyExpression(field string, expression [][]any) error {
+	for _, condition := range expression {
+		if len(condition) != 3 {
+			return fmt.Errorf("failed to validate the %q expression: each condition must contain 3 items", field)
+		}
+		operator, ok := condition[1].(string)
+		if !ok {
+			return fmt.Errorf("failed to validate the %q expression: operator must be a string", field)
+		}
+		switch operator {
+		case "==", "!=", ">", ">=", "<", "<=", "~", "!~", "in":
+		default:
+			return fmt.Errorf("failed to validate the %q expression: invalid operator %q", field, operator)
+		}
+	}
+	return nil
+}
+
+func (p *Plugin) Stop() {
+	p.stop.Do(func() {
+		p.BaseLoggerPlugin.Stop()
+		if closer, ok := p.sender.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
 }
 
 func (p *Plugin) resolveSecrets() error {
@@ -609,4 +650,8 @@ func (s *kafkaGoSender) Send(ctx context.Context, message kafkaMessage) error {
 		Key:   message.Key,
 		Value: message.Value,
 	})
+}
+
+func (s *kafkaGoSender) Close() error {
+	return s.writer.Close()
 }

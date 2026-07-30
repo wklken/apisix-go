@@ -21,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cast"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/etcd"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -118,6 +119,8 @@ func stripUntrustedForwardedFor(next http.Handler, addresses []string) http.Hand
 		}
 		if !trusted {
 			r.Header.Del("X-Forwarded-For")
+		} else {
+			r = apisixctx.WithTrustedProxy(r)
 		}
 		next.ServeHTTP(w, r)
 	})

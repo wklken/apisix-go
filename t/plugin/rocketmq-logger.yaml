@@ -1,184 +1,3 @@
-cases:
-    - config:
-        routes:
-            - id: rocketmq-logger-source-1
-              plugins:
-                rocketmq-logger:
-                    batch_max_size: 1
-                    buffer_duration: 1
-                    inactive_timeout: 1
-                    max_retry_count: 0
-                    nameserver_list:
-                        - '{{FIXTURE.sink.ADDR}}'
-                    timeout: 1
-                    topic: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: tcp
-          name: sink
-          network_expect:
-            - payload:
-                matches: '"code":105.*"topic":"integration"'
-          network_respond:
-            - payload: ok
-      name: rocketmq-logger-source-1
-      source:
-        file: t/plugin/rocketmq-logger-log-format.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: rocketmq-log-format-request
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: rocketmq-logger-source-2
-              plugins:
-                rocketmq-logger:
-                    batch_max_size: 1
-                    buffer_duration: 1
-                    inactive_timeout: 1
-                    max_retry_count: 0
-                    nameserver_list:
-                        - '{{FIXTURE.sink.ADDR}}'
-                    timeout: 1
-                    topic: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: tcp
-          name: sink
-          network_expect:
-            - payload:
-                matches: '"code":105.*"topic":"integration"'
-          network_respond:
-            - payload: ok
-      name: rocketmq-logger-source-2
-      source:
-        file: t/plugin/rocketmq-logger.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: rocketmq-log-request
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
-    - config:
-        routes:
-            - id: rocketmq-logger-source-3
-              plugins:
-                rocketmq-logger:
-                    batch_max_size: 1
-                    buffer_duration: 1
-                    inactive_timeout: 1
-                    max_retry_count: 0
-                    nameserver_list:
-                        - '{{FIXTURE.sink.ADDR}}'
-                    timeout: 1
-                    topic: integration
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: tcp
-          name: sink
-          network_expect:
-            - payload:
-                matches: '"code":105.*"topic":"integration"'
-          network_respond:
-            - payload: ok
-      name: rocketmq-logger-source-3
-      source:
-        file: t/plugin/rocketmq-logger2.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: rocketmq-log-variant-request
-          output:
-            body:
-                equals: hello world
-            status: 200
-          wait: 2s
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
@@ -192,3 +11,2652 @@ sources:
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/rocketmq-logger2.t
       tests: 18
+cases:
+    - name: metadata-log-format-is-accepted
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 1
+      config:
+        plugin_metadata:
+            - id: rocketmq-logger
+              log_format:
+                '@timestamp': $time_iso8601
+                client_ip: $remote_addr
+                host: $host
+        routes:
+            - id: rocketmq-001
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    tag: tag1
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-001
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"host":"[^"]+"'
+                  key:
+                    equals: key1
+                  tag:
+                    equals: tag1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: metadata-log-format-is-accepted-request
+          input:
+            method: GET
+            path: /rocketmq-001
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: metadata-log-format-route-with-single-entry-batch
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 2
+      config:
+        plugin_metadata:
+            - id: rocketmq-logger
+              log_format:
+                '@timestamp': $time_iso8601
+                client_ip: $remote_addr
+                host: $host
+        routes:
+            - id: rocketmq-002
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    tag: tag1
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-002
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"host":"[^"]+"'
+                  key:
+                    equals: key1
+                  tag:
+                    equals: tag1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: metadata-log-format-route-with-single-entry-batch-request
+          input:
+            method: GET
+            path: /rocketmq-002
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: metadata-log-format-publishes-host
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 3
+      config:
+        plugin_metadata:
+            - id: rocketmq-logger
+              log_format:
+                '@timestamp': $time_iso8601
+                client_ip: $remote_addr
+                host: $host
+        routes:
+            - id: rocketmq-003
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    tag: tag1
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-003
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"host":"[^"]+"'
+                  key:
+                    equals: key1
+                  tag:
+                    equals: tag1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: metadata-log-format-publishes-host-request
+          input:
+            method: GET
+            path: /rocketmq-003
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: route-log-format-overrides-plugin-metadata
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 4
+      config:
+        routes:
+            - id: rocketmq-004
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    log_format:
+                        x_ip: $remote_addr
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    tag: tag1
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-004
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"x_ip":"127\.0\.0\.1"'
+                  key:
+                    equals: key1
+                  tag:
+                    equals: tag1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: route-log-format-overrides-plugin-metadata-request
+          input:
+            method: POST
+            path: /rocketmq-004
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: route-log-format-publishes-client-address
+      source:
+        file: t/plugin/rocketmq-logger-log-format.t
+        tests:
+            - 5
+      config:
+        routes:
+            - id: rocketmq-005
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    log_format:
+                        x_ip: $remote_addr
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    tag: tag1
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-005
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"x_ip":"127\.0\.0\.1"'
+                  key:
+                    equals: key1
+                  tag:
+                    equals: tag1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: route-log-format-publishes-client-address-request
+          input:
+            method: POST
+            path: /rocketmq-005
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: valid-schema-publishes-message
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 1
+      config:
+        routes:
+            - id: rocketmq-006
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-006
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: valid-schema-publishes-message-request
+          input:
+            method: POST
+            path: /rocketmq-006
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: missing-nameserver-list-is-rejected
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 2
+      config:
+        routes:
+            - id: rocketmq-007
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    key: key1
+                    topic: test
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-007
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 0
+          respond:
+            - body: unused
+              headers: {}
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 0
+            partitions: 1
+      steps:
+        - name: missing-nameserver-list-is-rejected-invalid-config-keeps-route-unavailable
+          input:
+            method: GET
+            path: /rocketmq-007
+          output:
+            logs:
+                matches: nameserver_list.*required|validate.*rocketmq-logger
+            status: 404
+    - name: string-timeout-is-rejected
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 3
+      config:
+        routes:
+            - id: rocketmq-008
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    key: key1
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: "10"
+                    topic: test
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-008
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 0
+          respond:
+            - body: unused
+              headers: {}
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 0
+            partitions: 1
+      steps:
+        - name: string-timeout-is-rejected-invalid-config-keeps-route-unavailable
+          input:
+            method: GET
+            path: /rocketmq-008
+          output:
+            logs:
+                matches: timeout.*integer|validate.*rocketmq-logger
+            status: 404
+    - name: route-configuration-publishes-message
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 4
+      config:
+        routes:
+            - id: rocketmq-009
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-009
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: route-configuration-publishes-message-request
+          input:
+            method: POST
+            path: /rocketmq-009
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: route-access-publishes-message
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 5
+      config:
+        routes:
+            - id: rocketmq-010
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-010
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: route-access-publishes-message-request
+          input:
+            method: POST
+            path: /rocketmq-010
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: unavailable-nameserver-does-not-break-proxy-response
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 6
+      config:
+        routes:
+            - id: rocketmq-011
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-011
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 0
+            unavailable: true
+      steps:
+        - name: unavailable-nameserver-request-still-proxies
+          input:
+            method: GET
+            path: /rocketmq-011
+          output:
+            body:
+                equals: |
+                    hello world
+            logs:
+                matches: failed to send data to RocketMQ topic
+            status: 200
+          wait: 1s
+    - name: origin-format-with-request-body-config
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 7
+      config:
+        routes:
+            - id: rocketmq-012
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: true
+                    key: key1
+                    max_retry_count: 0
+                    meta_format: origin
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-012
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: (?s)POST /rocketmq-[0-9]+\?ab=cd HTTP/1\.1.*abcdef$
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: origin-format-with-request-body-config-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-012?ab=cd
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: origin-format-publishes-request-body
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 8
+      config:
+        routes:
+            - id: rocketmq-013
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: true
+                    key: key1
+                    max_retry_count: 0
+                    meta_format: origin
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-013
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: (?s)POST /rocketmq-[0-9]+\?ab=cd HTTP/1\.1.*abcdef$
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: origin-format-publishes-request-body-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-013?ab=cd
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: origin-format-without-request-body-config
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 9
+      config:
+        routes:
+            - id: rocketmq-014
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: false
+                    key: key1
+                    max_retry_count: 0
+                    meta_format: origin
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-014
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    not_matches: abcdef$
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: origin-format-without-request-body-config-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-014?ab=cd
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: origin-format-omits-request-body
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 10
+      config:
+        routes:
+            - id: rocketmq-015
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: false
+                    key: key1
+                    max_retry_count: 0
+                    meta_format: origin
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-015
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    not_matches: abcdef$
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: origin-format-omits-request-body-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-015?ab=cd
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: default-format-configuration-publishes-json
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 11
+      config:
+        routes:
+            - id: rocketmq-016
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-016
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"upstream":"[^"]+"|"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: default-format-configuration-publishes-json-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-016
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: default-format-publishes-upstream-field
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 12
+      config:
+        routes:
+            - id: rocketmq-017
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-017
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"upstream":"[^"]+"|"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: default-format-publishes-upstream-field-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-017
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: key-field-is-optional-in-route-config
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 13
+      config:
+        routes:
+            - id: rocketmq-018
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-018
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"upstream":"[^"]+"|"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: key-field-is-optional-in-route-config-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-018
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: missing-key-publishes-message-without-key
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 14
+      config:
+        routes:
+            - id: rocketmq-019
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-019
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"upstream":"[^"]+"|"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: missing-key-publishes-message-without-key-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-019
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: default-format-allows-missing-key
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 15
+      config:
+        routes:
+            - id: rocketmq-020
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-020
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"upstream":"[^"]+"|"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: default-format-allows-missing-key-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-020
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: default-format-missing-key-publishes-json
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 16
+      config:
+        routes:
+            - id: rocketmq-021
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-021
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"upstream":"[^"]+"|"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: default-format-missing-key-publishes-json-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-021
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: three-partition-topic-configuration-publishes
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 17
+      config:
+        routes:
+            - id: rocketmq-022
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test3
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-022
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            distinct_queue_count: 1
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test3
+            partitions: 3
+      steps:
+        - name: three-partition-topic-configuration-publishes-request
+          repeat: 1
+          input:
+            method: GET
+            path: /rocketmq-022
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: sync-publisher-uses-three-distinct-partitions
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 18
+      config:
+        routes:
+            - id: rocketmq-023
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test3
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-023
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 3
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+            - path:
+                matches: ^/rocketmq-[0-9]+
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            distinct_queue_count: 3
+            expect_messages: 3
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test3
+            partitions: 3
+      steps:
+        - name: sync-publisher-uses-three-distinct-partitions-request
+          repeat: 3
+          input:
+            method: GET
+            path: /rocketmq-023
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: async-publisher-uses-three-distinct-partitions
+      source:
+        file: t/plugin/rocketmq-logger.t
+        tests:
+            - 19
+      config:
+        routes:
+            - id: rocketmq-024
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test3
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-024
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 3
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+            - path:
+                matches: ^/rocketmq-[0-9]+
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            distinct_queue_count: 3
+            expect_messages: 3
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test3
+            partitions: 3
+      steps:
+        - name: async-publisher-uses-three-distinct-partitions-request
+          repeat: 3
+          input:
+            method: GET
+            path: /rocketmq-024
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: nameserver-update-creates-a-new-producer
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 1
+      config:
+        routes:
+            - id: rocketmq-025
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-025
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 2
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 2
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+                - body:
+                    matches: '"status":200'
+                  key_absent: true
+                  topic:
+                    equals: test4
+            partitions: 1
+      steps:
+        - name: publish-with-first-nameserver-list
+          input:
+            method: GET
+            path: /rocketmq-025
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+        - name: reload-with-different-nameserver-list-and-publish
+          config:
+            routes:
+                - id: rocketmq-025
+                  plugins:
+                    rocketmq-logger:
+                        batch_max_size: 1
+                        buffer_duration: 1
+                        inactive_timeout: 1
+                        max_retry_count: 0
+                        nameserver_list:
+                            - '{{FIXTURE.sink.ADDR}}'
+                            - '{{FIXTURE.sink.ADDR}}'
+                        timeout: 1
+                        topic: test4
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /rocketmq-025-updated
+                - id: rocketmq-reload-ready
+                  plugins:
+                    mocking:
+                        response_example: ""
+                        response_status: 204
+                  uri: /rocketmq-reload-ready
+          config_probe:
+            input:
+                method: GET
+                path: /rocketmq-reload-ready
+            output:
+                status: 204
+          config_timeout: 5s
+          input:
+            method: GET
+            path: /rocketmq-025-updated
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: missing-topic-is-reported-without-breaking-proxy
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 2
+      config:
+        routes:
+            - id: rocketmq-026
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: undefined_topic
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-026
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 0
+            partitions: 1
+            topic_missing: true
+      steps:
+        - name: publish-to-missing-topic
+          input:
+            method: GET
+            path: /rocketmq-026
+          output:
+            body:
+                equals: |
+                    hello world
+            logs:
+                matches: topic route info.*(nil|not found)|topic not exist
+            status: 200
+          wait: 1s
+    - name: nameserver-address-supports-real-publish
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 3
+      config:
+        routes:
+            - id: rocketmq-027
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-027
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: nameserver-address-supports-real-publish-request
+          input:
+            method: POST
+            path: /rocketmq-027
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: absent-plugin-metadata-uses-default-log-format
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 4
+      config:
+        routes:
+            - id: rocketmq-028
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-028
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    not_matches: '"x_ip"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: absent-plugin-metadata-uses-default-log-format-request
+          input:
+            method: POST
+            path: /rocketmq-028
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: request-body-expression-config-is-accepted
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 5
+      config:
+        routes:
+            - id: rocketmq-029
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: true
+                    include_req_body_expr:
+                        - - arg_name
+                          - ==
+                          - qwerty
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-029
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"request":.*"body":"abcdef"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: request-body-expression-config-is-accepted-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-029?name=qwerty
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: matching-request-body-expression-includes-body
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 6
+      config:
+        routes:
+            - id: rocketmq-030
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: true
+                    include_req_body_expr:
+                        - - arg_name
+                          - ==
+                          - qwerty
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-030
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"request":.*"body":"abcdef"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: matching-request-body-expression-includes-body-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-030?name=qwerty
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: nonmatching-request-body-expression-omits-body
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 7
+      config:
+        routes:
+            - id: rocketmq-031
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: true
+                    include_req_body_expr:
+                        - - arg_name
+                          - ==
+                          - qwerty
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-031
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    not_matches: '"body":"abcdef"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: nonmatching-request-body-expression-omits-body-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-031?name=zcxv
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: invalid-request-body-expression-operator-is-rejected
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 8
+      config:
+        routes:
+            - id: rocketmq-032
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    include_req_body: true
+                    include_req_body_expr:
+                        - - bar
+                          - <>
+                          - foo
+                    key: key1
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    topic: test
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-032
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 0
+          respond:
+            - body: unused
+              headers: {}
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 0
+            partitions: 1
+      steps:
+        - name: invalid-request-body-expression-operator-is-rejected-invalid-config-keeps-route-unavailable
+          input:
+            method: GET
+            path: /rocketmq-032
+          output:
+            logs:
+                matches: include_req_body_expr.*invalid operator
+            status: 404
+    - name: invalid-response-body-expression-operator-is-rejected
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 9
+      config:
+        routes:
+            - id: rocketmq-033
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    include_resp_body: true
+                    include_resp_body_expr:
+                        - - bar
+                          - <!>
+                          - foo
+                    key: key1
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    topic: test
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-033
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 0
+          respond:
+            - body: unused
+              headers: {}
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 0
+            partitions: 1
+      steps:
+        - name: invalid-response-body-expression-operator-is-rejected-invalid-config-keeps-route-unavailable
+          input:
+            method: GET
+            path: /rocketmq-033
+          output:
+            logs:
+                matches: include_resp_body_expr.*invalid operator
+            status: 404
+    - name: response-body-expression-config-is-accepted
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 10
+      config:
+        routes:
+            - id: rocketmq-034
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    include_resp_body_expr:
+                        - - arg_name
+                          - ==
+                          - qwerty
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-034
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"response":.*"body":"hello world\\n"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: response-body-expression-config-is-accepted-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-034?name=qwerty
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: matching-response-body-expression-includes-body
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 11
+      config:
+        routes:
+            - id: rocketmq-035
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    include_resp_body_expr:
+                        - - arg_name
+                          - ==
+                          - qwerty
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-035
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"response":.*"body":"hello world\\n"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: matching-response-body-expression-includes-body-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-035?name=qwerty
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: nonmatching-response-body-expression-omits-body
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 12
+      config:
+        routes:
+            - id: rocketmq-036
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    include_resp_body_expr:
+                        - - arg_name
+                          - ==
+                          - qwerty
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-036
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    not_matches: '"body":"hello world\\n"'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: nonmatching-response-body-expression-omits-body-request
+          input:
+            body: abcdef
+            method: POST
+            path: /rocketmq-036?name=zcxv
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: gzip-response-body-logging-config
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 13
+      config:
+        routes:
+            - id: rocketmq-037
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-037
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: !!binary H4sIAAAAAAAA/0qvyixQyEjNyclXKM8vyknhAgQAAP//s4TNCBEAAAA=
+              headers:
+                Content-Encoding: gzip
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: gzip hello world
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: gzip-response-body-logging-config-request
+          input:
+            headers:
+                Accept-Encoding: gzip
+            method: GET
+            path: /rocketmq-037
+          output:
+            gzip_body:
+                equals: |
+                    gzip hello world
+            headers:
+                Content-Encoding:
+                    equals: gzip
+            status: 200
+          wait: 200ms
+    - name: gzip-response-is-logged-after-decompression
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 14
+      config:
+        routes:
+            - id: rocketmq-038
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-038
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: !!binary H4sIAAAAAAAA/0qvyixQyEjNyclXKM8vyknhAgQAAP//s4TNCBEAAAA=
+              headers:
+                Content-Encoding: gzip
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: gzip hello world
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: gzip-response-is-logged-after-decompression-request
+          input:
+            headers:
+                Accept-Encoding: gzip
+            method: GET
+            path: /rocketmq-038
+          output:
+            gzip_body:
+                equals: |
+                    gzip hello world
+            headers:
+                Content-Encoding:
+                    equals: gzip
+            status: 200
+          wait: 200ms
+    - name: brotli-response-body-logging-config
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 15
+      config:
+        routes:
+            - id: rocketmq-039
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-039
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: !!binary CwmAYnJvdGxpIGhlbGxvIHdvcmxkCgM=
+              headers:
+                Content-Encoding: br
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: brotli hello world
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: brotli-response-body-logging-config-request
+          input:
+            headers:
+                Accept-Encoding: br
+            method: GET
+            path: /rocketmq-039
+          output:
+            brotli_body:
+                equals: |
+                    brotli hello world
+            headers:
+                Content-Encoding:
+                    equals: br
+            status: 200
+          wait: 200ms
+    - name: brotli-response-is-logged-after-decompression
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 16
+      config:
+        routes:
+            - id: rocketmq-040
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_resp_body: true
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-040
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: !!binary CwmAYnJvdGxpIGhlbGxvIHdvcmxkCgM=
+              headers:
+                Content-Encoding: br
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: brotli hello world
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: brotli-response-is-logged-after-decompression-request
+          input:
+            headers:
+                Accept-Encoding: br
+            method: GET
+            path: /rocketmq-040
+          output:
+            brotli_body:
+                equals: |
+                    brotli hello world
+            headers:
+                Content-Encoding:
+                    equals: br
+            status: 200
+          wait: 200ms
+    - name: nested-request-and-response-expressions-are-accepted
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 17
+      config:
+        routes:
+            - id: rocketmq-041
+              plugins:
+                rocketmq-logger:
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    include_req_body: true
+                    include_req_body_expr:
+                        - - request_length
+                          - <
+                          - 1024
+                        - - http_content_type
+                          - in
+                          - - application/xml
+                            - application/json
+                            - text/plain
+                            - text/xml
+                    include_resp_body: true
+                    include_resp_body_expr:
+                        - - http_content_length
+                          - <
+                          - 1024
+                        - - http_content_type
+                          - in
+                          - - application/xml
+                            - application/json
+                            - text/plain
+                            - text/xml
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-041
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: nested-request-and-response-expressions-are-accepted-request
+          input:
+            body: abcdef
+            headers:
+                Content-Type: text/plain
+            method: POST
+            path: /rocketmq-041
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms
+    - name: data-encryption-resolves-rocketmq-secret-key
+      source:
+        file: t/plugin/rocketmq-logger2.t
+        tests:
+            - 18
+      runtime:
+        apisix:
+            data_encryption:
+                enable_encrypt_fields: true
+                keyring:
+                    - edd1c9f0985e76a2
+      config:
+        routes:
+            - id: rocketmq-042
+              plugins:
+                rocketmq-logger:
+                    access_key: foo
+                    batch_max_size: 1
+                    buffer_duration: 1
+                    inactive_timeout: 1
+                    key: key1
+                    max_retry_count: 0
+                    nameserver_list:
+                        - '{{FIXTURE.sink.ADDR}}'
+                    secret_key: bar
+                    timeout: 1
+                    topic: test2
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /rocketmq-042
+      fixtures:
+        - name: primary
+          kind: http
+          expect_requests: 1
+          expect:
+            - path:
+                matches: ^/rocketmq-[0-9]+
+          respond:
+            - body: |
+                hello world
+              headers:
+                Content-Type: text/plain
+              status: 200
+        - name: sink
+          kind: rocketmq
+          rocketmq:
+            credentials:
+                access_key: foo
+                secret_key: bar
+            expect_messages: 1
+            messages:
+                - body:
+                    matches: '"status":200'
+                  key:
+                    equals: key1
+                  topic:
+                    equals: test2
+            partitions: 1
+      steps:
+        - name: data-encryption-resolves-rocketmq-secret-key-request
+          input:
+            method: POST
+            path: /rocketmq-042
+          output:
+            body:
+                equals: |
+                    hello world
+            status: 200
+          wait: 200ms

@@ -3,6 +3,7 @@ package pluginintegration
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,11 @@ import (
 	"strings"
 	"time"
 
+	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"go.yaml.in/yaml/v3"
+	"google.golang.org/protobuf/proto"
 )
 
 type Manifest struct {
@@ -178,15 +183,17 @@ type ScenarioFile struct {
 }
 
 type FixtureSpec struct {
-	Name           string                 `yaml:"name"`
-	Kind           string                 `yaml:"kind"`
-	ExpectRequests *int                   `yaml:"expect_requests,omitempty"`
-	Expect         []HTTPAssertion        `yaml:"expect,omitempty"`
-	Respond        []HTTPResponse         `yaml:"respond,omitempty"`
-	NetworkExpect  []NetworkAssertion     `yaml:"network_expect,omitempty"`
-	NetworkRespond []NetworkResponse      `yaml:"network_respond,omitempty"`
-	Count          *FixtureCountAssertion `yaml:"count,omitempty"`
-	Redis          *RedisFixtureAssertion `yaml:"redis,omitempty"`
+	Name           string                    `yaml:"name"`
+	Kind           string                    `yaml:"kind"`
+	ExpectRequests *int                      `yaml:"expect_requests,omitempty"`
+	Expect         []HTTPAssertion           `yaml:"expect,omitempty"`
+	Respond        []HTTPResponse            `yaml:"respond,omitempty"`
+	NetworkExpect  []NetworkAssertion        `yaml:"network_expect,omitempty"`
+	NetworkRespond []NetworkResponse         `yaml:"network_respond,omitempty"`
+	Count          *FixtureCountAssertion    `yaml:"count,omitempty"`
+	Redis          *RedisFixtureAssertion    `yaml:"redis,omitempty"`
+	Kafka          *KafkaFixtureConfig       `yaml:"kafka,omitempty"`
+	RocketMQ       *RocketMQFixtureAssertion `yaml:"rocketmq,omitempty"`
 }
 
 type FixtureCountAssertion struct {
@@ -213,6 +220,51 @@ type IntRange struct {
 type RedisAuthAssertion struct {
 	Username string `yaml:"username,omitempty"`
 	Password string `yaml:"password"`
+}
+
+type KafkaFixtureConfig struct {
+	Topics                 []string                `yaml:"topics,omitempty"`
+	Partitions             int                     `yaml:"partitions,omitempty"`
+	DistinctPartitionCount int                     `yaml:"distinct_partition_count,omitempty"`
+	MetadataErrorCode      int16                   `yaml:"metadata_error_code,omitempty"`
+	SASL                   *KafkaSASLFixtureConfig `yaml:"sasl,omitempty"`
+	RecordExpect           []KafkaRecordAssertion  `yaml:"record_expect,omitempty"`
+}
+
+type KafkaRecordAssertion struct {
+	NetworkAssertion  `yaml:",inline"`
+	TimestampPositive bool `yaml:"timestamp_positive,omitempty"`
+	Partition         *int `yaml:"partition,omitempty"`
+}
+
+type KafkaSASLFixtureConfig struct {
+	Mechanism string `yaml:"mechanism"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+}
+
+type RocketMQFixtureAssertion struct {
+	Partitions         int                           `yaml:"partitions,omitempty"`
+	TopicMissing       bool                          `yaml:"topic_missing,omitempty"`
+	Unavailable        bool                          `yaml:"unavailable,omitempty"`
+	ExpectMessages     int                           `yaml:"expect_messages"`
+	DistinctQueueCount int                           `yaml:"distinct_queue_count,omitempty"`
+	Messages           []RocketMQMessageAssertion    `yaml:"messages,omitempty"`
+	Credentials        *RocketMQCredentialsAssertion `yaml:"credentials,omitempty"`
+}
+
+type RocketMQMessageAssertion struct {
+	Topic     Matcher  `yaml:"topic"`
+	Key       *Matcher `yaml:"key,omitempty"`
+	KeyAbsent bool     `yaml:"key_absent,omitempty"`
+	Tag       *Matcher `yaml:"tag,omitempty"`
+	Body      Matcher  `yaml:"body"`
+	QueueID   *int     `yaml:"queue_id,omitempty"`
+}
+
+type RocketMQCredentialsAssertion struct {
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
 }
 
 type GRPCMessage struct {
@@ -318,6 +370,7 @@ type HTTPAssertion struct {
 	Body           *Matcher                 `yaml:"body,omitempty"`
 	LokiPush       *LokiPushAssertion       `yaml:"loki_push,omitempty"`
 	SkyWalkingLogs *SkyWalkingLogsAssertion `yaml:"skywalking_logs,omitempty"`
+	OTLPTraces     *OTLPTracesAssertion     `yaml:"otlp_traces,omitempty"`
 	GRPC           *GRPCMessage             `yaml:"grpc,omitempty"`
 }
 
@@ -353,6 +406,31 @@ type SkyWalkingTraceContextAssertion struct {
 	TraceID        string `yaml:"trace_id"`
 	TraceSegmentID string `yaml:"trace_segment_id"`
 	SpanID         int    `yaml:"span_id"`
+}
+
+type OTLPTracesAssertion struct {
+	SpanCount      int                 `yaml:"span_count"`
+	UniqueTraceIDs bool                `yaml:"unique_trace_ids,omitempty"`
+	Spans          []OTLPSpanAssertion `yaml:"spans"`
+}
+
+type OTLPSpanAssertion struct {
+	Name                     Matcher                           `yaml:"name"`
+	Scope                    *Matcher                          `yaml:"scope,omitempty"`
+	Kind                     string                            `yaml:"kind,omitempty"`
+	TraceID                  *Matcher                          `yaml:"trace_id,omitempty"`
+	SpanID                   *Matcher                          `yaml:"span_id,omitempty"`
+	ParentSpanID             *Matcher                          `yaml:"parent_span_id,omitempty"`
+	ParentSpanIDAbsent       bool                              `yaml:"parent_span_id_absent,omitempty"`
+	ResourceAttributes       map[string]OTLPAttributeAssertion `yaml:"resource_attributes,omitempty"`
+	ResourceAttributesAbsent []string                          `yaml:"resource_attributes_absent,omitempty"`
+	Attributes               map[string]OTLPAttributeAssertion `yaml:"attributes,omitempty"`
+	AttributesAbsent         []string                          `yaml:"attributes_absent,omitempty"`
+}
+
+type OTLPAttributeAssertion struct {
+	Matcher `yaml:",inline"`
+	Type    string `yaml:"type,omitempty"`
 }
 
 type HTTPResponse struct {
@@ -1041,10 +1119,132 @@ func (f *FixtureSpec) validate() error {
 	supportedKinds := map[string]bool{
 		"http": true, "https": true, "h2c": true, "tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
 		"redis": true, "redis-cluster": true, "redis-sentinel": true,
-		"kafka": true, "dubbo": true, "ldap": true,
+		"kafka": true, "rocketmq": true, "dubbo": true, "ldap": true,
 	}
 	if !supportedKinds[f.Kind] {
 		return fmt.Errorf("kind %q is not supported", f.Kind)
+	}
+	if f.Kafka != nil && f.Kind != "kafka" {
+		return fmt.Errorf("%s fixture does not support Kafka configuration", f.Kind)
+	}
+	if f.Kafka != nil {
+		seenTopics := make(map[string]struct{}, len(f.Kafka.Topics))
+		for _, topic := range f.Kafka.Topics {
+			if strings.TrimSpace(topic) == "" {
+				return errors.New("kafka topics must not contain blank names")
+			}
+			if _, duplicate := seenTopics[topic]; duplicate {
+				return fmt.Errorf("kafka topic %q is duplicated", topic)
+			}
+			seenTopics[topic] = struct{}{}
+		}
+		if f.Kafka.MetadataErrorCode < 0 {
+			return errors.New("kafka metadata_error_code must not be negative")
+		}
+		if f.Kafka.Partitions < 0 {
+			return errors.New("kafka partitions must not be negative")
+		}
+		partitions := f.Kafka.Partitions
+		if partitions == 0 {
+			partitions = 1
+		}
+		if f.Kafka.DistinctPartitionCount < 0 ||
+			f.Kafka.DistinctPartitionCount > partitions ||
+			f.Kafka.DistinctPartitionCount > len(f.Kafka.RecordExpect) {
+			return errors.New("kafka distinct_partition_count exceeds partitions or expected records")
+		}
+		if f.Kafka.SASL != nil {
+			switch f.Kafka.SASL.Mechanism {
+			case "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512":
+			default:
+				return fmt.Errorf("unsupported Kafka SASL mechanism %q", f.Kafka.SASL.Mechanism)
+			}
+			if strings.TrimSpace(f.Kafka.SASL.Username) == "" || f.Kafka.SASL.Password == "" {
+				return errors.New("kafka SASL username and password are required")
+			}
+		}
+		for i, assertion := range f.Kafka.RecordExpect {
+			if err := assertion.validate(); err != nil {
+				return fmt.Errorf("kafka record expectation %d: %w", i+1, err)
+			}
+			if assertion.Partition != nil &&
+				(*assertion.Partition < 0 || *assertion.Partition >= partitions) {
+				return fmt.Errorf("kafka record expectation %d partition is outside configured partitions", i+1)
+			}
+		}
+	}
+	if f.RocketMQ != nil && f.Kind != "rocketmq" {
+		return fmt.Errorf("%s fixture does not support RocketMQ assertions", f.Kind)
+	}
+	if f.Kind == "rocketmq" {
+		if f.RocketMQ == nil {
+			return errors.New("rocketmq fixture requires protocol assertions")
+		}
+		if f.RocketMQ.Partitions < 0 {
+			return errors.New("rocketmq partitions must not be negative")
+		}
+		if f.RocketMQ.ExpectMessages < 0 {
+			return errors.New("rocketmq expect_messages must not be negative")
+		}
+		if f.RocketMQ.Unavailable && f.RocketMQ.TopicMissing {
+			return errors.New("rocketmq unavailable and topic_missing are mutually exclusive")
+		}
+		if f.RocketMQ.ExpectMessages == 0 && len(f.RocketMQ.Messages) > 0 {
+			return errors.New("rocketmq messages must be empty when expect_messages is zero")
+		}
+		if f.RocketMQ.ExpectMessages > 0 &&
+			len(f.RocketMQ.Messages) != 1 &&
+			len(f.RocketMQ.Messages) != f.RocketMQ.ExpectMessages {
+			return errors.New("rocketmq messages must contain one reusable assertion or one assertion per message")
+		}
+		if f.RocketMQ.TopicMissing && f.RocketMQ.ExpectMessages != 0 {
+			return errors.New("rocketmq topic_missing cannot expect published messages")
+		}
+		if f.RocketMQ.Unavailable && f.RocketMQ.ExpectMessages != 0 {
+			return errors.New("rocketmq unavailable cannot expect published messages")
+		}
+		partitions := f.RocketMQ.Partitions
+		if partitions == 0 {
+			partitions = 1
+		}
+		if f.RocketMQ.DistinctQueueCount < 0 ||
+			f.RocketMQ.DistinctQueueCount > partitions ||
+			f.RocketMQ.DistinctQueueCount > f.RocketMQ.ExpectMessages {
+			return errors.New("rocketmq distinct_queue_count exceeds partitions or expected messages")
+		}
+		for i, message := range f.RocketMQ.Messages {
+			if err := message.Topic.validate(matcherBody); err != nil {
+				return fmt.Errorf("rocketmq message %d topic: %w", i+1, err)
+			}
+			if message.Key != nil {
+				if message.KeyAbsent {
+					return fmt.Errorf("rocketmq message %d key and key_absent are mutually exclusive", i+1)
+				}
+				if err := message.Key.validate(matcherBody); err != nil {
+					return fmt.Errorf("rocketmq message %d key: %w", i+1, err)
+				}
+			}
+			if message.Tag != nil {
+				if err := message.Tag.validate(matcherBody); err != nil {
+					return fmt.Errorf("rocketmq message %d tag: %w", i+1, err)
+				}
+			}
+			if err := message.Body.validate(matcherBody); err != nil {
+				return fmt.Errorf("rocketmq message %d body: %w", i+1, err)
+			}
+			if message.QueueID != nil && (*message.QueueID < 0 || *message.QueueID >= partitions) {
+				return fmt.Errorf("rocketmq message %d queue_id is outside configured partitions", i+1)
+			}
+		}
+		if f.RocketMQ.Credentials != nil &&
+			(strings.TrimSpace(f.RocketMQ.Credentials.AccessKey) == "" ||
+				f.RocketMQ.Credentials.SecretKey == "") {
+			return errors.New("rocketmq credentials require access_key and secret_key")
+		}
+		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
+			return errors.New("rocketmq fixture must use rocketmq protocol assertions")
+		}
+		return nil
 	}
 	if f.Kind == "http" || f.Kind == "https" || f.Kind == "h2c" {
 		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
@@ -1104,7 +1304,10 @@ func (f *FixtureSpec) validate() error {
 		if f.Kind != "redis" && f.Kind != "redis-sentinel" {
 			return fmt.Errorf("%s fixture does not support Redis assertions", f.Kind)
 		}
-		if len(f.Redis.Values) == 0 {
+		if f.Redis.AllowUnassertedCommands && len(f.NetworkExpect) > 0 {
+			return errors.New("redis allow_unasserted_commands must not be combined with network expectations")
+		}
+		if !f.Redis.AllowUnassertedCommands && len(f.Redis.Values) == 0 {
 			return errors.New("redis assertion requires at least one final value")
 		}
 		for key, seconds := range f.Redis.TTLSeconds {
@@ -1127,12 +1330,14 @@ func (f *FixtureSpec) validate() error {
 				return errors.New("redis auth password is required")
 			}
 		}
-		if f.Redis.AllowUnassertedCommands && len(f.NetworkExpect) > 0 {
-			return errors.New("redis allow_unasserted_commands must not be combined with network expectations")
-		}
 		if f.Redis.AllowUnassertedCommands {
 			return nil
 		}
+	}
+	if f.Kind == "kafka" && f.Kafka != nil &&
+		len(f.NetworkExpect) == 0 && len(f.NetworkRespond) == 0 &&
+		(len(f.Kafka.RecordExpect) > 0 || f.Kafka.SASL != nil || f.Kafka.MetadataErrorCode != 0) {
+		return nil
 	}
 	if len(f.NetworkExpect) == 0 {
 		return errors.New("at least one network expectation is required")
@@ -1591,11 +1796,16 @@ func (a HTTPAssertion) validate() error {
 	if a.SkyWalkingLogs != nil {
 		bodyAssertions++
 	}
+	if a.OTLPTraces != nil {
+		bodyAssertions++
+	}
 	if a.GRPC != nil {
 		bodyAssertions++
 	}
 	if bodyAssertions > 1 {
-		return errors.New("upstream request body, loki_push, skywalking_logs, and grpc are mutually exclusive")
+		return errors.New(
+			"upstream request body, loki_push, skywalking_logs, otlp_traces, and grpc are mutually exclusive",
+		)
 	}
 	if a.LokiPush != nil {
 		if err := a.LokiPush.validate(); err != nil {
@@ -1605,6 +1815,11 @@ func (a HTTPAssertion) validate() error {
 	if a.SkyWalkingLogs != nil {
 		if err := a.SkyWalkingLogs.validate(); err != nil {
 			return fmt.Errorf("upstream SkyWalking logs: %w", err)
+		}
+	}
+	if a.OTLPTraces != nil {
+		if err := a.OTLPTraces.validate(); err != nil {
+			return fmt.Errorf("upstream OTLP traces: %w", err)
 		}
 	}
 	if a.GRPC != nil {
@@ -1671,6 +1886,69 @@ func (a SkyWalkingLogsAssertion) validate() error {
 		for _, path := range entry.PayloadAbsent {
 			if strings.TrimSpace(path) == "" {
 				return fmt.Errorf("entry %d absent payload path must not be empty", i+1)
+			}
+		}
+	}
+	return nil
+}
+
+func (a OTLPTracesAssertion) validate() error {
+	if a.SpanCount <= 0 {
+		return errors.New("span_count must be positive")
+	}
+	if len(a.Spans) == 0 || len(a.Spans) > a.SpanCount {
+		return errors.New("spans must contain between one and span_count entries")
+	}
+	for i, span := range a.Spans {
+		if err := span.Name.validate(matcherBody); err != nil {
+			return fmt.Errorf("span %d name: %w", i+1, err)
+		}
+		for field, matcher := range map[string]*Matcher{
+			"scope":          span.Scope,
+			"trace_id":       span.TraceID,
+			"span_id":        span.SpanID,
+			"parent_span_id": span.ParentSpanID,
+		} {
+			if matcher != nil {
+				if err := matcher.validate(matcherBody); err != nil {
+					return fmt.Errorf("span %d %s: %w", i+1, field, err)
+				}
+			}
+		}
+		if span.ParentSpanID != nil && span.ParentSpanIDAbsent {
+			return fmt.Errorf("span %d parent_span_id and parent_span_id_absent are mutually exclusive", i+1)
+		}
+		if span.Kind != "" {
+			switch span.Kind {
+			case "unspecified", "internal", "server", "client", "producer", "consumer":
+			default:
+				return fmt.Errorf("span %d kind %q is unsupported", i+1, span.Kind)
+			}
+		}
+		for scope, attributes := range map[string]map[string]OTLPAttributeAssertion{
+			"resource attribute": span.ResourceAttributes,
+			"attribute":          span.Attributes,
+		} {
+			for key, expected := range attributes {
+				if strings.TrimSpace(key) == "" {
+					return fmt.Errorf("span %d %s key must not be empty", i+1, scope)
+				}
+				if err := expected.validate(matcherBody); err != nil {
+					return fmt.Errorf("span %d %s %q: %w", i+1, scope, key, err)
+				}
+				if expected.Type != "" && !validOTLPValueType(expected.Type) {
+					return fmt.Errorf("span %d %s %q type %q is unsupported", i+1, scope, key, expected.Type)
+				}
+			}
+		}
+		for scope, absent := range map[string][]string{
+			"resource attribute": span.ResourceAttributesAbsent,
+			"attribute":          span.AttributesAbsent,
+		} {
+			for _, key := range absent {
+				if strings.TrimSpace(key) == "" {
+					return fmt.Errorf("span %d absent %s key must not be empty", i+1, scope)
+				}
 			}
 		}
 	}
@@ -1860,6 +2138,223 @@ func (a SkyWalkingLogsAssertion) match(body string) error {
 		}
 	}
 	return nil
+}
+
+type decodedOTLPSpan struct {
+	span               *tracepb.Span
+	scope              string
+	resourceAttributes map[string]*commonpb.AnyValue
+	attributes         map[string]*commonpb.AnyValue
+}
+
+func (a OTLPTracesAssertion) match(body string) error {
+	var request collectortracepb.ExportTraceServiceRequest
+	if err := proto.Unmarshal([]byte(body), &request); err != nil {
+		return fmt.Errorf("decode OTLP traces: %w", err)
+	}
+	actual := flattenOTLPSpans(&request)
+	if len(actual) != a.SpanCount {
+		return fmt.Errorf("OTLP spans = %d, want exactly %d", len(actual), a.SpanCount)
+	}
+	if a.UniqueTraceIDs {
+		seen := make(map[string]struct{}, len(actual))
+		for _, item := range actual {
+			traceID := hex.EncodeToString(item.span.GetTraceId())
+			if _, ok := seen[traceID]; ok {
+				return fmt.Errorf("OTLP spans do not have unique trace IDs: duplicate %q", traceID)
+			}
+			seen[traceID] = struct{}{}
+		}
+	}
+	for i, expected := range a.Spans {
+		item := actual[i]
+		if err := expected.Name.match(item.span.GetName(), true); err != nil {
+			return fmt.Errorf("span %d name: %w", i+1, err)
+		}
+		if expected.Scope != nil {
+			if err := expected.Scope.match(item.scope, item.scope != ""); err != nil {
+				return fmt.Errorf("span %d scope: %w", i+1, err)
+			}
+		}
+		if expected.Kind != "" && otlpSpanKind(item.span.GetKind()) != expected.Kind {
+			return fmt.Errorf(
+				"span %d kind = %q, want %q",
+				i+1,
+				otlpSpanKind(item.span.GetKind()),
+				expected.Kind,
+			)
+		}
+		for field, valueMatcher := range map[string]struct {
+			value   string
+			present bool
+			matcher *Matcher
+		}{
+			"trace_id":       {hex.EncodeToString(item.span.GetTraceId()), len(item.span.GetTraceId()) > 0, expected.TraceID},
+			"span_id":        {hex.EncodeToString(item.span.GetSpanId()), len(item.span.GetSpanId()) > 0, expected.SpanID},
+			"parent_span_id": {hex.EncodeToString(item.span.GetParentSpanId()), len(item.span.GetParentSpanId()) > 0, expected.ParentSpanID},
+		} {
+			if valueMatcher.matcher != nil {
+				if err := valueMatcher.matcher.match(valueMatcher.value, valueMatcher.present); err != nil {
+					return fmt.Errorf("span %d %s: %w", i+1, field, err)
+				}
+			}
+		}
+		if expected.ParentSpanIDAbsent && len(item.span.GetParentSpanId()) > 0 {
+			return fmt.Errorf(
+				"span %d parent_span_id = %q, want absent",
+				i+1,
+				hex.EncodeToString(item.span.GetParentSpanId()),
+			)
+		}
+		if err := matchOTLPAttributes(
+			i+1,
+			"resource attribute",
+			expected.ResourceAttributes,
+			item.resourceAttributes,
+		); err != nil {
+			return err
+		}
+		if err := assertAbsentOTLPAttributes(
+			i+1,
+			"resource attribute",
+			expected.ResourceAttributesAbsent,
+			item.resourceAttributes,
+		); err != nil {
+			return err
+		}
+		if err := matchOTLPAttributes(i+1, "attribute", expected.Attributes, item.attributes); err != nil {
+			return err
+		}
+		if err := assertAbsentOTLPAttributes(i+1, "attribute", expected.AttributesAbsent, item.attributes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func flattenOTLPSpans(request *collectortracepb.ExportTraceServiceRequest) []decodedOTLPSpan {
+	var result []decodedOTLPSpan
+	for _, resourceSpans := range request.GetResourceSpans() {
+		resourceAttributes := otlpAttributes(resourceSpans.GetResource().GetAttributes())
+		for _, scopeSpans := range resourceSpans.GetScopeSpans() {
+			scope := scopeSpans.GetScope().GetName()
+			for _, span := range scopeSpans.GetSpans() {
+				result = append(result, decodedOTLPSpan{
+					span:               span,
+					scope:              scope,
+					resourceAttributes: resourceAttributes,
+					attributes:         otlpAttributes(span.GetAttributes()),
+				})
+			}
+		}
+	}
+	return result
+}
+
+func otlpAttributes(attributes []*commonpb.KeyValue) map[string]*commonpb.AnyValue {
+	result := make(map[string]*commonpb.AnyValue, len(attributes))
+	for _, attribute := range attributes {
+		result[attribute.GetKey()] = attribute.GetValue()
+	}
+	return result
+}
+
+func matchOTLPAttributes(
+	spanIndex int,
+	scope string,
+	expected map[string]OTLPAttributeAssertion,
+	actual map[string]*commonpb.AnyValue,
+) error {
+	for key, assertion := range expected {
+		value, ok := actual[key]
+		if !ok {
+			return fmt.Errorf("span %d %s %q is absent", spanIndex, scope, key)
+		}
+		valueType, text := otlpValue(value)
+		if assertion.Type != "" && valueType != assertion.Type {
+			return fmt.Errorf(
+				"span %d %s %q type = %q, want %q",
+				spanIndex,
+				scope,
+				key,
+				valueType,
+				assertion.Type,
+			)
+		}
+		if err := assertion.match(text, true); err != nil {
+			return fmt.Errorf("span %d %s %q: %w", spanIndex, scope, key, err)
+		}
+	}
+	return nil
+}
+
+func assertAbsentOTLPAttributes(
+	spanIndex int,
+	scope string,
+	expected []string,
+	actual map[string]*commonpb.AnyValue,
+) error {
+	for _, key := range expected {
+		if value, ok := actual[key]; ok {
+			valueType, text := otlpValue(value)
+			return fmt.Errorf(
+				"span %d %s %q = %s(%q), want absent",
+				spanIndex,
+				scope,
+				key,
+				valueType,
+				text,
+			)
+		}
+	}
+	return nil
+}
+
+func validOTLPValueType(valueType string) bool {
+	switch valueType {
+	case "string", "bool", "int", "double", "bytes", "array", "kvlist":
+		return true
+	default:
+		return false
+	}
+}
+
+func otlpValue(value *commonpb.AnyValue) (string, string) {
+	switch typed := value.GetValue().(type) {
+	case *commonpb.AnyValue_StringValue:
+		return "string", typed.StringValue
+	case *commonpb.AnyValue_BoolValue:
+		return "bool", strconv.FormatBool(typed.BoolValue)
+	case *commonpb.AnyValue_IntValue:
+		return "int", strconv.FormatInt(typed.IntValue, 10)
+	case *commonpb.AnyValue_DoubleValue:
+		return "double", strconv.FormatFloat(typed.DoubleValue, 'g', -1, 64)
+	case *commonpb.AnyValue_BytesValue:
+		return "bytes", hex.EncodeToString(typed.BytesValue)
+	case *commonpb.AnyValue_ArrayValue:
+		return "array", typed.ArrayValue.String()
+	case *commonpb.AnyValue_KvlistValue:
+		return "kvlist", typed.KvlistValue.String()
+	default:
+		return "", ""
+	}
+}
+
+func otlpSpanKind(kind tracepb.Span_SpanKind) string {
+	switch kind {
+	case tracepb.Span_SPAN_KIND_INTERNAL:
+		return "internal"
+	case tracepb.Span_SPAN_KIND_SERVER:
+		return "server"
+	case tracepb.Span_SPAN_KIND_CLIENT:
+		return "client"
+	case tracepb.Span_SPAN_KIND_PRODUCER:
+		return "producer"
+	case tracepb.Span_SPAN_KIND_CONSUMER:
+		return "consumer"
+	default:
+		return "unspecified"
+	}
 }
 
 func stringMapEqual(left, right map[string]string) bool {

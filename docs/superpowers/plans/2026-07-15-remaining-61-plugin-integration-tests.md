@@ -822,7 +822,9 @@ The original checked state was not supported by the manifests. This audit compar
   proves an always-insecure TLS implementation cannot pass. Package/Store,
   race, fixture, exact real-process, pinned-source, corpus, scoped lint, build,
   post-integration, and independent review gates pass.
-- [ ] `openid-connect` — twelve generic provider-authentication cases replace 141 bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis, renewal/logout, proxy, TLS, and header behaviors.
+- [x] `openid-connect` — all 141 pinned blocks are independent standalone
+  cases covering bearer/introspection/JWT, discovery/JWKS, session/PKCE/Redis,
+  renewal/logout, proxy trust, TLS, claims, and header behavior.
 - [x] `forward-auth` — all 28 pinned blocks across three sources map exactly once to standalone schema, header propagation/spoof resistance, allow/deny, degradation/error, `$post_arg`, CRLF/no-auth, bounded-body 413, chunked re-framing, GET/POST framing, and absent-header clearing behavior. Raw framing assertions combine required bytes with explicit forbidden-header patterns, so they cannot pass from fixture-generated claims. Package/race/corpus, full real-process, sensitive `-count=3`, scoped lint, build, post-integration gates, and task review pass.
 - [x] `multi-auth` — all 38 pinned blocks across two sources map exactly once to 13 real standalone groups and 38 requests covering ordered Basic/Key/JWT/HMAC alternatives, exact all-failed diagnostics, silent later success, configured token locations and hiding, invalid nested/cardinality reloads with last-good retention, JWT failures, anonymous failures, and exactly-once consumer chaining. Failed body-validating probes replay a bounded captured prefix plus unread source so later alternatives and upstream receive the full body; probe diagnostics are request-scoped and emitted only if every alternative fails. Affected auth/context package and race tests, full real-process and focused race, sensitive repeats, corpus, scoped lint, build, post-integration gates, and task review pass.
 - [x] `wolf-rbac` — all 44 owned pinned blocks (`wolf-rbac.t` 1–42 plus `security-warning2.t` 19–20) map exactly once to real standalone schema, public API, token/header, permission/retry, JSON/raw/102-field password, Vault/env, duplicate-appid consumer replacement, TLS, trusted-IP, and HTTP-warning behavior. The duplicate lifecycle retains the original same-appid consumer, appends the Echo consumer, waits boundedly for the newer credential index, then proves exactly one final permission and upstream request before Echo rewriting. Package/race, full real-process, sensitive and lifecycle repeats, confidentiality assertions, scoped lint, build, post-integration gates, and task review pass.
@@ -939,7 +941,9 @@ The original checked state was not supported by the manifests. This audit compar
   Authorization matching. Package/config/data-encryption/Store, race, exact
   real-process, pinned-source, no-alias, corpus, scoped lint, build, and diff
   gates pass.
-- [ ] `rocketmq-logger` — generic delivery omits nameserver/topic/access-key signing, body/log formats, batching, timeout, and error behavior.
+- [x] `rocketmq-logger` — all 42 pinned blocks use a real RocketMQ protocol
+  fixture for nameserver discovery and broker publication, including topic,
+  signing, body/log formats, batching, timeout, reload, and error behavior.
 - [x] `sls-logger` — all 17 pinned blocks map exactly once to independent
   standalone cases covering schema failures, TLS RFC5424 delivery,
   project/logstore credentials, ordered batching, subsecond timestamps,
@@ -971,7 +975,9 @@ The original checked state was not supported by the manifests. This audit compar
   empty/custom/nested format, and route/service context cases. Package,
   logger-batch, Store/config/server, race, exact real-process, pinned-source,
   corpus, scoped lint, build, post-integration, and task-review gates pass.
-- [ ] `kafka-logger` — one produce per source omits topic/key/partition, metadata negotiation, SASL/TLS, body truncation, formats, batching/retry, and broker failures.
+- [x] `kafka-logger` — all 99 pinned blocks use real Kafka protocol fixtures
+  for records, partitions, metadata, PLAIN/SCRAM, body handling, formats,
+  batching/retry, service sharing, reload, and broker failures.
 - [x] `file-logger` — all 44 pinned blocks across three sources map exactly once
   to real standalone schema, file append/cache/reopen, live `SIGUSR1`, exact
   default/nested/extra/metadata/route formats, pre-DNS node fields,
@@ -995,7 +1001,9 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 11 — Tracing
 
-- [ ] `opentelemetry` — one export per source omits semantic protobuf decoding, sampling, trace/span IDs, propagation, resource/route attributes, body limits, batching, HTTP/gRPC errors, and shutdown flush.
+- [x] `opentelemetry` — all 81 pinned blocks use semantic OTLP protobuf
+  assertions for sampling, trace/span IDs, propagation, resource/route
+  attributes, body limits, batching, errors, metadata reload, and shutdown.
 - [x] `skywalking` — all 17 pinned blocks across the two sources map exactly
   once to independent standalone cases covering propagated and generated
   trace context, segment/span/log semantics, route and metadata attributes,
@@ -1350,12 +1358,12 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 8 remaining (18 listed)
+### Hard — 4 remaining (18 listed)
 
 - [x] `key-auth`
 - [x] `jwt-auth`
 - [x] `ldap-auth`
-- [ ] `openid-connect`
+- [x] `openid-connect`
 - [x] `authz-keycloak`
 - [x] `saml-auth`
 - [ ] `limit-conn`
@@ -1364,10 +1372,10 @@ Execution waves:
 - [x] `proxy-cache`
 - [x] `traffic-split`
 - [x] `http-dubbo`
-- [ ] `rocketmq-logger`
-- [ ] `kafka-logger`
+- [x] `rocketmq-logger`
+- [x] `kafka-logger`
 - [x] `error-log-logger`
-- [ ] `opentelemetry`
+- [x] `opentelemetry`
 - [x] `ai-rate-limiting`
 - [ ] `ai-proxy`
 
@@ -1436,8 +1444,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 52 manifests
-are integrated and verified and 9 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 56 manifests
+are integrated and verified and 5 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1603,7 +1611,7 @@ already-implemented branch.
   `limit-conn` assertions. Package/race, exact real-process normal/race,
   source/corpus/target, scoped lint, build, and diff gates pass.
 
-### Hard — 8 remaining (15 at replan)
+### Hard — 4 remaining (15 at replan)
 
 - [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
@@ -1633,7 +1641,12 @@ already-implemented branch.
   Vault/environment resolution, realms, anonymous consumers, schema failures,
   and context propagation. Package/race, exact real-process normal/race,
   structural and semantic corpus, scoped lint, and diff gates pass.
-- [ ] `openid-connect`
+- [x] `openid-connect` — all 141 pinned blocks across twelve sources are
+  independent, alias-free standalone cases covering bearer and code flows,
+  introspection/JWT/JWKS, sessions and PKCE, Redis, claims, renewal/logout,
+  trusted forwarding, proxies, TLS, and header behavior. Package/server/ctx
+  race, exact real-process normal/race, source/corpus/target, scoped lint,
+  build, and diff gates pass.
 - [ ] `limit-conn`
 - [ ] `limit-count`
 - [ ] `limit-req`
@@ -1651,9 +1664,25 @@ already-implemented branch.
   nodes-minus-one default while selecting distinct retry targets. Package/
   route/resource/proxy race, exact real-process normal/race,
   source/corpus/target, scoped lint, build, and diff gates pass.
-- [ ] `rocketmq-logger`
-- [ ] `kafka-logger`
-- [ ] `opentelemetry`
+- [x] `rocketmq-logger` — all 42 pinned blocks are independent standalone
+  cases with real nameserver code 105 discovery and broker code 10 publish,
+  message/topic/key/tag/partition/signature assertions, error paths, reload,
+  compressed bodies, batching, and race-safe shutdown. Package/race, exact
+  real-process normal/race, source/corpus/target, scoped lint, build, and diff
+  gates pass.
+- [x] `kafka-logger` — all 99 pinned blocks plus thirteen schema variants are
+  independent standalone cases with record-level assertions, metadata and
+  partition behavior, PLAIN/SCRAM, formats and compressed bodies, batching,
+  retries, service-owned processor sharing, reload, and broker failures.
+  Package/route race, exact real-process normal/race, source/corpus/target,
+  scoped lint, build, and diff gates pass. `api_version` remains a validated
+  compatibility option rather than a forced kafka-go Produce version.
+- [x] `opentelemetry` — all 81 pinned blocks are independent standalone cases
+  with semantic OTLP protobuf assertions for span/resource attributes,
+  trace/span/parent IDs, propagation, sampling, request variables, batching,
+  metadata reload, errors, and shutdown flush. Package/race, exact
+  real-process normal/race, source/corpus/target, scoped lint, build, and diff
+  gates pass.
 - [ ] `ai-proxy`
 
 ### Updated Parallel Execution Waves

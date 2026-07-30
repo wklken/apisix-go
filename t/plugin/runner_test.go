@@ -1618,6 +1618,7 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	requests := make(chan capturedRequest, requestCapacity)
 	var responseMu sync.Mutex
 	nextResponse := 0
+	var server *httptest.Server
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		request := capturedRequest{
@@ -1640,10 +1641,10 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 		}
 		responseMu.Unlock()
 		response := spec.Respond[responseIndex]
+		response = expandFixtureSelfResponse(response, server.URL)
 		writeFixtureResponse(w, r.Context(), response, string(body))
 	})
 
-	var server *httptest.Server
 	switch spec.Kind {
 	case "https":
 		server = httptest.NewTLSServer(handler)
@@ -1657,6 +1658,46 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 		server = httptest.NewServer(handler)
 	}
 	return &fixtureServer{server: server, requests: requests}, nil
+}
+
+func expandFixtureSelfResponse(response HTTPResponse, selfURL string) HTTPResponse {
+	response.Body = strings.ReplaceAll(response.Body, "{{SELF.URL}}", selfURL)
+	if len(response.Headers) > 0 {
+		headers := make(map[string]string, len(response.Headers))
+		for name, value := range response.Headers {
+			headers[name] = strings.ReplaceAll(value, "{{SELF.URL}}", selfURL)
+		}
+		response.Headers = headers
+	}
+	return response
+}
+
+func TestExpandFixtureSelfResponseExpandsBodyAndHeaders(t *testing.T) {
+	response := expandFixtureSelfResponse(HTTPResponse{
+		Body:    `{"token_endpoint":"{{SELF.URL}}/token"}`,
+		Headers: map[string]string{"Location": "{{SELF.URL}}/authorize"},
+	}, "http://127.0.0.1:1980")
+
+	if response.Body != `{"token_endpoint":"http://127.0.0.1:1980/token"}` {
+		t.Fatalf("body = %q", response.Body)
+	}
+	if response.Headers["Location"] != "http://127.0.0.1:1980/authorize" {
+		t.Fatalf("Location = %q", response.Headers["Location"])
+	}
+}
+
+func TestRedisFixtureAllowsProtocolOnlyObservationWithoutPredictableKeys(t *testing.T) {
+	fixture := FixtureSpec{
+		Name: "redis",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			IgnoreNegotiation:       true,
+			AllowUnassertedCommands: true,
+		},
+	}
+	if err := fixture.validate(); err != nil {
+		t.Fatalf("validate protocol-only Redis fixture: %v", err)
+	}
 }
 
 func writeFixtureResponse(w http.ResponseWriter, context context.Context, response HTTPResponse, requestBody string) {
@@ -2437,7 +2478,8 @@ func runCase(t *testing.T, spec Case) {
 
 	transport.CloseIdleConnections()
 	if err := process.stop(); err != nil {
-		t.Errorf("stop APISIX: %v", err)
+		logs, logErr := process.logs()
+		t.Errorf("stop APISIX: %v\nread child logs: %v\nchild logs:\n%s", err, logErr, logs)
 	}
 	stopped = true
 	for _, fixtureSpec := range spec.Fixtures {
@@ -3989,7 +4031,7 @@ func assertElapsed(t *testing.T, output HTTPOutput, elapsed time.Duration) {
 func fixtureAssertionsConfigured(assertion HTTPAssertion) bool {
 	return assertion.Method != "" || assertion.Protocol != "" || assertion.Path != nil || assertion.Host != nil ||
 		len(assertion.Headers) > 0 || assertion.Body != nil || assertion.LokiPush != nil ||
-		assertion.SkyWalkingLogs != nil || assertion.GRPC != nil
+		assertion.SkyWalkingLogs != nil || assertion.OTLPTraces != nil || assertion.GRPC != nil
 }
 
 func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, body string) {
@@ -4176,6 +4218,11 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 	if expected.SkyWalkingLogs != nil {
 		if err := expected.SkyWalkingLogs.match(received.body); err != nil {
 			t.Errorf("upstream SkyWalking logs: %v", err)
+		}
+	}
+	if expected.OTLPTraces != nil {
+		if err := expected.OTLPTraces.match(received.body); err != nil {
+			t.Errorf("upstream OTLP traces: %v", err)
 		}
 	}
 	if expected.GRPC != nil {

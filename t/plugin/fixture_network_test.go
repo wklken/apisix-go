@@ -121,6 +121,8 @@ func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
 		return startRedisFixture(spec)
 	case "kafka":
 		return startKafkaFixture(spec)
+	case "rocketmq":
+		return startRocketMQFixture(spec)
 	case "dubbo":
 		return startDubboFixture(spec)
 	case "ldap":

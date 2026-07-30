@@ -297,6 +297,8 @@ type Builder struct {
 	stopperMu             sync.Mutex
 	consumerPluginChains  map[consumerPluginChainKey]alice.Chain
 	consumerPluginChainMu sync.Mutex
+	servicePlugins        map[servicePluginKey]plugin.Plugin
+	servicePluginMu       sync.Mutex
 	stopOnce              sync.Once
 }
 
@@ -304,6 +306,12 @@ type consumerPluginChainKey struct {
 	plugins   string
 	routeID   string
 	serviceID string
+}
+
+type servicePluginKey struct {
+	serviceID string
+	name      string
+	config    string
 }
 
 func NewBuilder(storage *store.Store) *Builder {
@@ -314,6 +322,7 @@ func NewBuilderWithServerAddr(storage *store.Store, serverAddr string) *Builder 
 	return &Builder{
 		serverAddr:           normalizeServerAddr(serverAddr),
 		consumerPluginChains: make(map[consumerPluginChainKey]alice.Chain),
+		servicePlugins:       make(map[servicePluginKey]plugin.Plugin),
 	}
 }
 
@@ -453,18 +462,25 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 		}
 	}
 
-	// add the plugins from service
+	servicePluginConfigs := make(map[string]resource.PluginConfig)
 	if len(service.Plugins) > 0 {
 		for name, config := range service.Plugins {
-			// if not in r.Plugins, add
-			if _, ok := resourcePlugins[name]; !ok {
+			if _, ok := resourcePlugins[name]; ok {
+				continue
+			}
+			if name == "kafka-logger" && service.ID != "" {
+				servicePluginConfigs[name] = config
+			} else {
 				resourcePlugins[name] = config
 			}
 		}
 	}
 
+	effectivePluginConfigs := clonePluginConfigs(resourcePlugins)
+	maps.Copy(effectivePluginConfigs, servicePluginConfigs)
+
 	// add a context plugin, set the default vars
-	systemPlugins := buildSystemPluginConfigs(r, service, resourcePlugins)
+	systemPlugins := buildSystemPluginConfigs(r, service, effectivePluginConfigs)
 
 	var chain alice.Chain
 
@@ -472,6 +488,13 @@ func (b *Builder) buildHandlerStrict(r resource.Route) (http.Handler, error) {
 	routeContext.service = service
 	localPlugins := make([]plugin.Plugin, 0, len(resourcePlugins)+len(systemPlugins))
 	initialized, err := b.initPluginsStrict(resourcePlugins, routeContext)
+	if err != nil {
+		return nil, err
+	}
+	for _, initializedPlugin := range initialized {
+		localPlugins = append(localPlugins, routeConsumerOverridePlugin{Plugin: initializedPlugin})
+	}
+	initialized, err = b.initServicePluginsStrict(servicePluginConfigs, routeContext)
 	if err != nil {
 		return nil, err
 	}
@@ -994,6 +1017,58 @@ func (b *Builder) initPlugins(
 		logger.Errorf("initialize strict plugin set fail: %s", err)
 	}
 	return plugins
+}
+
+func (b *Builder) initServicePluginsStrict(
+	pluginConfigs map[string]resource.PluginConfig,
+	routeContext pluginRouteContext,
+) ([]plugin.Plugin, error) {
+	plugins := make([]plugin.Plugin, 0, len(pluginConfigs))
+	for name, config := range pluginConfigs {
+		if name != "kafka-logger" || routeContext.service.ID == "" {
+			initialized, err := b.initPluginsStrict(
+				map[string]resource.PluginConfig{name: config},
+				routeContext,
+			)
+			if err != nil {
+				return nil, err
+			}
+			plugins = append(plugins, initialized...)
+			continue
+		}
+
+		encoded, err := stdjson.Marshal(config)
+		if err != nil {
+			return nil, fmt.Errorf("marshal service plugin %s config: %w", name, err)
+		}
+		key := servicePluginKey{
+			serviceID: routeContext.service.ID,
+			name:      name,
+			config:    string(encoded),
+		}
+
+		b.servicePluginMu.Lock()
+		initialized := b.servicePlugins[key]
+		if initialized == nil {
+			servicePlugins, initErr := b.initPluginsStrict(
+				map[string]resource.PluginConfig{name: config},
+				routeContext,
+			)
+			if initErr != nil {
+				b.servicePluginMu.Unlock()
+				return nil, initErr
+			}
+			if len(servicePlugins) == 1 {
+				initialized = servicePlugins[0]
+				b.servicePlugins[key] = initialized
+			}
+		}
+		b.servicePluginMu.Unlock()
+		if initialized != nil {
+			plugins = append(plugins, initialized)
+		}
+	}
+	return plugins, nil
 }
 
 func (b *Builder) initPluginsStrict(

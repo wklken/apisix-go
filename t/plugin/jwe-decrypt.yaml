@@ -378,14 +378,14 @@ cases:
           input:
             path: /jwe-reload-ready
             headers:
-              Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+              Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJjaGVuLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.ar0vE2I.AOndbhR7J1e2oM3N2c-KYQ"
           output:
             status: 204
         config_timeout: 2s
         input:
           path: /jwe-reload-ready
           headers:
-            Authorization: "eyJraWQiOiJ1c2VyLWtleSIsImFsZyI6ImRpciIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.6JeRgm0.rNt131nG5wMvUD1KXbwLGA"
+            Authorization: "eyJhbGciOiJkaXIiLCJraWQiOiJjaGVuLWtleSIsImVuYyI6IkEyNTZHQ00ifQ..MTIzNDU2Nzg5MDEy.ar0vE2I.AOndbhR7J1e2oM3N2c-KYQ"
         output:
           status: 204
 

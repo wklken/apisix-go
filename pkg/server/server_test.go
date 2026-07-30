@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 )
 
@@ -51,8 +52,10 @@ func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
 
 func TestStripUntrustedForwardedForPreservesTrustedHeader(t *testing.T) {
 	var gotForwardedFor string
+	var trustedProxy bool
 	handler := stripUntrustedForwardedFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		trustedProxy = apisixctx.IsTrustedProxy(r)
 		w.WriteHeader(http.StatusNoContent)
 	}), []string{"127.0.0.0/24"})
 	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
@@ -63,6 +66,9 @@ func TestStripUntrustedForwardedForPreservesTrustedHeader(t *testing.T) {
 
 	if gotForwardedFor != "1.1.1.1" {
 		t.Fatalf("X-Forwarded-For = %q, want trusted header preserved", gotForwardedFor)
+	}
+	if !trustedProxy {
+		t.Fatal("trusted proxy context = false, want true")
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -62,6 +63,58 @@ func TestPostInitSetsGoogleDefaults(t *testing.T) {
 	}
 	if p.config.BatchMaxSize != 1000 {
 		t.Fatalf("batch_max_size = %d, want 1000", p.config.BatchMaxSize)
+	}
+}
+
+func TestMetadataSchemaAcceptsObjectLogFormatAndRejectsString(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if p.GetMetadataSchema() == "" {
+		t.Fatal("metadata schema is empty")
+	}
+	valid := map[string]any{
+		"log_format":          map[string]any{"host": "$host"},
+		"max_pending_entries": 1,
+	}
+	if err := util.Validate(valid, p.GetMetadataSchema()); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	if err := util.Validate(map[string]any{"log_format": "wrong-type"}, p.GetMetadataSchema()); err == nil {
+		t.Fatal("string log_format was accepted")
+	}
+}
+
+func TestPostInitLoadsSSLCAFileForVerifiedClient(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	caFile := t.TempDir() + "/ca.pem"
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(caFile, certificate, 0o600); err != nil {
+		t.Fatalf("write CA file: %v", err)
+	}
+	t.Setenv("SSL_CERT_FILE", caFile)
+
+	privateKey, _ := testPrivateKey(t)
+	p := newTestPlugin(t, Config{AuthConfig: &AuthConfig{
+		ClientEmail: "trusted-ca@example.org",
+		PrivateKey:  privateKey,
+		ProjectID:   "trusted-ca",
+		TokenURI:    server.URL + "/token",
+		EntriesURI:  server.URL + "/entries",
+	}})
+	t.Cleanup(p.Stop)
+
+	response, err := p.client.R().Get(server.URL)
+	if err != nil {
+		t.Fatalf("verified request using SSL_CERT_FILE: %v", err)
+	}
+	if response.StatusCode() != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.StatusCode(), http.StatusNoContent)
 	}
 }
 

@@ -878,7 +878,16 @@ The original checked state was not supported by the manifests. This audit compar
   real-process, pinned-source, corpus, scoped lint, build, post-integration,
   and task-review gates pass.
 - [x] `clickhouse-logger` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates required/default/schema configuration, ClickHouse user/key/database headers, JSONEachRow SQL bodies, single and multiple endpoints, deterministic pending-entry overflow against a cancellable slow sink, request/response body capture and expressions, plugin metadata formats, and child-scoped `$ENV://` user resolution including empty values. Package, race, strict corpus, environment isolation, real-process, scoped lint, diff, build, post-integration, and task-review gates pass.
-- [ ] `google-cloud-logging` — generic delivery omits OAuth/JWT exchange, monitored-resource/log fields, batching, credentials, endpoint, and error handling.
+- [x] `google-cloud-logging` — all 33 pinned blocks across three sources map
+  exactly once to independent standalone cases covering auth-file and inline
+  credentials, signed OAuth exchange, token types, Cloud Logging resource and
+  payload fields, metadata and route formats, trusted/untrusted/disabled TLS,
+  encrypted private-key storage, batching defaults, delivery failures, and
+  deterministic pending-entry overflow. The integration run exposed and fixed
+  missing `$host`, port-bearing `$remote_addr`, metadata schema validation,
+  scenario-file fixture expansion, and macOS trusted-CA loading. Package,
+  logger-batch, race, exact real-process, pinned-source, no-alias, corpus,
+  scoped lint, build, and diff gates pass.
 - [x] `loggly` — all 22 pinned blocks map exactly once to real standalone
   schema, UDP RFC5424, token/tag, severity, body/expression, metadata,
   HTTP-bulk, encryption-at-rest, and buffered-config isolation cases. The
@@ -1220,7 +1229,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 8 remaining (28 listed)
+### Medium — 7 remaining (28 listed)
 
 - [x] `datadog`
 - [x] `basic-auth`
@@ -1236,7 +1245,7 @@ Execution waves:
 - [ ] `workflow`
 - [x] `batch-requests`
 - [x] `http-logger`
-- [ ] `google-cloud-logging`
+- [x] `google-cloud-logging`
 - [x] `loggly`
 - [x] `elasticsearch-logger`
 - [ ] `sls-logger`
@@ -1372,8 +1381,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 41 manifests
-are integrated and verified and 20 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 42 manifests
+are integrated and verified and 19 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1402,7 +1411,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 7 remaining (19 at replan)
+### Medium — 6 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1489,7 +1498,15 @@ already-implemented branch.
   headers. Its post-integration package/config/data-encryption/Store, race,
   real-process, pinned-source, no-alias, corpus, scoped lint, build, and diff
   gates pass.
-- [ ] `google-cloud-logging`
+- [x] `google-cloud-logging` — all 33 pinned blocks are independent,
+  source-complete, and alias-free. Real standalone processes prove auth-file
+  and inline credentials, OAuth/JWT requests, custom token types, exact
+  resource/log fields, metadata and route formats, TLS verification modes,
+  encrypted private-key persistence, batching defaults and pending overflow.
+  Package and shared logger lifecycle tests prove RS256 claims/signatures,
+  retry/flush/stop behavior, and schema rejection. Normal and race exact
+  real-process runs, pinned-source/corpus/target gates, scoped lint, build, and
+  diff checks pass.
 - [ ] `sls-logger`
 - [ ] `tencent-cloud-cls`
 - [ ] `error-log-logger` — follows Kafka plus HTTP/SkyWalking sink contracts.

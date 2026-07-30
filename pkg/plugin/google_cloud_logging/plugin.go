@@ -183,6 +183,21 @@ const schema = `
 }
 `
 
+const metadataSchema = `
+{
+  "type": "object",
+  "properties": {
+    "log_format": {
+      "type": "object"
+    },
+    "max_pending_entries": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+`
+
 type pluginMetadata struct {
 	LogFormat         map[string]string `json:"log_format"`
 	MaxPendingEntries int               `json:"max_pending_entries,omitempty"`
@@ -278,6 +293,7 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	p.MetadataSchema = metadataSchema
 
 	p.FireChan = make(chan map[string]any, 1000)
 	p.AsyncBlock = true
@@ -344,8 +360,13 @@ func (p *Plugin) PostInit() error {
 	configUID.Add(p.config.AuthFile)
 	configUID.Add(p.sslVerify())
 
+	tlsConfig, trustIdentity, err := googleCloudTLSConfig(p.sslVerify())
+	if err != nil {
+		return err
+	}
+	configUID.Add(trustIdentity)
 	client := resty.New()
-	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: !p.sslVerify()})
+	client.SetTLSClientConfig(tlsConfig)
 	p.client = shared.LoadOrStoreClient(name, configUID, client).(*resty.Client)
 
 	metadata := base.LoadPluginMetadata[pluginMetadata](name)
@@ -370,6 +391,29 @@ func (p *Plugin) PostInit() error {
 		ServerAddr:        p.ServerAddr,
 	}, p.SendBatch)
 	return nil
+}
+
+func googleCloudTLSConfig(verify bool) (*tls.Config, string, error) {
+	config := &tls.Config{InsecureSkipVerify: !verify}
+	if !verify {
+		return config, "insecure", nil
+	}
+
+	caFile := os.Getenv("SSL_CERT_FILE")
+	if caFile == "" {
+		return config, "verified:system", nil
+	}
+	certificate, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("read google-cloud-logging trusted certificate file: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certificate) {
+		return nil, "", fmt.Errorf("parse google-cloud-logging trusted certificate file %q", caFile)
+	}
+	config.RootCAs = roots
+	trustHash := sha256.Sum256(certificate)
+	return config, fmt.Sprintf("verified:file:%x", trustHash), nil
 }
 
 func (p *Plugin) Send(log map[string]any) {

@@ -1,6 +1,7 @@
 package variable
 
 import (
+	"net"
 	"net/http"
 	"time"
 )
@@ -14,6 +15,7 @@ var NginxVars = map[string]struct{}{
 	"$request_line":         {},
 	"$request_uri":          {},
 	"$remote_addr":          {},
+	"$host":                 {},
 	"$http_host":            {},
 	"$uri":                  {},
 	"$args":                 {},
@@ -42,7 +44,9 @@ func GetNginxVar(r *http.Request, key string) string {
 	case "$request_uri":
 		return r.URL.RequestURI()
 	case "$remote_addr":
-		return r.RemoteAddr
+		return addressHost(r.RemoteAddr)
+	case "$host":
+		return addressHost(r.Host)
 	case "$http_host":
 		return r.Host
 	case "$uri":
@@ -69,4 +73,12 @@ func GetNginxVar(r *http.Request, key string) string {
 	default:
 		return ""
 	}
+}
+
+func addressHost(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err == nil {
+		return host
+	}
+	return address
 }

@@ -250,7 +250,7 @@ func TestWriteScenarioFilesCreatesFilesUnderWorkDirectory(t *testing.T) {
 	workDir := t.TempDir()
 	files := []ScenarioFile{{Path: "fixtures/model.conf", Body: "model text"}}
 
-	if err := writeScenarioFiles(workDir, files); err != nil {
+	if err := writeScenarioFiles(workDir, files, nil); err != nil {
 		t.Fatalf("writeScenarioFiles() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(workDir, "fixtures", "model.conf"))
@@ -259,6 +259,28 @@ func TestWriteScenarioFilesCreatesFilesUnderWorkDirectory(t *testing.T) {
 	}
 	if got := string(data); got != "model text" {
 		t.Fatalf("scenario file body = %q, want model text", got)
+	}
+}
+
+func TestWriteScenarioFilesExpandsFixturePlaceholders(t *testing.T) {
+	workDir := t.TempDir()
+	files := []ScenarioFile{{
+		Path: "fixtures/auth.json",
+		Body: `{"token_uri":"{{FIXTURE.sink.URL}}/token"}`,
+	}}
+	replacements := map[string]string{
+		"{{FIXTURE.sink.URL}}": "https://127.0.0.1:8443",
+	}
+
+	if err := writeScenarioFiles(workDir, files, replacements); err != nil {
+		t.Fatalf("writeScenarioFiles() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "fixtures", "auth.json"))
+	if err != nil {
+		t.Fatalf("read scenario file: %v", err)
+	}
+	if got := string(data); got != `{"token_uri":"https://127.0.0.1:8443/token"}` {
+		t.Fatalf("scenario file body = %q, want expanded fixture URL", got)
 	}
 }
 
@@ -2148,9 +2170,6 @@ func runCase(t *testing.T, spec Case) {
 	}
 	workDir := t.TempDir()
 	replacements["{{WORK_DIR}}"] = workDir
-	if err := writeScenarioFiles(workDir, spec.Files); err != nil {
-		t.Fatalf("write scenario files: %v", err)
-	}
 	namedFixtures := make(map[string]namedFixture, len(spec.Fixtures))
 	for _, fixtureSpec := range spec.Fixtures {
 		namedFixture, err := startNamedFixture(fixtureSpec)
@@ -2175,6 +2194,9 @@ func runCase(t *testing.T, spec Case) {
 	}
 	apisixAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	replacements["{{APISIX_URL}}"] = "http://" + apisixAddress
+	if err := writeScenarioFiles(workDir, spec.Files, replacements); err != nil {
+		t.Fatalf("write scenario files: %v", err)
+	}
 	runtimeOverrides := spec.Runtime
 	standaloneResources := spec.Config
 	tlsPort := 0
@@ -3231,13 +3253,17 @@ func expandEnvironment(environment Environment, replacements map[string]string) 
 	return expanded, nil
 }
 
-func writeScenarioFiles(workDir string, files []ScenarioFile) error {
+func writeScenarioFiles(workDir string, files []ScenarioFile, replacements map[string]string) error {
 	for _, file := range files {
 		path := filepath.Join(workDir, filepath.Clean(file.Path))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return fmt.Errorf("create scenario file directory: %w", err)
 		}
-		if err := os.WriteFile(path, []byte(file.Body), 0o600); err != nil {
+		body, err := replaceFixturePlaceholders([]byte(file.Body), replacements)
+		if err != nil {
+			return fmt.Errorf("render scenario file %q: %w", file.Path, err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
 			return fmt.Errorf("write scenario file %q: %w", file.Path, err)
 		}
 	}

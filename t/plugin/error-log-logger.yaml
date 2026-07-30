@@ -1,177 +1,610 @@
-cases:
-    - config:
-        routes:
-            - id: error-log-logger-source-1
-              plugins:
-                error-log-logger: {}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: error-log-logger-source-1
-      source:
-        file: t/plugin/error-log-logger-clickhouse.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: error-log-logger-route-preserves-upstream
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: error-log-logger-source-2
-              plugins:
-                error-log-logger: {}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: error-log-logger-source-2
-      source:
-        file: t/plugin/error-log-logger-kafka.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: error-log-logger-kafka-route-preserves-upstream
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: error-log-logger-source-3
-              plugins:
-                error-log-logger: {}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: error-log-logger-source-3
-      source:
-        file: t/plugin/error-log-logger-skywalking.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: error-log-logger-skywalking-route-preserves-upstream
-          output:
-            body:
-                equals: hello world
-            status: 200
-    - config:
-        routes:
-            - id: error-log-logger-source-4
-              plugins:
-                error-log-logger: {}
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /probe
-      fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-      name: error-log-logger-source-4
-      source:
-        file: t/plugin/error-log-logger.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-      steps:
-        - input:
-            method: GET
-            path: /probe
-          name: error-log-logger-route-preserves-upstream
-          output:
-            body:
-                equals: hello world
-            status: 200
 sources:
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/error-log-logger-clickhouse.t
-      tests: 9
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/error-log-logger-kafka.t
-      tests: 7
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/error-log-logger-skywalking.t
-      tests: 8
-    - repository: https://github.com/apache/apisix
-      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-      file: t/plugin/error-log-logger.t
-      tests: 15
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger-clickhouse.t, tests: 9}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger-kafka.t, tests: 7}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger-skywalking.t, tests: 8}
+  - {repository: https://github.com/apache/apisix, commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7, file: t/plugin/error-log-logger.t, tests: 15}
+
+cases:
+  - name: clickhouse-schema-accepts-complete-metadata
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [1]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1, max_retry_count: 0}
+      routes: [{id: clickhouse-schema-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - name: sink
+        kind: http
+        expect: [{method: POST, headers: {X-ClickHouse-User: {equals: default}, X-ClickHouse-Key: {equals: a}, X-ClickHouse-Database: {equals: default}}, body: {matches: '(?s)^INSERT INTO t FORMAT JSONEachRow .*\[warn\].*Failed to decode authentication header: aca_a'}}]
+        respond: [{status: 204}]
+    steps:
+      - {name: valid-clickhouse-metadata-delivers-a-real-warning, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
+
+  - name: clickhouse-unreachable-endpoint-reports-batch-failure
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [2]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: 'http://127.0.0.1:1'}, batch_max_size: 1, max_retry_count: 0, timeout: 1}
+      routes: [{id: clickhouse-unreachable-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    steps:
+      - name: unreachable-clickhouse-keeps-request-isolated-and-logs-failure
+        input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}
+        output: {status: 401, logs: {matches: 'logger batch processor \[error-log-logger\].*(dial tcp|connection refused)'}}
+        wait: 500ms
+
+  - name: clickhouse-metadata-initialization-delivers-error
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [3]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1, max_retry_count: 0}
+      routes: [{id: clickhouse-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - name: sink
+        kind: http
+        expect: [{method: POST, headers: {X-ClickHouse-Key: {equals: a}}, body: {matches: '(?s)^INSERT INTO t FORMAT JSONEachRow .*\[error\].*failed to get anonymous consumer missing-consumer'}}]
+        respond: [{status: 204}]
+    steps:
+      - {name: initialized-clickhouse-owner-delivers-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: clickhouse-warning-level-is-delivered
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [4]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
+      routes: [{id: clickhouse-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*aca_a'}}], respond: [{status: 204}]}
+    steps:
+      - {name: warning-crosses-clickhouse-boundary, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
+
+  - name: clickhouse-consecutive-warnings-are-not-lost
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [5]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
+      routes: [{id: clickhouse-warning-series, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - name: sink
+        kind: http
+        expect:
+          - {method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*bad_one'}}
+          - {method: POST, body: {matches: '(?s)INSERT INTO t FORMAT JSONEachRow .*\[warn\].*bad_two'}}
+        respond: [{status: 204}]
+    steps:
+      - {name: first-warning-is-delivered, input: {path: /warn, headers: {Authorization: 'Basic bad_one'}}, output: {status: 401}}
+      - {name: second-warning-is-delivered, input: {path: /warn, headers: {Authorization: 'Basic bad_two'}}, output: {status: 401}, wait: 300ms}
+
+  - name: clickhouse-default-warn-threshold-filters-info
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [6]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
+      consumers: [{username: info-user, plugins: {basic-auth: {username: info-user, password: pass}}}]
+      routes:
+        - {id: clickhouse-info, uri: /info, plugins: {basic-auth: {}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: clickhouse-filter-control, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*filter_control'}}], respond: [{status: 204}]}
+    steps:
+      - {name: info-entry-is-filtered, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
+      - {name: warning-control-proves-clickhouse-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic filter_control'}}, output: {status: 401}, wait: 300ms}
+
+  - name: clickhouse-metadata-deletion-stops-delivery
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [7]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: a, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
+      routes:
+        - {id: clickhouse-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*before_delete'}}], respond: [{status: 204}]}
+    steps:
+      - {name: metadata-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_delete'}}, output: {status: 401}, wait: 300ms}
+      - name: deleting-metadata-clears-clickhouse-owner
+        config:
+          plugin_metadata: []
+          routes:
+            - {id: clickhouse-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+            - {id: clickhouse-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /warn, headers: {Authorization: 'Basic after_delete'}}
+        output: {status: 401}
+        wait: 300ms
+
+  - name: clickhouse-password-is-encrypted-at-rest
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [8]}
+    runtime:
+      plugins: [error-log-logger]
+      apisix: {data_encryption: {enable_encrypt_fields: true, keyring: [edd1c9f0985e76a2]}}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: bar, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
+      routes: [{id: clickhouse-encrypted-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, headers: {X-ClickHouse-Key: {equals: bar}}, body: {matches: '(?s)\[warn\].*encrypted_clickhouse'}}], respond: [{status: 204}]}
+    steps:
+      - {name: encrypted-metadata-is-decrypted-for-delivery, input: {path: /warn, headers: {Authorization: 'Basic encrypted_clickhouse'}}, output: {status: 401}, wait: 300ms}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: plugin_metadata
+          key: error-log-logger
+          fields: {/clickhouse/password: 77+NmbYqNfN+oLm0aX5akg==}
+          forbidden_matches: ['"password":"bar"']
+
+  - name: clickhouse-runtime-uses-decrypted-password
+    source: {file: t/plugin/error-log-logger-clickhouse.t, tests: [9]}
+    runtime:
+      plugins: [error-log-logger]
+      apisix: {data_encryption: {enable_encrypt_fields: true, keyring: [edd1c9f0985e76a2]}}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, clickhouse: {user: default, password: bar, database: default, logtable: t, endpoint_addr: '{{FIXTURE.sink.URL}}'}, batch_max_size: 1}
+      routes: [{id: clickhouse-decrypted-password, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, headers: {X-ClickHouse-Key: {equals: bar}}, body: {matches: '(?s)\[warn\].*decrypted_password'}}], respond: [{status: 204}]}
+    steps:
+      - {name: clickhouse-authentication-receives-plaintext-secret, input: {path: /warn, headers: {Authorization: 'Basic decrypted_password'}}, output: {status: 401}, wait: 300ms}
+
+  - name: kafka-schema-accepts-broker-and-topic
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [1]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, kafka: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}], kafka_topic: integration, producer_type: sync}, level: ERROR, batch_max_size: 1}
+      routes: [{id: kafka-schema-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
+    steps:
+      - {name: valid-kafka-metadata-delivers-real-record, input: {path: /error}, output: {status: 401, logs: {not_matches: 'logger batch processor'}}, wait: 300ms}
+
+  - name: kafka-no-auth-broker-delivers-error
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [2]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, kafka: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}], kafka_topic: integration, producer_type: sync, meta_refresh_interval: 1}, level: ERROR, batch_max_size: 1}
+      routes: [{id: kafka-no-auth-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
+    steps:
+      - {name: unauthenticated-kafka-broker-accepts-error-record, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: kafka-error-level-is-delivered
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [3]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, kafka: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}], kafka_topic: integration, producer_type: sync}, level: ERROR, batch_max_size: 1}
+      routes: [{id: kafka-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
+    steps:
+      - {name: error-crosses-kafka-protocol-boundary, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: kafka-error-threshold-filters-warning
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [4]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, kafka: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}], kafka_topic: integration, producer_type: sync}, level: ERROR, batch_max_size: 1}
+      routes:
+        - {id: kafka-filter-warning, uri: /warn, plugins: {basic-auth: {}}}
+        - {id: kafka-filter-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
+    fixtures:
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}, forbidden_matches: [warning_should_not_send]}], network_respond: [{}]}
+    steps:
+      - {name: warning-does-not-reach-kafka, input: {path: /warn, headers: {Authorization: 'Basic warning_should_not_send'}}, output: {status: 401}}
+      - {name: error-control-proves-kafka-sink-is-live, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: kafka-plain-sasl-auth-delivers-error
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [5]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - id: error-log-logger
+          kafka:
+            brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: admin-secret}}]
+            kafka_topic: integration
+            producer_type: sync
+          level: ERROR
+          batch_max_size: 1
+      routes: [{id: kafka-auth-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
+    steps:
+      - {name: plain-sasl-session-produces-error-record, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: kafka-metadata-deletion-stops-delivery
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [6]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, kafka: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}], kafka_topic: integration, producer_type: sync}, level: ERROR, batch_max_size: 1}
+      routes:
+        - {id: kafka-delete-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
+    steps:
+      - {name: kafka-owner-is-live-before-delete, input: {path: /error}, output: {status: 401}, wait: 2s}
+      - name: deleting-kafka-metadata-clears-owner
+        config:
+          plugin_metadata: []
+          routes:
+            - {id: kafka-delete-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
+            - {id: kafka-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /error}
+        output: {status: 401}
+        wait: 300ms
+
+  - name: kafka-sasl-password-is-encrypted-at-rest
+    source: {file: t/plugin/error-log-logger-kafka.t, tests: [7]}
+    runtime:
+      plugins: [error-log-logger]
+      apisix: {data_encryption: {enable_encrypt_fields: true, keyring: [edd1c9f0985e76a2]}}
+    config:
+      plugin_metadata:
+        - id: error-log-logger
+          kafka:
+            brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: super-secret-kafka-password}}]
+            kafka_topic: integration
+            producer_type: sync
+          level: ERROR
+          batch_max_size: 1
+      routes: [{id: kafka-encrypted-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '(?s)^".*\[error\].*missing-consumer"$'}}], network_respond: [{}]}
+    steps:
+      - {name: encrypted-sasl-password-is-decrypted-for-produce, input: {path: /error}, output: {status: 401}, wait: 300ms}
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: plugin_metadata
+          key: error-log-logger
+          fields: {/kafka/brokers/0/sasl_config/password: Hni5HAmaMT+87Rcqz5mKMz8LA/g1483YBCWswGWPpNk=}
+          forbidden_matches: ['super-secret-kafka-password']
+
+  - name: skywalking-schema-accepts-endpoint
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [1]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs'}, batch_max_size: 1}
+      routes: [{id: skywalking-schema-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /v3/logs}, body: {matches: '(?s)"service":"APISIX".*"serviceInstance":"APISIX Service Instance".*\[warn\].*aca_a'}}], respond: [{status: 204}]}
+    steps:
+      - {name: valid-skywalking-metadata-delivers-log-envelope, input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}, output: {status: 401}, wait: 300ms}
+
+  - name: skywalking-unreachable-endpoint-reports-batch-failure
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [2]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: 'http://127.0.0.1:1/v3/logs'}, batch_max_size: 1, max_retry_count: 0, timeout: 1}
+      routes: [{id: skywalking-unreachable-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    steps:
+      - name: unreachable-skywalking-keeps-request-isolated-and-logs-failure
+        input: {path: /warn, headers: {Authorization: 'Basic aca_a'}}
+        output: {status: 401, logs: {matches: 'logger batch processor \[error-log-logger\].*(dial tcp|connection refused)'}}
+        wait: 500ms
+
+  - name: skywalking-metadata-initialization-delivers-error
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [3]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: instance}, batch_max_size: 1}
+      routes: [{id: skywalking-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /v3/logs}, body: {matches: '(?s)"serviceInstance":"instance".*\[error\].*missing-consumer'}}], respond: [{status: 204}]}
+    steps:
+      - {name: initialized-skywalking-owner-delivers-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: skywalking-warning-level-is-delivered
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [4]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: instance}, batch_max_size: 1}
+      routes: [{id: skywalking-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)"serviceInstance":"instance".*\[warn\].*skywalking_warning'}}], respond: [{status: 204}]}
+    steps:
+      - {name: warning-crosses-skywalking-http-boundary, input: {path: /warn, headers: {Authorization: 'Basic skywalking_warning'}}, output: {status: 401}, wait: 300ms}
+
+  - name: skywalking-batches-error-and-warning
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [5]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: instance}, batch_max_size: 2, buffer_duration: 60}
+      routes:
+        - {id: skywalking-batch-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
+        - {id: skywalking-batch-warning, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)^\[.*\[error\].*missing-consumer.*\[warn\].*batch_warning.*\]$'}}], respond: [{status: 204}]}
+    steps:
+      - {name: first-error-waits-for-batch, input: {path: /error}, output: {status: 401}}
+      - {name: second-warning-flushes-two-entry-batch, input: {path: /warn, headers: {Authorization: 'Basic batch_warning'}}, output: {status: 401}, wait: 300ms}
+
+  - name: skywalking-default-warn-threshold-filters-info
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [6]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: instance}, batch_max_size: 1}
+      consumers: [{username: info-user, plugins: {basic-auth: {username: info-user, password: pass}}}]
+      routes:
+        - {id: skywalking-info, uri: /info, plugins: {basic-auth: {}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: skywalking-filter-control, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*skywalking_filter_control'}}], respond: [{status: 204}]}
+    steps:
+      - {name: info-entry-is-filtered-from-skywalking, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
+      - {name: warning-control-proves-skywalking-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic skywalking_filter_control'}}, output: {status: 401}, wait: 300ms}
+
+  - name: skywalking-metadata-deletion-stops-delivery
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [7]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs'}, batch_max_size: 1}
+      routes:
+        - {id: skywalking-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)\[warn\].*before_delete'}}], respond: [{status: 204}]}
+    steps:
+      - {name: skywalking-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_delete'}}, output: {status: 401}, wait: 300ms}
+      - name: deleting-skywalking-metadata-clears-owner
+        config:
+          plugin_metadata: []
+          routes:
+            - {id: skywalking-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+            - {id: skywalking-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /warn, headers: {Authorization: 'Basic after_delete'}}
+        output: {status: 401}
+        wait: 300ms
+
+  - name: skywalking-hostname-instance-is-expanded
+    source: {file: t/plugin/error-log-logger-skywalking.t, tests: [8]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, skywalking: {endpoint_addr: '{{FIXTURE.sink.URL}}/v3/logs', service_instance_name: '$hostname'}, batch_max_size: 1}
+      routes: [{id: skywalking-hostname-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: http, expect: [{method: POST, body: {matches: '(?s)"serviceInstance":"[^$][^"]+".*\[warn\].*hostname_warning'}}], respond: [{status: 204}]}
+    steps:
+      - {name: runtime-hostname-replaces-placeholder-in-envelope, input: {path: /warn, headers: {Authorization: 'Basic hostname_warning'}}, output: {status: 401}, wait: 300ms}
+
+  - name: global-plugin-not-enabled-does-not-observe-errors
+    source: {file: t/plugin/error-log-logger.t, tests: [1]}
+    runtime: {plugins: []}
+    config:
+      plugin_metadata:
+        - {id: error-log-logger, tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1}
+      routes:
+        - {id: not-enabled-warning, uri: /warn, plugins: {basic-auth: {}}}
+        - {id: dormant-error-log-route, uri: /dormant, plugins: {error-log-logger: {tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1}}}
+    steps:
+      - {name: warning-remains-local-when-global-plugin-is-disabled, input: {path: /warn, headers: {Authorization: 'Basic disabled_warning'}}, output: {status: 401, logs: {not_matches: 'logger batch processor \[error-log-logger\]'}}, wait: 300ms}
+
+  - name: enabled-plugin-without-metadata-reports-configuration-error
+    source: {file: t/plugin/error-log-logger.t, tests: [2]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      routes: [{id: missing-metadata-warning, uri: /warn, plugins: {error-log-logger: {}, basic-auth: {}}}]
+    steps:
+      - {name: missing-metadata-is-visible-in-real-process-logs, input: {path: /warn, headers: {Authorization: 'Basic missing_metadata'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger'}}}
+
+  - name: tcp-metadata-without-host-is-rejected
+    source: {file: t/plugin/error-log-logger.t, tests: [3]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {port: 1999}, inactive_timeout: 1}]
+      routes: [{id: invalid-metadata-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    steps:
+      - {name: invalid-tcp-metadata-never-installs-observer, input: {path: /warn, headers: {Authorization: 'Basic invalid_metadata'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger:.*host'}}}
+
+  - name: tcp-unreachable-endpoint-reports-batch-failure
+    source: {file: t/plugin/error-log-logger.t, tests: [4]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1, max_retry_count: 0, timeout: 1}]
+      routes: [{id: tcp-unreachable-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    steps:
+      - {name: unreachable-tcp-sink-keeps-request-isolated, input: {path: /warn, headers: {Authorization: 'Basic tcp_unreachable'}}, output: {status: 401, logs: {matches: 'logger batch processor \[error-log-logger\].*(dial tcp|connection refused)'}}, wait: 500ms}
+
+  - name: tcp-warning-level-is-delivered
+    source: {file: t/plugin/error-log-logger.t, tests: [5]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
+      routes: [{id: tcp-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*tcp_warning\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: warning-crosses-real-tcp-boundary, input: {path: /warn, headers: {Authorization: 'Basic tcp_warning'}}, output: {status: 401}, wait: 300ms}
+
+  - name: tcp-error-level-is-delivered
+    source: {file: t/plugin/error-log-logger.t, tests: [6]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
+      routes: [{id: tcp-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[error\].*failed to get anonymous consumer missing-consumer\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: error-crosses-real-tcp-boundary, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: tcp-default-warn-threshold-filters-info
+    source: {file: t/plugin/error-log-logger.t, tests: [7]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
+      consumers: [{username: info-user, plugins: {basic-auth: {username: info-user, password: pass}}}]
+      routes:
+        - {id: tcp-info, uri: /info, plugins: {basic-auth: {}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: tcp-filter-control, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*tcp_filter_control\n$'}, forbidden_matches: ['find consumer info-user']}], network_respond: [{close: true}]}
+    steps:
+      - {name: info-entry-does-not-open-tcp-connection, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
+      - {name: warning-control-proves-tcp-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic tcp_filter_control'}}, output: {status: 401}, wait: 300ms}
+
+  - name: tcp-metadata-deletion-clears-observer
+    source: {file: t/plugin/error-log-logger.t, tests: [8]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
+      routes:
+        - {id: tcp-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*before_delete\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: tcp-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_delete'}}, output: {status: 401}, wait: 300ms}
+      - name: deleting-tcp-metadata-stops-later-warning
+        config:
+          plugin_metadata: []
+          routes:
+            - {id: tcp-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+            - {id: tcp-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /warn, headers: {Authorization: 'Basic after_delete'}}
+        output: {status: 401}
+        wait: 300ms
+
+  - name: route-local-config-cannot-replace-global-metadata
+    source: {file: t/plugin/error-log-logger.t, tests: [9]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      routes:
+        - id: route-local-error-log
+          uri: /warn
+          plugins:
+            error-log-logger: {tcp: {host: 127.0.0.1, port: 1}, batch_max_size: 1}
+            basic-auth: {}
+    steps:
+      - {name: reload-contract-still-requires-plugin-metadata, input: {path: /warn, headers: {Authorization: 'Basic route_local'}}, output: {status: 401, logs: {matches: 'please set the correct plugin_metadata for error-log-logger'}}}
+
+  - name: metadata-replacement-does-not-leak-to-stale-owner
+    source: {file: t/plugin/error-log-logger.t, tests: [10]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.old.HOST}}', port: '{{FIXTURE.old.PORT}}'}, batch_max_size: 1}]
+      routes:
+        - {id: stale-owner-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: old, kind: tcp, network_expect: [{payload: {matches: '(?s)\[error\].*missing-consumer\n$'}}], network_respond: [{close: true}]}
+      - {name: current, kind: tcp, network_expect: [{payload: {matches: '(?s)\[error\].*missing-consumer\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: old-owner-receives-only-pre-replacement-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
+      - name: standalone-reload-installs-current-owner
+        config:
+          plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.current.HOST}}', port: '{{FIXTURE.current.PORT}}'}, batch_max_size: 1}]
+          routes:
+            - {id: stale-owner-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}
+            - {id: stale-owner-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /error}
+        output: {status: 401}
+        wait: 300ms
+
+  - name: deleting-route-removes-log-producing-handler
+    source: {file: t/plugin/error-log-logger.t, tests: [11]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
+      routes:
+        - {id: route-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*before_route_delete\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: route-produces-warning-before-removal, input: {path: /warn, headers: {Authorization: 'Basic before_route_delete'}}, output: {status: 401}, wait: 300ms}
+      - name: standalone-update-removes-warning-route
+        config:
+          plugin_metadata: [{id: error-log-logger, tcp: {host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}, batch_max_size: 1}]
+          routes: [{id: route-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}]
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /warn}
+        output: {status: 404}
+        wait: 300ms
+
+  - name: legacy-top-level-tcp-schema-delivers-warning
+    source: {file: t/plugin/error-log-logger.t, tests: [12]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
+      routes: [{id: legacy-tcp-warning, uri: /warn, plugins: {basic-auth: {}}}]
+    fixtures:
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*legacy_warning\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: legacy-tcp-fields-deliver-warning, input: {path: /warn, headers: {Authorization: 'Basic legacy_warning'}}, output: {status: 401}, wait: 300ms}
+
+  - name: legacy-top-level-tcp-schema-delivers-error
+    source: {file: t/plugin/error-log-logger.t, tests: [13]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
+      routes: [{id: legacy-tcp-error, uri: /error, plugins: {basic-auth: {anonymous_consumer: missing-consumer}}}]
+    fixtures:
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[error\].*missing-consumer\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: legacy-tcp-fields-deliver-error, input: {path: /error}, output: {status: 401}, wait: 300ms}
+
+  - name: legacy-top-level-tcp-schema-filters-info
+    source: {file: t/plugin/error-log-logger.t, tests: [14]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
+      consumers: [{username: info-user, plugins: {basic-auth: {username: info-user, password: pass}}}]
+      routes:
+        - {id: legacy-tcp-info, uri: /info, plugins: {basic-auth: {}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: legacy-tcp-control, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: primary, kind: http, expect: [{path: {equals: /info}}], respond: [{status: 200, body: info-ok}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*legacy_filter_control\n$'}, forbidden_matches: ['find consumer info-user']}], network_respond: [{close: true}]}
+    steps:
+      - {name: legacy-config-filters-info, input: {path: /info, headers: {Authorization: 'Basic aW5mby11c2VyOnBhc3M='}}, output: {status: 200, body: {equals: info-ok}}}
+      - {name: legacy-warning-control-proves-sink-is-live, input: {path: /warn, headers: {Authorization: 'Basic legacy_filter_control'}}, output: {status: 401}, wait: 300ms}
+
+  - name: legacy-top-level-metadata-deletion-clears-owner
+    source: {file: t/plugin/error-log-logger.t, tests: [15]}
+    runtime: {plugins: [error-log-logger]}
+    config:
+      plugin_metadata: [{id: error-log-logger, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', batch_max_size: 1}]
+      routes:
+        - {id: legacy-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+    fixtures:
+      - {name: ready, kind: http, respond: [{status: 200, body: ready}]}
+      - {name: sink, kind: tcp, network_expect: [{payload: {matches: '(?s)\[warn\].*before_legacy_delete\n$'}}], network_respond: [{close: true}]}
+    steps:
+      - {name: legacy-owner-is-live-before-delete, input: {path: /warn, headers: {Authorization: 'Basic before_legacy_delete'}}, output: {status: 401}, wait: 300ms}
+      - name: deleting-legacy-metadata-stops-delivery
+        config:
+          plugin_metadata: []
+          routes:
+            - {id: legacy-delete-warning, uri: /warn, plugins: {basic-auth: {}}}
+            - {id: legacy-delete-ready, uri: /ready, upstream: {type: roundrobin, nodes: {'{{FIXTURE.ready.ADDR}}': 1}}}
+        config_probe: {input: {path: /ready}, output: {status: 200, body: {equals: ready}}}
+        input: {path: /warn, headers: {Authorization: 'Basic after_legacy_delete'}}
+        output: {status: 401}
+        wait: 300ms

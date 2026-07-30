@@ -12,6 +12,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
 	"github.com/wklken/apisix-go/pkg/plugin/http_logger"
@@ -132,6 +133,8 @@ func TestBuildSystemPluginConfigsUsesGlobalBodyLimitUnlessRouteOverridesIt(t *te
 }
 
 func TestBuilderStopFlushesLoggerBatches(t *testing.T) {
+	ensureRouteStore(t)
+
 	delivered := make(chan struct{}, 1)
 	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		delivered <- struct{}{}
@@ -309,6 +312,59 @@ func TestBuilderStopFlushesErrorLogLoggerBatch(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Builder.Stop to flush error-log-logger")
+	}
+}
+
+func TestBuilderStartsOneGlobalErrorLogObserverFromMetadata(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	host, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse listener port: %v", err)
+	}
+
+	builder := NewBuilder(nil)
+	if err := builder.startGlobalErrorLogObserver(map[string]any{
+		"tcp": map[string]any{
+			"host": host,
+			"port": port,
+		},
+		"level":            "WARN",
+		"batch_max_size":   10,
+		"buffer_duration":  60,
+		"inactive_timeout": 60,
+	}); err != nil {
+		t.Fatalf("start global error-log observer: %v", err)
+	}
+
+	logger.Warn("global builder error-log marker")
+	builder.Stop()
+
+	received := make(chan string, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		body := make([]byte, 1024)
+		n, _ := conn.Read(body)
+		received <- string(body[:n])
+	}()
+	select {
+	case payload := <-received:
+		if !strings.Contains(payload, "[warn] global builder error-log marker") {
+			t.Fatalf("payload = %q, want global warning", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for global error-log observer")
 	}
 }
 

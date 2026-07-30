@@ -365,7 +365,7 @@ func (b *Builder) Build() *chi.Mux {
 		// add route to mux
 		for _, uri := range uris {
 			if err = registerRouteWithHosts(mux, methods, uri, r.Hosts, handler); err != nil {
-				logger.Warnf("convert uri fail: %w", err)
+				logger.Warnf("convert uri fail: %v", err)
 				continue
 			}
 		}
@@ -385,6 +385,7 @@ func (b *Builder) Build() *chi.Mux {
 
 	// add extra route
 	registerExtraRoutes(mux)
+	b.configureGlobalErrorLogObserver()
 
 	return mux
 }
@@ -932,6 +933,58 @@ type pluginStopper interface {
 	Stop()
 }
 
+type pluginObserverStarter interface {
+	StartObserving()
+}
+
+func (b *Builder) configureGlobalErrorLogObserver() {
+	const pluginName = "error-log-logger"
+	if appconfig.GlobalConfig == nil || !slices.Contains(appconfig.GlobalConfig.Plugins, pluginName) {
+		_ = logger.ReplaceObserver(pluginName, nil)
+		return
+	}
+
+	var metadata map[string]any
+	if err := store.GetPluginMetadata(pluginName, &metadata); err != nil || len(metadata) == 0 {
+		_ = logger.ReplaceObserver(pluginName, nil)
+		logger.Errorf("please set the correct plugin_metadata for error-log-logger")
+		return
+	}
+	if err := b.startGlobalErrorLogObserver(metadata); err != nil {
+		_ = logger.ReplaceObserver(pluginName, nil)
+		logger.Errorf("please set the correct plugin_metadata for error-log-logger: %s", err)
+	}
+}
+
+func (b *Builder) startGlobalErrorLogObserver(config resource.PluginConfig) error {
+	const pluginName = "error-log-logger"
+	p := plugin.New(pluginName)
+	if p == nil {
+		return fmt.Errorf("plugin %s is not supported", pluginName)
+	}
+	starter, ok := p.(pluginObserverStarter)
+	if !ok {
+		return fmt.Errorf("plugin %s does not support global observation", pluginName)
+	}
+	if err := p.Init(); err != nil {
+		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
+	}
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		return fmt.Errorf("validate plugin %s metadata: %w", pluginName, err)
+	}
+	if err := util.Parse(config, p.Config()); err != nil {
+		return fmt.Errorf("parse plugin %s metadata: %w", pluginName, err)
+	}
+	if err := p.PostInit(); err != nil {
+		return fmt.Errorf("initialize plugin %s: %w", pluginName, err)
+	}
+	starter.StartObserving()
+	if stopper, ok := p.(pluginStopper); ok {
+		b.addStopper(stopper)
+	}
+	return nil
+}
+
 func (b *Builder) initPlugins(
 	pluginConfigs map[string]resource.PluginConfig,
 	routeContext pluginRouteContext,
@@ -1125,47 +1178,16 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 		// 2. host: use RR/Weighted-RR to select target host
 		// target is like: http://127.0.0.1 => schema + host
 
-		rewrite := ctx.FinalizeProxyRewrite(req)
 		originalHost := req.Host
 
 		if applyTrafficSplitOverride(req) {
 			// traffic-split selected the upstream target for this request.
 		} else {
-			target := lb.Next()
-			pxy.SetSelectedTarget(req, target)
-			u, err := url.Parse(target)
-			if err != nil {
-				// log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
-				// 	Error("parse host fail, invalid target")
-				// ! invalid host, just return error for the request
+			if err := applyUpstreamTarget(req, lb, upstream, originalHost); err != nil {
 				panic("parse host fail, invalid target")
 			}
-			req.URL.Scheme = u.Scheme
-			req.URL.Host = u.Host
-			nodeHost := upstreamNodeHost(u.Scheme, u.Hostname(), u.Port())
-			switch upstream.PassHost {
-			case "", "pass":
-				req.Host = originalHost
-				if req.Host == "" {
-					req.Host = nodeHost
-				}
-			case "rewrite":
-				req.Host = upstream.UpstreamHost
-			case "node":
-				req.Host = nodeHost
-			}
 		}
-		if ctx.GetApisixVars(req) != nil {
-			ctx.RegisterApisixVar(req, "$balancer_ip", req.URL.Hostname())
-			ctx.RegisterApisixVar(req, "$balancer_port", req.URL.Port())
-		}
-		if rewrite.Host != "" {
-			req.Host = rewrite.Host
-		}
-
-		if rewrite.Scheme != "" {
-			req.URL.Scheme = rewrite.Scheme
-		}
+		applyFinalProxyRewrite(req)
 
 		// if u.Scheme == "" || u.Host == "" {
 		// 	log.WithFields(log.Fields{"APIID": api.ID, "Stage": stage.Name, "Resource": resource.ID, "target": target}).
@@ -1220,6 +1242,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			},
 		}
 	}
+	transport = pxy.NewRetryTransport(transport)
 
 	modifyResponse := newModifyResponse()
 	errorHandler := newErrorHandler()
@@ -1243,6 +1266,7 @@ func (b *Builder) buildReverseHandler(r resource.Route, service resource.Service
 			_ = render.New().JSON(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		r = attachHTTPRetries(r, upstream, lb)
 		selectProxyHandler(r, proxyHandler, streamingProxyHandler).ServeHTTP(w, r)
 	}), nil
 }
@@ -1549,8 +1573,90 @@ func bufferRequestBodyIfNeeded(r *http.Request) error {
 	return nil
 }
 
+func httpRetryCount(upstream resource.Upstream) int {
+	if upstream.RetriesConfigured() {
+		return max(upstream.Retries, 0)
+	}
+	return max(len(upstream.Nodes)-1, 0)
+}
+
+func attachHTTPRetries(
+	request *http.Request,
+	upstream resource.Upstream,
+	loadBalancer pxy.LoadBalancer,
+) *http.Request {
+	originalHost := request.Host
+	if override := traffic_split.GetOverride(request); override != nil {
+		return pxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
+			if override.NextRetry == nil {
+				return false
+			}
+			next := override.NextRetry()
+			if !applyTrafficSplitTarget(retry, next, originalHost) {
+				return false
+			}
+			applyFinalProxyRewrite(retry)
+			return true
+		})
+	}
+	return pxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
+		if err := applyUpstreamTarget(retry, loadBalancer, upstream, originalHost); err != nil {
+			return false
+		}
+		applyFinalProxyRewrite(retry)
+		return true
+	})
+}
+
+func applyUpstreamTarget(
+	request *http.Request,
+	loadBalancer pxy.LoadBalancer,
+	upstream resource.Upstream,
+	originalHost string,
+) error {
+	target := loadBalancer.Next()
+	pxy.SetSelectedTarget(request, target)
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("parse upstream target %q: %w", target, err)
+	}
+	request.URL.Scheme = parsed.Scheme
+	request.URL.Host = parsed.Host
+	nodeHost := upstreamNodeHost(parsed.Scheme, parsed.Hostname(), parsed.Port())
+	switch upstream.PassHost {
+	case "", "pass":
+		request.Host = originalHost
+		if request.Host == "" {
+			request.Host = nodeHost
+		}
+	case "rewrite":
+		request.Host = upstream.UpstreamHost
+	case "node":
+		request.Host = nodeHost
+	}
+	return nil
+}
+
+func applyFinalProxyRewrite(request *http.Request) {
+	if ctx.GetApisixVars(request) != nil {
+		ctx.RegisterApisixVar(request, "$balancer_ip", request.URL.Hostname())
+		ctx.RegisterApisixVar(request, "$balancer_port", request.URL.Port())
+	}
+	rewrite := ctx.FinalizeProxyRewrite(request)
+	if rewrite.Host != "" {
+		request.Host = rewrite.Host
+	}
+	if rewrite.Scheme != "" {
+		request.URL.Scheme = rewrite.Scheme
+	}
+}
+
 func applyTrafficSplitOverride(req *http.Request) bool {
 	override := traffic_split.GetOverride(req)
+	return applyTrafficSplitTarget(req, override, req.Host)
+}
+
+func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override, originalHost string) bool {
 	if override == nil {
 		return false
 	}
@@ -1558,7 +1664,6 @@ func applyTrafficSplitOverride(req *http.Request) bool {
 		req = pxy.WithHealthReporter(req, override.HealthReporter)
 		pxy.SetSelectedTarget(req, override.HealthTarget)
 	}
-	originalHost := req.Host
 	req.URL.Scheme = override.Scheme
 	req.URL.Host = override.Host
 	switch override.PassHost {

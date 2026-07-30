@@ -56,7 +56,8 @@ type Upstream struct {
 	Timeout Timeout      `json:"timeout"`
 	TLS     *UpstreamTLS `json:"tls,omitempty"`
 
-	Retries      int            `json:"retries,omitempty"`
+	Retries      int `json:"retries,omitempty"`
+	retriesSet   bool
 	Checks       map[string]any `json:"checks,omitempty"`
 	HashOn       string         `json:"hash_on,omitempty"`
 	Key          string         `json:"key,omitempty"`
@@ -128,6 +129,7 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(upstreamData["retries"], &s.Retries); err != nil {
 			return fmt.Errorf("unmarshal field `retries` fail, %w", err)
 		}
+		s.retriesSet = true
 	}
 
 	if upstreamData["checks"] != nil {
@@ -173,6 +175,11 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// RetriesConfigured reports whether retries was explicitly present, including zero.
+func (s Upstream) RetriesConfigured() bool {
+	return s.retriesSet || s.Retries != 0
 }
 
 func parseNodeAddress(address string) (string, int) {

@@ -3,6 +3,7 @@ package graphql_proxy_cache
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -415,6 +416,68 @@ func TestHandlerCachesGraphQLPOSTResponses(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+}
+
+func TestHandlerCachesAndPurgesGraphQLVaryVariants(t *testing.T) {
+	p := newTestPlugin(t, Config{CacheTTL: 60})
+	calls := 0
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Vary", "X-Variant")
+		_, _ = w.Write([]byte(r.Header.Get("X-Variant")))
+	}))
+
+	request := func(variant string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ hello }"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Variant", variant)
+		req.Host = "example.com"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+
+	firstA := request("a")
+	secondA := request("a")
+	firstB := request("b")
+	secondB := request("b")
+	if got := []string{
+		firstA.Header().Get(cacheStatusHeader),
+		secondA.Header().Get(cacheStatusHeader),
+		firstB.Header().Get(cacheStatusHeader),
+		secondB.Header().Get(cacheStatusHeader),
+	}; !slices.Equal(got, []string{"MISS", "HIT", "MISS", "HIT"}) {
+		t.Fatalf("variant cache statuses = %v, want [MISS HIT MISS HIT]", got)
+	}
+	if firstA.Body.String() != "a" || secondA.Body.String() != "a" ||
+		firstB.Body.String() != "b" || secondB.Body.String() != "b" {
+		t.Fatalf(
+			"variant bodies = %q/%q/%q/%q, want a/a/b/b",
+			firstA.Body,
+			secondA.Body,
+			firstB.Body,
+			secondB.Body,
+		)
+	}
+
+	cacheKey := firstA.Header().Get(cacheKeyHeader)
+	if !p.purge(cacheKey) {
+		t.Fatal("purge() = false, want stored Vary variants")
+	}
+	afterPurgeA := request("a")
+	afterPurgeB := request("b")
+	if afterPurgeA.Header().Get(cacheStatusHeader) != "MISS" ||
+		afterPurgeB.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf(
+			"cache statuses after purge = %q/%q, want MISS/MISS",
+			afterPurgeA.Header().Get(cacheStatusHeader),
+			afterPurgeB.Header().Get(cacheStatusHeader),
+		)
+	}
+	if calls != 4 {
+		t.Fatalf("upstream calls = %d, want 4", calls)
 	}
 }
 

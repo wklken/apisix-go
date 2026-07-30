@@ -618,7 +618,7 @@ func (s *Server) startServer(ctx context.Context) {
 		logger.Infof("listening on %s", addr)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			logger.Fatalf("error opening listener: %w", err)
+			logger.Fatalf("error opening listener: %v", err)
 		}
 		go func(listener net.Listener) {
 			if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -630,7 +630,7 @@ func (s *Server) startServer(ctx context.Context) {
 		logger.Infof("listening with TLS on %s", addr)
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			logger.Fatalf("error opening TLS listener: %w", err)
+			logger.Fatalf("error opening TLS listener: %v", err)
 		}
 		tlsListener := tls.NewListener(listener, frontendTLSConfig())
 		go func(listener net.Listener) {

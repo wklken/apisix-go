@@ -89,3 +89,44 @@ func TestUpstreamUnmarshalParsesBracketedIPv6Node(t *testing.T) {
 		t.Fatalf("upstream node = %#v, want IPv6 host and port 8080", upstream.Nodes[0])
 	}
 }
+
+func TestUpstreamUnmarshalTracksWhetherRetriesWereConfigured(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		config     string
+		want       int
+		configured bool
+	}{
+		{
+			name:       "omitted",
+			config:     `{"nodes":{"127.0.0.1:8080":1}}`,
+			want:       0,
+			configured: false,
+		},
+		{
+			name:       "explicit zero",
+			config:     `{"nodes":{"127.0.0.1:8080":1},"retries":0}`,
+			want:       0,
+			configured: true,
+		},
+		{
+			name:       "explicit positive",
+			config:     `{"nodes":{"127.0.0.1:8080":1},"retries":2}`,
+			want:       2,
+			configured: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var upstream Upstream
+			if err := json.Unmarshal([]byte(test.config), &upstream); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if upstream.Retries != test.want {
+				t.Fatalf("Retries = %d, want %d", upstream.Retries, test.want)
+			}
+			if upstream.RetriesConfigured() != test.configured {
+				t.Fatalf("RetriesConfigured() = %t, want %t", upstream.RetriesConfigured(), test.configured)
+			}
+		})
+	}
+}

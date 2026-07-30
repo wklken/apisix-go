@@ -857,12 +857,17 @@ The original checked state was not supported by the manifests. This audit compar
   APISIX-compatible unsupported-method cache status for disk and memory
   strategies. Package/race, exact real-process normal/race, source/corpus and
   isolated target-plugin gates, scoped lint, build, and diff checks pass.
-- [ ] `graphql-proxy-cache` — three MISS/HIT probes omit method/body/variables keying, invalid GraphQL requests, mutation bypass, purge failures, Vary, route/host isolation, and consumer isolation.
+- [x] `graphql-proxy-cache` — all 48 pinned blocks are independent standalone
+  cases across disk, GraphQL, and memory sources, including method/body/
+  variables keying, malformed input, mutation bypass, PURGE, Vary, route/host,
+  and consumer isolation.
 
 #### Task 8 — Routing, Workflow, Batch, and Dubbo
 
 - [x] `proxy-mirror` — all 36 pinned blocks across three sources map exactly once to standalone schema, exact primary/mirror traffic, HTTP version, live deletion, bounded concurrent sampling, path/DNS behavior, proxy-rewrite ordering, h2c gRPC, and grpc-web cases. A generic one-shot finalized-request hook applies rewritten URI and method before ordinary or AI terminals; h2c is explicitly configured, bounded counts observe their full window, concurrent captures reject, and DNS diagnostics await the bounded mirror timeout. Affected package/race/harness, full real-process, DNS/sensitive repeats, scoped lint, build, post-integration gates, and task review pass.
-- [ ] `traffic-split` — five header-selected routes replace weighted inline/resource upstreams, fallback/zero weights, chash, pass-host, HTTPS, health/retry, timeout, and reload behavior.
+- [x] `traffic-split` — all 94 pinned blocks are independent standalone cases
+  covering weighted inline/resource upstreams, fallback and zero weights,
+  chash, pass-host, HTTPS, health/retry, timeout, body matching, and reload.
 - [x] `workflow` — all 42 pinned blocks across four sources map exactly once to
   real standalone cases covering unconditional/no-case rules, AND/OR matching,
   ordered fallthrough, isolated limiter state, invalid and missing rules,
@@ -983,7 +988,9 @@ The original checked state was not supported by the manifests. This audit compar
   The real-process cases exposed and fixed stale cached file descriptors after
   rotation and loss of explicit `max_kept: 0`. Package, race, exact
   real-process, source/corpus/target, scoped lint, build, and diff gates pass.
-- [ ] `error-log-logger` — four pass-through requests configure `{}` and do not test log levels, metadata initialization/update/removal, or ClickHouse/Kafka/SkyWalking delivery.
+- [x] `error-log-logger` — all 39 pinned blocks are independent standalone
+  cases covering log levels, metadata lifecycle, and real TCP, ClickHouse,
+  Kafka, and SkyWalking delivery.
 - [x] `skywalking-logger` — all 15 pinned blocks map exactly once to real standalone cases. The corpus validates minimal/full/missing-endpoint schema paths, exact SkyWalking envelope arrays and nested JSON records, hostname service instances, valid and malformed `sw8` trace context, metadata and route format precedence with route/service identity, exact request/response body capture, and deterministic pending-entry overflow. A typed semantic matcher enforces envelope cardinality, trace presence/absence, and nested payload fields. Package, race, strict corpus, repeated real-process, scoped lint, build, post-integration Loki compatibility, and task-review gates pass.
 
 #### Task 11 — Tracing
@@ -1277,7 +1284,7 @@ Execution waves:
    package-local work may proceed in parallel, but common batch/retry/shutdown
    code has one owner and one review range.
 
-### Medium — 7 remaining (28 listed)
+### Medium — 1 remaining (28 listed)
 
 - [x] `datadog`
 - [x] `basic-auth`
@@ -1288,21 +1295,21 @@ Execution waves:
 - [x] `cas-auth`
 - [x] `feishu-auth`
 - [ ] `graphql-limit-count`
-- [ ] `graphql-proxy-cache`
+- [x] `graphql-proxy-cache`
 - [x] `proxy-mirror`
-- [ ] `workflow`
+- [x] `workflow`
 - [x] `batch-requests`
 - [x] `http-logger`
 - [x] `google-cloud-logging`
 - [x] `loggly`
 - [x] `elasticsearch-logger`
-- [ ] `sls-logger`
-- [ ] `tencent-cloud-cls`
+- [x] `sls-logger`
+- [x] `tencent-cloud-cls`
 - [x] `tcp-logger`
 - [x] `syslog`
 - [x] `file-logger`
-- [ ] `log-rotate`
-- [ ] `skywalking`
+- [x] `log-rotate`
+- [x] `skywalking`
 - [x] `ai-aws-content-moderation`
 - [x] `ai-prompt-guard`
 - [x] `ai-rag`
@@ -1343,10 +1350,10 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 12 remaining (18 listed)
+### Hard — 8 remaining (18 listed)
 
 - [x] `key-auth`
-- [ ] `jwt-auth`
+- [x] `jwt-auth`
 - [x] `ldap-auth`
 - [ ] `openid-connect`
 - [x] `authz-keycloak`
@@ -1354,12 +1361,12 @@ Execution waves:
 - [ ] `limit-conn`
 - [ ] `limit-count`
 - [ ] `limit-req`
-- [ ] `proxy-cache`
-- [ ] `traffic-split`
+- [x] `proxy-cache`
+- [x] `traffic-split`
 - [x] `http-dubbo`
 - [ ] `rocketmq-logger`
 - [ ] `kafka-logger`
-- [ ] `error-log-logger`
+- [x] `error-log-logger`
 - [ ] `opentelemetry`
 - [x] `ai-rate-limiting`
 - [ ] `ai-proxy`
@@ -1429,8 +1436,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 49 manifests
-are integrated and verified and 12 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 52 manifests
+are integrated and verified and 9 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1459,7 +1466,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 3 remaining (19 at replan)
+### Medium — 0 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1569,7 +1576,11 @@ already-implemented branch.
   capture, and verified TLS. A dedicated readiness route isolates hot-delete
   assertions from startup probes. Package/race, exact real-process
   normal/race, source/corpus/target, scoped lint, and diff gates pass.
-- [ ] `error-log-logger` — follows Kafka plus HTTP/SkyWalking sink contracts.
+- [x] `error-log-logger` — all 39 pinned blocks are independent, alias-free
+  standalone cases with real TCP, ClickHouse, Kafka, and SkyWalking sinks,
+  exact level filtering, metadata lifecycle, batching, encrypted secrets, and
+  route-independent global error observation. Package/race, exact real-process
+  normal/race, source/corpus/target, scoped lint, build, and diff gates pass.
 - [x] `ai-rate-limiting` — all 58 pinned blocks are source-complete as
   independent, alias-free standalone cases covering consumer isolation,
   global/instance/rule quotas, token strategies and expressions, windows,
@@ -1580,8 +1591,11 @@ already-implemented branch.
   post-integration package/config/data-encryption/Store, race, real-process,
   pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `graphql-limit-count` — blocked on the Hard Redis owner.
-- [ ] `graphql-proxy-cache` — the `proxy-cache` prerequisite is complete; its
-  48 pinned GraphQL cache blocks remain to be converted and verified.
+- [x] `graphql-proxy-cache` — all 48 pinned disk, GraphQL, and memory blocks
+  are independent, alias-free standalone cases covering request keying,
+  malformed input, mutation bypass, cache status and TTL, PURGE, Vary,
+  route/host identity, and consumer isolation. Package/race, exact real-process
+  normal/race, source/corpus/target, scoped lint, build, and diff gates pass.
 - [x] `workflow` — all 42 pinned blocks are independent, source-complete,
   alias-free standalone cases with unconditional and conditional rule
   evaluation, ordered fallthrough, isolated limiter state, schema rejection,
@@ -1589,7 +1603,7 @@ already-implemented branch.
   `limit-conn` assertions. Package/race, exact real-process normal/race,
   source/corpus/target, scoped lint, build, and diff gates pass.
 
-### Hard — 9 remaining (15 at replan)
+### Hard — 8 remaining (15 at replan)
 
 - [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
@@ -1629,7 +1643,14 @@ already-implemented branch.
   Vary, PURGE, consumer isolation, invalid zones, and persistence.
   Package/race, exact real-process normal/race, source/corpus and isolated
   target-plugin gates, scoped lint, build, and diff checks pass.
-- [ ] `traffic-split`
+- [x] `traffic-split` — all 94 pinned blocks across five sources are
+  independent, alias-free standalone cases covering ordered matches, weighted
+  inline/resource upstreams, fallback and zero weights, chash, pass-host,
+  HTTPS, health/retry, timeouts, form-body matching, and reload behavior.
+  Transport-error retries now honor explicit zero and APISIX's omitted
+  nodes-minus-one default while selecting distinct retry targets. Package/
+  route/resource/proxy race, exact real-process normal/race,
+  source/corpus/target, scoped lint, build, and diff gates pass.
 - [ ] `rocketmq-logger`
 - [ ] `kafka-logger`
 - [ ] `opentelemetry`

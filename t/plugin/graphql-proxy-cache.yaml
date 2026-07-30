@@ -11,87 +11,755 @@ sources:
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/graphql-proxy-cache/memory.t
     tests: 16
+
 cases:
-  - name: graphql-disk-cache
-    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]}
-    runtime:
-      plugin_attr:
-        proxy-cache:
-          zones:
-            - {name: graphql-integration, disk_path: '{{WORK_DIR}}/cache/graphql', disk_size: 10m}
+  - name: disk-default-zone-accepts-route-test-1
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [1]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/disk-one', disk_size: 10m}]}}}
     config:
       routes:
-        - id: graphql-proxy-cache-disk
-          uri: /graphql
-          plugins:
-            graphql-proxy-cache: {cache_strategy: disk, cache_zone: graphql-integration, cache_ttl: 60}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - {id: gql-disk-1, uri: /graphql, plugins: {graphql-proxy-cache: {}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: '{"data":{"hello":"disk"}}'}, {status: 200, body: '{"data":{"hello":"changed"}}'}]
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"default-disk"}}'}]}
     steps:
-      - name: disk-query-miss
+      - name: default-disk-route-serves-query
         input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output:
-          status: 200
-          body: {equals: '{"data":{"hello":"disk"}}'}
-          headers: {Apisix-Cache-Status: {equals: MISS}}
-      - name: disk-query-hit
-        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output:
-          status: 200
-          body: {equals: '{"data":{"hello":"disk"}}'}
-          headers: {Apisix-Cache-Status: {equals: HIT}}
-  - name: graphql-memory-cache
-    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
+        output: {status: 200, body: {equals: '{"data":{"kind":"default-disk"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-post-json-query-misses-test-2
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [2]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-2, disk_path: '{{WORK_DIR}}/cache/disk-2', disk_size: 10m}]}}}
     config:
       routes:
-        - id: graphql-proxy-cache-memory
-          uri: /graphql
-          plugins:
-            graphql-proxy-cache: {cache_strategy: memory, cache_zone: graphql-integration, cache_ttl: 60}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - {id: gql-disk-2, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-2, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: '{"data":{"hello":"memory"}}'}, {status: 200, body: '{"data":{"hello":"changed"}}'}]
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"post-json"}}'}]}
     steps:
-      - name: memory-query-miss
-        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output:
-          status: 200
-          body: {equals: '{"data":{"hello":"memory"}}'}
-          headers: {Apisix-Cache-Status: {equals: MISS}}
-      - name: memory-query-hit
-        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output:
-          status: 200
-          body: {equals: '{"data":{"hello":"memory"}}'}
-          headers: {Apisix-Cache-Status: {equals: HIT}}
-  - name: graphql-memory-variants
-    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]}
+      - name: post-json-query-enters-disk-cache
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query { hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"post-json"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-post-json-query-hits-test-3
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [3]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-3, disk_path: '{{WORK_DIR}}/cache/disk-3', disk_size: 10m}]}}}
     config:
       routes:
-        - id: graphql-proxy-cache-variants
-          uri: /graphql
-          plugins:
-            graphql-proxy-cache: {cache_strategy: memory, cache_zone: graphql-variants, cache_ttl: 60}
-          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - {id: gql-disk-3, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-3, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: '{"data":{"hello":"variant-a"}}'}, {status: 200, body: '{"data":{"hello":"variant-b"}}'}]
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"post-json-hit"}}'}]}
     steps:
-      - name: variant-a-miss
+      - name: prime-post-json-disk-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query { hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-post-json-disk-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query { hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"post-json-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: disk-get-query-misses-test-4
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [4]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-4, disk_path: '{{WORK_DIR}}/cache/disk-4', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-4, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-4, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"get-query"}}'}]}
+    steps:
+      - name: get-query-enters-disk-cache
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-get-query-hits-test-5
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [5]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-5, disk_path: '{{WORK_DIR}}/cache/disk-5', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-5, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-5, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"get-hit"}}'}]}
+    steps:
+      - name: prime-get-query-disk-entry
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-get-query-disk-entry
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20%7D'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"get-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: disk-get-variables-miss-on-distinct-key-test-6
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [6]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-6, disk_path: '{{WORK_DIR}}/cache/disk-6', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-6, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-6, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {matches: '^/graphql\?'}}, {path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"base"}}'}, {status: 200, body: '{"data":{"kind":"variables"}}'}]}
+    steps:
+      - name: prime-get-query-without-variables
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: different-get-variables-create-miss
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D&variables=%7B%22id%22%3A%222%22%7D'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"variables"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-get-variables-hit-test-7
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [7]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-7, disk_path: '{{WORK_DIR}}/cache/disk-7', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-7, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-7, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"get-vars-hit"}}'}]}
+    steps:
+      - name: prime-get-variables-disk-entry
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D&variables=%7B%22id%22%3A%222%22%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-get-variables-disk-entry
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D&variables=%7B%22id%22%3A%222%22%7D'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"get-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: disk-post-variables-miss-on-body-key-test-8
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [8]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-8, disk_path: '{{WORK_DIR}}/cache/disk-8', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-8, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-8, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql}}, {path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"post-base"}}'}, {status: 200, body: '{"data":{"kind":"post-vars"}}'}]}
+    steps:
+      - name: prime-post-query-without-variables
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: different-post-variables-create-miss
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}","variables":{"id":"2"}}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"post-vars"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-post-variables-hit-test-9
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [9]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-9, disk_path: '{{WORK_DIR}}/cache/disk-9', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-9, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-9, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"post-vars-hit"}}'}]}
+    steps:
+      - name: prime-post-variables-disk-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}","variables":{"id":"2"}}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-post-variables-disk-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}","variables":{"id":"2"}}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"post-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: disk-application-graphql-body-misses-test-10
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [10]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-10, disk_path: '{{WORK_DIR}}/cache/disk-10', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-10, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-10, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"raw"}}'}]}
+    steps:
+      - name: raw-graphql-body-enters-disk-cache
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: disk-application-graphql-body-hits-test-11
+    source: {file: t/plugin/graphql-proxy-cache/disk.t, tests: [11]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-disk-11, disk_path: '{{WORK_DIR}}/cache/disk-11', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-disk-11, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-disk-11, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"raw-hit"}}'}]}
+    steps:
+      - name: prime-raw-graphql-disk-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-raw-graphql-disk-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"raw-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: graphql-unknown-zone-rejects-route-test-1
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [1]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-valid, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-invalid-zone, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-missing}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: invalid-zone-route-is-not-published
         input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output:
-          status: 200
-          body: {equals: '{"data":{"hello":"variant-a"}}'}
-          headers: {Apisix-Cache-Status: {equals: MISS}}
-      - name: variant-a-hit
+        output: {status: 404, logs: {matches: 'cache_zone.*gql-missing'}}
+
+  - name: graphql-invalid-strategy-rejects-route-test-2
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [2]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-valid, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-invalid-strategy, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: redis, cache_zone: gql-valid}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: invalid-strategy-route-is-not-published
         input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
-        output:
-          status: 200
-          body: {equals: '{"data":{"hello":"variant-a"}}'}
-          headers: {Apisix-Cache-Status: {equals: HIT}}
+        output: {status: 404, logs: {matches: 'cache_strategy'}}
+
+  - name: graphql-default-config-serves-query-test-3
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [3]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: disk_cache_one, disk_path: '{{WORK_DIR}}/cache/graphql-default', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-default, uri: /graphql, plugins: {graphql-proxy-cache: {}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"default"}}'}]}
+    steps:
+      - name: default-config-caches-query
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: graphql-head-method-is-rejected-test-4
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [4]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-4, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-method, uri: /graphql, methods: [GET, POST, HEAD], plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-4}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: head-never-reaches-origin
+        input: {method: HEAD, path: /graphql}
+        output: {status: 405}
+
+  - name: graphql-get-without-args-is-rejected-test-5
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [5]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-5, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-get-no-args, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: missing-get-query-returns-diagnostic
+        input: {method: GET, path: /graphql}
+        output: {status: 400, body: {matches: 'args\[query\] is nil'}}
+
+  - name: graphql-oversize-get-is-rejected-test-6
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [6]}
+    runtime: {graphql: {max_size: 20}, apisix: {proxy_cache: {zones: [{name: gql-memory-6, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-get-large, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-6}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: oversize-get-query-stops-before-origin
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20world%20%7D'}
+        output: {status: 400, body: {matches: "can't get graphql request body"}}
+
+  - name: graphql-get-empty-query-is-rejected-test-7
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [7]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-7, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-get-empty, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-7}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: empty-get-query-returns-diagnostic
+        input: {method: GET, path: '/graphql?query='}
+        output: {status: 400, body: {matches: 'args\[query\] is nil'}}
+
+  - name: graphql-post-empty-body-is-rejected-test-8
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [8]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-8, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-post-empty, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-8}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: empty-post-body-stops-before-origin
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: ''}
+        output: {status: 400, body: {matches: "can't get graphql request body"}}
+
+  - name: graphql-wrong-content-type-is-rejected-test-9
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [9]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-9, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-content-type, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-9}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: text-plain-body-is-rejected
+        input: {method: POST, path: /graphql, headers: {Content-Type: text/plain}, body: '{ hello }'}
+        output: {status: 400, body: {matches: 'error content-type: text/plain'}}
+
+  - name: graphql-malformed-json-is-rejected-test-10
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [10]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-10, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-bad-json, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-10}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: malformed-json-stops-before-origin
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":'}
+        output: {status: 400, body: {matches: 'invalid graphql request'}}
+
+  - name: graphql-json-without-query-is-rejected-test-11
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [11]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-11, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-json-no-query, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-11}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: json-without-query-returns-diagnostic
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"variables":{"id":"1"}}'}
+        output: {status: 400, body: {matches: 'json body\[query\] is nil'}}
+
+  - name: graphql-invalid-operation-prefix-is-rejected-test-12
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [12]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-12, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-invalid-prefix, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-12}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: unknown-operation-prefix-fails-parse
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'test { hello }'}
+        output: {status: 400, body: {matches: 'failed to parse graphql query'}}
+
+  - name: graphql-malformed-selection-is-rejected-test-13
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [13]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-13, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-invalid-selection, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-13}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: malformed-selection-fails-parse
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query{persons(filter){id}}'}
+        output: {status: 400, body: {matches: 'failed to parse graphql query'}}
+
+  - name: graphql-empty-document-is-rejected-test-14
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [14]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-14, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-empty-document, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-14}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: empty-json-query-is-rejected
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":""}'}
+        output: {status: 400, body: {matches: 'json body\[query\] is nil'}}
+
+  - name: graphql-document-containing-mutation-bypasses-test-15
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [15]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-15, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-mutation, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-15}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"mutated":true}}'}]}
+    steps:
+      - name: mixed-query-and-mutation-bypasses-cache
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query Read { hello } mutation Write { update }'}
+        output: {status: 200, body: {equals: '{"data":{"mutated":true}}'}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}
+
+  - name: graphql-memory-purge-removes-entry-test-16
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [16]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-memory, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-purge-memory-route, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-purge-memory, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql}}, {path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"version":1}}'}, {status: 200, body: '{"data":{"version":2}}'}]}
+    steps:
+      - name: prime-memory-entry-and-capture-key
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}, captures: {memory_key: {header: APISIX-Cache-Key, matches: '^(.+)$'}}}
+      - name: confirm-memory-entry-hit
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: purge-captured-memory-entry
+        input: {method: PURGE, path: '/apisix/plugin/graphql-proxy-cache/memory/gql-purge-memory-route/{{CAPTURE.memory_key}}'}
+        output: {status: 200}
+      - name: memory-request-misses-after-purge
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"version":2}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: graphql-disk-purge-removes-entry-test-17
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [17]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-disk, disk_path: '{{WORK_DIR}}/cache/purge-disk', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-purge-disk-route, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-purge-disk, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql}}, {path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"version":1}}'}, {status: 200, body: '{"data":{"version":2}}'}]}
+    steps:
+      - name: prime-disk-entry-and-capture-key
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}, captures: {disk_key: {header: APISIX-Cache-Key, matches: '^(.+)$'}}}
+      - name: confirm-disk-entry-hit
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: purge-captured-disk-entry
+        input: {method: PURGE, path: '/apisix/plugin/graphql-proxy-cache/disk/gql-purge-disk-route/{{CAPTURE.disk_key}}'}
+        output: {status: 200}
+      - name: disk-request-misses-after-purge
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"version":2}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: graphql-purge-unknown-route-is-not-found-test-18
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [18]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-18, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-purge-known, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-purge-18}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: purge-unknown-route-returns-not-found
+        input: {method: PURGE, path: /apisix/plugin/graphql-proxy-cache/memory/gql-purge-unknown/deadbeef}
+        output: {status: 404}
+
+  - name: graphql-disk-purge-unknown-key-is-not-found-test-19
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [19]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-19, disk_path: '{{WORK_DIR}}/cache/purge-19', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-purge-disk-known, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-purge-19}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: disk-purge-unknown-key-returns-not-found
+        input: {method: PURGE, path: /apisix/plugin/graphql-proxy-cache/disk/gql-purge-disk-known/deadbeef}
+        output: {status: 404}
+
+  - name: graphql-purge-invalid-strategy-is-bad-request-test-20
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [20]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-20, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-purge-valid-strategy, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-purge-20}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: unsupported-purge-strategy-returns-bad-request
+        input: {method: PURGE, path: /apisix/plugin/graphql-proxy-cache/redis/gql-purge-valid-strategy/deadbeef}
+        output: {status: 400}
+
+  - name: graphql-purge-strategy-mismatch-is-bad-request-test-21
+    source: {file: t/plugin/graphql-proxy-cache/graphql.t, tests: [21]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-21, disk_path: '{{WORK_DIR}}/cache/purge-21', disk_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-purge-disk-mismatch, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-purge-21}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: memory-purge-for-disk-route-returns-bad-request
+        input: {method: PURGE, path: /apisix/plugin/graphql-proxy-cache/memory/gql-purge-disk-mismatch/deadbeef}
+        output: {status: 400}
+
+  - name: memory-zone-route-accepts-cache-config-test-1
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [1]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-1, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-1, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-1, cache_ttl: 3}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-zone"}}'}]}
+    steps:
+      - name: memory-zone-route-serves-query
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: memory-post-json-query-misses-test-2
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [2]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-2, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-2, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-2, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-post"}}'}]}
+    steps:
+      - name: post-json-query-enters-memory-cache
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query { hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: memory-post-json-query-hits-test-3
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [3]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-3, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-3, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-3, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-post-hit"}}'}]}
+    steps:
+      - name: prime-post-json-memory-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query { hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-post-json-memory-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query { hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-post-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-get-query-misses-test-4
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [4]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-4a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-4a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-4a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"memory-get"}}'}]}
+    steps:
+      - name: get-query-enters-memory-cache
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: memory-get-query-hits-test-5
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [5]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-5a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-5a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-5a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"memory-get-hit"}}'}]}
+    steps:
+      - name: prime-get-query-memory-entry
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-get-query-memory-entry
+        input: {method: GET, path: '/graphql?query=query%20%7B%20hello%20%7D'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-get-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-get-variables-miss-on-distinct-key-test-6
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [6]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-6a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-6a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-6a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {matches: '^/graphql\?'}}, {path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"memory-base"}}'}, {status: 200, body: '{"data":{"kind":"memory-vars"}}'}]}
+    steps:
+      - name: prime-memory-get-without-variables
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: different-memory-get-variables-create-miss
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D&variables=%7B%22id%22%3A%222%22%7D'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-vars"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: memory-get-variables-hit-test-7
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [7]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-7a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-7a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-7a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {matches: '^/graphql\?'}}], respond: [{status: 200, body: '{"data":{"kind":"memory-get-vars-hit"}}'}]}
+    steps:
+      - name: prime-memory-get-variables-entry
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D&variables=%7B%22id%22%3A%222%22%7D'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-memory-get-variables-entry
+        input: {method: GET, path: '/graphql?query=query%20Q%28%24id%3AID%21%29%7Bnode%28id%3A%24id%29%7Bid%7D%7D&variables=%7B%22id%22%3A%222%22%7D'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-get-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-post-variables-miss-on-body-key-test-8
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [8]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-8a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-8a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-8a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql}}, {path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-post-base"}}'}, {status: 200, body: '{"data":{"kind":"memory-post-vars"}}'}]}
+    steps:
+      - name: prime-memory-post-without-variables
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: different-memory-post-variables-create-miss
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}","variables":{"id":"2"}}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-post-vars"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: memory-post-variables-hit-test-9
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [9]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-9a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-9a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-9a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-post-vars-hit"}}'}]}
+    steps:
+      - name: prime-memory-post-variables-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}","variables":{"id":"2"}}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-memory-post-variables-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json}, body: '{"query":"query Q($id:ID!){node(id:$id){id}}","variables":{"id":"2"}}'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-post-vars-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-application-graphql-body-misses-test-10
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [10]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-10a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-10a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-10a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-raw"}}'}]}
+    steps:
+      - name: raw-graphql-body-enters-memory-cache
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+
+  - name: memory-application-graphql-body-hits-test-11
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [11]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-11a, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-memory-11a, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-11a, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"kind":"memory-raw-hit"}}'}]}
+    steps:
+      - name: prime-memory-raw-graphql-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: reuse-memory-raw-graphql-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/graphql}, body: 'query { hello }'}
+        output: {status: 200, body: {equals: '{"data":{"kind":"memory-raw-hit"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-consumers-have-isolated-entries-test-12
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [12]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-consumers, memory_size: 10m}]}}}
+    config:
+      consumers:
+        - {username: alice, plugins: {key-auth: {key: alice-key}}}
+        - {username: bob, plugins: {key-auth: {key: bob-key}}}
+      routes:
+        - {id: gql-consumer-isolated, uri: /graphql, plugins: {key-auth: {}, graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-consumers, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql}}, {path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"consumer":"alice"}}'}, {status: 200, body: '{"data":{"consumer":"bob"}}'}]}
+    steps:
+      - name: alice-first-request-misses
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json, apikey: alice-key}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"consumer":"alice"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: alice-second-request-hits
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json, apikey: alice-key}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"consumer":"alice"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: bob-first-request-has-separate-miss
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json, apikey: bob-key}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"consumer":"bob"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: bob-second-request-hits-own-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json, apikey: bob-key}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"consumer":"bob"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-disabled-consumer-isolation-shares-entry-test-13
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [13]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-shared-consumers, memory_size: 10m}]}}}
+    config:
+      consumers:
+        - {username: alice, plugins: {key-auth: {key: alice-key}}}
+        - {username: bob, plugins: {key-auth: {key: bob-key}}}
+      routes:
+        - {id: gql-consumer-shared, uri: /graphql, plugins: {key-auth: {}, graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-shared-consumers, cache_ttl: 60, consumer_isolation: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 1, expect: [{path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"consumer":"shared"}}'}]}
+    steps:
+      - name: alice-primes-shared-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json, apikey: alice-key}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: bob-reuses-shared-entry
+        input: {method: POST, path: /graphql, headers: {Content-Type: application/json, apikey: bob-key}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"consumer":"shared"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-route-identities-do-not-collide-test-14
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [14]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-routes, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-route-a, uri: /graphql-a, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-routes, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+        - {id: gql-route-b, uri: /graphql-b, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-routes, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql-a}}, {path: {equals: /graphql-b}}], respond: [{status: 200, body: '{"data":{"route":"a"}}'}, {status: 200, body: '{"data":{"route":"b"}}'}]}
+    steps:
+      - name: route-a-first-request-misses
+        input: {method: POST, path: /graphql-a, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"route":"a"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: route-a-second-request-hits
+        input: {method: POST, path: /graphql-a, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: route-b-first-request-has-separate-miss
+        input: {method: POST, path: /graphql-b, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"route":"b"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: route-b-second-request-hits
+        input: {method: POST, path: /graphql-b, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-host-identities-do-not-collide-test-15
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [15]}
+    runtime: {apisix: {proxy_cache: {zones: [{name: gql-memory-hosts, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-hosts, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-hosts, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - {name: origin, kind: http, expect_requests: 2, expect: [{path: {equals: /graphql}}, {path: {equals: /graphql}}], respond: [{status: 200, body: '{"data":{"host":"a"}}'}, {status: 200, body: '{"data":{"host":"b"}}'}]}
+    steps:
+      - name: host-a-first-request-misses
+        input: {method: POST, path: /graphql, headers: {Host: a.example.test, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"host":"a"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: host-a-second-request-hits
+        input: {method: POST, path: /graphql, headers: {Host: a.example.test, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: host-b-first-request-has-separate-miss
+        input: {method: POST, path: /graphql, headers: {Host: b.example.test, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"host":"b"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: host-b-second-request-hits
+        input: {method: POST, path: /graphql, headers: {Host: b.example.test, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, headers: {Apisix-Cache-Status: {equals: HIT}}}
+
+  - name: memory-vary-variants-are-purged-together-test-16
+    source: {file: t/plugin/graphql-proxy-cache/memory.t, tests: [16]}
+    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-memory-vary, memory_size: 10m}]}}}
+    config:
+      routes:
+        - {id: gql-vary-route, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-memory-vary, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
+    fixtures:
+      - name: origin
+        kind: http
+        expect_requests: 4
+        expect:
+          - {path: {equals: /graphql}, headers: {X-Variant: {equals: a}}}
+          - {path: {equals: /graphql}, headers: {X-Variant: {equals: b}}}
+          - {path: {equals: /graphql}, headers: {X-Variant: {equals: a}}}
+          - {path: {equals: /graphql}, headers: {X-Variant: {equals: b}}}
+        respond:
+          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"a1"}}'}
+          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"b1"}}'}
+          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"a2"}}'}
+          - {status: 200, headers: {Vary: X-Variant}, body: '{"data":{"variant":"b2"}}'}
+    steps:
+      - name: variant-a-first-request-misses-and-captures-base-key
+        input: {method: POST, path: /graphql, headers: {X-Variant: a, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"variant":"a1"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}, Vary: {equals: X-Variant}}, captures: {vary_key: {header: APISIX-Cache-Key, matches: '^(.+)$'}}}
+      - name: variant-a-second-request-hits-own-entry
+        input: {method: POST, path: /graphql, headers: {X-Variant: a, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"variant":"a1"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: variant-b-first-request-misses-separately
+        input: {method: POST, path: /graphql, headers: {X-Variant: b, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"variant":"b1"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: variant-b-second-request-hits-own-entry
+        input: {method: POST, path: /graphql, headers: {X-Variant: b, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"variant":"b1"}}'}, headers: {Apisix-Cache-Status: {equals: HIT}}}
+      - name: purge-base-key-removes-every-vary-variant
+        input: {method: PURGE, path: '/apisix/plugin/graphql-proxy-cache/memory/gql-vary-route/{{CAPTURE.vary_key}}'}
+        output: {status: 200}
+      - name: variant-a-misses-after-purge
+        input: {method: POST, path: /graphql, headers: {X-Variant: a, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"variant":"a2"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
+      - name: variant-b-misses-after-purge
+        input: {method: POST, path: /graphql, headers: {X-Variant: b, Content-Type: application/json}, body: '{"query":"{ hello }"}'}
+        output: {status: 200, body: {equals: '{"data":{"variant":"b2"}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}

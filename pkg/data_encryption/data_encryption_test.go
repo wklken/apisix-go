@@ -187,6 +187,54 @@ func TestEncryptRegisteredFieldRejectsInvalidExplicitCiphertext(t *testing.T) {
 	}
 }
 
+func TestEncryptPluginMetadataPreservesStrictErrorLogLoggerPasswordsForPluginResolution(t *testing.T) {
+	key := "qeddd145sfvddff3"
+	metadata := map[string]any{
+		"clickhouse": map[string]any{
+			"password": "clickhouse-secret",
+			"user":     "default",
+		},
+		"kafka": map[string]any{
+			"brokers": []any{
+				map[string]any{
+					"host": "127.0.0.1",
+					"sasl_config": map[string]any{
+						"user":     "kafka-user",
+						"password": "kafka-secret",
+					},
+				},
+			},
+		},
+	}
+
+	if err := EncryptPluginMetadata("error-log-logger", metadata, []string{key}); err != nil {
+		t.Fatalf("EncryptPluginMetadata() error = %v", err)
+	}
+	clickhouse := metadata["clickhouse"].(map[string]any)
+	broker := metadata["kafka"].(map[string]any)["brokers"].([]any)[0].(map[string]any)
+	sasl := broker["sasl_config"].(map[string]any)
+	if clickhouse["password"] == "clickhouse-secret" {
+		t.Fatal("clickhouse.password remained plaintext")
+	}
+	if sasl["password"] == "kafka-secret" {
+		t.Fatal("kafka.brokers[].sasl_config.password remained plaintext")
+	}
+	clickhouseCiphertext := clickhouse["password"]
+	kafkaCiphertext := sasl["password"]
+	if clickhouse["user"] != "default" || broker["host"] != "127.0.0.1" || sasl["user"] != "kafka-user" {
+		t.Fatalf("non-secret metadata changed: clickhouse=%#v broker=%#v", clickhouse, broker)
+	}
+
+	DecryptPluginMetadata("error-log-logger", metadata, []string{key})
+	if clickhouse["password"] != clickhouseCiphertext || sasl["password"] != kafkaCiphertext {
+		t.Fatalf(
+			"strict runtime passwords = %v/%v, want ciphertext retained for plugin resolution",
+			clickhouse["password"],
+			sasl["password"],
+		)
+	}
+}
+
 func TestDecryptPluginConfigsSupportsFeishuAuthSecretFallbacks(t *testing.T) {
 	key := "qeddd145sfvddff3"
 	configs := map[string]any{

@@ -1,6 +1,8 @@
 package route
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,9 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_buffering"
 	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 func TestBufferRequestBodyIfNeededBuffersWhenEnabled(t *testing.T) {
@@ -90,6 +95,85 @@ func TestSelectProxyHandlerUsesStreamingHandlerWhenProxyBufferingDisabled(t *tes
 	}
 }
 
+func TestHTTPRetryCountDefaultsToRemainingUpstreamNodes(t *testing.T) {
+	upstream := resource.Upstream{
+		Nodes: []resource.Node{{}, {}, {}},
+	}
+	if got := httpRetryCount(upstream); got != 2 {
+		t.Fatalf("httpRetryCount() = %d, want 2 for three nodes", got)
+	}
+
+	if err := json.Unmarshal([]byte(`{
+		"nodes": {
+			"127.0.0.1:8080": 1,
+			"127.0.0.2:8080": 1,
+			"127.0.0.3:8080": 1
+		},
+		"retries": 0
+	}`), &upstream); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if got := httpRetryCount(upstream); got != 0 {
+		t.Fatalf("httpRetryCount() = %d, want explicit zero", got)
+	}
+
+	upstream.Retries = 1
+	if got := httpRetryCount(upstream); got != 1 {
+		t.Fatalf("httpRetryCount() = %d, want explicit one", got)
+	}
+}
+
+func TestAttachHTTPRetriesAdvancesTrafficSplitTargets(t *testing.T) {
+	retryHosts := []string{"127.0.0.2:8080", "127.0.0.3:8080"}
+	next := 0
+	override := &traffic_split.Override{
+		Scheme:   "http",
+		Host:     "127.0.0.1:8080",
+		PassHost: "node",
+		Retries:  2,
+		NextRetry: func() *traffic_split.Override {
+			if next >= len(retryHosts) {
+				return nil
+			}
+			selected := &traffic_split.Override{
+				Scheme:   "http",
+				Host:     retryHosts[next],
+				PassHost: "node",
+			}
+			next++
+			return selected
+		},
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
+	request = traffic_split.WithOverride(request, override)
+	if !applyTrafficSplitOverride(request) {
+		t.Fatal("initial traffic-split override was not applied")
+	}
+	request = attachHTTPRetries(request, resource.Upstream{}, nil)
+
+	var attemptedHosts []string
+	transport := pxy.NewRetryTransport(routeRoundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		attemptedHosts = append(attemptedHosts, request.URL.Host)
+		if len(attemptedHosts) < 3 {
+			return nil, errors.New("connection refused")
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       http.NoBody,
+			Request:    request,
+		}, nil
+	}))
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	want := []string{"127.0.0.1:8080", "127.0.0.2:8080", "127.0.0.3:8080"}
+	if strings.Join(attemptedHosts, ",") != strings.Join(want, ",") {
+		t.Fatalf("attempted hosts = %v, want %v", attemptedHosts, want)
+	}
+}
+
 func TestModifyResponseRecordsUpstreamLatency(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	req = apisixctx.WithRequestVars(req)
@@ -131,4 +215,10 @@ func (b *countingReadCloser) Read(p []byte) (int, error) {
 
 func (b *countingReadCloser) Close() error {
 	return nil
+}
+
+type routeRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f routeRoundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }

@@ -32,6 +32,7 @@ type Plugin struct {
 	client         *http.Client
 	kafkaSender    kafkaSender
 	BatchProcessor *logger_batch.Processor
+	observerStop   func()
 	stopOnce       sync.Once
 }
 
@@ -42,7 +43,104 @@ const (
 
 const schema = `
 {
-  "type": "object"
+  "type": "object",
+  "properties": {
+    "id": {"type": "string", "const": "error-log-logger"},
+    "tcp": {
+      "type": "object",
+      "required": ["host", "port"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "tls": {"type": "boolean"},
+        "tls_server_name": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "skywalking": {
+      "type": "object",
+      "properties": {
+        "endpoint_addr": {"type": "string", "minLength": 1},
+        "service_name": {"type": "string", "minLength": 1},
+        "service_instance_name": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "clickhouse": {
+      "type": "object",
+      "required": ["user", "password", "database", "logtable", "endpoint_addr"],
+      "properties": {
+        "endpoint_addr": {"type": "string", "minLength": 1},
+        "user": {"type": "string", "minLength": 1},
+        "password": {"type": "string"},
+        "database": {"type": "string", "minLength": 1},
+        "logtable": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "kafka": {
+      "type": "object",
+      "required": ["brokers", "kafka_topic"],
+      "properties": {
+        "brokers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["host", "port"],
+            "properties": {
+              "host": {"type": "string", "minLength": 1},
+              "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+              "sasl_config": {
+                "type": "object",
+                "required": ["user", "password"],
+                "properties": {
+                  "mechanism": {"type": "string", "enum": ["PLAIN", "plain"]},
+                  "user": {"type": "string", "minLength": 1},
+                  "password": {"type": "string"}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "kafka_topic": {"type": "string", "minLength": 1},
+        "producer_type": {"type": "string", "enum": ["sync", "async"]},
+        "required_acks": {"type": "integer", "enum": [-1, 0, 1]},
+        "key": {"type": "string"},
+        "cluster_name": {"type": "integer", "minimum": 1},
+        "meta_refresh_interval": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "host": {"type": "string", "minLength": 1},
+    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "tls": {"type": "boolean"},
+    "tls_server_name": {"type": "string"},
+    "name": {"type": "string", "minLength": 1},
+    "level": {
+      "type": "string",
+      "enum": ["STDERR", "EMERG", "ALERT", "CRIT", "ERR", "ERROR", "WARN", "NOTICE", "INFO", "DEBUG",
+               "stderr", "emerg", "alert", "crit", "err", "error", "warn", "notice", "info", "debug"]
+    },
+    "timeout": {"type": "integer", "minimum": 1},
+    "keepalive": {"type": "integer", "minimum": 1},
+    "batch_max_size": {"type": "integer", "minimum": 1},
+    "max_retry_count": {"type": "integer", "minimum": 0},
+    "retry_delay": {"type": "integer", "minimum": 0},
+    "buffer_duration": {"type": "integer", "minimum": 1},
+    "inactive_timeout": {"type": "integer", "minimum": 1}
+  },
+  "anyOf": [
+    {"maxProperties": 0},
+    {"required": ["tcp"]},
+    {"required": ["skywalking"]},
+    {"required": ["clickhouse"]},
+    {"required": ["kafka"]},
+    {"required": ["host", "port"]}
+  ],
+  "additionalProperties": false
 }
 `
 
@@ -207,8 +305,28 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return next
 }
 
+func (p *Plugin) StartObserving() {
+	processorName := strings.ToLower(p.config.Name)
+	p.observerStop = logger.ReplaceObserver(name, func(entry logger.Entry) {
+		message := strings.ToLower(entry.Message)
+		if strings.Contains(message, "logger batch processor ["+processorName+"]") {
+			return
+		}
+		threshold := levelOrder[p.config.Level]
+		if level, ok := levelOrder[strings.ToUpper(entry.Level)]; ok && level > threshold {
+			return
+		}
+		if p.BatchProcessor != nil {
+			_ = p.BatchProcessor.Push(map[string]any{"message": entry.Line})
+		}
+	})
+}
+
 func (p *Plugin) Stop() {
 	p.stopOnce.Do(func() {
+		if p.observerStop != nil {
+			p.observerStop()
+		}
 		if p.BatchProcessor != nil {
 			p.BatchProcessor.Stop()
 		}
@@ -466,7 +584,6 @@ func (p *Plugin) newKafkaWriter() (*kafka.Writer, error) {
 
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(p.kafkaBrokerAddresses()...),
-		Topic:        p.config.Kafka.KafkaTopic,
 		RequiredAcks: kafka.RequiredAcks(p.config.Kafka.RequiredAcks),
 		Async:        p.config.Kafka.ProducerType == "async",
 		WriteTimeout: time.Duration(p.config.Timeout) * time.Second,

@@ -105,7 +105,12 @@ var strictPluginFields = map[string][]string{
 }
 
 var pluginMetadataFields = map[string][]string{
-	"azure-functions": {"master_apikey"},
+	"azure-functions":  {"master_apikey"},
+	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
+}
+
+var strictPluginMetadataFields = map[string][]string{
+	"error-log-logger": {"clickhouse.password", "kafka.brokers.*.sasl_config.password"},
 }
 
 func HasEncryptedPluginMetadata(name string) bool {
@@ -258,6 +263,9 @@ func DecryptPluginMetadata(name string, metadata map[string]any, keyring []strin
 	}
 	resolver := NewResolver(true, keyring)
 	for _, field := range pluginMetadataFields[name] {
+		if slices.Contains(strictPluginMetadataFields[name], field) {
+			continue
+		}
 		decryptField(metadata, field, resolver)
 	}
 }

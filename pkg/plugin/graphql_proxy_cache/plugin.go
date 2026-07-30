@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ type Plugin struct {
 	config Config
 
 	entries map[string]cacheEntry
+	vary    map[string]varyIndex
 	lock    sync.RWMutex
 	now     func() time.Time
 
@@ -106,6 +108,11 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
+type varyIndex struct {
+	headers     []string
+	storageKeys map[string]struct{}
+}
+
 type graphqlRequest struct {
 	Query string `json:"query"`
 }
@@ -147,6 +154,7 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 	p.entries = make(map[string]cacheEntry)
+	p.vary = make(map[string]varyIndex)
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -272,7 +280,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		key := p.cacheKey(r, body)
 		w.Header().Set(cacheKeyHeader, key)
-		if entry, status := p.lookup(key); status == "HIT" {
+		if entry, status := p.lookup(r, key); status == "HIT" {
 			writeCachedResponse(w, entry, status, key)
 			return
 		} else if status == "EXPIRED" {
@@ -342,7 +350,7 @@ func (p *Plugin) fetchAndStore(w http.ResponseWriter, r *http.Request, next http
 	if recorder.statusCode == http.StatusOK &&
 		!responseCacheControlSkipsStore(recorder.header) &&
 		(p.cacheSetCookieEnabled() || recorder.header.Get("Set-Cookie") == "") {
-		p.store(key, recorder)
+		p.store(r, key, recorder)
 	}
 	recorder.header.Set(cacheStatusHeader, status)
 	recorder.header.Set(cacheKeyHeader, key)
@@ -369,21 +377,22 @@ func (p *Plugin) cacheSetCookieEnabled() bool {
 	return p.config.CacheSetCookie && p.diskStore == nil
 }
 
-func (p *Plugin) lookup(key string) (cacheEntry, string) {
+func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
+	storageKey := p.storageKey(r, key)
 	if p.memoryStore != nil {
-		shared, ok := p.memoryStore.Load(key)
+		shared, ok := p.memoryStore.Load(storageKey)
 		if !ok {
 			return cacheEntry{}, "MISS"
 		}
 		entry := localCacheEntry(shared)
 		if p.now().After(entry.expiresAt) {
-			p.memoryStore.Delete(key)
+			p.memoryStore.Delete(storageKey)
 			return cacheEntry{}, "EXPIRED"
 		}
 		return entry, "HIT"
 	}
 	if p.diskStore != nil {
-		shared, found, expired := p.diskStore.Load(key, p.now())
+		shared, found, expired := p.diskStore.Load(storageKey, p.now())
 		if expired {
 			return cacheEntry{}, "EXPIRED"
 		}
@@ -393,7 +402,7 @@ func (p *Plugin) lookup(key string) (cacheEntry, string) {
 		return localCacheEntry(shared), "HIT"
 	}
 	p.lock.RLock()
-	entry, ok := p.entries[key]
+	entry, ok := p.entries[storageKey]
 	p.lock.RUnlock()
 	if !ok {
 		return cacheEntry{}, "MISS"
@@ -404,7 +413,11 @@ func (p *Plugin) lookup(key string) (cacheEntry, string) {
 	return entry, "HIT"
 }
 
-func (p *Plugin) store(key string, recorder *responseRecorder) {
+func (p *Plugin) store(r *http.Request, key string, recorder *responseRecorder) {
+	varyHeaders, cacheable := parseVaryHeader(recorder.header)
+	if !cacheable {
+		return
+	}
 	ttl := time.Duration(p.config.CacheTTL) * time.Second
 	if p.diskStore != nil {
 		ttl = diskResponseTTL(recorder.header, ttl, p.now())
@@ -419,19 +432,71 @@ func (p *Plugin) store(key string, recorder *responseRecorder) {
 	entry.expiresAt = entry.storedAt.Add(entry.ttl)
 	entry.header.Del(cacheStatusHeader)
 	entry.header.Del(cacheKeyHeader)
+	storageKey, staleKeys := p.prepareStorageKey(r, key, varyHeaders)
+	for _, staleKey := range staleKeys {
+		p.deleteStorageKey(staleKey)
+	}
 	shared := sharedCacheEntry(entry)
 	if p.memoryStore != nil {
-		p.memoryStore.Store(key, shared)
+		p.memoryStore.Store(storageKey, shared)
 		return
 	}
 	if p.diskStore != nil {
-		_ = p.diskStore.Store(key, shared)
+		_ = p.diskStore.Store(storageKey, shared)
 		return
 	}
 
 	p.lock.Lock()
-	p.entries[key] = entry
+	p.entries[storageKey] = entry
 	p.lock.Unlock()
+}
+
+func (p *Plugin) storageKey(r *http.Request, key string) string {
+	p.lock.RLock()
+	index, ok := p.vary[key]
+	p.lock.RUnlock()
+	if !ok || len(index.headers) == 0 {
+		return key
+	}
+	return key + "::" + varySignature(index.headers, r)
+}
+
+func (p *Plugin) prepareStorageKey(r *http.Request, key string, varyHeaders []string) (string, []string) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	index, hadIndex := p.vary[key]
+	if len(varyHeaders) == 0 {
+		if !hadIndex {
+			return key, nil
+		}
+		staleKeys := varyStorageKeys(index)
+		for _, staleKey := range staleKeys {
+			delete(p.entries, staleKey)
+		}
+		delete(p.vary, key)
+		return key, staleKeys
+	}
+
+	var staleKeys []string
+	if hadIndex && !sameStringSlice(index.headers, varyHeaders) {
+		staleKeys = varyStorageKeys(index)
+		for _, staleKey := range staleKeys {
+			delete(p.entries, staleKey)
+		}
+		index = varyIndex{}
+	}
+	if index.storageKeys == nil {
+		index = varyIndex{
+			headers:     append([]string(nil), varyHeaders...),
+			storageKeys: make(map[string]struct{}),
+		}
+	}
+	storageKey := key + "::" + varySignature(varyHeaders, r)
+	index.storageKeys[storageKey] = struct{}{}
+	p.vary[key] = index
+	delete(p.entries, key)
+	return storageKey, append(staleKeys, key)
 }
 
 func (p *Plugin) cacheKey(r *http.Request, body []byte) string {
@@ -587,17 +652,45 @@ func PurgeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) purge(key string) bool {
+	p.lock.Lock()
+	storageKeys := []string{key}
+	if index, ok := p.vary[key]; ok {
+		storageKeys = append(storageKeys, varyStorageKeys(index)...)
+		delete(p.vary, key)
+	}
+	found := false
+	for _, storageKey := range storageKeys {
+		if _, ok := p.entries[storageKey]; ok {
+			found = true
+		}
+		delete(p.entries, storageKey)
+	}
+	p.lock.Unlock()
+
+	for _, storageKey := range storageKeys {
+		if p.deleteStorageKey(storageKey) {
+			found = true
+		}
+	}
+	return found
+}
+
+func (p *Plugin) deleteStorageKey(storageKey string) bool {
 	if p.memoryStore != nil {
-		return p.memoryStore.Delete(key)
+		return p.memoryStore.Delete(storageKey)
 	}
 	if p.diskStore != nil {
-		return p.diskStore.Delete(key)
+		return p.diskStore.Delete(storageKey)
 	}
-	p.lock.Lock()
-	_, found := p.entries[key]
-	delete(p.entries, key)
-	p.lock.Unlock()
-	return found
+	return false
+}
+
+func varyStorageKeys(index varyIndex) []string {
+	keys := make([]string, 0, len(index.storageKeys))
+	for key := range index.storageKeys {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func graphqlHasMutation(query string) (bool, error) {
@@ -1115,4 +1208,53 @@ func cloneHeader(header http.Header) http.Header {
 		cloned[field] = append([]string(nil), values...)
 	}
 	return cloned
+}
+
+func parseVaryHeader(header http.Header) ([]string, bool) {
+	values := header.Values("Vary")
+	if len(values) == 0 {
+		return nil, true
+	}
+
+	seen := make(map[string]struct{})
+	var headers []string
+	for _, value := range values {
+		for part := range strings.SplitSeq(value, ",") {
+			name := strings.ToLower(strings.TrimSpace(part))
+			if name == "" {
+				continue
+			}
+			if name == "*" {
+				return nil, false
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			headers = append(headers, name)
+		}
+	}
+	sort.Strings(headers)
+	return headers, true
+}
+
+func varySignature(headers []string, r *http.Request) string {
+	values := make([]string, 0, len(headers))
+	for _, header := range headers {
+		values = append(values, r.Header.Get(header))
+	}
+	sum := md5.Sum([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+func sameStringSlice(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

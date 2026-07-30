@@ -856,7 +856,15 @@ The original checked state was not supported by the manifests. This audit compar
 
 - [x] `proxy-mirror` — all 36 pinned blocks across three sources map exactly once to standalone schema, exact primary/mirror traffic, HTTP version, live deletion, bounded concurrent sampling, path/DNS behavior, proxy-rewrite ordering, h2c gRPC, and grpc-web cases. A generic one-shot finalized-request hook applies rewritten URI and method before ordinary or AI terminals; h2c is explicitly configured, bounded counts observe their full window, concurrent captures reject, and DNS diagnostics await the bounded mirror timeout. Affected package/race/harness, full real-process, DNS/sensitive repeats, scoped lint, build, post-integration gates, and task review pass.
 - [ ] `traffic-split` — five header-selected routes replace weighted inline/resource upstreams, fallback/zero weights, chash, pass-host, HTTPS, health/retry, timeout, and reload behavior.
-- [ ] `workflow` — four happy-path actions omit no-case behavior, ordered fallthrough, isolated action state, invalid/no rules, limit-conn/global-rule interactions, and rewrite/log phase interaction.
+- [x] `workflow` — all 42 pinned blocks across four sources map exactly once to
+  real standalone cases covering unconditional/no-case rules, AND/OR matching,
+  ordered fallthrough, isolated limiter state, invalid and missing rules,
+  consumer-over-route actions, global-rule and CORS interaction, and real
+  concurrent `limit-conn` behavior. Nested `limit-count` actions now receive
+  strict schema validation, reject unsupported groups, and consumer workflow
+  limiters override their route counterpart without discarding sibling
+  overrides. Package/race, exact real-process normal/race, source/corpus/target,
+  scoped lint, build, and diff gates pass.
 - [x] `batch-requests` — all 46 pinned blocks across three sources map exactly
   once to real standalone pipeline validation, method/path/header/query/body
   merging, custom URI, body and metadata limits, partial timeout aggregation,
@@ -1414,8 +1422,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 47 manifests
-are integrated and verified and 14 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 48 manifests
+are integrated and verified and 13 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1444,7 +1452,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 4 remaining (19 at replan)
+### Medium — 3 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1566,7 +1574,12 @@ already-implemented branch.
   pinned-source, corpus, scoped lint, build, and diff gates pass.
 - [ ] `graphql-limit-count` — blocked on the Hard Redis owner.
 - [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
-- [ ] `workflow` — blocked on the limiter owners.
+- [x] `workflow` — all 42 pinned blocks are independent, source-complete,
+  alias-free standalone cases with unconditional and conditional rule
+  evaluation, ordered fallthrough, isolated limiter state, schema rejection,
+  consumer override, global-rule/CORS interaction, and concurrent
+  `limit-conn` assertions. Package/race, exact real-process normal/race,
+  source/corpus/target, scoped lint, build, and diff gates pass.
 
 ### Hard — 10 remaining (15 at replan)
 

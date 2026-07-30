@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_conn"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/limit_req"
+	"github.com/wklken/apisix-go/pkg/resource"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -160,6 +163,12 @@ func (p *Plugin) PostInit() error {
 				if err := plugin.Init(); err != nil {
 					return err
 				}
+				if _, ok := action.Config["group"]; ok {
+					return fmt.Errorf("workflow rule %d limit-count action group is not supported", ruleIndex)
+				}
+				if err := util.Validate(action.Config, plugin.GetSchema()); err != nil {
+					return fmt.Errorf("workflow rule %d limit-count action validation failed: %w", ruleIndex, err)
+				}
 				if err := util.Parse(action.Config, plugin.Config()); err != nil {
 					return err
 				}
@@ -205,14 +214,17 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, next http.
 	}
 	action := actions[0]
 	if action.Name == "limit-req" && action.limitReq != nil {
+		r = withConsumerActionOverride(r, action.Name)
 		action.limitReq.Handler(next).ServeHTTP(w, r)
 		return true
 	}
 	if action.Name == "limit-conn" && action.limitConn != nil {
+		r = withConsumerActionOverride(r, action.Name)
 		action.limitConn.Handler(next).ServeHTTP(w, r)
 		return true
 	}
 	if action.Name == "limit-count" && action.limitCount != nil {
+		r = withConsumerActionOverride(r, action.Name)
 		action.limitCount.Handler(next).ServeHTTP(w, r)
 		return true
 	}
@@ -225,6 +237,30 @@ func (p *Plugin) handleAction(w http.ResponseWriter, r *http.Request, next http.
 	w.WriteHeader(action.Return.Code)
 	_, _ = w.Write([]byte(`{"error_msg":"rejected by workflow"}`))
 	return true
+}
+
+func withConsumerActionOverride(r *http.Request, actionName string) *http.Request {
+	if !apisixctx.ConsumerPluginOverrides(r, name) {
+		return r
+	}
+	consumer, ok := apisixctx.GetApisixVar(r, "$consumer").(resource.Consumer)
+	if !ok {
+		return r
+	}
+
+	overrides := make(map[string]struct{}, len(consumer.Plugins)+1)
+	if consumer.GroupID != "" {
+		if group, err := store.GetConsumerGroup(consumer.GroupID); err == nil {
+			for pluginName := range group.Plugins {
+				overrides[pluginName] = struct{}{}
+			}
+		}
+	}
+	for pluginName := range consumer.Plugins {
+		overrides[pluginName] = struct{}{}
+	}
+	overrides[actionName] = struct{}{}
+	return apisixctx.WithConsumerPluginOverrides(r, overrides)
 }
 
 func matchRule(r *http.Request, rule Rule) bool {

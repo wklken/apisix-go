@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -205,6 +207,48 @@ func TestPostInitRejectsInvalidReturnCode(t *testing.T) {
 	}
 }
 
+func TestPostInitRejectsInvalidLimitCountAction(t *testing.T) {
+	p := &Plugin{config: Config{
+		Rules: []Rule{
+			{Actions: []Action{{
+				Name:   "limit-count",
+				Config: map[string]any{"count": 2},
+			}}},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "time_window") {
+		t.Fatalf("PostInit() error = %v, want missing time_window validation error", err)
+	}
+}
+
+func TestPostInitRejectsLimitCountGroup(t *testing.T) {
+	p := &Plugin{config: Config{
+		Rules: []Rule{
+			{Actions: []Action{{
+				Name: "limit-count",
+				Config: map[string]any{
+					"count":       2,
+					"time_window": 60,
+					"group":       "services_1",
+				},
+			}}},
+		},
+	}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	err := p.PostInit()
+	if err == nil || !strings.Contains(err.Error(), "group is not supported") {
+		t.Fatalf("PostInit() error = %v, want unsupported group validation error", err)
+	}
+}
+
 func TestHandlerRunsLimitCountAction(t *testing.T) {
 	var cfg Config
 	err := util.Parse(map[string]any{
@@ -247,6 +291,67 @@ func TestHandlerRunsLimitCountAction(t *testing.T) {
 	handler.ServeHTTP(secondRecorder, second)
 	if secondRecorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("second status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestConsumerWorkflowLimitCountOverridesRouteLimitCount(t *testing.T) {
+	var cfg Config
+	err := util.Parse(map[string]any{
+		"rules": []any{
+			map[string]any{
+				"actions": []any{
+					[]any{
+						"limit-count",
+						map[string]any{
+							"count":         5,
+							"time_window":   60,
+							"key":           "remote_addr",
+							"rejected_code": http.StatusTooManyRequests,
+						},
+					},
+				},
+			},
+		},
+	}, &cfg)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	p := newTestPlugin(t, cfg)
+
+	nextCalled := false
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		if !apisixctx.ConsumerPluginOverrides(r, "limit-count") {
+			t.Fatal("consumer workflow action did not override route limit-count")
+		}
+		if !apisixctx.ConsumerPluginOverrides(r, "consumer-restriction") {
+			t.Fatal("consumer workflow action discarded another consumer plugin override")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.0.2.20:1234"
+	req = apisixctx.WithApisixVars(req, nil)
+	apisixctx.AttachConsumer(req, resource.Consumer{
+		Username: "jack",
+		Plugins: map[string]resource.PluginConfig{
+			"consumer-restriction": map[string]any{},
+			"workflow":             map[string]any{},
+		},
+	})
+	req = apisixctx.WithConsumerPluginOverrides(req, map[string]struct{}{
+		"consumer-restriction": {},
+		"workflow":             {},
+	})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
 	}
 }
 

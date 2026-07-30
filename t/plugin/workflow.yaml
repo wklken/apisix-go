@@ -15,87 +15,1074 @@ sources:
     commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
     file: t/plugin/workflow3.t
     tests: 7
+
 cases:
-  - name: workflow-unconditional-return
-    source: {file: t/plugin/workflow-without-case.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+  - name: unconditional-rule-route-created
+    source: {file: t/plugin/workflow-without-case.t, tests: [1]}
     config:
       routes:
-        - id: workflow-unconditional
-          uri: /workflow
+        - id: without-case-created
+          uri: /hello
+          plugins:
+            workflow: {rules: [{actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: unconditional-rule-is-active
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: unconditional-rule-rejects-request
+    source: {file: t/plugin/workflow-without-case.t, tests: [2]}
+    config:
+      routes:
+        - id: without-case-request
+          uri: /hello
+          plugins:
+            workflow: {rules: [{actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: request-is-rejected-before-upstream
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: route-limit-count-chain-created
+    source: {file: t/plugin/workflow-without-case.t, tests: [3]}
+    config:
+      routes:
+        - id: without-case-route-chain
+          uri: /hello
+          plugins:
+            key-auth: {}
+            limit-count: {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}
+            workflow: {rules: [{case: [[arg_block, '==', yes]], actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+      consumers:
+        - username: rose
+          plugins: {key-auth: {key: rose}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello}, headers: {X-Consumer-Username: {equals: rose}}}]
+        respond: [{status: 200, body: route-ready}]
+    steps:
+      - name: route-chain-authenticates-and-allows
+        input: {path: /hello, headers: {apikey: rose}}
+        output: {status: 200, body: {equals: route-ready}}
+
+  - name: rose-consumer-created
+    source: {file: t/plugin/workflow-without-case.t, tests: [4]}
+    config:
+      consumers:
+        - username: rose
+          plugins: {key-auth: {key: rose}}
+      routes:
+        - id: without-case-rose
+          uri: /hello
+          plugins:
+            key-auth: {}
+            workflow: {rules: [{case: [[arg_block, '==', yes]], actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello}, headers: {X-Consumer-Username: {equals: rose}}}]
+        respond: [{status: 200, body: rose-ready}]
+    steps:
+      - name: rose-key-resolves-created-consumer
+        input: {path: /hello, headers: {apikey: rose}}
+        output: {status: 200, body: {equals: rose-ready}}
+
+  - name: jack-consumer-workflow-created
+    source: {file: t/plugin/workflow-without-case.t, tests: [5]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            key-auth: {key: jack}
+            workflow:
+              rules:
+                - case: [[route_id, '==', without-case-jack]]
+                  actions: [[limit-count, {count: 5, time_window: 60, rejected_code: 429, key: remote_addr}]]
+      routes:
+        - id: without-case-jack
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello}, headers: {X-Consumer-Username: {equals: jack}}}]
+        respond: [{status: 200, body: jack-ready}]
+    steps:
+      - name: jack-consumer-workflow-allows-first-request
+        input: {path: /hello, headers: {apikey: jack}}
+        output: {status: 200, body: {equals: jack-ready}}
+
+  - name: rose-uses-route-limit
+    source: {file: t/plugin/workflow-without-case.t, tests: [6]}
+    config:
+      consumers:
+        - username: rose
+          plugins: {key-auth: {key: rose}}
+        - username: jack
+          plugins:
+            key-auth: {key: jack}
+            workflow:
+              rules:
+                - case: [[route_id, '==', without-case-rose-limit]]
+                  actions: [[limit-count, {count: 5, time_window: 60, rejected_code: 429, key: remote_addr}]]
+      routes:
+        - id: without-case-rose-limit
+          uri: /hello
+          plugins:
+            key-auth: {}
+            limit-count: {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}
+            workflow: {rules: [{case: [[arg_never, '==', yes]], actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: rose}}}
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: rose}}}
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: rose}}}
+        respond: [{status: 200, body: rose-upstream}]
+    steps:
+      - {name: rose-first-request, input: {path: /hello, headers: {apikey: rose}}, output: {status: 200, body: {equals: rose-upstream}}}
+      - {name: rose-second-request, input: {path: /hello, headers: {apikey: rose}}, output: {status: 200, body: {equals: rose-upstream}}}
+      - {name: rose-third-request, input: {path: /hello, headers: {apikey: rose}}, output: {status: 200, body: {equals: rose-upstream}}}
+      - {name: rose-fourth-request-is-route-rejected, input: {path: /hello, headers: {apikey: rose}}, output: {status: 503}}
+
+  - name: jack-consumer-workflow-overrides-route-limit
+    source: {file: t/plugin/workflow-without-case.t, tests: [7]}
+    config:
+      consumers:
+        - username: rose
+          plugins: {key-auth: {key: rose}}
+        - username: jack
+          plugins:
+            key-auth: {key: jack}
+            workflow:
+              rules:
+                - case: [[route_id, '==', without-case-jack-limit]]
+                  actions: [[limit-count, {count: 5, time_window: 60, rejected_code: 429, key: remote_addr}]]
+      routes:
+        - id: without-case-jack-limit
+          uri: /hello
+          plugins:
+            key-auth: {}
+            limit-count: {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}
+            workflow: {rules: [{case: [[arg_never, '==', yes]], actions: [[return, {code: 403}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: jack}}}
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: jack}}}
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: jack}}}
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: jack}}}
+          - {path: {equals: /hello}, headers: {X-Consumer-Username: {equals: jack}}}
+        respond: [{status: 200, body: jack-upstream}]
+    steps:
+      - {name: jack-first-request, input: {path: /hello, headers: {apikey: jack}}, output: {status: 200, body: {equals: jack-upstream}}}
+      - {name: jack-second-request, input: {path: /hello, headers: {apikey: jack}}, output: {status: 200, body: {equals: jack-upstream}}}
+      - {name: jack-third-request, input: {path: /hello, headers: {apikey: jack}}, output: {status: 200, body: {equals: jack-upstream}}}
+      - {name: jack-fourth-request, input: {path: /hello, headers: {apikey: jack}}, output: {status: 200, body: {equals: jack-upstream}}}
+      - {name: jack-fifth-request, input: {path: /hello, headers: {apikey: jack}}, output: {status: 200, body: {equals: jack-upstream}}}
+      - {name: jack-sixth-request-is-consumer-rejected, input: {path: /hello, headers: {apikey: jack}}, output: {status: 429}}
+
+  - name: workflow-schema-diagnostics
+    source: {file: t/plugin/workflow.t, tests: [1]}
+    config:
+      routes:
+        - id: workflow-schema
+          uri: /schema
           plugins:
             workflow: {rules: [{actions: [[return, {code: 201}]]}]}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: upstream should not run}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
     steps:
-      - name: return-action
-        input: {method: GET, path: /workflow}
-        output:
-          status: 201
-          body: {equals: '{"error_msg":"rejected by workflow"}'}
-  - name: workflow-uri-condition
-    source: {file: t/plugin/workflow.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}
+      - name: valid-return-schema-is-active
+        input: {path: /schema}
+        output: {status: 201, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+      - name: missing-actions-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-schema
+              uri: /schema
+              plugins: {workflow: {rules: [{}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /schema}, output: {status: 201}}
+        input: {path: /schema}
+        output: {status: 201, logs: {matches: "missing properties: 'actions'"}}
+      - name: empty-action-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-schema
+              uri: /schema
+              plugins: {workflow: {rules: [{actions: [[]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /schema}, output: {status: 201}}
+        input: {path: /schema}
+        output: {status: 201, logs: {matches: 'workflow action must contain a name|minimum 1'}}
+      - name: return-status-key-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-schema
+              uri: /schema
+              plugins: {workflow: {rules: [{actions: [[return, {status: 403}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /schema}, output: {status: 201}}
+        input: {path: /schema}
+        output: {status: 201, logs: {matches: 'workflow return action code must be between 100 and 599'}}
+      - name: noninteger-return-code-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-schema
+              uri: /schema
+              plugins: {workflow: {rules: [{actions: [[return, {code: bad}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /schema}, output: {status: 201}}
+        input: {path: /schema}
+        output: {status: 201, logs: {matches: 'cannot unmarshal|string.*Go value of type int'}}
+      - name: empty-case-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-schema
+              uri: /schema
+              plugins: {workflow: {rules: [{case: [], actions: [[return, {code: 403}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /schema}, output: {status: 201}}
+        input: {path: /schema}
+        output: {status: 201, logs: {matches: 'minimum 1'}}
+      - name: unsupported-action-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-schema
+              uri: /schema
+              plugins: {workflow: {rules: [{actions: [[fake, {}]]}]}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /schema}, output: {status: 201}}
+        input: {path: /schema}
+        output: {status: 201, logs: {matches: 'unsupported workflow action \\"fake\\"'}}
+
+  - name: return-route-created
+    source: {file: t/plugin/workflow.t, tests: [2]}
     config:
       routes:
-        - id: workflow-condition
-          uri: /workflow
+        - id: workflow-return-created
+          uri: /hello
           plugins:
-            workflow: {rules: [{case: [[uri, ==, /workflow]], actions: [[return, {code: 403}]]}]}
+            workflow: {rules: [{actions: [[return, {code: 403}]]}]}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: conditional upstream}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
     steps:
-      - name: matching-case
-        input: {method: GET, path: /workflow}
-        output:
-          status: 403
-          body: {equals: '{"error_msg":"rejected by workflow"}'}
-  - name: workflow-multiple-actions
-    source: {file: t/plugin/workflow2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8]}
+      - name: created-return-route-rejects
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: return-route-request
+    source: {file: t/plugin/workflow.t, tests: [3]}
     config:
       routes:
-        - id: workflow-multiple
-          uri: /workflow
+        - id: workflow-return-request
+          uri: /hello
           plugins:
-            workflow: {rules: [{case: [[uri, ==, /workflow]], actions: [[return, {code: 401}]]}]}
+            workflow: {rules: [{actions: [[return, {code: 403}]]}]}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: multiple upstream}]
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
     steps:
-      - name: first-case-wins
-        input: {method: GET, path: /workflow}
-        output:
-          status: 401
-          body: {equals: '{"error_msg":"rejected by workflow"}'}
-  - name: workflow-limit-count-action
-    source: {file: t/plugin/workflow3.t, tests: [1, 2, 3, 4, 5, 6, 7]}
+      - name: return-body-and-status-match
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: and-condition-route-created
+    source: {file: t/plugin/workflow.t, tests: [4]}
     config:
       routes:
-        - id: workflow-limit-count
-          uri: /workflow
+        - id: workflow-and-created
+          uri: /hello
           plugins:
             workflow:
               rules:
-                - case: [[uri, ==, /workflow]]
-                  actions: [[limit-count, {count: 1, time_window: 60, rejected_code: 429, key: remote_addr}]]
+                - case: [[uri, '==', /hello], [arg_foo, '==', bar]]
+                  actions: [[return, {code: 403}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: both-created-conditions-match
+        input: {path: '/hello?foo=bar'}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: and-condition-falls-through
+    source: {file: t/plugin/workflow.t, tests: [5]}
+    config:
+      routes:
+        - id: workflow-and-fallthrough
+          uri: /hello
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, '==', /hello], [arg_foo, '==', bar]]
+                  actions: [[return, {code: 403}]]
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond: [{status: 200, body: counted upstream}]
+        expect: [{path: {equals: '/hello?foo=bad'}}]
+        respond: [{status: 200, body: hello-world}]
     steps:
-      - name: count-allowed
-        input: {method: GET, path: /workflow}
+      - name: mismatched-argument-reaches-upstream
+        input: {path: '/hello?foo=bad'}
+        output: {status: 200, body: {equals: hello-world}}
+
+  - name: and-condition-matches
+    source: {file: t/plugin/workflow.t, tests: [6]}
+    config:
+      routes:
+        - id: workflow-and-match
+          uri: /hello
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, '==', /hello], [arg_foo, '==', bar]]
+                  actions: [[return, {code: 403}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: matching-argument-is-rejected
+        input: {path: '/hello?foo=bar'}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: two-uri-rules-created
+    source: {file: t/plugin/workflow.t, tests: [7]}
+    config:
+      routes:
+        - id: workflow-two-uri-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello2]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: both-created-rules-have-distinct-actions
+        input: {path: /hello2}
+        output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: first-uri-rule-matches
+    source: {file: t/plugin/workflow.t, tests: [8]}
+    config:
+      routes:
+        - id: workflow-first-uri
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello2]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: first-uri-rule-returns-403
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: second-uri-rule-matches
+    source: {file: t/plugin/workflow.t, tests: [9]}
+    config:
+      routes:
+        - id: workflow-second-uri
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello2]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: second-uri-rule-returns-401
+        input: {path: /hello2}
+        output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: ordered-rules-created
+    source: {file: t/plugin/workflow.t, tests: [10]}
+    config:
+      routes:
+        - id: workflow-order-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[arg_foo, '==', bar]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: created-order-prefers-first-match
+        input: {path: '/hello?foo=bar'}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: first-matching-rule-wins
+    source: {file: t/plugin/workflow.t, tests: [11]}
+    config:
+      routes:
+        - id: workflow-order-first
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[arg_foo, '==', bar]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: first-rule-short-circuits-second
+        input: {path: '/hello?foo=bar'}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: second-rule-after-first-miss
+    source: {file: t/plugin/workflow.t, tests: [12]}
+    config:
+      routes:
+        - id: workflow-order-second
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[arg_foo, '==', bar]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: second-rule-runs-after-first-miss
+        input: {path: '/hello?foo=bad'}
+        output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: all-rules-miss
+    source: {file: t/plugin/workflow.t, tests: [13]}
+    config:
+      routes:
+        - id: workflow-order-miss
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[arg_foo, '==', bar]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 401}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: '/hello1?foo=bad'}}]
+        respond: [{status: 200, body: hello-world}]
+    steps:
+      - name: unmatched-request-reaches-upstream
+        input: {path: '/hello1?foo=bad'}
+        output: {status: 200, body: {equals: hello-world}}
+
+  - name: limit-count-action-schema
+    source: {file: t/plugin/workflow.t, tests: [14]}
+    config:
+      routes:
+        - id: workflow-limit-schema
+          uri: /limit-schema
+          plugins:
+            workflow:
+              rules:
+                - actions: [[limit-count, {count: 2, time_window: 60, rejected_code: 503, key: remote_addr}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /limit-schema}}
+          - {path: {equals: /limit-schema}}
+        respond: [{status: 200, body: valid-limit-count}]
+    steps:
+      - name: valid-limit-count-allows-first-request
+        input: {path: /limit-schema}
+        output: {status: 200, body: {equals: valid-limit-count}}
+      - name: valid-limit-count-allows-second-request
+        input: {path: /limit-schema}
+        output: {status: 200, body: {equals: valid-limit-count}}
+      - name: valid-limit-count-rejects-third-request
+        input: {path: /limit-schema}
+        output: {status: 503}
+      - name: missing-time-window-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-limit-schema
+              uri: /limit-schema
+              plugins:
+                workflow: {rules: [{actions: [[limit-count, {count: 2, rejected_code: 503, key: remote_addr}]]}]}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /limit-schema}, output: {status: 503}}
+        input: {path: /limit-schema}
+        output: {status: 503, logs: {matches: "limit-count action validation failed:.*time_window"}}
+      - name: missing-count-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-limit-schema
+              uri: /limit-schema
+              plugins:
+                workflow: {rules: [{actions: [[limit-count, {time_window: 60, rejected_code: 503, key: remote_addr}]]}]}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /limit-schema}, output: {status: 503}}
+        input: {path: /limit-schema}
+        output: {status: 503, logs: {matches: "limit-count action validation failed:.*count"}}
+      - name: unsupported-group-is-rejected
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow-limit-schema
+              uri: /limit-schema
+              plugins:
+                workflow: {rules: [{actions: [[limit-count, {count: 2, time_window: 60, rejected_code: 503, key: remote_addr, group: foo}]]}]}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /limit-schema}, output: {status: 503}}
+        input: {path: /limit-schema}
+        output: {status: 503, logs: {matches: 'limit-count action group is not supported'}}
+
+  - name: single-limit-count-route-created
+    source: {file: t/plugin/workflow.t, tests: [15]}
+    config:
+      routes:
+        - id: workflow-limit-created
+          uri: /hello
+          plugins:
+            workflow:
+              rules:
+                - actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello}}]
+        respond: [{status: 200, body: limit-ready}]
+    steps:
+      - name: created-limit-allows-request
+        input: {path: /hello}
+        output: {status: 200, body: {equals: limit-ready}}
+
+  - name: single-limit-count-threshold
+    source: {file: t/plugin/workflow.t, tests: [16]}
+    config:
+      routes:
+        - id: workflow-limit-threshold
+          uri: /hello
+          plugins:
+            workflow:
+              rules:
+                - actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello}}
+        respond: [{status: 200, body: limited}]
+    steps:
+      - {name: first-counted-request, input: {path: /hello}, output: {status: 200, body: {equals: limited}}}
+      - {name: second-counted-request, input: {path: /hello}, output: {status: 200, body: {equals: limited}}}
+      - {name: third-counted-request, input: {path: /hello}, output: {status: 200, body: {equals: limited}}}
+      - {name: fourth-request-is-rejected, input: {path: /hello}, output: {status: 503}}
+
+  - name: two-independent-limit-count-rules-created
+    source: {file: t/plugin/workflow.t, tests: [17]}
+    config:
+      routes:
+        - id: workflow-two-limits-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello1}}
+        respond: [{status: 200, body: independent}]
+    steps:
+      - {name: first-rule-allows, input: {path: /hello}, output: {status: 200, body: {equals: independent}}}
+      - {name: second-rule-allows, input: {path: /hello1}, output: {status: 200, body: {equals: independent}}}
+
+  - name: two-independent-limit-count-thresholds
+    source: {file: t/plugin/workflow.t, tests: [18]}
+    config:
+      routes:
+        - id: workflow-two-limit-thresholds
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+        respond: [{status: 200, body: independent}]
+    steps:
+      - {name: hello-first, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-first, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-second, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-second, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-third, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-third, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-fourth-rejected, input: {path: /hello}, output: {status: 503}}
+      - {name: hello1-fourth-rejected, input: {path: /hello1}, output: {status: 503}}
+
+  - name: or-condition-route-created
+    source: {file: t/plugin/workflow.t, tests: [19]}
+    config:
+      routes:
+        - id: workflow-or-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - case: [[arg_foo, '==', bar], or, [uri, '==', /hello]]
+                  actions: [[return, {code: 403}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: uri-side-of-or-matches
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: or-condition-request
+    source: {file: t/plugin/workflow.t, tests: [20]}
+    config:
+      routes:
+        - id: workflow-or-request
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - case: [[arg_foo, '==', bar], or, [uri, '==', /hello]]
+                  actions: [[return, {code: 403}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: uri-match-returns-exact-response
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+
+  - name: mixed-return-and-count-rules-created
+    source: {file: t/plugin/workflow2.t, tests: [1]}
+    config:
+      routes:
+        - id: workflow2-mixed-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 1, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello1}}]
+        respond: [{status: 200, body: mixed-ready}]
+    steps:
+      - {name: return-rule-is-created, input: {path: /hello}, output: {status: 403}}
+      - {name: count-rule-is-created, input: {path: /hello1}, output: {status: 200, body: {equals: mixed-ready}}}
+
+  - name: mixed-return-and-count-behavior
+    source: {file: t/plugin/workflow2.t, tests: [2]}
+    config:
+      routes:
+        - id: workflow2-mixed-behavior
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[return, {code: 403}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 1, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello1}}]
+        respond: [{status: 200, body: mixed}]
+    steps:
+      - {name: return-rule-rejects, input: {path: /hello}, output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}}
+      - {name: count-rule-first-allows, input: {path: /hello1}, output: {status: 200, body: {equals: mixed}}}
+      - {name: count-rule-second-rejects, input: {path: /hello1}, output: {status: 503}}
+
+  - name: two-count-rules-created
+    source: {file: t/plugin/workflow2.t, tests: [3]}
+    config:
+      routes:
+        - id: workflow2-two-count-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello1}}
+        respond: [{status: 200, body: created}]
+    steps:
+      - {name: first-created-rule-allows, input: {path: /hello}, output: {status: 200}}
+      - {name: second-created-rule-allows, input: {path: /hello1}, output: {status: 200}}
+
+  - name: two-count-rules-first-two-each
+    source: {file: t/plugin/workflow2.t, tests: [4]}
+    config:
+      routes:
+        - id: workflow2-two-count-first
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello1}}
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello1}}
+        respond: [{status: 200, body: allowed}]
+    steps:
+      - {name: hello-first-allowed, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-first-allowed, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-second-allowed, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-second-allowed, input: {path: /hello1}, output: {status: 200}}
+
+  - name: two-count-rules-reach-independent-thresholds
+    source: {file: t/plugin/workflow2.t, tests: [5]}
+    config:
+      routes:
+        - id: workflow2-two-count-next
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 3, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+          - {path: {matches: '^/hello1?$'}}
+        respond: [{status: 200, body: allowed}]
+    steps:
+      - {name: hello-first, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-first, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-second, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-second, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-third, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-third, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-fourth-is-rejected, input: {path: /hello}, output: {status: 503}}
+      - {name: hello1-fourth-is-rejected, input: {path: /hello1}, output: {status: 503}}
+
+  - name: unequal-count-rules-created
+    source: {file: t/plugin/workflow2.t, tests: [6]}
+    config:
+      routes:
+        - id: workflow2-unequal-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 1, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 2, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello1}}
+        respond: [{status: 200, body: unequal}]
+    steps:
+      - {name: count-one-rule-allows-first, input: {path: /hello}, output: {status: 200}}
+      - {name: count-two-rule-allows-first, input: {path: /hello1}, output: {status: 200}}
+
+  - name: unequal-count-rule-thresholds
+    source: {file: t/plugin/workflow2.t, tests: [7]}
+    config:
+      routes:
+        - id: workflow2-unequal-thresholds
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /hello]], actions: [[limit-count, {count: 1, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /hello1]], actions: [[limit-count, {count: 2, time_window: 60, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /hello}}
+          - {path: {equals: /hello1}}
+          - {path: {equals: /hello1}}
+        respond: [{status: 200, body: unequal}]
+    steps:
+      - {name: hello-first-allowed, input: {path: /hello}, output: {status: 200}}
+      - {name: hello1-first-allowed, input: {path: /hello1}, output: {status: 200}}
+      - {name: hello-second-rejected, input: {path: /hello}, output: {status: 503}}
+      - {name: hello1-second-allowed, input: {path: /hello1}, output: {status: 200}}
+
+  - name: missing-rules-is-rejected
+    source: {file: t/plugin/workflow2.t, tests: [8]}
+    config:
+      routes:
+        - id: workflow2-last-good
+          uri: /hello
+          plugins:
+            workflow: {rules: [{actions: [[return, {code: 201}]]}]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: invalid-missing-rules-update
+        wait: 100ms
+        config:
+          routes:
+            - id: workflow2-last-good
+              uri: /hello
+              plugins: {workflow: {}}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /hello}, output: {status: 201}}
+        input: {path: /hello}
+        output: {status: 201, logs: {matches: "missing properties: 'rules'"}}
+
+  - name: single-limit-conn-rule-created
+    source: {file: t/plugin/workflow3.t, tests: [1]}
+    config:
+      routes:
+        - id: workflow3-limit-conn-created
+          uri: /limit_conn
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, '==', /limit_conn]]
+                  actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /limit_conn}}]
+        respond: [{status: 200, body: conn-ready}]
+    steps:
+      - name: created-conn-rule-allows-request
+        input: {path: /limit_conn}
+        output: {status: 200, body: {equals: conn-ready}}
+
+  - name: single-limit-conn-concurrency
+    source: {file: t/plugin/workflow3.t, tests: [2]}
+    config:
+      routes:
+        - id: workflow3-limit-conn-concurrency
+          uri: /limit_conn
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, '==', /limit_conn]]
+                  actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /limit_conn}}]
+        count: {at_least: 3, at_most: 3, timeout: 2s}
+        respond: [{status: 503, body: admitted, delay: 500ms}]
+    steps:
+      - name: only-conn-plus-burst-reach-upstream
+        repeat: 10
+        concurrency: 10
+        input: {path: /limit_conn}
+        output: {status: 503}
+
+  - name: two-limit-conn-rules-created
+    source: {file: t/plugin/workflow3.t, tests: [3]}
+    config:
+      routes:
+        - id: workflow3-two-conn-created
+          uri: /*
+          plugins:
+            workflow:
+              rules:
+                - {case: [[uri, '==', /limit_conn]], actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[uri, '==', /limit_conn2]], actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - {path: {equals: /limit_conn}}
+          - {path: {equals: /limit_conn2}}
+        respond: [{status: 200, body: two-conn-ready}]
+    steps:
+      - {name: first-conn-rule-allows, input: {path: /limit_conn}, output: {status: 200}}
+      - {name: second-conn-rule-allows, input: {path: /limit_conn2}, output: {status: 200}}
+
+  - name: two-limit-conn-rules-are-independent
+    source: {file: t/plugin/workflow3.t, tests: [4]}
+    config:
+      routes:
+        - id: workflow3-two-conn-concurrency
+          uri: /limit_conn
+          plugins:
+            workflow:
+              rules:
+                - {case: [[arg_bucket, in, ['1', '2', '3', '4', '5']]], actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]}
+                - {case: [[arg_bucket, in, ['6', '7', '8', '9', '10']]], actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {matches: '^/limit_conn\?bucket=(?:[1-9]|10)$'}}]
+        count: {at_least: 6, at_most: 6, timeout: 2s}
+        respond: [{status: 503, body: admitted, delay: 500ms}]
+    steps:
+      - name: both-rules-admit-their-own-conn-plus-burst-concurrently
+        repeat: 10
+        concurrency: 10
+        input: {path: '/limit_conn?bucket={{ITERATION}}'}
+        output: {status: 503}
+
+  - name: global-workflow-limit-conn-created
+    source: {file: t/plugin/workflow3.t, tests: [5]}
+    config:
+      global_rules:
+        - id: workflow3-global
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, '==', /hello]]
+                  actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]
+      routes:
+        - id: workflow3-global-route
+          uri: /hello
+          plugins: {cors: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{path: {equals: /hello}}]
+        respond: [{status: 200, body: global-ready}]
+    steps:
+      - name: global-workflow-wraps-route
+        input: {path: /hello}
+        output: {status: 200, body: {equals: global-ready}}
+
+  - name: cors-preflight-with-global-workflow
+    source: {file: t/plugin/workflow3.t, tests: [6]}
+    config:
+      global_rules:
+        - id: workflow3-global-cors
+          plugins:
+            workflow:
+              rules:
+                - case: [[uri, '==', /hello]]
+                  actions: [[limit-conn, {conn: 2, burst: 1, default_conn_delay: 0.1, rejected_code: 503, key: remote_addr}]]
+      routes:
+        - id: workflow3-cors-route
+          uri: /hello
+          plugins: {cors: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: preflight-completes-without-upstream
+        input:
+          method: OPTIONS
+          path: /hello
+          headers: {Origin: 'https://example.test', Access-Control-Request-Method: GET}
         output:
           status: 200
-          body: {equals: counted upstream}
-      - name: count-rejected
-        input: {method: GET, path: /workflow}
-        output:
-          status: 429
+          headers: {Access-Control-Allow-Origin: {equals: '*'}}
+
+  - name: global-workflow-cleanup
+    source: {file: t/plugin/workflow3.t, tests: [7]}
+    config:
+      global_rules:
+        - id: workflow3-global-cleanup
+          plugins:
+            workflow: {rules: [{case: [[uri, '==', /hello]], actions: [[return, {code: 403}]]}]}
+      routes:
+        - id: workflow3-cleanup-route
+          uri: /hello
+          plugins: {cors: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+    steps:
+      - name: global-rule-is-active-before-cleanup
+        input: {path: /hello}
+        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+      - name: remove-global-rule-and-route
+        config:
+          routes:
+            - id: workflow3-after-cleanup
+              uri: /after-cleanup
+              plugins:
+                workflow: {rules: [{actions: [[return, {code: 201}]]}]}
+              upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        config_probe: {input: {path: /after-cleanup}, output: {status: 201}}
+        input: {path: /hello}
+        output: {status: 404}

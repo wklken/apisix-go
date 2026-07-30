@@ -539,10 +539,17 @@ func removeCookie(r *http.Request, name string) {
 	kept := parts[:0]
 	for _, part := range parts {
 		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
 		if strings.HasPrefix(trimmed, name+"=") {
 			continue
 		}
 		kept = append(kept, trimmed)
+	}
+	if len(kept) == 0 {
+		r.Header.Del("Cookie")
+		return
 	}
 	r.Header.Set("Cookie", strings.Join(kept, "; "))
 }

@@ -799,7 +799,15 @@ The original checked state was not supported by the manifests. This audit compar
   printable-ASCII contract, and package/Store, race, real-process, corpus,
   scoped lint, build, post-integration, and independent review gates pass.
 - [x] `basic-auth` — all 44 pinned blocks across three sources map exactly once to standalone consumer/route schema, parsing/credential, last-good reload, hide/preserve, Vault/env, scheme, anonymous limiter, missing-consumer, and realm behavior. Raw validated consumer snapshots persist without secret I/O; only the selected auth plugin resolves a deep copy lazily per request, unresolved references fail closed across Basic/Key/JWT/HMAC, and late Vault provisioning retries without reload. Package/race/cross-auth/store stress, full real-process, sensitive repeats, confidentiality assertions, scoped lint, build, post-integration gates, and task review pass.
-- [ ] `jwt-auth` — a small token matrix replaces the pinned signing endpoint, HS/RS/ES/EdDSA algorithms, `nbf`/grace claims, base64 and Vault keys, schema failures, and context behavior.
+- [x] `jwt-auth` — all 130 pinned blocks across seven sources map exactly once
+  to independent standalone cases covering anonymous consumers, the complete
+  HS/RS/PS/ES/EdDSA algorithm matrix, `nbf` and lifetime-grace claims, custom
+  token locations, credential hiding, base64 secrets, real Vault/environment
+  resolution, encrypted storage, realm behavior, schema failures, and
+  `store_in_ctx` propagation. Removing the last credential cookie now deletes
+  the header instead of forwarding an empty value. Package/race, exact
+  real-process normal/race, structural and semantic corpus, scoped lint, and
+  diff gates pass.
 - [x] `hmac-auth` — all 70 pinned blocks across six sources map exactly once to 32 isolated standalone groups and 61 real requests. The cases cover strict consumer/route schemas and last-good behavior, parsing and lookup, Date/GMT/skew/replay, SHA-1/SHA-256/SHA-512 plus allowlists, signed-header defaults/cardinality, body digest/413/restoration, hidden credentials, normal and anonymous limiter chains, realms, real Vault lazy retry, and environment resolution. Package/store and race tests, full real-process coverage, sensitive repeats, independent OpenSSL vectors, confidentiality checks, scoped lint, build, post-integration gates, and task review pass.
 - [x] `jwe-decrypt` — all 23 pinned blocks map exactly once to real standalone cases. The corpus validates schema and secret lengths, supported key-management/content-encryption algorithms, protected headers, header/cookie/query extraction, forwarded headers, malformed and decryption failures, consumer key selection, and live Jack-to-Chen consumer replacement. The standalone lifecycle now publishes only completed snapshots, synchronizes store events with a same-channel FIFO barrier, fails closed on malformed routes/global rules, and retains the last-good security handler. Package, race, scheduler stress, strict corpus, repeated real-process, scoped lint, build, post-integration, and task-review gates pass.
 
@@ -966,7 +974,14 @@ The original checked state was not supported by the manifests. This audit compar
 #### Task 11 — Tracing
 
 - [ ] `opentelemetry` — one export per source omits semantic protobuf decoding, sampling, trace/span IDs, propagation, resource/route attributes, body limits, batching, HTTP/gRPC errors, and shutdown flush.
-- [ ] `skywalking` — generic export cases omit trace propagation, segment/span/log semantics, sampling, metadata, body capture, collector failures, and shutdown delivery.
+- [x] `skywalking` — all 17 pinned blocks across the two sources map exactly
+  once to independent standalone cases covering propagated and generated
+  trace context, segment/span/log semantics, route and metadata attributes,
+  sampling, request/response body capture, collector failures, and shutdown
+  delivery. A request-scoped marker prevents duplicate nested segments when
+  route and global configurations both enable tracing. Package/race, exact
+  real-process normal/race, source/corpus/target, scoped lint, and diff gates
+  pass.
 
 #### Task 12 — Bounded AI Plugins
 
@@ -1399,8 +1414,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 45 manifests
-are integrated and verified and 16 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 47 manifests
+are integrated and verified and 14 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1429,7 +1444,7 @@ already-implemented branch.
   already cover the required POJO/array, application/void, timeout, and
   connection-failure paths.
 
-### Medium — 6 remaining (19 at replan)
+### Medium — 4 remaining (19 at replan)
 
 - [x] `key-auth` — all 58 pinned blocks are source-complete. The approved range
   adds strict consumer snapshots, exact realm and auth diagnostics, real
@@ -1553,7 +1568,7 @@ already-implemented branch.
 - [ ] `graphql-proxy-cache` — blocked on the Hard `proxy-cache` owner.
 - [ ] `workflow` — blocked on the limiter owners.
 
-### Hard — 13 remaining (15 at replan)
+### Hard — 10 remaining (15 at replan)
 
 - [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
@@ -1571,8 +1586,18 @@ already-implemented branch.
   access logging. Rotation now reopens cached file writers and preserves
   explicit `max_kept: 0`. Package/race, exact real-process normal/race,
   source/corpus/target, scoped lint, build, and diff gates pass.
-- [ ] `skywalking`
-- [ ] `jwt-auth`
+- [x] `skywalking` — all 17 pinned blocks are independent, source-complete,
+  alias-free standalone cases with exact trace propagation, generated
+  context, sampling, span/log metadata, body capture, collector failures, and
+  shutdown delivery. Route-plus-global activation emits one segment per
+  request. Package/race, exact real-process normal/race, source/corpus/target,
+  scoped lint, and diff gates pass.
+- [x] `jwt-auth` — all 130 pinned blocks across seven sources are independent,
+  source-complete, alias-free standalone cases covering algorithms, claims,
+  token locations, hiding, base64 and encrypted credentials, real
+  Vault/environment resolution, realms, anonymous consumers, schema failures,
+  and context propagation. Package/race, exact real-process normal/race,
+  structural and semantic corpus, scoped lint, and diff gates pass.
 - [ ] `openid-connect`
 - [ ] `limit-conn`
 - [ ] `limit-count`

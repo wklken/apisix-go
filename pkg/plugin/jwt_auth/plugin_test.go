@@ -413,6 +413,17 @@ func TestHandlerHideCredentialsRemovesAuthorizationHeader(t *testing.T) {
 	}
 }
 
+func TestRemoveCookieDeletesHeaderWhenLastCredentialIsRemoved(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	request.Header.Set("Cookie", "jwt=credential")
+
+	removeCookie(request, "jwt")
+
+	if _, present := request.Header["Cookie"]; present {
+		t.Fatalf("Cookie header = %#v, want absent", request.Header["Cookie"])
+	}
+}
+
 func performRequest(handler http.Handler, token string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 	req = ctx.WithApisixVars(req, map[string]string{})

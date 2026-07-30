@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -254,5 +255,33 @@ func TestReportIntervalBuffersSegmentsUntilFlush(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for buffered SkyWalking report")
+	}
+}
+
+func TestNestedSkyWalkingHandlersTraceRequestOnce(t *testing.T) {
+	var segments atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reported []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reported); err != nil {
+			t.Fatalf("decode skywalking segments: %v", err)
+		}
+		segments.Add(int64(len(reported)))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+
+	routePlugin := newTestPlugin(t, Config{EndpointAddr: server.URL, ReportInterval: 60})
+	globalPlugin := newTestPlugin(t, Config{EndpointAddr: server.URL, ReportInterval: 60})
+	handler := routePlugin.Handler(globalPlugin.Handler(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		},
+	)))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/once", nil))
+	routePlugin.Flush()
+	globalPlugin.Flush()
+
+	if got := segments.Load(); got != 1 {
+		t.Fatalf("reported segments = %d, want one trace when route and global rule both enable skywalking", got)
 	}
 }

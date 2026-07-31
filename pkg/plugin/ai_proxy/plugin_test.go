@@ -20,6 +20,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_runtime"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -225,6 +226,19 @@ func TestBuildProviderRequestPreservesPassthroughRouting(t *testing.T) {
 	}
 }
 
+func TestReadJSONBodyRejectsNullWithoutPanicking(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer token"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("null"))
+	req.Header.Set("Content-Type", "application/json")
+
+	if _, _, err := p.readJSONBody(req); err == nil {
+		t.Fatal("readJSONBody() error = nil, want unsupported null body")
+	}
+}
+
 func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	var upstreamBody map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +298,96 @@ func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	}
 	if got := metadata["gateway"]; got != "apisix-go" {
 		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
+func TestSchemaRejectsUnknownRequestBodyProtocolKey(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"provider": "openai",
+		"auth":     map[string]any{"header": map[string]any{"Authorization": "Bearer t"}},
+		"override": map[string]any{
+			"request_body": map[string]any{"not-a-protocol": map[string]any{"x": 1}},
+		},
+	}
+
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("unknown request_body protocol key was accepted")
+	}
+}
+
+func TestHandlerPreservesRawBodyWhenProviderRequestIsUnchanged(t *testing.T) {
+	const raw = `{ "messages" : [ { "role" : "user", "content" : "hi" } ], "temperature" : 0.7 }`
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rr.Code)
+	}
+	if upstreamBody != raw {
+		t.Fatalf("upstream body = %q, want exact raw body %q", upstreamBody, raw)
+	}
+}
+
+func TestHandlerDeepMergesRequestBodyIntoGeneratedStreamOptions(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai",
+		Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+		Override: Override{
+			Endpoint: upstream.URL + "/v1/chat/completions",
+			RequestBody: map[string]any{
+				"openai-chat": map[string]any{
+					"stream_options": map[string]any{"extra": float64(1)},
+				},
+			},
+		},
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/chat",
+		strings.NewReader(`{"messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+
+	streamOptions, ok := upstreamBody["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options = %#v, want object", upstreamBody["stream_options"])
+	}
+	if streamOptions["include_usage"] != true || streamOptions["extra"] != float64(1) {
+		t.Fatalf("stream_options = %#v, want generated include_usage and configured extra", streamOptions)
 	}
 }
 

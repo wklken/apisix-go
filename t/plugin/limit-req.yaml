@@ -192,34 +192,460 @@ cases:
       - name: second-route-sees-the-shared-consumer-counter
         input: {method: GET, path: /hello1, headers: {apikey: jack-key}}
         output: {status: 429}
-  - name: limit-req
-    source: {file: t/plugin/limit-req.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
+  - name: limit-req-valid-schema-installs-route-test-1
+    source: {file: t/plugin/limit-req.t, tests: [1]}
     config:
       routes:
-        - id: limit-req
-          uri: /limit-req
+        - id: limit-req-test-01
+          uri: /hello
           plugins:
-            limit-req: {rate: 1, burst: 1, nodelay: true, rejected_code: 429, rejected_msg: limit reached, key: remote_addr}
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond: [{status: 200, body: limit-req upstream}]
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: first-request
-        input: {method: GET, path: /limit-req, headers: {}}
+      - name: valid-schema-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-misfiled-limit-conn-missing-conn-rejects-route-test-2
+    source: {file: t/plugin/limit-req.t, tests: [2]}
+    config:
+      routes:
+        - id: limit-req-test-02
+          uri: /hello
+          plugins:
+            limit-conn: {burst: 0, rejected_code: 503, key: remote_addr}
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-req-test-02 fail:.*limit-conn'}
+
+  - name: limit-req-rate-four-burst-two-route-serves-test-3
+    source: {file: t/plugin/limit-req.t, tests: [3]}
+    config:
+      routes:
+        - id: limit-req-test-03
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 2, rejected_code: 503, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: configured-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-rate-four-burst-two-allows-four-requests-test-4
+    source: {file: t/plugin/limit-req.t, tests: [4]}
+    config:
+      routes:
+        - id: limit-req-test-04
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 2, rejected_code: 503, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 4, at_most: 4}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: four-pipelined-equivalent-requests-are-accepted
+        repeat: 4
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-low-rate-small-burst-route-serves-test-5
+    source: {file: t/plugin/limit-req.t, tests: [5]}
+    config:
+      routes:
+        - id: limit-req-test-05
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: updated-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-low-rate-small-burst-rejects-followups-test-6
+    source: {file: t/plugin/limit-req.t, tests: [6]}
+    config:
+      routes:
+        - id: limit-req-test-06
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-request-is-accepted
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: following-three-requests-exceed-burst
+        repeat: 3
+        input: {method: GET, path: /hello}
+        output: {status: 503}
+
+  - name: limit-req-negative-rate-rejects-route-test-7
+    source: {file: t/plugin/limit-req.t, tests: [7]}
+    config:
+      routes:
+        - id: limit-req-test-07
+          uri: /hello
+          plugins:
+            limit-req: {rate: -1, burst: 0.1, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-req-test-07 fail:.*limit-req.*rate.*must be > 0'}
+
+  - name: limit-req-disabled-meta-bypasses-limiter-test-8
+    source: {file: t/plugin/limit-req.t, tests: [8]}
+    config:
+      routes:
+        - id: limit-req-test-08
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: remote_addr
+              _meta: {disable: true}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: disabled-plugin-does-not-intercept
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-disabled-meta-allows-four-requests-test-9
+    source: {file: t/plugin/limit-req.t, tests: [9]}
+    config:
+      routes:
+        - id: limit-req-test-09
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: remote_addr
+              _meta: {disable: true}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 4, at_most: 4}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: all-four-requests-bypass-disabled-plugin
+        repeat: 4
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-server-addr-key-installs-route-test-10
+    source: {file: t/plugin/limit-req.t, tests: [10]}
+    config:
+      routes:
+        - id: limit-req-test-10
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 2, rejected_code: 503, key: server_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: server-address-key-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-default-rejected-code-is-503-test-11
+    source: {file: t/plugin/limit-req.t, tests: [11]}
+    config:
+      routes:
+        - id: limit-req-test-11
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, key: remote_addr}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-request-is-accepted
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: default-rejection-status-is-service-unavailable
+        input: {method: GET, path: /hello}
+        output: {status: 503}
+
+  - name: limit-req-consumer-name-plugin-installs-test-12
+    source: {file: t/plugin/limit-req.t, tests: [12]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name}
+      routes:
+        - id: limit-req-test-12
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {X-Consumer-Username: {equals: new_consumer}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: consumer-bound-plugin-proxies
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-key-auth-route-uses-consumer-plugin-test-13
+    source: {file: t/plugin/limit-req.t, tests: [13]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name}
+      routes:
+        - id: limit-req-test-13
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {X-Consumer-Username: {equals: new_consumer}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: route-authentication-activates-consumer-limit
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-consumer-rate-three-burst-two-allows-three-test-14
+    source: {file: t/plugin/limit-req.t, tests: [14]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name}
+      routes:
+        - id: limit-req-test-14
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 3, at_most: 3}
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {X-Consumer-Username: {equals: new_consumer}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: all-three-consumer-requests-are-accepted
+        repeat: 3
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-updated-consumer-low-rate-installs-test-15
+    source: {file: t/plugin/limit-req.t, tests: [15]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 403, key: consumer_name}
+      routes:
+        - id: limit-req-test-15
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {X-Consumer-Username: {equals: new_consumer}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: updated-consumer-plugin-proxies
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-updated-consumer-rejects-followups-test-16
+    source: {file: t/plugin/limit-req.t, tests: [16]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 403, key: consumer_name}
+      routes:
+        - id: limit-req-test-16
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {X-Consumer-Username: {equals: new_consumer}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-consumer-request-is-accepted
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: following-three-consumer-requests-are-rejected
+        repeat: 3
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 403}
+
+  - name: limit-req-empty-consumer-name-route-serves-test-17
+    source: {file: t/plugin/limit-req.t, tests: [17]}
+    config:
+      routes:
+        - id: limit-req-test-17
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: consumer-name-key-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-empty-consumer-name-falls-back-to-client-ip-test-18
+    source: {file: t/plugin/limit-req.t, tests: [18]}
+    config:
+      routes:
+        - id: limit-req-test-18
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: empty-consumer-name-uses-client-ip
+        input: {method: GET, path: /hello}
         output:
           status: 200
-          body: {equals: limit-req upstream}
-      - name: burst-request
-        input: {method: GET, path: /limit-req, headers: {}}
+          body: {equals: hello world}
+          logs: {matches: 'The value of the configured key is empty, use client IP instead'}
+
+  - name: limit-req-missing-consumer-rejects-authentication-test-19
+    source: {file: t/plugin/limit-req.t, tests: [19]}
+    config:
+      routes:
+        - id: limit-req-test-19
+          uri: /hello
+          plugins:
+            key-auth: {}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond: [{status: 200, body: unexpected}]
+    steps:
+      - name: deleted-consumer-key-is-invalid
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
         output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: rejected-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 429
+          status: 401
+          body: {equals: '{"message":"Invalid API key in request"}'}
+          logs: {matches: 'failed to find consumer: invalid api key'}
+
+  - name: limit-req-missing-route-returns-not-found-test-20
+    source: {file: t/plugin/limit-req.t, tests: [20]}
+    config:
+      services:
+        - id: limit-req-test-20-service
+          plugins:
+            limit-req: {rate: 2, burst: 1, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /hello}
+    output: {status: 404}
+
+  - name: limit-req-zero-rate-rejects-route-test-21
+    source: {file: t/plugin/limit-req.t, tests: [21]}
+    config:
+      routes:
+        - id: limit-req-test-21
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0, burst: 0, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-req-test-21 fail:.*limit-req.*rate.*must be > 0'}
   - name: limit-req2-delay-route-is-runnable-test-1
     source: {file: t/plugin/limit-req2.t, tests: [1]}
     config:

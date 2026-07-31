@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -151,7 +152,33 @@ const schema = `
         },
         "request_body": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "openai-chat": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "openai-responses": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "openai-embeddings": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "anthropic-messages": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "bedrock-converse": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "passthrough": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": false
         },
         "request_body_force_override": {
           "type": "boolean",
@@ -563,6 +590,7 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, e
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, ai_protocols.Protocol{}, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
+	originalBody := cloneJSONValue(bodyTab).(map[string]any)
 	protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 	if err != nil {
 		return nil, ai_protocols.Protocol{}, err
@@ -570,11 +598,14 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, e
 	maps.Copy(bodyTab, p.config.Options)
 	if protocol != ai_protocols.AnthropicMessages || !providerUsesOpenAIChat(p.config.Provider) {
 		p.applyLLMOptions(bodyTab, protocol)
-		p.applyRequestBodyOverride(bodyTab, protocol)
-		p.applyProviderBodyRules(bodyTab)
 		if ai_protocols.IsStreaming(protocol, bodyTab) && protocol == ai_protocols.OpenAIChat {
 			bodyTab["stream_options"] = map[string]any{"include_usage": true}
 		}
+		p.applyRequestBodyOverride(bodyTab, protocol)
+		p.applyProviderBodyRules(bodyTab)
+	}
+	if reflect.DeepEqual(originalBody, bodyTab) {
+		return body, protocol, nil
 	}
 
 	rewritten, err := json.Marshal(bodyTab)

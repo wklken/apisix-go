@@ -286,12 +286,33 @@ func TestGraphQLDepthRejectsUndefinedFragment(t *testing.T) {
 	}
 }
 
-func TestGraphQLDepthRejectsCyclicFragments(t *testing.T) {
+func TestGraphQLDepthBoundsCyclicFragments(t *testing.T) {
 	query := `query { viewer { ...First } }
 fragment First on Viewer { ...Second }
 fragment Second on Viewer { ...First }`
+	depth, err := queryDepth(query)
+	if err != nil {
+		t.Fatalf("queryDepth() error = %v", err)
+	}
+	if depth != 1 {
+		t.Fatalf("depth = %d, want 1", depth)
+	}
+}
+
+func TestGraphQLDepthRejectsUnknownOperationKeyword(t *testing.T) {
+	query := `test {
+  persons(first: 1, after: "xxx") {
+    name
+  }
+}`
 	if _, err := queryDepth(query); err == nil {
-		t.Fatal("queryDepth() error = nil, want cyclic fragment rejection")
+		t.Fatal("queryDepth() error = nil, want unknown operation keyword rejection")
+	}
+}
+
+func TestGraphQLDepthRejectsArgumentWithoutValue(t *testing.T) {
+	if _, err := queryDepth(`query{persons(filter){id}}`); err == nil {
+		t.Fatal("queryDepth() error = nil, want argument without value rejection")
 	}
 }
 
@@ -398,6 +419,13 @@ func TestHandlerRejectsInvalidGraphQLRequests(t *testing.T) {
 			wantStatus:  http.StatusBadRequest,
 		},
 		{
+			name:        "empty query",
+			method:      http.MethodPost,
+			contentType: "application/json",
+			body:        `{"query":""}`,
+			wantStatus:  http.StatusBadRequest,
+		},
+		{
 			name:        "invalid query",
 			method:      http.MethodPost,
 			contentType: "application/graphql",
@@ -422,6 +450,28 @@ func TestHandlerRejectsInvalidGraphQLRequests(t *testing.T) {
 				t.Fatalf("response code = %d, want %d", rr.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestHandlerReportsEmptyGraphQLQuery(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:      3,
+		TimeWindow: 60,
+		Key:        "remote_addr",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rr.Body.String(), "empty graphql query") {
+		t.Fatalf("response body = %q, want empty graphql query error", rr.Body.String())
 	}
 }
 

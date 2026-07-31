@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -206,7 +207,33 @@ const schema = `
               },
               "request_body": {
                 "type": "object",
-                "additionalProperties": true
+                "properties": {
+                  "openai-chat": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "openai-responses": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "openai-embeddings": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "anthropic-messages": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "bedrock-converse": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "passthrough": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "additionalProperties": false
               },
               "request_body_force_override": {
                 "type": "boolean",
@@ -825,12 +852,7 @@ func (p *Plugin) readJSONBody(r *http.Request) ([]byte, ai_protocols.Protocol, e
 	if err != nil {
 		return nil, ai_protocols.Protocol{}, err
 	}
-
-	rewritten, err := json.Marshal(bodyTab)
-	if err != nil {
-		return nil, ai_protocols.Protocol{}, fmt.Errorf("failed to encode provider request body: %w", err)
-	}
-	return rewritten, protocol, nil
+	return body, protocol, nil
 }
 
 func (p *Plugin) requestInstance(
@@ -1006,6 +1028,7 @@ func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, insta
 	if err := json.Unmarshal(body, &bodyTab); err != nil {
 		return nil, fmt.Errorf("could not parse JSON request body: %w", err)
 	}
+	originalBody := cloneJSONValue(bodyTab).(map[string]any)
 	maps.Copy(bodyTab, instance.Options)
 	p.applyLLMOptions(bodyTab, protocol, instance)
 	p.applyRequestBodyOverride(bodyTab, protocol, instance)
@@ -1014,11 +1037,15 @@ func (p *Plugin) providerBody(body []byte, protocol ai_protocols.Protocol, insta
 		bodyTab["stream_options"] = map[string]any{"include_usage": true}
 	}
 
+	vertexEmbeddings := instance.Provider == "vertex-ai" && protocol == ai_protocols.OpenAIEmbeddings
+	if reflect.DeepEqual(originalBody, bodyTab) && !vertexEmbeddings {
+		return body, nil
+	}
 	rewritten, err := json.Marshal(bodyTab)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode provider request body: %w", err)
 	}
-	if instance.Provider == "vertex-ai" && protocol == ai_protocols.OpenAIEmbeddings {
+	if vertexEmbeddings {
 		return ai_protocols.ConvertOpenAIEmbeddingsToVertex(rewritten)
 	}
 	return rewritten, nil

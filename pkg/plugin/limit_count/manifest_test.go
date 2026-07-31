@@ -16,9 +16,9 @@ import (
 
 func TestStandaloneManifestDuplicateBacklogOnlyDecreases(t *testing.T) {
 	const (
-		maxHistoricalDuplicateGroups = 28
-		maxHistoricalDuplicateCases  = 160
-		currentSourcePrefix          = "limit-count-redis4-"
+		maxHistoricalDuplicateGroups = 27
+		maxHistoricalDuplicateCases  = 150
+		currentSourcePrefix          = "limit-count-redis3-"
 	)
 
 	path := filepath.Join("..", "..", "..", "t", "plugin", "limit-count.yaml")
@@ -308,7 +308,7 @@ func assertLimitCountCaseResources(t *testing.T, index int, testCase limitCountM
 		hasHTTP := false
 		for fixtureIndex, fixture := range testCase.Fixtures {
 			switch fixture.Kind {
-			case "http":
+			case "http", "https":
 				hasHTTP = true
 				if fixture.ExpectRequests == nil && len(fixture.Count) == 0 {
 					t.Errorf(

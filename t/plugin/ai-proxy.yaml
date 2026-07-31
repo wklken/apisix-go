@@ -1384,77 +1384,559 @@ cases:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
-    - config:
+    - name: request-body-override-rejects-unknown-llm-option
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [1]}
+      config:
         routes:
-            - id: ai-proxy-source-12
-              plugins:
-                ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+          - id: request-body-override-invalid-llm-option
+            uri: /request-body-override-invalid-llm-option
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  llm_options: {temperature: 0.5}
+                ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"case":"unexpected-1"}'}]
+      steps:
+        - name: invalid-llm-option-keeps-route-unavailable
+          input: {method: POST, path: /request-body-override-invalid-llm-option, headers: {Content-Type: application/json}, body: '{"messages":[]}'}
+          output: {status: 404, body: {matches: '404 page not found'}, logs: {matches: 'additional properties|validate plugin ai-proxy config'}}
+
+    - name: request-body-override-rejects-unknown-protocol-key
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [2]}
+      config:
+        routes:
+          - id: request-body-override-invalid-protocol
+            uri: /request-body-override-invalid-protocol
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    not-a-protocol: {x: 1}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"case":"unexpected-2"}'}]
+      steps:
+        - name: unknown-protocol-keeps-route-unavailable
+          input: {method: POST, path: /request-body-override-invalid-protocol, headers: {Content-Type: application/json}, body: '{"messages":[]}'}
+          output: {status: 404, body: {matches: '404 page not found'}, logs: {matches: 'additional properties|validate plugin ai-proxy config'}}
+
+    - name: request-body-override-single-preserves-original-body
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [3]}
+      config:
+        routes:
+          - id: request-body-override-single-original
+            uri: /request-body-override-single-original
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer t}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
-              headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+              path: {equals: /v1/chat/completions}
+              body: {equals: '{ "messages" : [ { "role" : "user", "content" : "hi" } ], "temperature" : 0.7 }'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-12
-      source:
-        file: t/plugin/ai-proxy-request-body-override.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-3-original"}}]}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
-            method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
-          output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-            status: 200
+        - name: exact-original-body-reaches-provider
+          input: {method: POST, path: /request-body-override-single-original, headers: {Content-Type: application/json}, body: '{ "messages" : [ { "role" : "user", "content" : "hi" } ], "temperature" : 0.7 }'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-3-original"}}]}'}}
+
+    - name: request-body-override-multi-preserves-original-body
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [4]}
+      config:
+        routes:
+          - id: request-body-override-multi-original
+            uri: /request-body-override-multi-original
+            plugins:
+              ai-proxy-multi:
+                instances:
+                  - name: only
+                    provider: openai-compatible
+                    weight: 1
+                    auth: {header: {Authorization: Bearer t}}
+                    override: {endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {equals: '{ "messages" : [ { "role" : "user", "content" : "hello" } ], "top_p" : 0.9 }'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-4-original"}}]}'}
+      steps:
+        - name: exact-original-body-reaches-selected-instance
+          input: {method: POST, path: /request-body-override-multi-original, headers: {Content-Type: application/json}, body: '{ "messages" : [ { "role" : "user", "content" : "hello" } ], "top_p" : 0.9 }'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-4-original"}}]}'}}
+
+    - name: request-body-override-rewrite-does-not-reuse-raw-body
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [5]}
+      config:
+        routes:
+          - id: request-body-override-no-stale-raw
+            uri: /request-body-override-no-stale-raw
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body_force_override: true
+                  request_body:
+                    openai-chat: {temperature: 0.1}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"changed"}],"temperature":0.1}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-5-rewritten"}}]}'}
+      steps:
+        - name: rewritten-body-replaces-raw-input
+          input: {method: POST, path: /request-body-override-no-stale-raw, headers: {Content-Type: application/json}, body: '{ "messages" : [ { "role" : "user", "content" : "changed" } ], "temperature" : 0.7 }'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-5-rewritten"}}]}'}}
+
+    - name: request-body-override-openai-maps-max-completion-tokens
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [6]}
+      config:
+        routes:
+          - id: request-body-override-openai-llm-option
+            uri: /request-body-override-openai-llm-option
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  llm_options: {max_tokens: 555}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_completion_tokens":555}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-6-max-completion"}}]}'}
+      steps:
+        - name: openai-provider-receives-max-completion-tokens
+          input: {method: POST, path: /request-body-override-openai-llm-option, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-6-max-completion"}}]}'}}
+
+    - name: request-body-override-compatible-keeps-max-tokens
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [7]}
+      config:
+        routes:
+          - id: request-body-override-compatible-llm-option
+            uri: /request-body-override-compatible-llm-option
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  llm_options: {max_tokens: 444}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":444}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-7-max-tokens"}}]}'}
+      steps:
+        - name: compatible-provider-receives-max-tokens
+          input: {method: POST, path: /request-body-override-compatible-llm-option, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-7-max-tokens"}}]}'}}
+
+    - name: request-body-override-responses-maps-max-output-tokens
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [8]}
+      config:
+        routes:
+          - id: request-body-override-responses-llm-option
+            uri: /v1/responses
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/responses'
+                  llm_options: {max_tokens: 333}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/responses}
+              body: {json_equals: '{"model":"gpt-4o","input":"hello","max_output_tokens":333}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"response-8","object":"response","model":"echo","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}'}
+      steps:
+        - name: responses-provider-receives-max-output-tokens
+          input: {method: POST, path: /v1/responses, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","input":"hello"}'}
+          output: {status: 200, body: {json_equals: '{"id":"response-8","object":"response","model":"echo","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}'}}
+
+    - name: request-body-override-multi-maps-instance-llm-option
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [9]}
+      config:
+        routes:
+          - id: request-body-override-multi-llm-option
+            uri: /request-body-override-multi-llm-option
+            plugins:
+              ai-proxy-multi:
+                instances:
+                  - name: only
+                    provider: openai
+                    weight: 1
+                    auth: {header: {Authorization: Bearer t}}
+                    override:
+                      endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                      llm_options: {max_tokens: 222}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_completion_tokens":222}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-9-multi-llm-option"}}]}'}
+      steps:
+        - name: selected-instance-receives-mapped-llm-option
+          input: {method: POST, path: /request-body-override-multi-llm-option, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-9-multi-llm-option"}}]}'}}
+
+    - name: request-body-override-llm-option-overwrites-client-value
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [10]}
+      config:
+        routes:
+          - id: request-body-override-llm-option-force
+            uri: /request-body-override-llm-option-force
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  llm_options: {max_tokens: 555}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":555}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-10-llm-option-wins"}}]}'}
+      steps:
+        - name: configured-llm-option-overwrites-client-value
+          input: {method: POST, path: /request-body-override-llm-option-force, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":999}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-10-llm-option-wins"}}]}'}}
+
+    - name: request-body-override-writes-openai-chat-fields
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [11]}
+      config:
+        routes:
+          - id: request-body-override-openai-chat-fields
+            uri: /request-body-override-openai-chat-fields
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    openai-chat: {max_tokens: 555, temperature: 0.1}
+                  request_body_force_override: true
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":555,"temperature":0.1}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-11-body-fields"}}]}'}
+      steps:
+        - name: configured-openai-chat-fields-reach-provider
+          input: {method: POST, path: /request-body-override-openai-chat-fields, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-11-body-fields"}}]}'}}
+
+    - name: request-body-override-nonforce-deep-merges-stream-options
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [12]}
+      config:
+        routes:
+          - id: request-body-override-stream-options
+            uri: /request-body-override-stream-options
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    openai-chat:
+                      stream_options: {extra: 1}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true,"extra":1}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"choices\":[{\"delta\":{\"content\":\"case-12\"}}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: deep-merge-preserves-usage-and-extra-stream-options
+          input: {method: POST, path: /request-body-override-stream-options, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}],"stream":true}'}
+          output: {status: 200, body: {matches: 'case-12'}}
+
+    - name: request-body-override-force-replaces-array-values
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [13]}
+      config:
+        routes:
+          - id: request-body-override-array
+            uri: /request-body-override-array
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    openai-chat: {stop: [a, b]}
+                  request_body_force_override: true
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"stop":["a","b"]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-13-array-replaced"}}]}'}
+      steps:
+        - name: configured-stop-array-replaces-client-array
+          input: {method: POST, path: /request-body-override-array, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}],"stop":["x"]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-13-array-replaced"}}]}'}}
+
+    - name: request-body-override-ignores-nonmatching-protocol
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [14]}
+      config:
+        routes:
+          - id: request-body-override-nonmatching-protocol
+            uri: /request-body-override-nonmatching-protocol
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    anthropic-messages: {max_tokens: 999}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-14-ignored"}}]}'}
+      steps:
+        - name: anthropic-override-does-not-change-chat-request
+          input: {method: POST, path: /request-body-override-nonmatching-protocol, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-14-ignored"}}]}'}}
+
+    - name: request-body-override-default-keeps-client-value
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [15]}
+      config:
+        routes:
+          - id: request-body-override-client-priority
+            uri: /request-body-override-client-priority
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    openai-chat: {max_tokens: 555}
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":999}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-15-client-wins"}}]}'}
+      steps:
+        - name: client-max-tokens-wins-without-force
+          input: {method: POST, path: /request-body-override-client-priority, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":999}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-15-client-wins"}}]}'}}
+
+    - name: request-body-override-force-overwrites-client-value
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [16]}
+      config:
+        routes:
+          - id: request-body-override-force-priority
+            uri: /request-body-override-force-priority
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    openai-chat: {max_tokens: 555}
+                  request_body_force_override: true
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":555}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-16-override-wins"}}]}'}
+      steps:
+        - name: forced-max-tokens-overwrites-client-value
+          input: {method: POST, path: /request-body-override-force-priority, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":999}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-16-override-wins"}}]}'}}
+
+    - name: request-body-override-applies-after-protocol-conversion
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [17]}
+      config:
+        routes:
+          - id: request-body-override-converted-protocol
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  request_body:
+                    openai-chat: {max_tokens: 77}
+                    anthropic-messages: {max_tokens: 999}
+                  request_body_force_override: true
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {matches: '"max_tokens":77'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"chat-17","model":"echo","choices":[{"message":{"role":"assistant","content":"case-17-converted"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'}
+      steps:
+        - name: openai-target-override-wins-after-anthropic-conversion
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-3","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {matches: '"text":"case-17-converted"'}}
+
+    - name: request-body-override-multi-applies-instance-body
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [18]}
+      config:
+        routes:
+          - id: request-body-override-multi-body
+            uri: /request-body-override-multi-body
+            plugins:
+              ai-proxy-multi:
+                instances:
+                  - name: only
+                    provider: openai
+                    weight: 1
+                    auth: {header: {Authorization: Bearer t}}
+                    override:
+                      endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                      request_body:
+                        openai-chat: {max_tokens: 321}
+                      request_body_force_override: true
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_tokens":321}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-18-multi-body"}}]}'}
+      steps:
+        - name: selected-instance-body-override-reaches-provider
+          input: {method: POST, path: /request-body-override-multi-body, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-18-multi-body"}}]}'}}
+
+    - name: request-body-override-wins-after-llm-options
+      source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [19]}
+      config:
+        routes:
+          - id: request-body-override-order
+            uri: /request-body-override-order
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer t}}
+                override:
+                  endpoint: '{{FIXTURE.provider.URL}}/v1/chat/completions'
+                  llm_options: {max_tokens: 100}
+                  request_body:
+                    openai-chat: {max_completion_tokens: 200, temperature: 0.5}
+                  request_body_force_override: true
+                ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"hi"}],"max_completion_tokens":200,"temperature":0.5}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"case-19-request-body-wins"}}]}'}
+      steps:
+        - name: request-body-overwrites-mapped-llm-option
+          input: {method: POST, path: /request-body-override-order, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
+          output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-19-request-body-wins"}}]}'}}
     - config:
         routes:
             - id: ai-proxy-source-13

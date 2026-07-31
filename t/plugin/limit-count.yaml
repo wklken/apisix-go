@@ -5372,18 +5372,19 @@ cases:
     - name: limit-count-redis3-set-route-counter-will-be-shared-test-1
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 1
+        tests: [1]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-shared-counter-test-1
               plugins:
                 limit-count:
-                    count: 2
+                    count: 1
                     key: remote_addr
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_database: 1
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -5391,15 +5392,15 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-shared-counter
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 1
+            at_most: 1
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-shared-counter
           kind: http
           name: primary
           respond:
@@ -5410,20 +5411,13 @@ cases:
           redis:
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-shared-counter-test-1:127\.0\.0\.1$': "2"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: allowed-request-1
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
+            path: /redis3-shared-counter
+          name: first-request-consumes-the-shared-redis-counter
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -5431,8 +5425,8 @@ cases:
             status: 200
         - input:
             method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
+            path: /redis3-shared-counter
+          name: second-request-observes-the-consumed-shared-counter
           output:
             headers:
                 X-RateLimit-Remaining:
@@ -5441,11 +5435,10 @@ cases:
     - name: limit-count-redis3-test-x-ratelimit-reset-second-number-could-be-decline-test-2
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 2
+        tests: [2]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-declining-reset-test-2
               plugins:
                 limit-count:
                     count: 1
@@ -5453,14 +5446,16 @@ cases:
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_database: 1
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
-                    time_window: 60
+                    time_window: 6
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-declining-reset
       fixtures:
         - count:
             at_least: 1
@@ -5468,7 +5463,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-declining-reset
           kind: http
           name: primary
           respond:
@@ -5479,37 +5474,39 @@ cases:
           redis:
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-declining-reset-test-2:127\.0\.0\.1$': "2"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: first-response-has-integer-quota-headers
+            path: /redis3-declining-reset
+          name: first-response-starts-a-six-second-reset-window
           output:
             headers:
                 X-RateLimit-Remaining:
                     equals: "0"
                 X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    matches: ^[56]$
             status: 200
+          wait: 2s
         - input:
             method: GET
-            path: /limit-count
-          name: rejection-retains-nonzero-reset
+            path: /redis3-declining-reset
+          name: rejected-response-observes-a-smaller-reset-value
           output:
             headers:
                 X-RateLimit-Remaining:
                     equals: "0"
                 X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    matches: ^[234]$
             status: 503
     - name: limit-count-redis3-set-router-test-3
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 3
+        tests: [3]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-two-request-route-test-3
               plugins:
                 limit-count:
                     count: 2
@@ -5517,14 +5514,16 @@ cases:
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_database: 1
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
-                    time_window: 60
+                    time_window: 10
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-two-request-route
       fixtures:
         - count:
             at_least: 1
@@ -5532,7 +5531,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-two-request-route
           kind: http
           name: primary
           respond:
@@ -5543,49 +5542,54 @@ cases:
           redis:
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-two-request-route-test-3:127\.0\.0\.1$': "1"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
+            path: /redis3-two-request-route
+          name: configured-redis-route-starts-with-one-request-remaining
           output:
             body:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
                     equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
     - name: limit-count-redis3-test-header-x-ratelimit-remaining-exist-when-limit-rejected-test-4
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 4
+        tests: [4]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-rejected-remaining-test-4
               plugins:
                 limit-count:
-                    count: 1
+                    count: 2
                     key: remote_addr
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_database: 1
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
-                    time_window: 60
+                    time_window: 10
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-rejected-remaining
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 2
+            at_most: 2
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-rejected-remaining
           kind: http
           name: primary
           respond:
@@ -5596,37 +5600,45 @@ cases:
           redis:
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-rejected-remaining-test-4:127\.0\.0\.1$': "3"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: first-response-has-integer-quota-headers
+            path: /redis3-rejected-remaining
+          name: first-response-reports-one-remaining
           output:
             headers:
                 X-RateLimit-Remaining:
-                    equals: "0"
-                X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    equals: "1"
             status: 200
+          wait: 1s
         - input:
             method: GET
-            path: /limit-count
-          name: rejection-retains-nonzero-reset
+            path: /redis3-rejected-remaining
+          name: second-response-reports-zero-remaining
           output:
             headers:
                 X-RateLimit-Remaining:
                     equals: "0"
-                X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+            status: 200
+          wait: 1s
+        - input:
+            method: GET
+            path: /redis3-rejected-remaining
+          name: rejected-response-still-reports-zero-remaining
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
             status: 503
     - name: limit-count-redis3-set-route-with-redis-host-port-and-ssl-test-5
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 5
+        tests: [5]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-tls-route-test-5
               plugins:
                 limit-count:
                     count: 2
@@ -5634,6 +5646,9 @@ cases:
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    redis_ssl: true
+                    redis_ssl_verify: false
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -5641,7 +5656,7 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-tls-route
       fixtures:
         - count:
             at_least: 1
@@ -5649,37 +5664,41 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-tls-route
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
-        - kind: redis
+        - kind: redis-cluster
           name: redis
           redis:
+            tls: true
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-tls-route-test-5:127\.0\.0\.1$': "1"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
+            path: /redis3-tls-route
+          name: tls-redis-route-proxies-with-verification-disabled
           output:
             body:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
                     equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
     - name: limit-count-redis3-up-the-limit-test-6
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 6
+        tests: [6]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-tls-limit-test-6
               plugins:
                 limit-count:
                     count: 2
@@ -5687,147 +5706,9 @@ cases:
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 2
-            at_most: 2
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            ignore_negotiation: true
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-1
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 503
-    - name: limit-count-redis3-up-the-limit-test-7
-      source:
-        file: t/plugin/limit-count-redis3.t
-        tests:
-            - 7
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis
-                    redis_host: '{{FIXTURE.redis.HOST}}'
-                    redis_port: '{{FIXTURE.redis.PORT}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 2
-            at_most: 2
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis
-          name: redis
-          redis:
-            allow_unasserted_commands: true
-            ignore_negotiation: true
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-1
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 503
-    - name: limit-count-redis3-set-route-with-redis-host-port-ssl-and-ssl-verify-is-true-will-cause-ssl-handshake-err-with-enable-degradation-switch-test-8
-      source:
-        file: t/plugin/limit-count-redis3.t
-        tests:
-            - 8
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    allow_degradation: true
-                    count: 2
-                    key: remote_addr
-                    policy: redis
-                    redis_host: 127.0.0.1
-                    redis_port: 1
+                    redis_timeout: 1001
                     redis_ssl: true
-                    redis_timeout: 50
+                    redis_ssl_verify: false
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -5835,48 +5716,169 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-tls-limit
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 2
+            at_most: 2
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-tls-limit
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - kind: redis-cluster
+          name: redis
+          redis:
+            tls: true
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-tls-limit-test-6:127\.0\.0\.1$': "4"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: backend-failure-degrades-to-upstream
+            path: /redis3-tls-limit
+          name: first-tls-request-is-allowed
           output:
-            body:
-                equals: limit-count upstream
-            logs:
-                matches: connection refused
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
-    - name: limit-count-redis3-enable-degradation-switch-for-test-8-test-9
+        - input:
+            method: GET
+            path: /redis3-tls-limit
+          name: second-tls-request-is-allowed
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 200
+        - input:
+            method: GET
+            path: /redis3-tls-limit
+          name: third-tls-request-is-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+        - input:
+            method: GET
+            path: /redis3-tls-limit
+          name: fourth-tls-request-remains-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+    - name: limit-count-redis3-unmatched-paths-do-not-consume-tls-redis-quota-test-7
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 9
+        tests: [7]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-unmatched-paths-test-7
+              plugins:
+                limit-count:
+                    count: 2
+                    key: remote_addr
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    redis_ssl: true
+                    redis_ssl_verify: false
+                    rejected_code: 503
+                    show_limit_quota_header: true
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /redis3-matched
+      fixtures:
+        - count:
+            at_least: 2
+            at_most: 2
+          expect:
+            - method: GET
+              path:
+                equals: /redis3-matched
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+        - kind: redis-cluster
+          name: redis
+          redis:
+            tls: true
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-unmatched-paths-test-7:127\.0\.0\.1$': "3"
+      steps:
+        - input:
+            method: GET
+            path: /redis3-unmatched-before
+          name: unmatched-path-before-quota-requests-is-404
+          output:
+            status: 404
+        - input:
+            method: GET
+            path: /redis3-matched
+          name: first-matched-request-has-one-remaining
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "1"
+            status: 200
+        - input:
+            method: GET
+            path: /redis3-unmatched-between
+          name: unmatched-path-between-quota-requests-is-404
+          output:
+            status: 404
+        - input:
+            method: GET
+            path: /redis3-matched
+          name: second-matched-request-has-zero-remaining
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 200
+        - input:
+            method: GET
+            path: /redis3-matched
+          name: third-matched-request-is-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+    - name: limit-count-redis3-tls-verification-failure-is-runtime-checked-with-degradation-test-8
+      source:
+        file: t/plugin/limit-count-redis3.t
+        tests: [8]
+      config:
+        routes:
+            - id: redis3-tls-verify-config-test-8
               plugins:
                 limit-count:
                     allow_degradation: true
                     count: 2
                     key: remote_addr
                     policy: redis
-                    redis_host: 127.0.0.1
-                    redis_port: 1
-                    redis_timeout: 50
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_ssl: true
+                    redis_ssl_verify: true
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -5884,7 +5886,7 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-tls-verify-config
       fixtures:
         - count:
             at_least: 1
@@ -5892,31 +5894,97 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-tls-verify-config
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - expect_requests: 0
+          kind: https
+          name: redis
+          respond:
+            - status: 200
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: backend-failure-degrades-to-upstream
+            path: /redis3-tls-verify-config
+          name: schema-valid-verify-true-route-defers-handshake-check-to-request
           output:
             body:
                 equals: limit-count upstream
+            headers:
+                X-RateLimit-Limit:
+                    absent: true
             logs:
-                matches: connection refused
+                matches: '(?i)(certificate|tls|handshake)'
+            status: 200
+    - name: limit-count-redis3-degradation-keeps-proxying-after-tls-handshake-failures-test-9
+      source:
+        file: t/plugin/limit-count-redis3.t
+        tests: [9]
+      config:
+        routes:
+            - id: redis3-tls-degradation-test-9
+              plugins:
+                limit-count:
+                    allow_degradation: true
+                    count: 2
+                    key: remote_addr
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_ssl: true
+                    redis_ssl_verify: true
+                    redis_timeout: 1001
+                    rejected_code: 503
+                    show_limit_quota_header: true
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /redis3-tls-degradation
+      fixtures:
+        - count:
+            at_least: 3
+            at_most: 3
+          expect:
+            - method: GET
+              path:
+                equals: /redis3-tls-degradation
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+        - expect_requests: 0
+          kind: https
+          name: redis
+          respond:
+            - status: 200
+      steps:
+        - input:
+            method: GET
+            path: /redis3-tls-degradation
+          repeat: 3
+          name: every-tls-backend-failure-degrades-to-the-upstream
+          output:
+            body:
+                equals: limit-count upstream
+            headers:
+                X-RateLimit-Remaining:
+                    absent: true
+            logs:
+                matches: '(?i)(certificate|tls|handshake)'
             status: 200
     - name: limit-count-redis3-set-router-test-10
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 10
+        tests: [10]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-positive-reset-route-test-10
               plugins:
                 limit-count:
                     count: 2
@@ -5924,6 +5992,8 @@ cases:
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_database: 1
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -5931,7 +6001,7 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-positive-reset-route
       fixtures:
         - count:
             at_least: 1
@@ -5939,7 +6009,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-positive-reset-route
           kind: http
           name: primary
           respond:
@@ -5950,33 +6020,40 @@ cases:
           redis:
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-positive-reset-route-test-10:127\.0\.0\.1$': "1"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
+            path: /redis3-positive-reset-route
+          name: configured-route-returns-a-positive-reset
           output:
             body:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
                     equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
+                X-RateLimit-Reset:
+                    matches: ^[1-9][0-9]*$
             status: 200
     - name: limit-count-redis3-test-header-x-ratelimit-reset-shouldn-t-be-set-to-0-after-request-be-rejected-test-11
       source:
         file: t/plugin/limit-count-redis3.t
-        tests:
-            - 11
+        tests: [11]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis3-rejected-positive-reset-test-11
               plugins:
                 limit-count:
-                    count: 1
+                    count: 2
                     key: remote_addr
                     policy: redis
                     redis_host: '{{FIXTURE.redis.HOST}}'
                     redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_database: 1
+                    redis_timeout: 1001
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -5984,15 +6061,15 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis3-rejected-positive-reset
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 2
+            at_most: 2
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis3-rejected-positive-reset
           kind: http
           name: primary
           respond:
@@ -6003,28 +6080,43 @@ cases:
           redis:
             allow_unasserted_commands: true
             ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis3-rejected-positive-reset-test-11:127\.0\.0\.1$': "3"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: first-response-has-integer-quota-headers
+            path: /redis3-rejected-positive-reset
+          name: first-accepted-request-has-positive-reset
           output:
             headers:
                 X-RateLimit-Remaining:
-                    equals: "0"
+                    equals: "1"
                 X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    matches: ^[1-9][0-9]*$
             status: 200
+          wait: 1s
         - input:
             method: GET
-            path: /limit-count
-          name: rejection-retains-nonzero-reset
+            path: /redis3-rejected-positive-reset
+          name: second-accepted-request-keeps-positive-reset
           output:
             headers:
                 X-RateLimit-Remaining:
                     equals: "0"
                 X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    matches: ^[1-9][0-9]*$
+            status: 200
+          wait: 1s
+        - input:
+            method: GET
+            path: /redis3-rejected-positive-reset
+          name: rejected-request-keeps-positive-reset
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+                X-RateLimit-Reset:
+                    matches: ^[1-9][0-9]*$
             status: 503
     - name: limit-count-redis4-modified-redis-script-cost-2-test-1
       source:

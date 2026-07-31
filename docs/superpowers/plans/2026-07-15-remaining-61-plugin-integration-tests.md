@@ -851,9 +851,9 @@ The original checked state was not supported by the manifests. This audit compar
   cases covering concurrent/in-flight counters, dynamic variables,
   route/global/consumer scope, Redis authentication/reuse, TLS, SNI, and
   HTTP/2 behavior.
-- [ ] `limit-count` — repeated three-request probes omit much of the 252-block fixed/sliding window, delayed-sync, Sentinel/Cluster, group sharing, metadata, reset header, and state-transition matrix.
-- [ ] `limit-req` — simple burst probes omit delay versus `nodelay`, atomic Redis concurrency, shared routes, variable errors, authentication, degradation, and HTTP/2 cases.
-- [ ] `graphql-limit-count` — one generic GraphQL quota request replaces fragments, cost/depth calculation, local/Redis/Cluster state, quota transitions, and schema rejection.
+- [ ] `limit-count` — 80 of 252 pinned blocks are independent real standalone cases; fixed/sliding window, delayed-sync, Sentinel/Cluster, group sharing, metadata, reset header, and state-transition sources remain.
+- [ ] `limit-req` — 37 of 89 pinned blocks are independent real standalone cases; the two Redis source families remain.
+- [x] `graphql-limit-count` — all 26 pinned blocks map one-to-one to independent real standalone cases covering local/Redis/Cluster quota state, depth costs, shorthand/JSON parsing, fragments and bounded cycles, schema errors, and runtime `graphql.max_size`.
 - [x] `proxy-cache` — all 76 pinned disk and memory blocks map exactly once to
   independent standalone cases covering schema and zone validation, MISS/HIT,
   bypass/no-cache, expiry and Cache-Control directives, Set-Cookie/private
@@ -1305,7 +1305,7 @@ Execution waves:
 - [x] `wolf-rbac`
 - [x] `cas-auth`
 - [x] `feishu-auth`
-- [ ] `graphql-limit-count`
+- [x] `graphql-limit-count`
 - [x] `graphql-proxy-cache`
 - [x] `proxy-mirror`
 - [x] `workflow`
@@ -1601,7 +1601,13 @@ already-implemented branch.
   ciphertext markers close the independent-review findings. Its
   post-integration package/config/data-encryption/Store, race, real-process,
   pinned-source, corpus, scoped lint, build, and diff gates pass.
-- [ ] `graphql-limit-count` — blocked on the Hard Redis owner.
+- [x] `graphql-limit-count` — all 26 pinned blocks are independent,
+  alias-free standalone cases with exact local, Redis, Redis Cluster,
+  fragment/depth, parse-error, quota-header, and `graphql.max_size` behavior.
+  The conversion exposed and fixed unknown operation acceptance, missing
+  argument values, empty-query diagnostics, and cyclic-fragment handling.
+  Package/race, exact real-process normal/race, strict source mapping,
+  corpus/source/target, and diff gates pass.
 - [x] `graphql-proxy-cache` — all 48 pinned disk, GraphQL, and memory blocks
   are independent, alias-free standalone cases covering request keying,
   malformed input, mutation bypass, cache status and TTL, PURGE, Vary,
@@ -1659,22 +1665,28 @@ already-implemented branch.
   latency logging, and empty combination-key fallback. Package/race, Redis
   fixture normal/race, exact real-process normal/race, source/corpus/target,
   full 104-case mapping, build, and diff gates pass.
-- [ ] `limit-count` — 69 of 252 pinned blocks are now independent real
+- [ ] `limit-count` — 80 of 252 pinned blocks are now independent real
   standalone cases across delayed-sync, sliding-window, variable, local
-  lifecycle, cost, and Redis keepalive/environment sources. The strict
+  lifecycle, cost, Redis keepalive/environment, and Redis TLS sources. The
+  converted `limit-count-redis3.t` source adds all 11 blocks for shared
+  counters, declining/positive Reset values, Remaining on rejection, TLS,
+  unmatched paths, and degradation after certificate verification failure.
+  The strict
   manifest gate enforces the full pinned source inventory, ordered singleton
   mapping, target-plugin resources, and a non-increasing duplicate-backlog
-  ceiling; 28 duplicate groups/160 cases remain. Review remediation also made
+  ceiling; 27 duplicate groups/150 cases remain. Review remediation also made
   Sentinel replica routing panic-free, disabled unsafe delayed sync for
   request-resolved limits, bounded local sliding-window state, preserved
   nested Redis configuration, and populated `$rate_limiting_info` for sliding
   and delayed windows. Completion remains unchecked until the remaining
   sources replace their generic mapped cases and pass the final gates.
-- [ ] `limit-req` — 16 of 89 pinned blocks are now independent real standalone
+- [ ] `limit-req` — 37 of 89 pinned blocks are now independent real standalone
   cases covering delayed versus nodelay execution, combination keys and
   fallback diagnostics, consumer counters shared across routes but isolated
-  across consumers, SNI TLS, and parallel HTTP/2. Completion remains unchecked
-  until the local and Redis source families are converted and reviewed.
+  across consumers, SNI TLS, parallel HTTP/2, and all 21 local `limit-req.t`
+  schema, disabled, default rejection, consumer authentication/lifecycle, and
+  zero/negative-rate blocks. Completion remains unchecked until the two Redis
+  source families are converted and reviewed.
 - [x] `proxy-cache` — all 76 pinned disk and memory blocks are independent,
   source-complete, alias-free standalone cases covering schema/zones, cache
   status transitions, bypass/no-cache, TTL and Cache-Control, Set-Cookie,
@@ -1713,9 +1725,13 @@ already-implemented branch.
   use real provider fixtures and streaming assertions. The conversion has
   already found and fixed passthrough method/path/query precedence, Bedrock
   validation and model URL escaping, logical SSE frame timing, and
-  `$upstream_*` registration. Anthropic, protocol conversion, request override,
-  stream limits, client disconnect observability, Vertex AI, and the remaining
-  generic source groups keep this item unchecked.
+  `$upstream_*` registration. All 19 `ai-proxy-request-body-override.t` blocks
+  are now independent real provider cases covering strict option/protocol
+  schemas, raw-body preservation, protocol-specific token fields, single and
+  multi overrides, deep merge/force semantics, conversion ordering, and option
+  precedence. Anthropic, the remaining protocol conversion, stream limits,
+  client disconnect observability, Vertex AI, and the remaining generic source
+  groups keep this item unchecked.
 
 ### Updated Parallel Execution Waves
 

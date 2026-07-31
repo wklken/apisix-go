@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,6 +52,26 @@ func TestSchemaValidatesActiveHealthCheckFields(t *testing.T) {
 	config["instances"].([]any)[0].(map[string]any)["checks"].(map[string]any)["active"].(map[string]any)["type"] = "grpc"
 	if err := util.Validate(config, p.GetSchema()); err == nil {
 		t.Fatal("unsupported active health check type was accepted")
+	}
+}
+
+func TestSchemaRejectsUnknownRequestBodyProtocolKey(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	config := map[string]any{
+		"instances": []any{map[string]any{
+			"name": "one", "provider": "openai", "weight": 1,
+			"auth": map[string]any{"header": map[string]any{"Authorization": "Bearer t"}},
+			"override": map[string]any{
+				"request_body": map[string]any{"not-a-protocol": map[string]any{"x": 1}},
+			},
+		}},
+	}
+
+	if err := util.Validate(config, p.GetSchema()); err == nil {
+		t.Fatal("unknown request_body protocol key was accepted")
 	}
 }
 
@@ -736,6 +757,35 @@ func TestHandlerMergesRequestBodyOverrideWithoutForce(t *testing.T) {
 	}
 	if got := metadata["gateway"]; got != "apisix-go" {
 		t.Fatalf("metadata.gateway = %v, want apisix-go", got)
+	}
+}
+
+func TestHandlerPreservesRawBodyWhenProviderRequestIsUnchanged(t *testing.T) {
+	const raw = `{ "messages" : [ { "role" : "user", "content" : "hello" } ], "top_p" : 0.9 }`
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		upstreamBody = string(body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "one",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer t"}},
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+
+	serveChatWithBody(t, p, raw)
+
+	if upstreamBody != raw {
+		t.Fatalf("upstream body = %q, want exact raw body %q", upstreamBody, raw)
 	}
 }
 

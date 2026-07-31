@@ -1,8 +1,10 @@
 package pluginintegration
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,11 +52,235 @@ type networkFixture struct {
 	wg        sync.WaitGroup
 }
 
+type httpsConnectFixture struct {
+	listener    net.Listener
+	certificate tls.Certificate
+	caPath      string
+	respond     []HTTPResponse
+	requests    chan capturedRequest
+	errors      chan error
+	done        chan struct{}
+	closeOnce   sync.Once
+	wg          sync.WaitGroup
+}
+
 const defaultZeroPacketObservation = 250 * time.Millisecond
 
 func isExactZeroUDPFixture(spec FixtureSpec) bool {
 	return spec.Kind == "udp" && spec.Count != nil &&
 		spec.Count.AtLeast == 0 && spec.Count.AtMost == 0
+}
+
+func startHTTPSConnectFixture(spec FixtureSpec) (namedFixture, error) {
+	authority := *spec.Expect[0].Host.Equals
+	hostname, _, err := net.SplitHostPort(authority)
+	if err != nil {
+		return nil, fmt.Errorf("parse HTTPS CONNECT authority %q: %w", authority, err)
+	}
+	certPEM, keyPEM, err := generateFrontendCertificate(hostname)
+	if err != nil {
+		return nil, fmt.Errorf("generate HTTPS CONNECT fixture certificate: %w", err)
+	}
+	certificate, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("load HTTPS CONNECT fixture certificate: %w", err)
+	}
+	caFile, err := os.CreateTemp("", "apisix-go-https-connect-ca-*.pem")
+	if err != nil {
+		return nil, fmt.Errorf("create HTTPS CONNECT fixture CA file: %w", err)
+	}
+	caPath := caFile.Name()
+	if _, err = caFile.WriteString(certPEM); err != nil {
+		_ = caFile.Close()
+		_ = os.Remove(caPath)
+		return nil, fmt.Errorf("write HTTPS CONNECT fixture CA file: %w", err)
+	}
+	if err = caFile.Close(); err != nil {
+		_ = os.Remove(caPath)
+		return nil, fmt.Errorf("close HTTPS CONNECT fixture CA file: %w", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = os.Remove(caPath)
+		return nil, fmt.Errorf("listen HTTPS CONNECT fixture: %w", err)
+	}
+	fixture := &httpsConnectFixture{
+		listener:    listener,
+		certificate: certificate,
+		caPath:      caPath,
+		respond:     spec.Respond,
+		requests:    make(chan capturedRequest, len(spec.Expect)+1),
+		errors:      make(chan error, len(spec.Expect)+1),
+		done:        make(chan struct{}),
+	}
+	fixture.wg.Add(1)
+	go fixture.serve()
+	return fixture, nil
+}
+
+func (f *httpsConnectFixture) serve() {
+	defer f.wg.Done()
+	for {
+		connection, err := f.listener.Accept()
+		if err != nil {
+			select {
+			case <-f.done:
+				return
+			default:
+			}
+			f.reportError(fmt.Errorf("accept HTTPS CONNECT fixture connection: %w", err))
+			return
+		}
+		f.wg.Go(func() {
+			f.handleConnection(connection)
+		})
+	}
+}
+
+func (f *httpsConnectFixture) handleConnection(connection net.Conn) {
+	defer func() { _ = connection.Close() }()
+	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+
+	connectRequest, err := http.ReadRequest(bufio.NewReader(connection))
+	if err != nil {
+		f.reportError(fmt.Errorf("read HTTPS CONNECT request: %w", err))
+		return
+	}
+	connectCaptured, err := captureFixtureRequest(connectRequest)
+	if err != nil {
+		f.reportError(fmt.Errorf("capture HTTPS CONNECT request: %w", err))
+		return
+	}
+	f.requests <- connectCaptured
+	if err := writeRawFixtureResponse(connection, f.respond[0], false); err != nil {
+		f.reportError(fmt.Errorf("write HTTPS CONNECT response: %w", err))
+		return
+	}
+
+	tunnel := tls.Server(connection, &tls.Config{Certificates: []tls.Certificate{f.certificate}})
+	if err := tunnel.Handshake(); err != nil {
+		f.reportError(fmt.Errorf("handshake HTTPS CONNECT tunnel: %w", err))
+		return
+	}
+	providerRequest, err := http.ReadRequest(bufio.NewReader(tunnel))
+	if err != nil {
+		f.reportError(fmt.Errorf("read tunneled provider request: %w", err))
+		return
+	}
+	providerCaptured, err := captureFixtureRequest(providerRequest)
+	if err != nil {
+		f.reportError(fmt.Errorf("capture tunneled provider request: %w", err))
+		return
+	}
+	f.requests <- providerCaptured
+	if err := writeRawFixtureResponse(tunnel, f.respond[1], true); err != nil {
+		f.reportError(fmt.Errorf("write tunneled provider response: %w", err))
+	}
+}
+
+func captureFixtureRequest(request *http.Request) (capturedRequest, error) {
+	defer func() { _ = request.Body.Close() }()
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return capturedRequest{}, err
+	}
+	return capturedRequest{
+		method:   request.Method,
+		path:     request.URL.RequestURI(),
+		host:     request.Host,
+		protocol: request.Proto,
+		headers:  request.Header.Clone(),
+		body:     string(body),
+	}, nil
+}
+
+func writeRawFixtureResponse(writer io.Writer, configured HTTPResponse, closeConnection bool) error {
+	status := configured.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	body := configured.Body
+	header := make(http.Header, len(configured.Headers)+1)
+	for name, value := range configured.Headers {
+		header.Set(name, value)
+	}
+	response := &http.Response{
+		StatusCode:    status,
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        header,
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         closeConnection,
+	}
+	return response.Write(writer)
+}
+
+func (f *httpsConnectFixture) reportError(err error) {
+	select {
+	case f.errors <- err:
+	case <-f.done:
+	default:
+	}
+}
+
+func (f *httpsConnectFixture) address() string { return f.listener.Addr().String() }
+
+func (f *httpsConnectFixture) host() string {
+	host, _, err := net.SplitHostPort(f.address())
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
+func (f *httpsConnectFixture) port() string {
+	_, port, err := net.SplitHostPort(f.address())
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+func (f *httpsConnectFixture) url() string    { return "http://" + f.address() }
+func (f *httpsConnectFixture) caFile() string { return f.caPath }
+
+func (f *httpsConnectFixture) close() {
+	f.closeOnce.Do(func() {
+		close(f.done)
+		_ = f.listener.Close()
+		f.wg.Wait()
+		_ = os.Remove(f.caPath)
+	})
+}
+
+func (f *httpsConnectFixture) assert(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	for i, expected := range spec.Expect {
+		select {
+		case received := <-f.requests:
+			assertUpstreamRequest(t, expected, received)
+		case <-time.After(2 * time.Second):
+			t.Errorf("fixture %s did not receive expected request %d", spec.Name, i+1)
+		}
+	}
+	select {
+	case err := <-f.errors:
+		t.Errorf("fixture %s: %v", spec.Name, err)
+	default:
+	}
+	select {
+	case extra := <-f.requests:
+		t.Errorf(
+			"fixture %s received unexpected extra request %s %s",
+			spec.Name,
+			extra.method,
+			extra.path,
+		)
+	default:
+	}
 }
 
 func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
@@ -746,6 +973,93 @@ func matchFileJSONLines(
 		}
 	}
 	return nil
+}
+
+func TestHTTPSConnectFixtureCapturesOuterAndTunneledRequest(t *testing.T) {
+	connectAuthority := "api.openai.com:443"
+	providerPath := "/v1/chat/completions"
+	authorization := "some-key"
+	requestBody := `{"messages":[{"role":"user","content":"hello"}],"model":"gpt-4"}`
+	spec := FixtureSpec{
+		Name: "provider-proxy",
+		Kind: "https-connect",
+		Expect: []HTTPAssertion{
+			{
+				Method: http.MethodConnect,
+				Host:   &Matcher{Equals: &connectAuthority},
+			},
+			{
+				Method: http.MethodPost,
+				Path:   &Matcher{Equals: &providerPath},
+				Headers: map[string]Matcher{
+					"Authorization": {Equals: &authorization},
+				},
+				Body: &Matcher{JSONEquals: &requestBody},
+			},
+		},
+		Respond: []HTTPResponse{
+			{Status: http.StatusOK},
+			{
+				Status:  http.StatusUnauthorized,
+				Headers: map[string]string{"Content-Type": "text/plain"},
+				Body:    "Unauthorized",
+			},
+		},
+	}
+	fixture, err := startNamedFixture(spec)
+	if err != nil {
+		t.Fatalf("start HTTPS CONNECT fixture: %v", err)
+	}
+	defer fixture.close()
+
+	trusted, ok := fixture.(interface{ caFile() string })
+	if !ok {
+		t.Fatal("HTTPS CONNECT fixture does not expose its CA file")
+	}
+	caPEM, err := os.ReadFile(trusted.caFile())
+	if err != nil {
+		t.Fatalf("read HTTPS CONNECT fixture CA file: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("load HTTPS CONNECT fixture CA")
+	}
+	proxyURL, err := url.Parse(fixture.url())
+	if err != nil {
+		t.Fatalf("parse HTTPS CONNECT fixture URL: %v", err)
+	}
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{RootCAs: roots},
+	}}
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"https://api.openai.com/v1/chat/completions",
+		strings.NewReader(requestBody),
+	)
+	if err != nil {
+		t.Fatalf("create tunneled provider request: %v", err)
+	}
+	request.Header.Set("Authorization", authorization)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("send tunneled provider request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read tunneled provider response: %v", err)
+	}
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("provider response status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+	if string(body) != "Unauthorized" {
+		t.Fatalf("provider response body = %q, want %q", body, "Unauthorized")
+	}
+
+	fixture.assert(t, spec)
 }
 
 func TestHarnessRunsTCPFixture(t *testing.T) {

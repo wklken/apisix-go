@@ -22,6 +22,9 @@ var (
 		"GM":              "no Apache APISIX t/plugin source at the pinned commit",
 		"proxy-buffering": "no Apache APISIX t/plugin source at the pinned commit",
 	}
+	manifestTargetPluginAliases = map[string][]string{
+		"ai-proxy": {"ai-proxy", "ai-proxy-multi"},
+	}
 )
 
 const pinnedAPISIXSourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
@@ -425,6 +428,35 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 			want:   true,
 		},
 		{
+			name: "explicit manifest target alias",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"routes": []any{map[string]any{"plugins": map[string]any{"ai-proxy-multi": map[string]any{}}}},
+			}}}},
+			plugin: "ai-proxy",
+			want:   true,
+		},
+		{
+			name: "step config plugin",
+			manifest: &Manifest{Cases: []Case{{
+				Config: map[string]any{
+					"routes": []any{map[string]any{"plugins": map[string]any{"mocking": map[string]any{}}}},
+				},
+				Steps: []CaseStep{{Config: map[string]any{
+					"routes": []any{map[string]any{"plugins": map[string]any{"ai-proxy": map[string]any{}}}},
+				}}},
+			}}},
+			plugin: "ai-proxy",
+			want:   true,
+		},
+		{
+			name: "manifest target alias is narrow",
+			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+				"routes": []any{map[string]any{"plugins": map[string]any{"ai-proxy-multi": map[string]any{}}}},
+			}}}},
+			plugin: "acl",
+			want:   false,
+		},
+		{
 			name: "fixture proxy placeholder",
 			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
 				"routes": []any{map[string]any{"uri": "/*", "upstream": map[string]any{}}},
@@ -488,14 +520,24 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 	for caseIndex := range manifest.Cases {
 		caseSpec := &manifest.Cases[caseIndex]
 		if len(caseSpec.Variants) == 0 {
-			if !scenarioExercisesPlugin(caseSpec.Runtime, caseSpec.Config, pluginName) {
+			if !caseExercisesTargetPlugin(
+				caseSpec.Runtime,
+				caseSpec.Config,
+				caseSpec.Steps,
+				pluginName,
+			) {
 				t.Errorf("%s case %q never activates target plugin %q", file, caseSpec.Name, pluginName)
 			}
 			continue
 		}
 		for variantIndex := range caseSpec.Variants {
 			variant := &caseSpec.Variants[variantIndex]
-			if !scenarioExercisesPlugin(variant.Runtime, variant.Config, pluginName) {
+			if !caseExercisesTargetPlugin(
+				variant.Runtime,
+				variant.Config,
+				variant.Steps,
+				pluginName,
+			) {
 				t.Errorf(
 					"%s case %q variant %q never activates target plugin %q",
 					file,
@@ -511,14 +553,43 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 func manifestExercisesPlugin(manifest *Manifest, pluginName string) bool {
 	for i := range manifest.Cases {
 		caseSpec := &manifest.Cases[i]
-		if scenarioExercisesPlugin(caseSpec.Runtime, caseSpec.Config, pluginName) {
+		if caseExercisesTargetPlugin(caseSpec.Runtime, caseSpec.Config, caseSpec.Steps, pluginName) {
 			return true
 		}
 		for j := range caseSpec.Variants {
 			variant := &caseSpec.Variants[j]
-			if scenarioExercisesPlugin(variant.Runtime, variant.Config, pluginName) {
+			if caseExercisesTargetPlugin(variant.Runtime, variant.Config, variant.Steps, pluginName) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func caseExercisesTargetPlugin(
+	runtime, config map[string]any,
+	steps []CaseStep,
+	pluginName string,
+) bool {
+	if scenarioExercisesTargetPlugin(runtime, config, pluginName) {
+		return true
+	}
+	for i := range steps {
+		if scenarioExercisesTargetPlugin(nil, steps[i].Config, pluginName) {
+			return true
+		}
+	}
+	return false
+}
+
+func scenarioExercisesTargetPlugin(runtime, config map[string]any, pluginName string) bool {
+	pluginNames := manifestTargetPluginAliases[pluginName]
+	if len(pluginNames) == 0 {
+		pluginNames = []string{pluginName}
+	}
+	for _, candidate := range pluginNames {
+		if scenarioExercisesPlugin(runtime, config, candidate) {
+			return true
 		}
 	}
 	return false

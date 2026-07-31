@@ -23,6 +23,7 @@ var RequestVars = map[string]struct{}{
 	"$llm_response_text":             {},
 	"$llm_summary":                   {},
 	"$llm_time_to_first_token":       {},
+	"$rate_limiting_info":            {},
 	"$request_llm_model":             {},
 	"$request_type":                  {},
 	"$status":                        {},

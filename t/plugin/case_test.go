@@ -94,6 +94,96 @@ func TestManifestRejectsConcurrentStepWithBodyCaptures(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsConcurrentStatusCounts(t *testing.T) {
+	data := []byte(`sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/example.t
+    tests: 1
+cases:
+  - name: concurrent-status-counts
+    source: {tests: [1]}
+    config: {routes: []}
+    fixtures:
+      - name: origin
+        kind: http
+        respond: [{status: 200}]
+    steps:
+      - name: exact-mix
+        repeat: 5
+        concurrency: 5
+        input: {path: /hello}
+        output:
+          status_counts: {200: 1, 503: 4}
+`)
+
+	if _, err := loadManifest("status-counts.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestManifestRejectsStatusCountsOutsideConcurrentStep(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Output.Status = 0
+	manifest.Cases[0].Output.StatusCounts = map[int]int{http.StatusOK: 1}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "status_counts requires a concurrent step") {
+		t.Fatalf("validate() error = %v, want concurrent-step requirement", err)
+	}
+}
+
+func TestManifestRejectsTopLevelStatusCountsWithSteps(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{
+		StatusCounts: map[int]int{http.StatusOK: 1},
+	}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: http.StatusOK},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "steps and fixtures must not be mixed") {
+		t.Fatalf("validate() error = %v, want mixed top-level output rejection", err)
+	}
+}
+
+func TestManifestAcceptsHeldUpstreamProbes(t *testing.T) {
+	data := []byte(`sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/example.t
+    tests: 1
+cases:
+  - name: held-upstream
+    source: {tests: [1]}
+    config: {routes: []}
+    fixtures:
+      - name: origin
+        kind: http
+        respond: [{status: 200}]
+    steps:
+      - name: hold-two
+        repeat: 2
+        concurrency: 2
+        hold_upstream:
+          fixture: origin
+          requests: 2
+          probes:
+            - input: {path: /probe}
+              output: {status: 503}
+        input: {path: /hold}
+        output: {status: 200}
+`)
+
+	if _, err := loadManifest("held-upstream.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
 func TestManifestRejectsTopLevelBodyCaptureWithSteps(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].Input = HTTPInput{}
@@ -753,6 +843,53 @@ func TestManifestAcceptsTypedRedisAuthenticationWithUnassertedCommands(t *testin
 	}
 }
 
+func TestManifestAcceptsTLSRedisClusterFixture(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "redis",
+		Kind: "redis-cluster",
+		Redis: &RedisFixtureAssertion{
+			TLS:                     true,
+			AllowUnassertedCommands: true,
+		},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
+func TestManifestRejectsTLSForPlainRedisFixture(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "redis",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			TLS:                     true,
+			AllowUnassertedCommands: true,
+		},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "does not support Redis TLS") {
+		t.Fatalf("validate() error = %v, want Redis TLS kind error", err)
+	}
+}
+
 func TestManifestRejectsInvalidRedisTTLRange(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].Input = HTTPInput{}
@@ -775,6 +912,87 @@ func TestManifestRejectsInvalidRedisTTLRange(t *testing.T) {
 	err := manifest.validate()
 	if err == nil || !strings.Contains(err.Error(), "ttl_seconds_between") {
 		t.Fatalf("validate() error = %v, want ttl_seconds_between error", err)
+	}
+}
+
+func TestManifestAcceptsRedisValueKeyMatcher(t *testing.T) {
+	for _, kind := range []string{"redis", "redis-cluster", "redis-sentinel"} {
+		t.Run(kind, func(t *testing.T) {
+			manifest := validManifest()
+			manifest.Cases[0].Input = HTTPInput{}
+			manifest.Cases[0].Output = HTTPOutput{}
+			manifest.Cases[0].Fixtures = []FixtureSpec{{
+				Name: "redis",
+				Kind: kind,
+				Redis: &RedisFixtureAssertion{
+					AllowUnassertedCommands: true,
+					ValueMatches:            map[string]string{`^quota:\d+$`: "2"},
+				},
+			}}
+			manifest.Cases[0].Steps = []CaseStep{{
+				Name:   "request",
+				Input:  HTTPInput{Path: "/hello"},
+				Output: HTTPOutput{Status: 200},
+			}}
+
+			if err := manifest.validate(); err != nil {
+				t.Fatalf("validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestManifestRejectsInvalidRedisValueKeyMatcher(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "redis",
+		Kind: "redis",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+			ValueMatches:            map[string]string{"[": "2"},
+		},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), "value_matches") {
+		t.Fatalf("validate() error = %v, want value_matches error", err)
+	}
+}
+
+func TestManifestAcceptsRedisHashAssertions(t *testing.T) {
+	data := []byte(`sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/example.t
+    tests: 1
+cases:
+  - name: redis-hash
+    source: {tests: [1]}
+    config: {routes: []}
+    fixtures:
+      - name: redis
+        kind: redis
+        redis:
+          allow_unasserted_commands: true
+          hashes:
+            plugin-limit-req:route:one:client:
+              excess: {equals: "1"}
+              last: {matches: '^\d+$'}
+    steps:
+      - name: request
+        input: {path: /hello}
+        output: {status: 200}
+`)
+
+	if _, err := loadManifest("redis-hash.yaml", data); err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
 	}
 }
 
@@ -1544,6 +1762,33 @@ cases:
 
 	if _, err := loadManifest("http2.yaml", data); err != nil {
 		t.Fatalf("loadManifest() error = %v", err)
+	}
+}
+
+func TestManifestAcceptsHTTPSConnectFixture(t *testing.T) {
+	connectAuthority := "api.openai.com:443"
+	providerPath := "/v1/chat/completions"
+	fixture := FixtureSpec{
+		Name: "provider-proxy",
+		Kind: "https-connect",
+		Expect: []HTTPAssertion{
+			{
+				Method: http.MethodConnect,
+				Host:   &Matcher{Equals: &connectAuthority},
+			},
+			{
+				Method: http.MethodPost,
+				Path:   &Matcher{Equals: &providerPath},
+			},
+		},
+		Respond: []HTTPResponse{
+			{Status: http.StatusOK},
+			{Status: http.StatusUnauthorized, Body: "Unauthorized"},
+		},
+	}
+
+	if err := fixture.validate(); err != nil {
+		t.Fatalf("validate HTTPS CONNECT fixture: %v", err)
 	}
 }
 

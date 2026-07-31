@@ -3,9 +3,12 @@ package limit_req
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -207,6 +210,108 @@ func TestHandlerScopesRedisClusterKeyByRoute(t *testing.T) {
 	}
 	if redisLimiter.key != "route:route-1:192.0.2.40" {
 		t.Fatalf("redis key = %q, want route-scoped key", redisLimiter.key)
+	}
+}
+
+func TestConsumerLimiterSharesQuotaAcrossRouteInstancesAndIsolatesConsumers(t *testing.T) {
+	config := Config{
+		Rate:         1,
+		Burst:        1,
+		Key:          "remote_addr",
+		RejectedCode: http.StatusTooManyRequests,
+		Nodelay:      new(true),
+	}
+	first := newTestPlugin(t, config)
+	first.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+	second := newTestPlugin(t, config)
+	second.SetResourceContext(resource.Route{ID: "route-2"}, resource.Service{})
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	request := func(plugin *Plugin, consumer string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+		req.RemoteAddr = "192.0.2.40:12345"
+		req = apisixctx.WithApisixVars(req, map[string]string{"$consumer_name": consumer})
+		req = apisixctx.WithConsumerPluginOverrides(req, map[string]struct{}{name: {}})
+		res := httptest.NewRecorder()
+		plugin.Handler(next).ServeHTTP(res, req)
+		return res
+	}
+
+	if got := request(first, "shared-limit-req-consumer").Code; got != http.StatusNoContent {
+		t.Fatalf("first route first response = %d, want %d", got, http.StatusNoContent)
+	}
+	if got := request(first, "shared-limit-req-consumer").Code; got != http.StatusNoContent {
+		t.Fatalf("first route burst response = %d, want %d", got, http.StatusNoContent)
+	}
+	if got := request(second, "shared-limit-req-consumer").Code; got != http.StatusTooManyRequests {
+		t.Fatalf("second route response = %d, want shared quota rejection %d", got, http.StatusTooManyRequests)
+	}
+	if got := request(second, "isolated-limit-req-consumer").Code; got != http.StatusNoContent {
+		t.Fatalf("different consumer response = %d, want isolated quota %d", got, http.StatusNoContent)
+	}
+}
+
+func TestConsumerRedisLimiterUsesConsumerScopeInsteadOfRouteScope(t *testing.T) {
+	redisLimiter := &fakeRedisLimiter{allowed: true}
+	p := newTestPlugin(t, Config{
+		Rate:              1,
+		Burst:             0,
+		Key:               "remote_addr",
+		Policy:            "redis-cluster",
+		RedisClusterNodes: []string{"127.0.0.1:5000"},
+		RedisClusterName:  "cluster-1",
+		Nodelay:           new(true),
+	})
+	p.redisLimiter = redisLimiter
+	p.SetResourceContext(resource.Route{ID: "route-1"}, resource.Service{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello", nil)
+	req.RemoteAddr = "192.0.2.40:12345"
+	req = apisixctx.WithApisixVars(req, map[string]string{"$consumer_name": "jack"})
+	req = apisixctx.WithConsumerPluginOverrides(req, map[string]struct{}{name: {}})
+	res := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
+	}
+	if redisLimiter.key != "consumer:jack:192.0.2.40" {
+		t.Fatalf("Redis consumer key = %q, want consumer scope", redisLimiter.key)
+	}
+}
+
+func TestResolveKeyLogsFallbackToClientIP(t *testing.T) {
+	p := &Plugin{config: Config{
+		Key:     "$http_a $http_b",
+		KeyType: "var_combination",
+	}}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.RemoteAddr = "192.0.2.90:12345"
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("limit-req-fallback-key-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "configured key is empty") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	if key := p.resolveKey(req); key != "192.0.2.90" {
+		t.Fatalf("resolveKey() = %q, want 192.0.2.90", key)
+	}
+	select {
+	case entry := <-entries:
+		want := "The value of the configured key is empty, use client IP instead"
+		if entry.Message != want {
+			t.Fatalf("log message = %q, want %q", entry.Message, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fallback to client IP was not logged")
 	}
 }
 

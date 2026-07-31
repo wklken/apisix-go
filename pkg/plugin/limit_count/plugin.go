@@ -1,8 +1,10 @@
 package limit_count
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -16,21 +18,31 @@ import (
 	limiter "github.com/ulule/limiter/v3"
 	"github.com/ulule/limiter/v3/drivers/store/memory"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/store"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
 	base.BasePlugin
-	config       Config
-	metadata     Metadata
-	limiter      *limiter.Limiter
-	limiterMu    sync.Mutex
-	limiters     map[string]*limiter.Limiter
-	ruleLimiters []*limiter.Limiter
-	routeID      string
+	config            Config
+	metadata          Metadata
+	limiter           *limiter.Limiter
+	limiterMu         sync.Mutex
+	limiters          map[string]*limiter.Limiter
+	sliding           *slidingWindowLimiter
+	slidingStore      slidingWindowStore
+	slidingByKey      map[string]*slidingWindowLimiter
+	delayed           *delayedSyncer
+	delayedByKey      map[string]*delayedSyncer
+	ruleLimiters      []*limiter.Limiter
+	routeID           string
+	localLimiterStore limiter.Store
+	dynamicLimits     bool
 }
 
 const (
@@ -39,11 +51,75 @@ const (
 	name     = "limit-count"
 )
 
-var varPattern = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+var (
+	varPattern        = regexp.MustCompile(`\$\{?[A-Za-z0-9_]+\}?`)
+	defaultVarPattern = regexp.MustCompile(`^\$\{\s*([0-9A-Za-z_]+)\s*\?\?\s*([^{}]+?)\s*\}$`)
+)
+
+const maxSafeInteger = int64(1<<53 - 1)
 
 type limitCountGroup struct {
 	fingerprint string
 	store       limiter.Store
+}
+
+type redisPoolStatsProvider interface {
+	PoolStats() *redis.PoolStats
+}
+
+type redisDiagnosticStore struct {
+	limiter.Store
+	client       redisPoolStatsProvider
+	baselineHits uint32
+}
+
+func newRedisDiagnosticStore(store limiter.Store, client redisPoolStatsProvider) limiter.Store {
+	return &redisDiagnosticStore{
+		Store:        store,
+		client:       client,
+		baselineHits: client.PoolStats().Hits,
+	}
+}
+
+func (s *redisDiagnosticStore) logConnectionReuse() {
+	logger.Debugf("redis connection reused times: %d", s.client.PoolStats().Hits-s.baselineHits)
+}
+
+func (s *redisDiagnosticStore) Get(
+	ctx context.Context,
+	key string,
+	rate limiter.Rate,
+) (limiter.Context, error) {
+	s.logConnectionReuse()
+	return s.Store.Get(ctx, key, rate)
+}
+
+func (s *redisDiagnosticStore) Peek(
+	ctx context.Context,
+	key string,
+	rate limiter.Rate,
+) (limiter.Context, error) {
+	s.logConnectionReuse()
+	return s.Store.Peek(ctx, key, rate)
+}
+
+func (s *redisDiagnosticStore) Increment(
+	ctx context.Context,
+	key string,
+	count int64,
+	rate limiter.Rate,
+) (limiter.Context, error) {
+	s.logConnectionReuse()
+	return s.Store.Increment(ctx, key, count, rate)
+}
+
+func (s *redisDiagnosticStore) Reset(
+	ctx context.Context,
+	key string,
+	rate limiter.Rate,
+) (limiter.Context, error) {
+	s.logConnectionReuse()
+	return s.Store.Reset(ctx, key, rate)
 }
 
 var limitCountGroups = struct {
@@ -122,6 +198,11 @@ const schema = `
 	  "group": {
 		"type": "string"
 	  },
+	  "cost": {
+		"type": "integer",
+		"minimum": 0,
+		"default": 1
+	  },
 	  "key": {
 		"type": "string",
 		"default": "remote_addr"
@@ -143,8 +224,17 @@ const schema = `
 	  },
 	  "policy": {
 		"type": "string",
-		"enum": ["local", "redis", "redis-cluster"],
+		"enum": ["local", "redis", "redis-cluster", "redis-sentinel"],
 		"default": "local"
+	  },
+	  "window_type": {
+		"type": "string",
+		"enum": ["fixed", "sliding"],
+		"default": "fixed"
+	  },
+	  "sync_interval": {
+		"type": "number",
+		"exclusiveMinimum": 0
 	  },
 	  "redis_host": {
 		"type": "string",
@@ -211,6 +301,22 @@ const schema = `
 		"type": "boolean",
 		"default": false
 	  },
+	  "redis_sentinels": {
+		"type": "array",
+		"minItems": 1,
+		"items": {
+		  "type": "object",
+		  "properties": {
+			"host": {"type": "string", "minLength": 1},
+			"port": {"type": "integer", "minimum": 1}
+		  },
+		  "required": ["host", "port"]
+		}
+	  },
+	  "redis_master_name": {"type": "string", "minLength": 1},
+	  "redis_role": {"type": "string", "enum": ["master", "slave"], "default": "master"},
+	  "sentinel_username": {"type": "string"},
+	  "sentinel_password": {"type": "string"},
 	  "allow_degradation": {
 		"type": "boolean",
 		"default": false
@@ -229,6 +335,18 @@ const schema = `
 	"allOf": [
 	  {
 		"if": {
+		  "properties": {"policy": {"const": "redis"}},
+		  "required": ["policy"]
+		},
+		"then": {
+		  "anyOf": [
+			{"required": ["redis_host"]},
+			{"required": ["redis_config"]}
+		  ]
+		}
+	  },
+	  {
+		"if": {
 		  "properties": {"policy": {"const": "redis-cluster"}},
 		  "required": ["policy"]
 		},
@@ -238,6 +356,13 @@ const schema = `
 			{"required": ["redis_cluster_config"]}
 		  ]
 		}
+	  },
+	  {
+		"if": {
+		  "properties": {"policy": {"const": "redis-sentinel"}},
+		  "required": ["policy"]
+		},
+		"then": {"required": ["redis_sentinels", "redis_master_name"]}
 	  }
 	],
 	"definitions": {
@@ -323,6 +448,7 @@ type Config struct {
 	Count                 any                `json:"count"`
 	TimeWindow            any                `json:"time_window"`
 	Group                 string             `json:"group,omitempty"`
+	Cost                  *int               `json:"cost,omitempty"`
 	Key                   string             `json:"key,omitempty"`
 	KeyType               string             `json:"key_type,omitempty"`
 	RejectedCode          int                `json:"rejected_code,omitempty"`
@@ -344,6 +470,13 @@ type Config struct {
 	RedisClusterName      string             `json:"redis_cluster_name,omitempty"`
 	RedisClusterSSL       *bool              `json:"redis_cluster_ssl,omitempty"`
 	RedisClusterSSLVerify *bool              `json:"redis_cluster_ssl_verify,omitempty"`
+	RedisSentinels        []RedisSentinel    `json:"redis_sentinels,omitempty"`
+	RedisMasterName       string             `json:"redis_master_name,omitempty"`
+	RedisRole             string             `json:"redis_role,omitempty"`
+	SentinelUsername      string             `json:"sentinel_username,omitempty"`
+	SentinelPassword      string             `json:"sentinel_password,omitempty"`
+	WindowType            string             `json:"window_type,omitempty"`
+	SyncInterval          float64            `json:"sync_interval,omitempty"`
 	Redis                 RedisConfig        `json:"redis_config"`
 	RedisCluster          RedisClusterConfig `json:"redis_cluster_config"`
 	Rules                 []Rule             `json:"rules,omitempty"`
@@ -365,14 +498,21 @@ type Metadata struct {
 }
 
 type RedisConfig struct {
-	RedisHost      string `json:"redis_host,omitempty"`
-	RedisPort      int    `json:"redis_port,omitempty"`
-	RedisUsername  string `json:"redis_username,omitempty"`
-	RedisPassword  string `json:"redis_password,omitempty"`
-	RedisDatabase  int    `json:"redis_database,omitempty"`
-	RedisTimeout   int    `json:"redis_timeout,omitempty"`
-	RedisSSL       *bool  `json:"redis_ssl,omitempty"`
-	RedisSSLVerify *bool  `json:"redis_ssl_verify,omitempty"`
+	RedisHost             string `json:"redis_host,omitempty"`
+	RedisPort             int    `json:"redis_port,omitempty"`
+	RedisUsername         string `json:"redis_username,omitempty"`
+	RedisPassword         string `json:"redis_password,omitempty"`
+	RedisDatabase         int    `json:"redis_database,omitempty"`
+	RedisTimeout          int    `json:"redis_timeout,omitempty"`
+	RedisSSL              *bool  `json:"redis_ssl,omitempty"`
+	RedisSSLVerify        *bool  `json:"redis_ssl_verify,omitempty"`
+	RedisKeepaliveTimeout int    `json:"redis_keepalive_timeout,omitempty"`
+	RedisKeepalivePool    int    `json:"redis_keepalive_pool,omitempty"`
+}
+
+type RedisSentinel struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 func (rc *RedisConfig) String() string {
@@ -404,6 +544,13 @@ func (p *Plugin) PostInit() error {
 	if p.config.Key == "" {
 		p.config.Key = "remote_addr"
 	}
+	if strings.HasPrefix(strings.ToUpper(p.config.Key), "$ENV://") {
+		key, err := store.ResolveSecretReference(p.config.Key)
+		if err != nil {
+			return fmt.Errorf("resolve limit-count key: %w", err)
+		}
+		p.config.Key = key
+	}
 	if p.config.KeyType == "" {
 		p.config.KeyType = "var"
 	}
@@ -415,11 +562,28 @@ func (p *Plugin) PostInit() error {
 	if p.config.Policy == "" {
 		p.config.Policy = "local"
 	}
+	if p.config.Cost == nil {
+		cost := 1
+		p.config.Cost = &cost
+	}
+	if p.config.WindowType == "" {
+		p.config.WindowType = "fixed"
+	}
+	if p.config.SyncInterval > 0 && p.config.SyncInterval < 0.1 {
+		return fmt.Errorf("sync_interval should not be smaller than 0.1")
+	}
 
 	p.applyRootRedisConfig()
 	p.applyRootRedisClusterConfig()
 	switch p.config.Policy {
 	case "redis":
+		if strings.HasPrefix(strings.ToUpper(p.config.Redis.RedisHost), "$ENV://") {
+			host, err := store.ResolveSecretReference(p.config.Redis.RedisHost)
+			if err != nil {
+				return fmt.Errorf("resolve limit-count Redis host: %w", err)
+			}
+			p.config.Redis.RedisHost = host
+		}
 		if p.config.Redis.RedisPort == 0 {
 			p.config.Redis.RedisPort = 6379
 		}
@@ -430,6 +594,12 @@ func (p *Plugin) PostInit() error {
 
 		if p.config.Redis.RedisTimeout == 0 {
 			p.config.Redis.RedisTimeout = 1000
+		}
+		if p.config.Redis.RedisKeepaliveTimeout == 0 {
+			p.config.Redis.RedisKeepaliveTimeout = 10000
+		}
+		if p.config.Redis.RedisKeepalivePool == 0 {
+			p.config.Redis.RedisKeepalivePool = 100
 		}
 
 		if p.config.Redis.RedisSSL == nil {
@@ -464,6 +634,19 @@ func (p *Plugin) PostInit() error {
 		}
 		if p.config.RedisCluster.RedisKeepalivePool == 0 {
 			p.config.RedisCluster.RedisKeepalivePool = 100
+		}
+	case "redis-sentinel":
+		if len(p.config.RedisSentinels) == 0 {
+			return fmt.Errorf("redis_sentinels is required")
+		}
+		if p.config.RedisMasterName == "" {
+			return fmt.Errorf("redis_master_name is required")
+		}
+		if p.config.RedisRole == "" {
+			p.config.RedisRole = "master"
+		}
+		if p.config.RedisTimeout == 0 {
+			p.config.RedisTimeout = 1000
 		}
 	}
 
@@ -502,17 +685,45 @@ func (p *Plugin) PostInit() error {
 	if err != nil {
 		return err
 	}
+	p.dynamicLimits = !countStatic || !timeWindowStatic
 	if err := p.registerGroup(); err != nil {
 		return err
 	}
 	if countStatic && timeWindowStatic {
-		lim, err := p.newLimiter(count, timeWindow)
-		if err != nil {
-			return err
+		if p.config.SyncInterval > 0 &&
+			p.config.Policy != "local" &&
+			p.config.SyncInterval >= float64(timeWindow) {
+			return fmt.Errorf("sync_interval should be smaller than time_window")
 		}
-		p.limiter = lim
+		if p.delayedSyncEnabled() {
+			p.delayedByKey = make(map[string]*delayedSyncer)
+			return nil
+		}
+		if p.config.WindowType == "sliding" {
+			sliding, err := p.newSlidingLimiter(count, timeWindow)
+			if err != nil {
+				return err
+			}
+			p.sliding = sliding
+			return nil
+		}
+		if p.config.Policy == "local" {
+			lim, err := p.newLimiter(count, timeWindow)
+			if err != nil {
+				return err
+			}
+			p.limiter = lim
+		} else {
+			p.limiters = make(map[string]*limiter.Limiter)
+		}
 	} else {
 		p.limiters = make(map[string]*limiter.Limiter)
+		if p.delayedSyncEnabled() {
+			p.delayedByKey = make(map[string]*delayedSyncer)
+		}
+		if p.config.WindowType == "sliding" {
+			p.slidingByKey = make(map[string]*slidingWindowLimiter)
+		}
 	}
 
 	return nil
@@ -559,7 +770,10 @@ func (p *Plugin) registerGroup() error {
 
 func (p *Plugin) localStore() limiter.Store {
 	if p.config.Group == "" {
-		return memory.NewStore()
+		if p.localLimiterStore == nil {
+			p.localLimiterStore = memory.NewStore()
+		}
+		return p.localLimiterStore
 	}
 	limitCountGroups.Lock()
 	defer limitCountGroups.Unlock()
@@ -579,6 +793,8 @@ func (p *Plugin) applyRootRedisConfig() {
 	p.config.Redis.RedisTimeout = p.config.RedisTimeout
 	p.config.Redis.RedisSSL = p.config.RedisSSL
 	p.config.Redis.RedisSSLVerify = p.config.RedisSSLVerify
+	p.config.Redis.RedisKeepaliveTimeout = p.config.RedisKeepaliveTimeout
+	p.config.Redis.RedisKeepalivePool = p.config.RedisKeepalivePool
 }
 
 func (p *Plugin) applyRootRedisClusterConfig() {
@@ -628,7 +844,10 @@ func (p *Plugin) initRuleLimiters() error {
 		if err != nil {
 			return err
 		}
-		if countStatic && timeWindowStatic {
+		if !countStatic || !timeWindowStatic {
+			p.dynamicLimits = true
+		}
+		if countStatic && timeWindowStatic && p.config.Policy == "local" {
 			lim, err := p.newLimiter(count, timeWindow)
 			if err != nil {
 				return err
@@ -655,15 +874,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		// each route has its own limit => we should share the redis client
 		configUID := shared.NewConfigUID()
 		configUID.Add(p.config.Redis.String())
-		c := redis.NewClient(&redis.Options{
-			Addr:     fmt.Sprintf("%s:%d", p.config.Redis.RedisHost, p.config.Redis.RedisPort),
-			Username: p.config.Redis.RedisUsername,
-			Password: p.config.Redis.RedisPassword,
-			DB:       p.config.Redis.RedisDatabase,
-			// RedisTimeout   int    `json:"redis_timeout,omitempty"`
-			// RedisSSL       bool   `json:"redis_ssl,omitempty"`
-			// RedisSSLVerify bool   `json:"redis_ssl_verify,omitempty"`
-		})
+		c := redis.NewClient(p.redisOptions())
 		client := shared.LoadOrStoreClient(name, configUID, c).(*redis.Client)
 
 		// BREAKPOINT: add redis into docker-compose, then test it
@@ -676,6 +887,7 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		if err != nil {
 			return nil, err
 		}
+		store = newRedisDiagnosticStore(store, client)
 	case "redis-cluster":
 		configUID := shared.NewConfigUID()
 		configUID.Add(
@@ -702,9 +914,76 @@ func (p *Plugin) newLimiter(count int64, timeWindow int64) (*limiter.Limiter, er
 		if err != nil {
 			return nil, err
 		}
+	case "redis-sentinel":
+		configUID := shared.NewConfigUID()
+		configUID.Add(
+			p.config.RedisMasterName,
+			p.config.RedisRole,
+			p.config.RedisSentinels,
+			p.config.RedisUsername,
+			p.config.RedisPassword,
+			p.config.RedisDatabase,
+			p.config.RedisTimeout,
+			p.config.SentinelUsername,
+			p.config.SentinelPassword,
+		)
+		client := shared.LoadOrStoreClient(
+			name,
+			configUID,
+			redis.NewFailoverClient(p.redisSentinelOptions()),
+		).(*redis.Client)
+		var err error
+		store, err = sredis.NewStoreWithOptions(client, limiter.StoreOptions{
+			Prefix:   "limit-count",
+			MaxRetry: 3,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return limiter.New(store, rate, limiter.WithTrustForwardHeader(true)), nil
+}
+
+func (p *Plugin) redisOptions() *redis.Options {
+	conf := p.config.Redis
+	options := &redis.Options{
+		Addr:         fmt.Sprintf("%s:%d", conf.RedisHost, conf.RedisPort),
+		Username:     conf.RedisUsername,
+		Password:     conf.RedisPassword,
+		DB:           conf.RedisDatabase,
+		DialTimeout:  time.Duration(conf.RedisTimeout) * time.Millisecond,
+		ReadTimeout:  time.Duration(conf.RedisTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(conf.RedisTimeout) * time.Millisecond,
+		PoolSize:     conf.RedisKeepalivePool,
+	}
+	if conf.RedisKeepaliveTimeout > 0 {
+		options.ConnMaxIdleTime = time.Duration(conf.RedisKeepaliveTimeout) * time.Millisecond
+	}
+	if conf.RedisSSL != nil && *conf.RedisSSL {
+		options.TLSConfig = &tls.Config{InsecureSkipVerify: !*conf.RedisSSLVerify}
+	}
+	return options
+}
+
+func (p *Plugin) redisSentinelOptions() *redis.FailoverOptions {
+	addresses := make([]string, 0, len(p.config.RedisSentinels))
+	for _, sentinel := range p.config.RedisSentinels {
+		addresses = append(addresses, fmt.Sprintf("%s:%d", sentinel.Host, sentinel.Port))
+	}
+	return &redis.FailoverOptions{
+		MasterName:       p.config.RedisMasterName,
+		SentinelAddrs:    addresses,
+		Username:         p.config.RedisUsername,
+		Password:         p.config.RedisPassword,
+		SentinelUsername: p.config.SentinelUsername,
+		SentinelPassword: p.config.SentinelPassword,
+		DB:               p.config.RedisDatabase,
+		DialTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		ReadTimeout:      time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		WriteTimeout:     time.Duration(p.config.RedisTimeout) * time.Millisecond,
+		ReplicaOnly:      p.config.RedisRole == "slave",
+	}
 }
 
 func (p *Plugin) redisClusterOptions() *redis.ClusterOptions {
@@ -735,12 +1014,9 @@ func staticLimitValue(value any, name string) (int64, bool, error) {
 		if strings.Contains(expr, "$") {
 			return 0, false, nil
 		}
-		parsed, err := strconv.ParseInt(expr, 10, 64)
+		parsed, err := parseLimitInt(expr, name)
 		if err != nil {
-			return 0, false, fmt.Errorf("%s must resolve to an integer: %w", name, err)
-		}
-		if parsed <= 0 {
-			return 0, false, fmt.Errorf("%s must be greater than 0", name)
+			return 0, false, err
 		}
 		return parsed, true, nil
 	}
@@ -754,19 +1030,20 @@ func staticLimitValue(value any, name string) (int64, bool, error) {
 
 func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
 	if expr, ok := value.(string); ok {
+		if match := defaultVarPattern.FindStringSubmatch(expr); match != nil {
+			resolved := base.RequestVarFromNginx(r, match[1])
+			if resolved == "" {
+				resolved = strings.TrimSpace(match[2])
+			}
+			return parseLimitInt(resolved, name)
+		}
+
 		resolved := varPattern.ReplaceAllStringFunc(expr, func(match string) string {
 			varName := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			varName = strings.TrimSuffix(varName, "}")
 			return base.RequestVarFromNginx(r, varName)
 		})
-		parsed, err := strconv.ParseInt(resolved, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("%s must resolve to an integer: %w", name, err)
-		}
-		if parsed <= 0 {
-			return 0, fmt.Errorf("%s must be greater than 0", name)
-		}
-		return parsed, nil
+		return parseLimitInt(resolved, name)
 	}
 
 	return numericLimitValue(value, name)
@@ -775,32 +1052,54 @@ func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
 func numericLimitValue(value any, name string) (int64, error) {
 	switch v := value.(type) {
 	case int:
-		if v <= 0 {
-			return 0, fmt.Errorf("%s must be greater than 0", name)
+		parsed := int64(v)
+		if err := validateLimitInt(parsed, name); err != nil {
+			return 0, err
 		}
-		return int64(v), nil
+		return parsed, nil
 	case int64:
-		if v <= 0 {
-			return 0, fmt.Errorf("%s must be greater than 0", name)
+		if err := validateLimitInt(v, name); err != nil {
+			return 0, err
 		}
 		return v, nil
 	case float64:
-		if v <= 0 || math.Trunc(v) != v {
-			return 0, fmt.Errorf("%s must be a positive integer", name)
+		if math.Trunc(v) != v {
+			return 0, fmt.Errorf("%s resolved value must be an integer", name)
 		}
-		return int64(v), nil
-	case json.Number:
-		parsed, err := strconv.ParseInt(string(v), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("%s must be an integer: %w", name, err)
+		if v > float64(maxSafeInteger) || v < float64(-maxSafeInteger) {
+			return 0, fmt.Errorf("%s resolved value exceeds safe integer range", name)
 		}
-		if parsed <= 0 {
-			return 0, fmt.Errorf("%s must be greater than 0", name)
+		parsed := int64(v)
+		if err := validateLimitInt(parsed, name); err != nil {
+			return 0, err
 		}
 		return parsed, nil
+	case json.Number:
+		return parseLimitInt(string(v), name)
 	default:
 		return 0, fmt.Errorf("%s must be an integer or string expression", name)
 	}
+}
+
+func parseLimitInt(value string, name string) (int64, error) {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s resolved value must be an integer: %w", name, err)
+	}
+	if err := validateLimitInt(parsed, name); err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func validateLimitInt(value int64, name string) error {
+	if value > maxSafeInteger || value < -maxSafeInteger {
+		return fmt.Errorf("%s resolved value exceeds safe integer range", name)
+	}
+	if value <= 0 {
+		return fmt.Errorf("%s resolved value must be a positive number", name)
+	}
+	return nil
 }
 
 func (p *Plugin) Config() any {
@@ -816,11 +1115,44 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if !ok {
 					continue
 				}
-				count, timeWindow, ok := p.resolveRuleLimit(r, rule)
-				if !ok {
-					continue
+				count, timeWindow, err := p.resolveRuleLimit(r, rule)
+				if err != nil {
+					if *p.config.AllowDegradation {
+						continue
+					}
+					logger.Error(err.Error())
+					http.Error(w, "failed to resolve limit count rules", http.StatusInternalServerError)
+					return
 				}
 				applied++
+				if p.delayedSyncEnabledFor(timeWindow) {
+					syncer, err := p.delayedSyncerFor(count, timeWindow)
+					if err != nil {
+						if *p.config.AllowDegradation {
+							continue
+						}
+						http.Error(w, "failed to limit count", http.StatusInternalServerError)
+						return
+					}
+					if !p.runDelayedLimit(w, r, syncer, count, key, ruleHeaders(rule, i)) {
+						return
+					}
+					continue
+				}
+				if p.config.WindowType == "sliding" {
+					lim, err := p.slidingLimiterFor(count, timeWindow)
+					if err != nil {
+						if *p.config.AllowDegradation {
+							continue
+						}
+						http.Error(w, "failed to limit count", http.StatusInternalServerError)
+						return
+					}
+					if !p.runSlidingLimit(w, r, lim, count, key, ruleHeaders(rule, i), time.Now()) {
+						return
+					}
+					continue
+				}
 				lim := p.ruleLimiters[i]
 				if lim == nil {
 					var err error
@@ -852,7 +1184,40 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Error(err.Error())
 			http.Error(w, "failed to resolve limit count config", http.StatusInternalServerError)
+			return
+		}
+		if p.delayedSyncEnabledFor(timeWindow) {
+			syncer, err := p.delayedSyncerFor(count, timeWindow)
+			if err != nil {
+				if *p.config.AllowDegradation {
+					next.ServeHTTP(w, r)
+					return
+				}
+				http.Error(w, "failed to limit count", http.StatusInternalServerError)
+				return
+			}
+			if !p.runDelayedLimit(w, r, syncer, count, key, defaultHeaders(p.metadata)) {
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if p.config.WindowType == "sliding" {
+			lim, err := p.slidingLimiterFor(count, timeWindow)
+			if err != nil {
+				if *p.config.AllowDegradation {
+					next.ServeHTTP(w, r)
+					return
+				}
+				http.Error(w, "failed to limit count", http.StatusInternalServerError)
+				return
+			}
+			if !p.runSlidingLimit(w, r, lim, count, key, defaultHeaders(p.metadata), time.Now()) {
+				return
+			}
+			next.ServeHTTP(w, r)
 			return
 		}
 		lim, err := p.limiterFor(count, timeWindow)
@@ -861,6 +1226,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Errorf("failed to limit count: %v", err)
 			http.Error(w, "failed to limit count", http.StatusInternalServerError)
 			return
 		}
@@ -872,15 +1238,160 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) limiterFor(count int64, timeWindow int64) (*limiter.Limiter, error) {
-	if p.limiter != nil {
-		return p.limiter, nil
+func (p *Plugin) delayedSyncEnabled() bool {
+	return !p.dynamicLimits && p.config.Policy != "local" && p.config.SyncInterval > 0
+}
+
+func (p *Plugin) delayedSyncEnabledFor(timeWindow int64) bool {
+	return p.delayedSyncEnabled() && p.config.SyncInterval < float64(timeWindow)
+}
+
+func (p *Plugin) delayedSyncerFor(count int64, timeWindow int64) (*delayedSyncer, error) {
+	if p.delayed != nil {
+		return p.delayed, nil
 	}
 
 	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
 	p.limiterMu.Lock()
 	defer p.limiterMu.Unlock()
+	if p.delayedByKey == nil {
+		p.delayedByKey = make(map[string]*delayedSyncer)
+	}
+	if syncer := p.delayedByKey[key]; syncer != nil {
+		return syncer, nil
+	}
 
+	var backend delayedSyncBackend
+	if p.config.WindowType == "sliding" {
+		sliding, err := p.newSlidingLimiter(count, timeWindow)
+		if err != nil {
+			return nil, err
+		}
+		backend = slidingWindowDelayedBackend{limiter: sliding}
+	} else {
+		fixed, err := p.newLimiter(count, timeWindow)
+		if err != nil {
+			return nil, err
+		}
+		backend = fixedWindowDelayedBackend{limiter: fixed}
+	}
+	syncer := newDelayedSyncer(
+		backend,
+		count,
+		time.Duration(timeWindow)*time.Second,
+		time.Duration(p.config.SyncInterval*float64(time.Second)),
+		10000,
+	)
+	p.delayedByKey[key] = syncer
+	return syncer, nil
+}
+
+func (p *Plugin) slidingLimiterFor(count int64, timeWindow int64) (*slidingWindowLimiter, error) {
+	if p.sliding != nil {
+		return p.sliding, nil
+	}
+
+	p.limiterMu.Lock()
+	defer p.limiterMu.Unlock()
+	if p.dynamicLimits {
+		return p.newSlidingLimiter(count, timeWindow)
+	}
+
+	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
+	if p.slidingByKey == nil {
+		p.slidingByKey = make(map[string]*slidingWindowLimiter)
+	}
+	lim, ok := p.slidingByKey[key]
+	if ok {
+		return lim, nil
+	}
+
+	lim, err := p.newSlidingLimiter(count, timeWindow)
+	if err != nil {
+		return nil, err
+	}
+	p.slidingByKey[key] = lim
+	return lim, nil
+}
+
+func (p *Plugin) newSlidingLimiter(count int64, timeWindow int64) (*slidingWindowLimiter, error) {
+	if p.slidingStore == nil {
+		store, err := p.newSlidingStore()
+		if err != nil {
+			return nil, err
+		}
+		p.slidingStore = store
+	}
+	return newSlidingWindowLimiter(p.slidingStore, "plugin-"+name, count, timeWindow), nil
+}
+
+func (p *Plugin) newSlidingStore() (slidingWindowStore, error) {
+	switch p.config.Policy {
+	case "local":
+		return newMemorySlidingWindowStore(), nil
+	case "redis":
+		configUID := shared.NewConfigUID()
+		configUID.Add(p.config.Redis.String())
+		client := shared.LoadOrStoreClient(
+			name,
+			configUID,
+			redis.NewClient(p.redisOptions()),
+		).(*redis.Client)
+		return newRedisSlidingWindowStore(client), nil
+	case "redis-cluster":
+		configUID := shared.NewConfigUID()
+		configUID.Add(
+			p.config.RedisCluster.RedisClusterName,
+			strings.Join(p.config.RedisCluster.RedisClusterNodes, ","),
+			p.config.RedisCluster.RedisPassword,
+			p.config.RedisCluster.RedisTimeout,
+			*p.config.RedisCluster.RedisClusterSSL,
+			*p.config.RedisCluster.RedisClusterSSLVerify,
+			p.config.RedisCluster.RedisKeepaliveTimeout,
+			p.config.RedisCluster.RedisKeepalivePool,
+		)
+		client := shared.LoadOrStoreClient(
+			name,
+			configUID,
+			redis.NewClusterClient(p.redisClusterOptions()),
+		).(*redis.ClusterClient)
+		return newRedisSlidingWindowStore(client), nil
+	case "redis-sentinel":
+		configUID := shared.NewConfigUID()
+		configUID.Add(
+			p.config.RedisMasterName,
+			p.config.RedisRole,
+			p.config.RedisSentinels,
+			p.config.RedisUsername,
+			p.config.RedisPassword,
+			p.config.RedisDatabase,
+			p.config.RedisTimeout,
+			p.config.SentinelUsername,
+			p.config.SentinelPassword,
+		)
+		client := shared.LoadOrStoreClient(
+			name,
+			configUID,
+			redis.NewFailoverClient(p.redisSentinelOptions()),
+		).(*redis.Client)
+		return newRedisSlidingWindowStore(client), nil
+	default:
+		return nil, fmt.Errorf("unsupported sliding-window policy %q", p.config.Policy)
+	}
+}
+
+func (p *Plugin) limiterFor(count int64, timeWindow int64) (*limiter.Limiter, error) {
+	if p.limiter != nil {
+		return p.limiter, nil
+	}
+
+	p.limiterMu.Lock()
+	defer p.limiterMu.Unlock()
+	if p.dynamicLimits {
+		return p.newLimiter(count, timeWindow)
+	}
+
+	key := strconv.FormatInt(count, 10) + ":" + strconv.FormatInt(timeWindow, 10)
 	if p.limiters == nil {
 		p.limiters = make(map[string]*limiter.Limiter)
 	}
@@ -909,16 +1420,16 @@ func (p *Plugin) resolveLimit(r *http.Request) (int64, int64, error) {
 	return count, timeWindow, nil
 }
 
-func (p *Plugin) resolveRuleLimit(r *http.Request, rule Rule) (int64, int64, bool) {
+func (p *Plugin) resolveRuleLimit(r *http.Request, rule Rule) (int64, int64, error) {
 	count, err := resolveLimitValue(r, rule.Count, "rule count")
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, err
 	}
 	timeWindow, err := resolveLimitValue(r, rule.TimeWindow, "rule time_window")
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, err
 	}
-	return count, timeWindow, true
+	return count, timeWindow, nil
 }
 
 func (p *Plugin) runLimit(
@@ -929,20 +1440,32 @@ func (p *Plugin) runLimit(
 	key string,
 	headers quotaHeaders,
 ) bool {
-	context, err := lim.Get(r.Context(), p.scopedKey(key))
+	var context limiter.Context
+	var err error
+	switch *p.config.Cost {
+	case 0:
+		context, err = lim.Peek(r.Context(), p.scopedKey(key))
+	case 1:
+		context, err = lim.Get(r.Context(), p.scopedKey(key))
+	default:
+		context, err = lim.Increment(r.Context(), p.scopedKey(key), int64(*p.config.Cost))
+	}
 	if err != nil {
 		if *p.config.AllowDegradation {
 			return true
 		}
+		logger.Errorf("failed to limit count: %v", err)
 		http.Error(w, "failed to limit count", http.StatusInternalServerError)
 		return false
 	}
+	reset := fixedWindowResetSeconds(context.Reset, time.Now())
+	p.recordRateLimitingInfo(r, key, context.Limit, context.Remaining, reset)
 
 	if context.Reached {
 		if *p.config.ShowLimitQuotaHeader {
 			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
 			w.Header().Add(headers.remaining, "0")
-			w.Header().Add(headers.reset, strconv.FormatInt(context.Reset, 10))
+			w.Header().Add(headers.reset, strconv.FormatInt(reset, 10))
 		}
 
 		if p.config.RejectedMsg != "" {
@@ -958,10 +1481,145 @@ func (p *Plugin) runLimit(
 	if *p.config.ShowLimitQuotaHeader {
 		w.Header().Add(headers.limit, strconv.FormatInt(context.Limit, 10))
 		w.Header().Add(headers.remaining, strconv.FormatInt(context.Remaining, 10))
-		w.Header().Add(headers.reset, strconv.FormatInt(context.Reset, 10))
+		w.Header().Add(headers.reset, strconv.FormatInt(reset, 10))
 	}
 
 	return true
+}
+
+func fixedWindowResetSeconds(expiration int64, now time.Time) int64 {
+	return max(expiration-now.Unix(), 0)
+}
+
+func (p *Plugin) recordRateLimitingInfo(
+	r *http.Request,
+	key string,
+	limit int64,
+	remaining int64,
+	reset any,
+) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$rate_limiting_info", map[string]any{
+		"rate_limiting_key":       p.scopedKey(key),
+		"rate_limiting_limit":     limit,
+		"rate_limiting_remaining": remaining,
+		"rate_limiting_reset":     reset,
+	})
+}
+
+func (p *Plugin) runSlidingLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	lim *slidingWindowLimiter,
+	count int64,
+	key string,
+	headers quotaHeaders,
+	now time.Time,
+) bool {
+	remaining, reset, err := lim.incoming(
+		r.Context(),
+		p.scopedKey(key),
+		int64(*p.config.Cost),
+		now,
+	)
+	if err != nil && !errors.Is(err, errSlidingWindowRejected) {
+		if *p.config.AllowDegradation {
+			return true
+		}
+		http.Error(w, "failed to limit count", http.StatusInternalServerError)
+		return false
+	}
+	p.recordRateLimitingInfo(r, key, count, max(remaining, 0), reset)
+
+	if errors.Is(err, errSlidingWindowRejected) {
+		if *p.config.ShowLimitQuotaHeader {
+			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
+			w.Header().Add(headers.remaining, "0")
+			w.Header().Add(headers.reset, strconv.FormatFloat(reset, 'f', -1, 64))
+		}
+		if p.config.RejectedMsg != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(p.config.RejectedCode)
+			_, _ = w.Write([]byte(p.config.rejectBody))
+			return false
+		}
+		w.WriteHeader(p.config.RejectedCode)
+		return false
+	}
+
+	if *p.config.ShowLimitQuotaHeader {
+		w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
+		w.Header().Add(headers.remaining, strconv.FormatInt(remaining, 10))
+		w.Header().Add(headers.reset, strconv.FormatFloat(reset, 'f', -1, 64))
+	}
+	return true
+}
+
+func (p *Plugin) runDelayedLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	syncer *delayedSyncer,
+	count int64,
+	key string,
+	headers quotaHeaders,
+) bool {
+	remaining, reset, err := syncer.incoming(
+		r.Context(),
+		p.scopedKey(key),
+		int64(*p.config.Cost),
+		time.Now(),
+	)
+	if err != nil && !errors.Is(err, errDelayedSyncRejected) {
+		if *p.config.AllowDegradation {
+			return true
+		}
+		http.Error(w, "failed to limit count", http.StatusInternalServerError)
+		return false
+	}
+	resetSeconds := int64(math.Ceil(reset.Seconds()))
+	p.recordRateLimitingInfo(r, key, count, max(remaining, 0), resetSeconds)
+	if errors.Is(err, errDelayedSyncRejected) {
+		if *p.config.ShowLimitQuotaHeader {
+			w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
+			w.Header().Add(headers.remaining, "0")
+			w.Header().Add(headers.reset, strconv.FormatInt(resetSeconds, 10))
+		}
+		if p.config.RejectedMsg != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(p.config.RejectedCode)
+			_, _ = w.Write([]byte(p.config.rejectBody))
+			return false
+		}
+		w.WriteHeader(p.config.RejectedCode)
+		return false
+	}
+
+	if *p.config.ShowLimitQuotaHeader {
+		w.Header().Add(headers.limit, strconv.FormatInt(count, 10))
+		w.Header().Add(headers.remaining, strconv.FormatInt(remaining, 10))
+		w.Header().Add(headers.reset, strconv.FormatInt(resetSeconds, 10))
+	}
+	return true
+}
+
+func (p *Plugin) Stop() {
+	p.limiterMu.Lock()
+	syncers := make([]*delayedSyncer, 0, len(p.delayedByKey)+1)
+	if p.delayed != nil {
+		syncers = append(syncers, p.delayed)
+	}
+	for _, syncer := range p.delayedByKey {
+		syncers = append(syncers, syncer)
+	}
+	p.delayed = nil
+	p.delayedByKey = nil
+	p.limiterMu.Unlock()
+
+	for _, syncer := range syncers {
+		syncer.Stop()
+	}
 }
 
 func (p *Plugin) resolveKey(r *http.Request) string {
@@ -974,7 +1632,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 		key = varPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
 			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 			name = strings.TrimSuffix(name, "}")
-			value := base.RequestVarFromNginx(r, name)
+			value := limitCountRequestVar(r, name)
 			if value != "" {
 				resolved++
 			}
@@ -984,13 +1642,24 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 			key = ""
 		}
 	default:
-		key = base.RequestVarFromNginx(r, p.config.Key)
+		key = limitCountRequestVar(r, p.config.Key)
 	}
 
 	if key == "" {
-		key = base.RequestVarFromNginx(r, "remote_addr")
+		key = limitCountRequestVar(r, "remote_addr")
 	}
 	return key
+}
+
+func limitCountRequestVar(r *http.Request, name string) string {
+	name = strings.TrimPrefix(name, "$")
+	if argument, ok := strings.CutPrefix(name, "arg_"); ok {
+		return r.URL.Query().Get(argument)
+	}
+	if name == "http_host" {
+		return r.Host
+	}
+	return base.RequestVarFromNginx(r, name)
 }
 
 func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
@@ -998,7 +1667,7 @@ func (p *Plugin) resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
 	key := varPattern.ReplaceAllStringFunc(rule.Key, func(match string) string {
 		name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
 		name = strings.TrimSuffix(name, "}")
-		value := base.RequestVarFromNginx(r, name)
+		value := limitCountRequestVar(r, name)
 		if value != "" {
 			resolved++
 		}

@@ -80,34 +80,118 @@ cases:
         input: {method: GET, path: /limit-req, headers: {}}
         output:
           status: 429
-  - name: limit-req-shared-counter
-    source: {file: t/plugin/limit-req-shared-counter.t, tests: [1, 2, 3]}
+  - name: limit-req-shared-counter-consumer-plugin-enforces-quota-test-1
+    source: {file: t/plugin/limit-req-shared-counter.t, tests: [1]}
     config:
-      routes:
-        - id: limit-req-shared-counter
-          uri: /limit-req
+      consumers:
+        - username: jack
           plugins:
-            limit-req: {rate: 1, burst: 1, nodelay: true, rejected_code: 429, rejected_msg: limit reached, key: remote_addr}
+            key-auth: {key: jack-key}
+            limit-req:
+              rate: 1
+              burst: 1
+              key: remote_addr
+              rejected_code: 429
+              nodelay: true
+      routes:
+        - id: limit-req-consumer-route
+          uri: /hello
+          plugins: {key-auth: {}}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond: [{status: 200, body: limit-req upstream}]
+        count: {at_least: 2, at_most: 2}
+        expect:
+          - {method: GET, path: {equals: /hello}}
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: first-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: burst-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: rejected-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 429
+      - name: first-consumer-request-is-allowed
+        input: {method: GET, path: /hello, headers: {apikey: jack-key}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: consumer-burst-request-is-allowed
+        input: {method: GET, path: /hello, headers: {apikey: jack-key}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: consumer-quota-rejects-third-request
+        input: {method: GET, path: /hello, headers: {apikey: jack-key}}
+        output: {status: 429}
+
+  - name: limit-req-shared-counter-two-routes-use-consumer-plugin-test-2
+    source: {file: t/plugin/limit-req-shared-counter.t, tests: [2]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            key-auth: {key: jack-key}
+            limit-req:
+              rate: 1
+              burst: 1
+              key: remote_addr
+              rejected_code: 429
+              nodelay: true
+      routes:
+        - id: limit-req-consumer-route-one
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: limit-req-consumer-route-two
+          uri: /hello1
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 2, at_most: 2}
+        expect:
+          - {method: GET, path: {matches: '^/hello1?$'}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-route-authenticates-consumer
+        input: {method: GET, path: /hello, headers: {apikey: jack-key}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-route-authenticates-same-consumer
+        input: {method: GET, path: /hello1, headers: {apikey: jack-key}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-shared-counter-consumer-quota-spans-routes-test-3
+    source: {file: t/plugin/limit-req-shared-counter.t, tests: [3]}
+    config:
+      consumers:
+        - username: jack
+          plugins:
+            key-auth: {key: jack-key}
+            limit-req:
+              rate: 1
+              burst: 1
+              key: remote_addr
+              rejected_code: 429
+              nodelay: true
+      routes:
+        - id: limit-req-shared-route-one
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+        - id: limit-req-shared-route-two
+          uri: /hello1
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 2, at_most: 2}
+        expect:
+          - {method: GET, path: {matches: '^/hello1?$'}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-route-consumes-base-capacity
+        input: {method: GET, path: /hello, headers: {apikey: jack-key}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: first-route-consumes-burst-capacity
+        input: {method: GET, path: /hello, headers: {apikey: jack-key}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-route-sees-the-shared-consumer-counter
+        input: {method: GET, path: /hello1, headers: {apikey: jack-key}}
+        output: {status: 429}
   - name: limit-req
     source: {file: t/plugin/limit-req.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
     config:
@@ -136,59 +220,358 @@ cases:
         input: {method: GET, path: /limit-req, headers: {}}
         output:
           status: 429
-  - name: limit-req2
-    source: {file: t/plugin/limit-req2.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
+  - name: limit-req2-delay-route-is-runnable-test-1
+    source: {file: t/plugin/limit-req2.t, tests: [1]}
     config:
       routes:
-        - id: limit-req2
-          uri: /limit-req
+        - id: limit-req2-delay-route
+          uri: /hello*
           plugins:
-            limit-req: {rate: 1, burst: 1, nodelay: true, rejected_code: 429, rejected_msg: limit reached, key: remote_addr}
+            limit-req: {rate: 0.1, burst: 4, rejected_code: 503, key: remote_addr}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond: [{status: 200, body: limit-req upstream}]
+        count: {at_least: 1, at_most: 1}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: first-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: burst-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: rejected-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 429
-  - name: limit-req3
-    source: {file: t/plugin/limit-req3.t, tests: [1, 2, 3]}
+      - name: first-request-has-no-delay
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, elapsed_less_than: 500ms}
+
+  - name: limit-req2-second-request-is-delayed-test-2
+    source: {file: t/plugin/limit-req2.t, tests: [2]}
     config:
       routes:
-        - id: limit-req3
-          uri: /limit-req
+        - id: limit-req2-observable-delay
+          uri: /hello
           plugins:
-            limit-req: {rate: 1, burst: 1, nodelay: true, rejected_code: 429, rejected_msg: limit reached, key: remote_addr}
+            limit-req: {rate: 2, burst: 4, rejected_code: 503, key: remote_addr}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
       - name: primary
         kind: http
-        respond: [{status: 200, body: limit-req upstream}]
+        count: {at_least: 2, at_most: 2}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
     steps:
-      - name: first-request
-        input: {method: GET, path: /limit-req, headers: {}}
+      - name: first-request-is-immediate
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, elapsed_less_than: 500ms}
+      - name: second-request-waits-for-the-leaky-bucket
+        input: {method: GET, path: /hello}
         output:
           status: 200
-          body: {equals: limit-req upstream}
-      - name: burst-request
-        input: {method: GET, path: /limit-req, headers: {}}
+          body: {equals: hello world}
+          elapsed_at_least: 450ms
+          elapsed_less_than: 2s
+
+  - name: limit-req2-nodelay-route-is-runnable-test-3
+    source: {file: t/plugin/limit-req2.t, tests: [3]}
+    config:
+      routes:
+        - id: limit-req2-nodelay-route
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 4, rejected_code: 503, key: remote_addr, nodelay: true}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: configured-nodelay-request-reaches-upstream
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, elapsed_less_than: 500ms}
+
+  - name: limit-req2-nodelay-skips-second-request-delay-test-4
+    source: {file: t/plugin/limit-req2.t, tests: [4]}
+    config:
+      routes:
+        - id: limit-req2-nodelay-two-requests
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 4, rejected_code: 503, key: remote_addr, nodelay: true}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 2, at_most: 2}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-request-is-immediate
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, elapsed_less_than: 500ms}
+      - name: second-request-is-also-immediate
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, elapsed_less_than: 500ms}
+
+  - name: limit-req2-var-combination-key-is-runnable-test-5
+    source: {file: t/plugin/limit-req2.t, tests: [5]}
+    config:
+      routes:
+        - id: limit-req2-var-combination
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: "$http_a $http_b"
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {A: {equals: one}, B: {equals: two}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: two-header-key-reaches-upstream
+        input: {method: GET, path: /hello, headers: {A: one, B: two}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req2-same-var-combination-exceeds-burst-test-6
+    source: {file: t/plugin/limit-req2.t, tests: [6]}
+    config:
+      routes:
+        - id: limit-req2-same-var-key
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: "$http_a $http_b"
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 1, at_most: 1}
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            headers: {A: {equals: one}}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-identical-key-is-allowed
+        input: {method: GET, path: /hello, headers: {A: one}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-identical-key-is-rejected
+        input: {method: GET, path: /hello, headers: {A: one}}
+        output: {status: 503}
+
+  - name: limit-req2-different-var-combinations-have-separate-buckets-test-7
+    source: {file: t/plugin/limit-req2.t, tests: [7]}
+    config:
+      routes:
+        - id: limit-req2-distinct-var-keys
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: "$http_a $http_b"
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 2, at_most: 2}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-header-value-is-allowed
+        input: {method: GET, path: /hello, headers: {A: one}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: different-header-value-is-a-fresh-key
+        input: {method: GET, path: /hello, headers: {A: two}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req2-missing-var-combination-falls-back-to-client-ip-test-8
+    source: {file: t/plugin/limit-req2.t, tests: [8]}
+    config:
+      routes:
+        - id: limit-req2-missing-var-key
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: "$http_a $http_b"
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 1, at_most: 1}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-missing-key-uses-client-ip
+        input: {method: GET, path: /hello}
         output:
           status: 200
-          body: {equals: limit-req upstream}
-      - name: rejected-request
-        input: {method: GET, path: /limit-req, headers: {}}
+          body: {equals: hello world}
+          logs: {matches: "The value of the configured key is empty, use client IP instead"}
+      - name: second-missing-key-shares-client-ip-bucket
+        input: {method: GET, path: /hello}
         output:
-          status: 429
+          status: 503
+          logs: {matches: "The value of the configured key is empty, use client IP instead"}
+
+  - name: limit-req2-literal-var-combination-falls-back-to-client-ip-test-9
+    source: {file: t/plugin/limit-req2.t, tests: [9]}
+    config:
+      routes:
+        - id: limit-req2-literal-invalid-key
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: abcdefgh
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: literal-without-variable-uses-client-ip
+        input: {method: GET, path: /hello}
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {matches: "The value of the configured key is empty, use client IP instead"}
+
+  - name: limit-req2-invalid-key-shares-client-ip-bucket-test-10
+    source: {file: t/plugin/limit-req2.t, tests: [10]}
+    config:
+      routes:
+        - id: limit-req2-invalid-key-two-requests
+          uri: /hello
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: abcdefgh
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        count: {at_least: 1, at_most: 1}
+        expect: [{method: GET, path: {equals: /hello}}]
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: first-invalid-key-fallback-is-allowed
+        input: {method: GET, path: /hello}
+        output:
+          status: 200
+          body: {equals: hello world}
+          logs: {matches: "The value of the configured key is empty, use client IP instead"}
+      - name: second-invalid-key-fallback-is-rejected
+        input: {method: GET, path: /hello}
+        output:
+          status: 503
+          logs: {matches: "The value of the configured key is empty, use client IP instead"}
+  - name: limit-req3-route-accepts-var-combination-key-test-1
+    source: {file: t/plugin/limit-req3.t, tests: [1]}
+    config:
+      routes:
+        - id: limit-req3-route
+          uri: /hello
+          host: www.test.com
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: $remote_addr
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            host: {equals: www.test.com}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: configured-route-serves-request
+        input: {method: GET, path: /hello, headers: {Host: www.test.com}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req3-frontend-tls-sni-serves-route-test-2
+    source: {file: t/plugin/limit-req3.t, tests: [2]}
+    frontend_tls: {sni: www.test.com}
+    config:
+      routes:
+        - id: limit-req3-tls-route
+          uri: /hello
+          host: www.test.com
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: $remote_addr
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            host: {equals: www.test.com}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: generated-sni-certificate-terminates-tls
+        input: {method: GET, scheme: https, path: /hello, headers: {Host: www.test.com}}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req3-http2-parallel-requests-share-limit-test-3
+    source: {file: t/plugin/limit-req3.t, tests: [3]}
+    frontend_tls: {sni: www.test.com}
+    config:
+      routes:
+        - id: limit-req3-http2-route
+          uri: /hello
+          host: www.test.com
+          plugins:
+            limit-req:
+              rate: 0.1
+              burst: 0.1
+              rejected_code: 503
+              key: $remote_addr
+              key_type: var_combination
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 1
+        expect:
+          - method: GET
+            path: {equals: /hello}
+            host: {equals: www.test.com}
+        respond: [{status: 200, body: hello world}]
+    steps:
+      - name: two-http2-streams-share-the-client-rate-limit
+        concurrency: 2
+        repeat: 2
+        input: {method: GET, scheme: https, version: "2", path: /hello, headers: {Host: www.test.com}}
+        output: {status_counts: {200: 1, 503: 1}}

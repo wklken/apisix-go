@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -200,11 +202,18 @@ type bucket struct {
 	last   time.Time
 }
 
+type bucketStore struct {
+	mu      sync.Mutex
+	buckets map[string]*bucket
+}
+
 type reqLimiter interface {
 	incoming(key string, rate float64, burst float64) (time.Duration, bool, error)
 }
 
 var varPattern = regexp.MustCompile(`\$\{([0-9A-Za-z_]+)\}|\$([0-9A-Za-z_]+)`)
+
+var consumerBucketStores sync.Map
 
 const redisLimitReqScript = `
 local state = redis.call("HMGET", KEYS[1], "excess", "last")
@@ -366,7 +375,11 @@ func (p *Plugin) scopedKey(key string) string {
 func (p *Plugin) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		key := p.resolveKey(r)
-		delay, allowed, err := p.incoming(key)
+		consumerName := ""
+		if apisixctx.ConsumerPluginOverrides(r, name) {
+			consumerName, _ = apisixctx.GetApisixVar(r, "$consumer_name").(string)
+		}
+		delay, allowed, err := p.incomingWithConsumer(key, consumerName)
 		if err != nil {
 			if *p.config.AllowDegradation {
 				next.ServeHTTP(w, r)
@@ -395,20 +408,31 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) incoming(key string) (time.Duration, bool, error) {
-	key = p.scopedKey(key)
+func (p *Plugin) incomingWithConsumer(key string, consumerName string) (time.Duration, bool, error) {
+	if consumerName == "" {
+		key = p.scopedKey(key)
+	} else {
+		key = "consumer:" + consumerName + ":" + key
+	}
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		return p.redisLimiter.incoming(key, p.config.Rate, p.config.Burst)
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	mu := &p.mu
+	buckets := p.buckets
+	if consumerName != "" {
+		store := p.consumerBucketStore()
+		mu = &store.mu
+		buckets = store.buckets
+	}
+	mu.Lock()
+	defer mu.Unlock()
 
 	now := p.now()
-	b, ok := p.buckets[key]
+	b, ok := buckets[key]
 	if !ok {
 		b = &bucket{last: now}
-		p.buckets[key] = b
+		buckets[key] = b
 	}
 
 	elapsed := now.Sub(b.last).Seconds()
@@ -427,6 +451,14 @@ func (p *Plugin) incoming(key string) (time.Duration, bool, error) {
 	}
 
 	return time.Duration(delaySeconds * float64(time.Second)), true, nil
+}
+
+func (p *Plugin) consumerBucketStore() *bucketStore {
+	uid := shared.NewConfigUID()
+	uid.Add(p.config.Rate, p.config.Burst, p.config.Key, p.config.KeyType)
+	created := &bucketStore{buckets: make(map[string]*bucket)}
+	actual, _ := consumerBucketStores.LoadOrStore(uid.String(), created)
+	return actual.(*bucketStore)
 }
 
 type redisReqLimiter struct {
@@ -583,6 +615,7 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 	}
 
 	if key == "" {
+		logger.Warn("The value of the configured key is empty, use client IP instead")
 		key = base.RequestVarFromNginx(r, "remote_addr")
 	}
 	return key

@@ -103,6 +103,7 @@ type CaseStep struct {
 	Name           string          `yaml:"name"`
 	Repeat         int             `yaml:"repeat,omitempty"`
 	Concurrency    int             `yaml:"concurrency,omitempty"`
+	HoldUpstream   *HeldUpstream   `yaml:"hold_upstream,omitempty"`
 	Config         map[string]any  `yaml:"config,omitempty"`
 	ConfigProbe    *ConfigProbe    `yaml:"config_probe,omitempty"`
 	ConfigTimeout  time.Duration   `yaml:"config_timeout,omitempty"`
@@ -111,6 +112,12 @@ type CaseStep struct {
 	Output         HTTPOutput      `yaml:"output"`
 	FileAssertions []FileAssertion `yaml:"file_assertions,omitempty"`
 	Wait           time.Duration   `yaml:"wait,omitempty"`
+}
+
+type HeldUpstream struct {
+	Fixture  string        `yaml:"fixture"`
+	Requests int           `yaml:"requests"`
+	Probes   []ConfigProbe `yaml:"probes"`
 }
 
 type CaseAction struct {
@@ -203,13 +210,16 @@ type FixtureCountAssertion struct {
 }
 
 type RedisFixtureAssertion struct {
-	IgnoreNegotiation       bool                 `yaml:"ignore_negotiation,omitempty"`
-	AllowUnassertedCommands bool                 `yaml:"allow_unasserted_commands,omitempty"`
-	Values                  map[string]string    `yaml:"values,omitempty"`
-	TTLSeconds              map[string]int       `yaml:"ttl_seconds,omitempty"`
-	TTLSecondsBetween       map[string]IntRange  `yaml:"ttl_seconds_between,omitempty"`
-	ExpiryInitializations   map[string]int       `yaml:"expiry_initializations,omitempty"`
-	Auth                    []RedisAuthAssertion `yaml:"auth,omitempty"`
+	TLS                     bool                          `yaml:"tls,omitempty"`
+	IgnoreNegotiation       bool                          `yaml:"ignore_negotiation,omitempty"`
+	AllowUnassertedCommands bool                          `yaml:"allow_unasserted_commands,omitempty"`
+	Values                  map[string]string             `yaml:"values,omitempty"`
+	ValueMatches            map[string]string             `yaml:"value_matches,omitempty"`
+	Hashes                  map[string]map[string]Matcher `yaml:"hashes,omitempty"`
+	TTLSeconds              map[string]int                `yaml:"ttl_seconds,omitempty"`
+	TTLSecondsBetween       map[string]IntRange           `yaml:"ttl_seconds_between,omitempty"`
+	ExpiryInitializations   map[string]int                `yaml:"expiry_initializations,omitempty"`
+	Auth                    []RedisAuthAssertion          `yaml:"auth,omitempty"`
 }
 
 type IntRange struct {
@@ -324,19 +334,20 @@ type CaseSource struct {
 }
 
 type HTTPInput struct {
-	Method         string              `yaml:"method,omitempty"`
-	Scheme         string              `yaml:"scheme,omitempty"`
-	Version        string              `yaml:"version,omitempty"`
-	Path           string              `yaml:"path"`
-	Headers        map[string]string   `yaml:"headers,omitempty"`
-	HeaderValues   map[string][]string `yaml:"header_values,omitempty"`
-	Body           string              `yaml:"body,omitempty"`
-	BodyBase64     string              `yaml:"body_base64,omitempty"`
-	BodyRepeat     *RepeatedBody       `yaml:"body_repeat,omitempty"`
-	HMAC           *HMACSignature      `yaml:"hmac,omitempty"`
-	Chunked        bool                `yaml:"chunked,omitempty"`
-	WithoutCookies bool                `yaml:"without_cookies,omitempty"`
-	GRPC           *GRPCMessage        `yaml:"grpc,omitempty"`
+	Method               string              `yaml:"method,omitempty"`
+	Scheme               string              `yaml:"scheme,omitempty"`
+	Version              string              `yaml:"version,omitempty"`
+	Path                 string              `yaml:"path"`
+	Headers              map[string]string   `yaml:"headers,omitempty"`
+	HeaderValues         map[string][]string `yaml:"header_values,omitempty"`
+	Body                 string              `yaml:"body,omitempty"`
+	BodyBase64           string              `yaml:"body_base64,omitempty"`
+	BodyRepeat           *RepeatedBody       `yaml:"body_repeat,omitempty"`
+	HMAC                 *HMACSignature      `yaml:"hmac,omitempty"`
+	Chunked              bool                `yaml:"chunked,omitempty"`
+	WithoutCookies       bool                `yaml:"without_cookies,omitempty"`
+	DisconnectAfterBytes int                 `yaml:"disconnect_after_bytes,omitempty"`
+	GRPC                 *GRPCMessage        `yaml:"grpc,omitempty"`
 }
 
 type HMACSignature struct {
@@ -434,23 +445,33 @@ type OTLPAttributeAssertion struct {
 }
 
 type HTTPResponse struct {
-	Status          int               `yaml:"status,omitempty"`
-	Headers         map[string]string `yaml:"headers,omitempty"`
-	Body            string            `yaml:"body,omitempty"`
-	BodyRepeat      *RepeatedBody     `yaml:"body_repeat,omitempty"`
-	Chunks          []string          `yaml:"chunks,omitempty"`
-	EchoRequestBody bool              `yaml:"echo_request_body,omitempty"`
-	Delay           time.Duration     `yaml:"delay,omitempty"`
-	GRPC            *GRPCMessage      `yaml:"grpc,omitempty"`
+	Status          int                     `yaml:"status,omitempty"`
+	Headers         map[string]string       `yaml:"headers,omitempty"`
+	Body            string                  `yaml:"body,omitempty"`
+	BodyRepeat      *RepeatedBody           `yaml:"body_repeat,omitempty"`
+	Chunks          []string                `yaml:"chunks,omitempty"`
+	ChunkDelay      time.Duration           `yaml:"chunk_delay,omitempty"`
+	ChunkRepeat     int                     `yaml:"chunk_repeat,omitempty"`
+	AWSEventStream  []AWSEventStreamMessage `yaml:"aws_event_stream,omitempty"`
+	EchoRequestBody bool                    `yaml:"echo_request_body,omitempty"`
+	Delay           time.Duration           `yaml:"delay,omitempty"`
+	GRPC            *GRPCMessage            `yaml:"grpc,omitempty"`
+}
+
+type AWSEventStreamMessage struct {
+	Headers map[string]string `yaml:"headers"`
+	Payload string            `yaml:"payload"`
 }
 
 type HTTPOutput struct {
 	Status                  int                      `yaml:"status"`
+	StatusCounts            map[int]int              `yaml:"status_counts,omitempty"`
 	Headers                 map[string]Matcher       `yaml:"headers,omitempty"`
 	UniqueHeaders           []string                 `yaml:"unique_headers,omitempty"`
 	MonotonicHeaders        []string                 `yaml:"monotonic_headers,omitempty"`
 	DifferentHeaders        [][]string               `yaml:"different_headers,omitempty"`
 	Body                    *Matcher                 `yaml:"body,omitempty"`
+	Chunks                  []Matcher                `yaml:"chunks,omitempty"`
 	GzipBody                *Matcher                 `yaml:"gzip_body,omitempty"`
 	BrotliBody              *Matcher                 `yaml:"brotli_body,omitempty"`
 	Logs                    *Matcher                 `yaml:"logs,omitempty"`
@@ -462,6 +483,8 @@ type HTTPOutput struct {
 	Captures                map[string]HeaderCapture `yaml:"captures,omitempty"`
 	BodyCaptures            map[string]BodyCapture   `yaml:"body_captures,omitempty"`
 	GRPC                    *GRPCMessage             `yaml:"grpc,omitempty"`
+
+	recordStatus func(int)
 }
 
 type HeaderCapture struct {
@@ -745,6 +768,7 @@ func (c *Case) validateScenario() error {
 			c.Input.BodyRepeat != nil || c.Input.GRPC != nil ||
 			c.Input.Chunked ||
 			c.Upstream != nil || c.Output.Status != 0 || len(c.Output.Headers) > 0 || c.Output.Body != nil || c.Output.GRPC != nil ||
+			len(c.Output.StatusCounts) > 0 ||
 			c.Output.GzipBody != nil || c.Output.BrotliBody != nil || c.Output.Logs != nil || c.Output.SaveBodyLength != "" ||
 			c.Output.BodyLengthLessThan != "" || c.Output.BodyLengthLessThanValue != nil || c.Output.ElapsedAtLeast > 0 || c.Output.ElapsedLessThan > 0 || len(c.Output.UniqueHeaders) > 0 ||
 			len(c.Output.MonotonicHeaders) > 0 || len(c.Output.DifferentHeaders) > 0 ||
@@ -754,16 +778,16 @@ func (c *Case) validateScenario() error {
 		if len(c.Steps) == 0 {
 			return errors.New("at least one step is required with named fixtures")
 		}
-		fixtureNames := make(map[string]bool, len(c.Fixtures))
+		fixtureNames := make(map[string]string, len(c.Fixtures))
 		for i := range c.Fixtures {
 			fixture := &c.Fixtures[i]
 			if err := fixture.validate(); err != nil {
 				return fmt.Errorf("fixture %d: %w", i+1, err)
 			}
-			if fixtureNames[fixture.Name] {
+			if _, exists := fixtureNames[fixture.Name]; exists {
 				return fmt.Errorf("fixture name %q is duplicated", fixture.Name)
 			}
-			fixtureNames[fixture.Name] = true
+			fixtureNames[fixture.Name] = fixture.Kind
 		}
 		if err := validateAfterShutdown(c.AfterShutdown); err != nil {
 			return err
@@ -799,6 +823,60 @@ func (c *Case) validateScenario() error {
 			}
 			if step.Concurrency > 0 && (len(step.Actions) > 0 || len(step.FileAssertions) > 0) {
 				return fmt.Errorf("step %q concurrency must not be combined with actions or file assertions", step.Name)
+			}
+			if step.HoldUpstream != nil {
+				hold := step.HoldUpstream
+				if step.Concurrency == 0 {
+					return fmt.Errorf("step %q hold_upstream requires concurrency", step.Name)
+				}
+				kind, exists := fixtureNames[hold.Fixture]
+				if !exists {
+					return fmt.Errorf("step %q hold_upstream fixture %q does not exist", step.Name, hold.Fixture)
+				}
+				if kind != "http" && kind != "https" && kind != "h2c" {
+					return fmt.Errorf("step %q hold_upstream fixture %q must be HTTP", step.Name, hold.Fixture)
+				}
+				if hold.Requests <= 0 || hold.Requests != step.Repeat {
+					return fmt.Errorf("step %q hold_upstream requests must equal repeat", step.Name)
+				}
+				if step.Concurrency < hold.Requests {
+					return fmt.Errorf("step %q concurrency must cover all held upstream requests", step.Name)
+				}
+				if len(hold.Probes) == 0 {
+					return fmt.Errorf("step %q hold_upstream requires at least one probe", step.Name)
+				}
+				for i, probe := range hold.Probes {
+					if len(probe.Output.StatusCounts) > 0 {
+						return fmt.Errorf("step %q hold_upstream probe %d cannot use status_counts", step.Name, i+1)
+					}
+					if err := validateHTTPScenario(probe.Input, probe.Output); err != nil {
+						return fmt.Errorf("step %q hold_upstream probe %d: %w", step.Name, i+1, err)
+					}
+					if probe.Input.Scheme == "https" && c.TLS == nil {
+						return fmt.Errorf(
+							"step %q hold_upstream probe %d: HTTPS input requires frontend TLS",
+							step.Name,
+							i+1,
+						)
+					}
+				}
+			}
+			if len(step.Output.StatusCounts) > 0 {
+				if step.Concurrency == 0 {
+					return fmt.Errorf("step %q status_counts requires concurrency", step.Name)
+				}
+				total := 0
+				for _, count := range step.Output.StatusCounts {
+					total += count
+				}
+				if total != step.Repeat {
+					return fmt.Errorf(
+						"step %q status_counts total %d must equal repeat %d",
+						step.Name,
+						total,
+						step.Repeat,
+					)
+				}
 			}
 			if err := validateCaseActions(step.Actions); err != nil {
 				return fmt.Errorf("step %q actions: %w", step.Name, err)
@@ -875,14 +953,18 @@ func validateConfigProbeInput(input HTTPInput) error {
 	if input.WithoutCookies {
 		return errors.New("input without_cookies is not supported; config probes never use the client cookie jar")
 	}
+	if input.DisconnectAfterBytes != 0 {
+		return errors.New("input disconnect_after_bytes is not supported in config probes")
+	}
 	return nil
 }
 
 func validateConfigProbeOutput(output HTTPOutput) error {
 	if output.Logs != nil || output.SaveBodyLength != "" || output.BodyLengthLessThan != "" ||
 		output.BodyLengthLessThanValue != nil || output.ElapsedAtLeast > 0 || output.ElapsedLessThan > 0 ||
-		len(output.UniqueHeaders) > 0 || len(output.MonotonicHeaders) > 0 ||
-		len(output.DifferentHeaders) > 0 || len(output.Captures) > 0 || len(output.BodyCaptures) > 0 {
+		len(output.UniqueHeaders) > 0 || len(output.MonotonicHeaders) > 0 || len(output.Chunks) > 0 ||
+		len(output.DifferentHeaders) > 0 || len(output.Captures) > 0 || len(output.BodyCaptures) > 0 ||
+		len(output.StatusCounts) > 0 {
 		return errors.New("output supports only status, headers, body, gzip_body, and brotli_body")
 	}
 	return nil
@@ -908,6 +990,9 @@ func validateScenarioFiles(files []ScenarioFile) error {
 }
 
 func (c *Case) validateSingleScenario() error {
+	if len(c.Output.StatusCounts) > 0 {
+		return errors.New("output status_counts requires a concurrent step")
+	}
 	logOnly := c.Input.Path == "" && c.Output.Status == 0 && c.Output.Logs != nil
 	if logOnly {
 		if err := c.Output.Logs.validate(matcherLogs); err != nil {
@@ -940,7 +1025,7 @@ func (c *Case) validateSingleScenario() error {
 }
 
 func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
-	if input.Path == "" && output.Status == 0 {
+	if input.Path == "" && output.Status == 0 && len(output.StatusCounts) == 0 {
 		return errors.New("HTTP output or log assertion is required")
 	}
 	if !strings.HasPrefix(input.Path, "/") {
@@ -1012,8 +1097,36 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 			}
 		}
 	}
-	if output.Status < 100 || output.Status > 599 {
-		return errors.New("output status must be between 100 and 599")
+	if input.DisconnectAfterBytes < 0 {
+		return errors.New("input disconnect_after_bytes must not be negative")
+	}
+	if input.DisconnectAfterBytes > 0 {
+		if input.Version == "1.0" || input.Version == "2" {
+			return errors.New("input disconnect_after_bytes requires HTTP/1.1")
+		}
+		if output.Body != nil || output.GzipBody != nil || output.BrotliBody != nil ||
+			output.GRPC != nil || len(output.Chunks) > 0 || len(output.BodyCaptures) > 0 ||
+			output.SaveBodyLength != "" || output.BodyLengthLessThan != "" ||
+			output.BodyLengthLessThanValue != nil {
+			return errors.New("disconnect_after_bytes supports status, headers, logs, and timing assertions only")
+		}
+	}
+	if len(output.StatusCounts) == 0 {
+		if output.Status < 100 || output.Status > 599 {
+			return errors.New("output status must be between 100 and 599")
+		}
+	} else {
+		if output.Status != 0 {
+			return errors.New("output status and status_counts are mutually exclusive")
+		}
+		for status, count := range output.StatusCounts {
+			if status < 100 || status > 599 {
+				return errors.New("output status_counts statuses must be between 100 and 599")
+			}
+			if count <= 0 {
+				return errors.New("output status_counts values must be positive")
+			}
+		}
 	}
 	for name, matcher := range output.Headers {
 		if err := matcher.validate(matcherHeader); err != nil {
@@ -1061,6 +1174,17 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 		if err := output.Body.validate(matcherBody); err != nil {
 			return fmt.Errorf("output body: %w", err)
 		}
+	}
+	for i, matcher := range output.Chunks {
+		if err := matcher.validate(matcherBody); err != nil {
+			return fmt.Errorf("output chunk %d: %w", i+1, err)
+		}
+	}
+	if len(output.Chunks) > 0 && (input.Version == "1.0" || input.Version == "2") {
+		return errors.New("output chunks require HTTP/1.1")
+	}
+	if len(output.Chunks) > 0 && (output.GzipBody != nil || output.BrotliBody != nil || output.GRPC != nil) {
+		return errors.New("output chunks cannot be combined with gzip_body, brotli_body, or grpc")
 	}
 	if output.GRPC != nil {
 		if output.Body != nil || output.GzipBody != nil || output.BrotliBody != nil {
@@ -1117,7 +1241,8 @@ func (f *FixtureSpec) validate() error {
 		return errors.New("name is required")
 	}
 	supportedKinds := map[string]bool{
-		"http": true, "https": true, "h2c": true, "tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
+		"http": true, "https": true, "h2c": true, "https-connect": true,
+		"tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
 		"redis": true, "redis-cluster": true, "redis-sentinel": true,
 		"kafka": true, "rocketmq": true, "dubbo": true, "ldap": true,
 	}
@@ -1246,7 +1371,7 @@ func (f *FixtureSpec) validate() error {
 		}
 		return nil
 	}
-	if f.Kind == "http" || f.Kind == "https" || f.Kind == "h2c" {
+	if f.Kind == "http" || f.Kind == "https" || f.Kind == "h2c" || f.Kind == "https-connect" {
 		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
 			return fmt.Errorf("%s fixture must use expect/respond", f.Kind)
 		}
@@ -1267,6 +1392,18 @@ func (f *FixtureSpec) validate() error {
 		for i := range f.Expect {
 			if err := f.Expect[i].validate(); err != nil {
 				return fmt.Errorf("expectation %d: %w", i+1, err)
+			}
+		}
+		if f.Kind == "https-connect" {
+			if len(f.Expect) != 2 || len(f.Respond) != 2 {
+				return errors.New("https-connect fixture requires exactly two expectations and responses")
+			}
+			if f.Expect[0].Method != "CONNECT" || f.Expect[0].Host == nil ||
+				f.Expect[0].Host.Equals == nil {
+				return errors.New("https-connect fixture first expectation requires CONNECT and an exact host")
+			}
+			if f.Respond[0].Status != http.StatusOK {
+				return errors.New("https-connect fixture first response must have status 200")
 			}
 		}
 		if f.Count != nil {
@@ -1301,14 +1438,41 @@ func (f *FixtureSpec) validate() error {
 		return fmt.Errorf("%s fixture must use network_expect/network_respond", f.Kind)
 	}
 	if f.Redis != nil {
-		if f.Kind != "redis" && f.Kind != "redis-sentinel" {
+		if f.Kind != "redis" && f.Kind != "redis-cluster" && f.Kind != "redis-sentinel" {
 			return fmt.Errorf("%s fixture does not support Redis assertions", f.Kind)
+		}
+		if f.Redis.TLS && f.Kind != "redis-cluster" {
+			return fmt.Errorf("%s fixture does not support Redis TLS", f.Kind)
 		}
 		if f.Redis.AllowUnassertedCommands && len(f.NetworkExpect) > 0 {
 			return errors.New("redis allow_unasserted_commands must not be combined with network expectations")
 		}
-		if !f.Redis.AllowUnassertedCommands && len(f.Redis.Values) == 0 {
+		if !f.Redis.AllowUnassertedCommands &&
+			len(f.Redis.Values) == 0 &&
+			len(f.Redis.ValueMatches) == 0 &&
+			len(f.Redis.Hashes) == 0 {
 			return errors.New("redis assertion requires at least one final value")
+		}
+		for pattern := range f.Redis.ValueMatches {
+			if pattern == "" {
+				return errors.New("redis value_matches patterns must not be empty")
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("redis value_matches pattern %q: %w", pattern, err)
+			}
+		}
+		for key, fields := range f.Redis.Hashes {
+			if key == "" || len(fields) == 0 {
+				return errors.New("redis hashes require non-empty keys and fields")
+			}
+			for field, matcher := range fields {
+				if field == "" {
+					return errors.New("redis hash field names must not be empty")
+				}
+				if err := matcher.validate(matcherBody); err != nil {
+					return fmt.Errorf("redis hash %q field %q: %w", key, field, err)
+				}
+			}
 		}
 		for key, seconds := range f.Redis.TTLSeconds {
 			if key == "" || seconds <= 0 {
@@ -1732,6 +1896,9 @@ func (r HTTPResponse) validate() error {
 	if r.Body != "" || len(r.Chunks) > 0 {
 		configuredBodies++
 	}
+	if len(r.AWSEventStream) > 0 {
+		configuredBodies++
+	}
 	if r.EchoRequestBody {
 		configuredBodies++
 	}
@@ -1751,13 +1918,40 @@ func (r HTTPResponse) validate() error {
 		}
 	}
 	if configuredBodies > 1 || (r.Body != "" && len(r.Chunks) > 0) {
-		return errors.New("body, body_repeat, chunks, echo_request_body, and grpc are mutually exclusive")
+		return errors.New(
+			"body, body_repeat, chunks, aws_event_stream, echo_request_body, and grpc are mutually exclusive",
+		)
 	}
 	if r.Delay < 0 {
 		return errors.New("delay must not be negative")
 	}
 	if r.Delay > 5*time.Second {
 		return errors.New("delay must not exceed 5s")
+	}
+	if r.ChunkDelay < 0 || r.ChunkDelay > 5*time.Second {
+		return errors.New("chunk_delay must be between 0 and 5s")
+	}
+	if r.ChunkDelay > 0 && len(r.Chunks) == 0 {
+		return errors.New("chunk_delay requires chunks")
+	}
+	if r.ChunkRepeat < 0 {
+		return errors.New("chunk_repeat must not be negative")
+	}
+	if r.ChunkRepeat > 0 && len(r.Chunks) == 0 {
+		return errors.New("chunk_repeat requires chunks")
+	}
+	for i, message := range r.AWSEventStream {
+		if len(message.Headers) == 0 {
+			return fmt.Errorf("aws_event_stream message %d headers are required", i+1)
+		}
+		for name, value := range message.Headers {
+			if strings.TrimSpace(name) == "" || len(name) > 255 {
+				return fmt.Errorf("aws_event_stream message %d header name is invalid", i+1)
+			}
+			if len(value) > 65535 {
+				return fmt.Errorf("aws_event_stream message %d header %q value is too long", i+1, name)
+			}
+		}
 	}
 	return nil
 }

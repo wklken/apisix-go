@@ -847,7 +847,10 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 7 — Limits and Cache
 
-- [ ] `limit-conn` — six two-request scenarios do not preserve real concurrent/in-flight counters, dynamic variable failures, auth/global-rule interactions, Redis authentication/reuse, or HTTP/2 behavior.
+- [x] `limit-conn` — all 104 pinned blocks are now independent standalone
+  cases covering concurrent/in-flight counters, dynamic variables,
+  route/global/consumer scope, Redis authentication/reuse, TLS, SNI, and
+  HTTP/2 behavior.
 - [ ] `limit-count` — repeated three-request probes omit much of the 252-block fixed/sliding window, delayed-sync, Sentinel/Cluster, group sharing, metadata, reset header, and state-transition matrix.
 - [ ] `limit-req` — simple burst probes omit delay versus `nodelay`, atomic Redis concurrency, shared routes, variable errors, authentication, degradation, and HTTP/2 cases.
 - [ ] `graphql-limit-count` — one generic GraphQL quota request replaces fragments, cost/depth calculation, local/Redis/Cluster state, quota transitions, and schema rejection.
@@ -1358,7 +1361,7 @@ Execution waves:
    follows the limiter owners. They remain Medium because their own conversion
    is bounded, but they are not scheduled before those Hard prerequisites.
 
-### Hard — 4 remaining (18 listed)
+### Hard — 3 remaining (18 listed)
 
 - [x] `key-auth`
 - [x] `jwt-auth`
@@ -1366,7 +1369,7 @@ Execution waves:
 - [x] `openid-connect`
 - [x] `authz-keycloak`
 - [x] `saml-auth`
-- [ ] `limit-conn`
+- [x] `limit-conn`
 - [ ] `limit-count`
 - [ ] `limit-req`
 - [x] `proxy-cache`
@@ -1444,8 +1447,8 @@ Execution waves:
 ## Current Remaining-Work Analysis: 2026-07-30
 
 The user's reference to 56 remaining manifests is the historical count at
-commit `335203d`. The live checked ledger above is authoritative: 56 manifests
-are integrated and verified and 5 are still unchecked. An approved worker branch
+commit `335203d`. The live checked ledger above is authoritative: 57 manifests
+are integrated and verified and 4 are still unchecked. An approved worker branch
 does not reduce that number until its commits are integrated and its
 post-integration gates pass.
 
@@ -1611,7 +1614,7 @@ already-implemented branch.
   `limit-conn` assertions. Package/race, exact real-process normal/race,
   source/corpus/target, scoped lint, build, and diff gates pass.
 
-### Hard — 4 remaining (15 at replan)
+### Hard — 3 remaining (15 at replan)
 
 - [x] `batch-requests` — the approved worker range realized this risk through
   strict pipeline/metadata state, mixed HTTP/gRPC behavior, and ordered
@@ -1647,9 +1650,31 @@ already-implemented branch.
   trusted forwarding, proxies, TLS, and header behavior. Package/server/ctx
   race, exact real-process normal/race, source/corpus/target, scoped lint,
   build, and diff gates pass.
-- [ ] `limit-conn`
-- [ ] `limit-count`
-- [ ] `limit-req`
+- [x] `limit-conn` — all 104 pinned blocks across six sources are independent,
+  source-complete standalone cases. They cover local, Redis, and Redis Cluster
+  policies; dynamic variables; route/global/consumer scope; real held-request
+  concurrency; delay and latency diagnostics; authentication and connection
+  reuse; plaintext and TLS clusters; SNI and HTTP/2. The conversion fixed
+  NGINX-variable lookup, Redis config scoping, exact Redis diagnostics, request
+  latency logging, and empty combination-key fallback. Package/race, Redis
+  fixture normal/race, exact real-process normal/race, source/corpus/target,
+  full 104-case mapping, build, and diff gates pass.
+- [ ] `limit-count` — 69 of 252 pinned blocks are now independent real
+  standalone cases across delayed-sync, sliding-window, variable, local
+  lifecycle, cost, and Redis keepalive/environment sources. The strict
+  manifest gate enforces the full pinned source inventory, ordered singleton
+  mapping, target-plugin resources, and a non-increasing duplicate-backlog
+  ceiling; 28 duplicate groups/160 cases remain. Review remediation also made
+  Sentinel replica routing panic-free, disabled unsafe delayed sync for
+  request-resolved limits, bounded local sliding-window state, preserved
+  nested Redis configuration, and populated `$rate_limiting_info` for sliding
+  and delayed windows. Completion remains unchecked until the remaining
+  sources replace their generic mapped cases and pass the final gates.
+- [ ] `limit-req` — 16 of 89 pinned blocks are now independent real standalone
+  cases covering delayed versus nodelay execution, combination keys and
+  fallback diagnostics, consumer counters shared across routes but isolated
+  across consumers, SNI TLS, and parallel HTTP/2. Completion remains unchecked
+  until the local and Redis source families are converted and reviewed.
 - [x] `proxy-cache` — all 76 pinned disk and memory blocks are independent,
   source-complete, alias-free standalone cases covering schema/zones, cache
   status transitions, bypass/no-cache, TTL and Cache-Control, Set-Cookie,
@@ -1683,7 +1708,14 @@ already-implemented branch.
   metadata reload, errors, and shutdown flush. Package/race, exact
   real-process normal/race, source/corpus/target, scoped lint, build, and diff
   gates pass.
-- [ ] `ai-proxy`
+- [ ] `ai-proxy` — provider smoke, the main OpenAI cases, official endpoint
+  proxying, passthrough routing, flush timing, and upstream-variable cases now
+  use real provider fixtures and streaming assertions. The conversion has
+  already found and fixed passthrough method/path/query precedence, Bedrock
+  validation and model URL escaping, logical SSE frame timing, and
+  `$upstream_*` registration. Anthropic, protocol conversion, request override,
+  stream limits, client disconnect observability, Vertex AI, and the remaining
+  generic source groups keep this item unchecked.
 
 ### Updated Parallel Execution Waves
 
@@ -1707,3 +1739,14 @@ already-implemented branch.
    prerequisite changes.
 6. Run `ai-proxy` last, after bounded AI contracts and the disconnect,
    flushed-chunk, and AWS EventStream harness primitives are reviewed.
+
+### 2026-07-31 Checkpoint Verification
+
+- The standalone runner executes independent cases with a global six-process
+  cap while preserving ordered steps and variants inside each case. This keeps
+  the expanded corpus inside Go's default package timeout.
+- `source .envrc && go test ./... -count=1` passes; the complete `t/plugin`
+  package finishes in 337.762 seconds.
+- `source .envrc && make build` passes.
+- `make lint` reports only five pre-existing findings in untouched Brotli,
+  CORS, and request-validation files; the current diff adds no lint finding.

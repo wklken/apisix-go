@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"hash/crc32"
 	"html"
 	"io"
 	"maps"
@@ -46,6 +47,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	brotlidec "github.com/andybalholm/brotli"
@@ -61,7 +63,15 @@ const helperProcessEnv = "APISIX_GO_INTEGRATION_HELPER"
 
 const environmentHelperProcessEnv = "APISIX_GO_CASE_ENVIRONMENT_HELPER"
 
+const fallbackRootsHelperProcessEnv = "APISIX_GO_FALLBACK_ROOTS_HELPER"
+
+const fallbackRootsProxyURLEnv = "APISIX_GO_FALLBACK_ROOTS_PROXY_URL"
+
+const integrationFallbackRootsEnv = "APISIX_GO_INTEGRATION_FALLBACK_ROOTS"
+
 const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+
+const maxParallelPluginCases = 6
 
 func TestPluginIntegration(t *testing.T) {
 	files, err := filepath.Glob("*.yaml")
@@ -71,6 +81,7 @@ func TestPluginIntegration(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no plugin manifests found")
 	}
+	caseSlots := make(chan struct{}, maxParallelPluginCases)
 	for _, path := range files {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -83,6 +94,10 @@ func TestPluginIntegration(t *testing.T) {
 		pluginName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		for _, spec := range manifest.Cases {
 			t.Run(pluginName+"/"+spec.Name, func(t *testing.T) {
+				t.Parallel()
+				caseSlots <- struct{}{}
+				defer func() { <-caseSlots }()
+
 				if len(spec.Variants) == 0 {
 					runCase(t, spec)
 					return
@@ -1216,6 +1231,323 @@ func TestHarnessRunsChunkedFixture(t *testing.T) {
 	runCase(t, caseSpec)
 }
 
+func TestHarnessDisconnectsClient(t *testing.T) {
+	disconnected := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for range 1000 {
+			select {
+			case <-r.Context().Done():
+				close(disconnected)
+				return
+			default:
+			}
+			_, _ = io.WriteString(w, strings.Repeat("x", 64))
+			flusher.Flush()
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := server.Client()
+	client.Timeout = 2 * time.Second
+	err := runHTTPInput(
+		t,
+		client,
+		strings.TrimPrefix(server.URL, "http://"),
+		"",
+		HTTPInput{Path: "/stream", DisconnectAfterBytes: 128},
+		HTTPOutput{Status: http.StatusOK},
+		map[string]int{},
+		map[string][]string{},
+		map[string]string{},
+		map[string]string{},
+	)
+	if err != nil {
+		t.Fatalf("run disconnect input: %v", err)
+	}
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("server did not observe the client disconnect")
+	}
+}
+
+func TestHarnessAssertsConcurrentStatusCounts(t *testing.T) {
+	path := "/concurrent-statuses"
+	caseSpec := Case{
+		Name:   "concurrent-status-counts",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "concurrent-status-counts",
+					"uri": path,
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.origin.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{{
+			Name: "origin",
+			Kind: "http",
+			Expect: []HTTPAssertion{{
+				Path: &Matcher{Equals: &path},
+			}},
+			Respond: []HTTPResponse{
+				{Status: http.StatusOK},
+				{Status: http.StatusServiceUnavailable},
+				{Status: http.StatusServiceUnavailable},
+				{Status: http.StatusServiceUnavailable},
+				{Status: http.StatusServiceUnavailable},
+			},
+			Count: &FixtureCountAssertion{AtLeast: 5, AtMost: 5},
+		}},
+		Steps: []CaseStep{{
+			Name:        "exact-mix",
+			Repeat:      5,
+			Concurrency: 5,
+			Input:       HTTPInput{Path: path},
+			Output: HTTPOutput{
+				StatusCounts: map[int]int{
+					http.StatusOK:                 1,
+					http.StatusServiceUnavailable: 4,
+				},
+			},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessHoldsInflightRequestsWhileRunningProbes(t *testing.T) {
+	path := "/held-limit-conn"
+	caseSpec := Case{
+		Name:   "held-limit-conn",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "held-limit-conn",
+					"uri": path,
+					"plugins": map[string]any{
+						"limit-conn": map[string]any{
+							"conn":               2,
+							"burst":              0,
+							"default_conn_delay": 0.1,
+							"key":                "remote_addr",
+							"rejected_code":      http.StatusServiceUnavailable,
+						},
+					},
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.origin.ADDR}}": 1},
+					},
+				},
+				map[string]any{
+					"id":  "held-probe-observer",
+					"uri": "/held-probe-observer",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{FIXTURE.probe.ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Fixtures: []FixtureSpec{
+			{
+				Name: "origin",
+				Kind: "http",
+				Expect: []HTTPAssertion{{
+					Path: &Matcher{Equals: &path},
+				}},
+				Respond: []HTTPResponse{{Status: http.StatusOK, Body: "held"}},
+				Count:   &FixtureCountAssertion{AtLeast: 2, AtMost: 2},
+			},
+			{
+				Name: "probe",
+				Kind: "http",
+				Expect: []HTTPAssertion{{
+					Path: &Matcher{Equals: new("/held-probe-observer")},
+				}},
+				Respond: []HTTPResponse{{Status: http.StatusNoContent}},
+			},
+		},
+		Steps: []CaseStep{{
+			Name:        "two-held-one-rejected",
+			Repeat:      2,
+			Concurrency: 2,
+			HoldUpstream: &HeldUpstream{
+				Fixture:  "origin",
+				Requests: 2,
+				Probes: []ConfigProbe{{
+					Input:  HTTPInput{Path: path},
+					Output: HTTPOutput{Status: http.StatusServiceUnavailable},
+				}, {
+					Input:  HTTPInput{Path: "/held-probe-observer"},
+					Output: HTTPOutput{Status: http.StatusNoContent},
+				}},
+			},
+			Input:  HTTPInput{Path: path},
+			Output: HTTPOutput{Status: http.StatusOK},
+		}},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessAssertsFlushedChunks(t *testing.T) {
+	first := "data: first\n\n"
+	second := "data: second\n\n"
+	done := "data: [DONE]\n\n"
+	caseSpec := Case{
+		Name:   "flushed-chunks",
+		Source: CaseSource{Tests: []int{1}},
+		Config: map[string]any{
+			"routes": []any{
+				map[string]any{
+					"id":  "flushed-chunks",
+					"uri": "/flushed-chunks",
+					"upstream": map[string]any{
+						"type":  "roundrobin",
+						"nodes": map[string]any{"{{UPSTREAM_ADDR}}": 1},
+					},
+				},
+			},
+		},
+		Input: HTTPInput{Path: "/flushed-chunks"},
+		Upstream: &UpstreamSpec{
+			Respond: HTTPResponse{
+				Status:     http.StatusOK,
+				Headers:    map[string]string{"Content-Type": "text/event-stream"},
+				Chunks:     []string{first, second, done},
+				ChunkDelay: 300 * time.Millisecond,
+			},
+		},
+		Output: HTTPOutput{
+			Status: http.StatusOK,
+			Chunks: []Matcher{
+				{Equals: &first},
+				{Equals: &second},
+				{Equals: &done},
+			},
+		},
+	}
+
+	runCase(t, caseSpec)
+}
+
+func TestHarnessRunsAWSEventStreamFixture(t *testing.T) {
+	spec := FixtureSpec{
+		Name: "bedrock",
+		Kind: "http",
+		Respond: []HTTPResponse{{
+			Status:  http.StatusOK,
+			Headers: map[string]string{"Content-Type": "application/vnd.amazon.eventstream"},
+			AWSEventStream: []AWSEventStreamMessage{
+				{
+					Headers: map[string]string{
+						":message-type": "event",
+						":event-type":   "messageStart",
+						":content-type": "application/json",
+					},
+					Payload: `{"role":"assistant"}`,
+				},
+				{
+					Headers: map[string]string{
+						":message-type": "event",
+						":event-type":   "contentBlockDelta",
+						":content-type": "application/json",
+					},
+					Payload: `{"delta":{"text":"Hello"}}`,
+				},
+				{
+					Headers: map[string]string{
+						":message-type": "event",
+						":event-type":   "metadata",
+						":content-type": "application/json",
+					},
+					Payload: `{"usage":{"inputTokens":13,"outputTokens":5}}`,
+				},
+			},
+		}},
+	}
+	fixture, err := startNamedFixture(spec)
+	if err != nil {
+		t.Fatalf("start AWS EventStream fixture: %v", err)
+	}
+	t.Cleanup(fixture.close)
+
+	response, err := http.Get(fixture.url())
+	if err != nil {
+		t.Fatalf("request AWS EventStream fixture: %v", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read AWS EventStream fixture: %v", readErr)
+	}
+	events, err := decodeHarnessAWSEventStream(body)
+	if err != nil {
+		t.Fatalf("decode AWS EventStream fixture: %v", err)
+	}
+	want := []string{
+		`messageStart:{"role":"assistant"}`,
+		`contentBlockDelta:{"delta":{"text":"Hello"}}`,
+		`metadata:{"usage":{"inputTokens":13,"outputTokens":5}}`,
+	}
+	if !slices.Equal(events, want) {
+		t.Fatalf("AWS EventStream events = %#v, want %#v", events, want)
+	}
+}
+
+func decodeHarnessAWSEventStream(body []byte) ([]string, error) {
+	var events []string
+	for len(body) > 0 {
+		if len(body) < 16 {
+			return nil, errors.New("truncated AWS EventStream frame")
+		}
+		totalLength := int(binary.BigEndian.Uint32(body[:4]))
+		headersLength := int(binary.BigEndian.Uint32(body[4:8]))
+		if totalLength < 16 || totalLength > len(body) || headersLength > totalLength-16 {
+			return nil, errors.New("invalid AWS EventStream lengths")
+		}
+		frame := body[:totalLength]
+		if got, want := crc32.ChecksumIEEE(frame[:8]), binary.BigEndian.Uint32(frame[8:12]); got != want {
+			return nil, fmt.Errorf("AWS EventStream prelude CRC = %08x, want %08x", got, want)
+		}
+		if got, want := crc32.ChecksumIEEE(frame[:totalLength-4]),
+			binary.BigEndian.Uint32(frame[totalLength-4:]); got != want {
+			return nil, fmt.Errorf("AWS EventStream message CRC = %08x, want %08x", got, want)
+		}
+		headers := frame[12 : 12+headersLength]
+		eventType := ""
+		for len(headers) > 0 {
+			nameLength := int(headers[0])
+			if len(headers) < 1+nameLength+4 || headers[1+nameLength] != 7 {
+				return nil, errors.New("invalid AWS EventStream string header")
+			}
+			name := string(headers[1 : 1+nameLength])
+			valueLength := int(binary.BigEndian.Uint16(headers[2+nameLength : 4+nameLength]))
+			if len(headers) < 4+nameLength+valueLength {
+				return nil, errors.New("truncated AWS EventStream string header")
+			}
+			value := string(headers[4+nameLength : 4+nameLength+valueLength])
+			if name == ":event-type" {
+				eventType = value
+			}
+			headers = headers[4+nameLength+valueLength:]
+		}
+		payload := string(frame[12+headersLength : totalLength-4])
+		events = append(events, eventType+":"+payload)
+		body = body[totalLength:]
+	}
+	return events, nil
+}
+
 func TestHarnessSupportsHTTP10AndGzipBody(t *testing.T) {
 	body := "01234567890123456789"
 	caseSpec := Case{
@@ -1553,8 +1885,159 @@ func TestAPISIXProcess(t *testing.T) {
 	if os.Getenv(helperProcessEnv) != "1" {
 		return
 	}
+	if err := installIntegrationFallbackRoots(); err != nil {
+		t.Fatalf("install integration fallback roots: %v", err)
+	}
 	os.Args = []string{"apisix", "-c", "conf/config.yaml"}
 	apisixcmd.Execute()
+}
+
+func installIntegrationFallbackRoots() error {
+	if os.Getenv(integrationFallbackRootsEnv) != "1" {
+		return nil
+	}
+	if !godebugFallbackRootsEnabled(os.Getenv("GODEBUG")) {
+		return errors.New("integration fallback roots require GODEBUG=x509usefallbackroots=1")
+	}
+	path := os.Getenv("SSL_CERT_FILE")
+	if path == "" {
+		return errors.New("integration fallback roots require SSL_CERT_FILE")
+	}
+	certificates, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read SSL_CERT_FILE: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certificates) {
+		return errors.New("SSL_CERT_FILE contains no certificates")
+	}
+	x509.SetFallbackRoots(roots)
+	return nil
+}
+
+func godebugFallbackRootsEnabled(godebug string) bool {
+	useFallbackRoots := false
+	for setting := range strings.SplitSeq(godebug, ",") {
+		name, value, configured := strings.Cut(setting, "=")
+		if configured && name == "x509usefallbackroots" {
+			useFallbackRoots = value == "1"
+		}
+	}
+	return useFallbackRoots
+}
+
+func TestIntegrationFallbackRootsHelperProcess(t *testing.T) {
+	if os.Getenv(fallbackRootsHelperProcessEnv) != "1" {
+		return
+	}
+	if err := installIntegrationFallbackRoots(); err != nil {
+		t.Fatalf("install integration fallback roots: %v", err)
+	}
+	proxyURL, err := url.Parse(os.Getenv(fallbackRootsProxyURLEnv))
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
+	client := &http.Client{Transport: transport}
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"https://api.openai.com/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4"}`),
+	)
+	if err != nil {
+		t.Fatalf("create provider request: %v", err)
+	}
+	request.Header.Set("Authorization", "some-key")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("send provider request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("provider response status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestIntegrationFallbackRootsTrustsOnlyConfiguredCA(t *testing.T) {
+	fixtureSpec := func() FixtureSpec {
+		authority := "api.openai.com:443"
+		path := "/v1/chat/completions"
+		authorization := "some-key"
+		body := `{"model":"gpt-4"}`
+		return FixtureSpec{
+			Name: "provider-proxy",
+			Kind: "https-connect",
+			Expect: []HTTPAssertion{
+				{Method: http.MethodConnect, Host: &Matcher{Equals: &authority}},
+				{
+					Method:  http.MethodPost,
+					Path:    &Matcher{Equals: &path},
+					Headers: map[string]Matcher{"Authorization": {Equals: &authorization}},
+					Body:    &Matcher{JSONEquals: &body},
+				},
+			},
+			Respond: []HTTPResponse{
+				{Status: http.StatusOK},
+				{Status: http.StatusUnauthorized, Body: "Unauthorized"},
+			},
+		}
+	}
+	runHelper := func(t *testing.T, proxyURL string, caFile string) ([]byte, error) {
+		t.Helper()
+		command := exec.Command(
+			os.Args[0],
+			"-test.run=^TestIntegrationFallbackRootsHelperProcess$",
+			"-test.v",
+		)
+		command.Env = childEnvironment(os.Environ(), Environment{
+			fallbackRootsHelperProcessEnv: "1",
+			fallbackRootsProxyURLEnv:      proxyURL,
+			integrationFallbackRootsEnv:   "1",
+			"GODEBUG":                     "x509usefallbackroots=1",
+			"SSL_CERT_FILE":               caFile,
+		}, nil)
+		return command.CombinedOutput()
+	}
+
+	t.Run("trusted CA", func(t *testing.T) {
+		spec := fixtureSpec()
+		fixture, err := startHTTPSConnectFixture(spec)
+		if err != nil {
+			t.Fatalf("start HTTPS CONNECT fixture: %v", err)
+		}
+		defer fixture.close()
+
+		trusted := fixture.(interface{ caFile() string })
+		output, err := runHelper(t, fixture.url(), trusted.caFile())
+		if err != nil {
+			t.Fatalf("trusted CA helper failed: %v\n%s", err, output)
+		}
+		fixture.assert(t, spec)
+	})
+
+	t.Run("wrong CA", func(t *testing.T) {
+		spec := fixtureSpec()
+		fixture, err := startHTTPSConnectFixture(spec)
+		if err != nil {
+			t.Fatalf("start HTTPS CONNECT fixture: %v", err)
+		}
+		defer fixture.close()
+		wrongCA, err := startHTTPSConnectFixture(fixtureSpec())
+		if err != nil {
+			t.Fatalf("start wrong-CA fixture: %v", err)
+		}
+		defer wrongCA.close()
+
+		untrusted := wrongCA.(interface{ caFile() string })
+		output, err := runHelper(t, fixture.url(), untrusted.caFile())
+		if err == nil {
+			t.Fatalf("wrong CA helper unexpectedly succeeded:\n%s", output)
+		}
+		if !bytes.Contains(output, []byte("certificate signed by unknown authority")) {
+			t.Fatalf("wrong CA helper output = %q, want unknown authority", output)
+		}
+	})
 }
 
 func TestCaseEnvironmentHelperProcess(t *testing.T) {
@@ -1576,6 +2059,80 @@ type capturedRequest struct {
 type fixtureServer struct {
 	server   *httptest.Server
 	requests chan capturedRequest
+
+	holdMu sync.Mutex
+	hold   *fixtureResponseHold
+}
+
+type fixtureResponseHold struct {
+	mu       sync.Mutex
+	want     int
+	observed int
+	arrived  chan struct{}
+	release  chan struct{}
+}
+
+func newFixtureResponseHold(want int) *fixtureResponseHold {
+	return &fixtureResponseHold{
+		want:    want,
+		arrived: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (h *fixtureResponseHold) arriveAndWait(context context.Context) {
+	h.mu.Lock()
+	h.observed++
+	if h.observed == h.want {
+		close(h.arrived)
+	}
+	h.mu.Unlock()
+
+	select {
+	case <-h.release:
+	case <-context.Done():
+	}
+}
+
+func (h *fixtureResponseHold) wait(timeout time.Duration) error {
+	select {
+	case <-h.arrived:
+		return nil
+	case <-time.After(timeout):
+		h.mu.Lock()
+		observed := h.observed
+		h.mu.Unlock()
+		return fmt.Errorf("observed %d of %d held upstream requests", observed, h.want)
+	}
+}
+
+func (f *fixtureServer) beginResponseHold(requests int) (*fixtureResponseHold, error) {
+	f.holdMu.Lock()
+	defer f.holdMu.Unlock()
+	if f.hold != nil {
+		return nil, errors.New("fixture response hold is already active")
+	}
+	hold := newFixtureResponseHold(requests)
+	f.hold = hold
+	return hold, nil
+}
+
+func (f *fixtureServer) waitOnResponseHold(context context.Context) {
+	f.holdMu.Lock()
+	hold := f.hold
+	f.holdMu.Unlock()
+	if hold != nil {
+		hold.arriveAndWait(context)
+	}
+}
+
+func (f *fixtureServer) endResponseHold(hold *fixtureResponseHold) {
+	f.holdMu.Lock()
+	if f.hold == hold {
+		f.hold = nil
+		close(hold.release)
+	}
+	f.holdMu.Unlock()
 }
 
 func startFixture(spec *UpstreamSpec) *fixtureServer {
@@ -1608,6 +2165,9 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 }
 
 func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
+	if spec.Kind == "https-connect" {
+		return startHTTPSConnectFixture(spec)
+	}
 	if spec.Kind != "http" && spec.Kind != "https" && spec.Kind != "h2c" {
 		return startNetworkFixture(spec)
 	}
@@ -1619,6 +2179,7 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	var responseMu sync.Mutex
 	nextResponse := 0
 	var server *httptest.Server
+	fixture := &fixtureServer{requests: requests}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		request := capturedRequest{
@@ -1633,6 +2194,7 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 		case requests <- request:
 		default:
 		}
+		fixture.waitOnResponseHold(r.Context())
 
 		responseMu.Lock()
 		responseIndex := nextResponse
@@ -1657,7 +2219,8 @@ func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	default:
 		server = httptest.NewServer(handler)
 	}
-	return &fixtureServer{server: server, requests: requests}, nil
+	fixture.server = server
+	return fixture, nil
 }
 
 func expandFixtureSelfResponse(response HTTPResponse, selfURL string) HTTPResponse {
@@ -1713,6 +2276,9 @@ func writeFixtureResponse(w http.ResponseWriter, context context.Context, respon
 	for name, value := range response.Headers {
 		w.Header().Set(name, value)
 	}
+	if len(response.AWSEventStream) > 0 && w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+	}
 	if response.GRPC != nil {
 		message, err := base64.StdEncoding.DecodeString(*response.GRPC.MessageBase64)
 		if err != nil {
@@ -1743,17 +2309,77 @@ func writeFixtureResponse(w http.ResponseWriter, context context.Context, respon
 		_, _ = io.WriteString(w, renderRepeatedBody(response.BodyRepeat))
 		return
 	}
+	if len(response.AWSEventStream) > 0 {
+		flusher, _ := w.(http.Flusher)
+		for _, message := range response.AWSEventStream {
+			_, _ = w.Write(encodeHarnessAWSEventStreamMessage(message))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		return
+	}
 	if len(response.Chunks) == 0 {
 		_, _ = io.WriteString(w, response.Body)
 		return
 	}
 	flusher, _ := w.(http.Flusher)
-	for _, chunk := range response.Chunks {
-		_, _ = io.WriteString(w, chunk)
-		if flusher != nil {
-			flusher.Flush()
+	repeats := response.ChunkRepeat
+	if repeats == 0 {
+		repeats = 1
+	}
+	for range repeats {
+		for _, chunk := range response.Chunks {
+			select {
+			case <-context.Done():
+				return
+			default:
+			}
+			_, _ = io.WriteString(w, chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if response.ChunkDelay > 0 {
+				timer := time.NewTimer(response.ChunkDelay)
+				select {
+				case <-timer.C:
+					timer.Stop()
+				case <-context.Done():
+					timer.Stop()
+					return
+				}
+			}
 		}
 	}
+}
+
+func encodeHarnessAWSEventStreamMessage(message AWSEventStreamMessage) []byte {
+	names := make([]string, 0, len(message.Headers))
+	for name := range message.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var headers bytes.Buffer
+	for _, name := range names {
+		value := message.Headers[name]
+		headers.WriteByte(byte(len(name)))
+		headers.WriteString(name)
+		headers.WriteByte(7)
+		_ = binary.Write(&headers, binary.BigEndian, uint16(len(value)))
+		headers.WriteString(value)
+	}
+
+	totalLength := 16 + headers.Len() + len(message.Payload)
+	frame := make([]byte, 12, totalLength)
+	binary.BigEndian.PutUint32(frame[:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(headers.Len()))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	frame = append(frame, headers.Bytes()...)
+	frame = append(frame, message.Payload...)
+	messageCRC := make([]byte, 4)
+	binary.BigEndian.PutUint32(messageCRC, crc32.ChecksumIEEE(frame))
+	return append(frame, messageCRC...)
 }
 
 func (f *fixtureServer) address() string {
@@ -1890,6 +2516,10 @@ func startAPISIX(workDir string, environment Environment, environmentUnset []str
 	childEnvironmentOverrides := make(Environment, len(environment)+1)
 	maps.Copy(childEnvironmentOverrides, environment)
 	childEnvironmentOverrides[helperProcessEnv] = "1"
+	childEnvironmentOverrides[integrationFallbackRootsEnv] = "0"
+	if godebugFallbackRootsEnabled(environment["GODEBUG"]) && environment["SSL_CERT_FILE"] != "" {
+		childEnvironmentOverrides[integrationFallbackRootsEnv] = "1"
+	}
 	command.Env = childEnvironment(os.Environ(), childEnvironmentOverrides, environmentUnset)
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -2395,6 +3025,21 @@ func runCase(t *testing.T, spec Case) {
 				if step.Concurrency > 0 {
 					var failed atomic.Bool
 					semaphore := make(chan struct{}, step.Concurrency)
+					var statusMu sync.Mutex
+					actualStatusCounts := make(map[int]int, len(step.Output.StatusCounts))
+					var responseHold *fixtureResponseHold
+					var heldFixture *fixtureServer
+					if step.HoldUpstream != nil {
+						var ok bool
+						heldFixture, ok = namedFixtures[step.HoldUpstream.Fixture].(*fixtureServer)
+						if !ok {
+							t.Fatalf("fixture %s does not support held responses", step.HoldUpstream.Fixture)
+						}
+						responseHold, err = heldFixture.beginResponseHold(step.HoldUpstream.Requests)
+						if err != nil {
+							t.Fatalf("hold fixture %s responses: %v", step.HoldUpstream.Fixture, err)
+						}
+					}
 					var group sync.WaitGroup
 					for iteration := 1; iteration <= repeat; iteration++ {
 						iteration := iteration
@@ -2403,6 +3048,13 @@ func runCase(t *testing.T, spec Case) {
 							defer func() { <-semaphore }()
 							input := expandIterationInput(step.Input, iteration)
 							output := expandIterationOutput(step.Output, iteration)
+							if len(output.StatusCounts) > 0 {
+								output.recordStatus = func(status int) {
+									statusMu.Lock()
+									actualStatusCounts[status]++
+									statusMu.Unlock()
+								}
+							}
 							if err := runHTTPInput(
 								t, client, address, tlsAddress, input, output,
 								make(map[string]int), make(map[string][]string),
@@ -2412,7 +3064,43 @@ func runCase(t *testing.T, spec Case) {
 							}
 						})
 					}
+					if responseHold != nil {
+						if err := responseHold.wait(2 * time.Second); err != nil {
+							t.Errorf("wait for fixture %s held requests: %v", step.HoldUpstream.Fixture, err)
+							failed.Store(true)
+						} else {
+							for i, probe := range step.HoldUpstream.Probes {
+								if err := runHTTPInput(
+									t,
+									client,
+									address,
+									tlsAddress,
+									probe.Input,
+									probe.Output,
+									make(map[string]int),
+									make(map[string][]string),
+									maps.Clone(capturedCookies),
+									capturedValues,
+								); err != nil {
+									t.Errorf("held upstream probe %d: %v", i+1, err)
+									failed.Store(true)
+								}
+								if probe.Output.Logs != nil {
+									logMatchers = append(logMatchers, *probe.Output.Logs)
+								}
+							}
+						}
+						heldFixture.endResponseHold(responseHold)
+					}
 					group.Wait()
+					if len(step.Output.StatusCounts) > 0 &&
+						!maps.Equal(actualStatusCounts, step.Output.StatusCounts) {
+						t.Errorf(
+							"concurrent response status counts = %v, want %v",
+							actualStatusCounts,
+							step.Output.StatusCounts,
+						)
+					}
 					if failed.Load() {
 						requestFailed = true
 					}
@@ -3652,7 +4340,33 @@ func runHTTPInput(
 		_ = response.Body.Close()
 		return err
 	}
-	responseBody, err := io.ReadAll(response.Body)
+	if input.DisconnectAfterBytes > 0 {
+		_, err = io.CopyN(io.Discard, response.Body, int64(input.DisconnectAfterBytes))
+		closeErr := response.Body.Close()
+		if err != nil {
+			t.Errorf("read %d response bytes before disconnect: %v", input.DisconnectAfterBytes, err)
+			return err
+		}
+		if closeErr != nil {
+			t.Errorf("disconnect client response: %v", closeErr)
+			return closeErr
+		}
+		assertOutput(t, output, response, "")
+		assertElapsed(t, output, time.Since(started))
+		assertGeneratedHeaders(t, output, response.Header, headerHistory)
+		captureResponseCookies(response, capturedCookies)
+		if err := captureResponseHeaders(output.Captures, response.Header, capturedValues); err != nil {
+			t.Errorf("capture response header: %v", err)
+			return err
+		}
+		return nil
+	}
+	var responseBody []byte
+	if len(output.Chunks) > 0 {
+		responseBody, err = readAndAssertResponseChunks(t, response.Body, output.Chunks)
+	} else {
+		responseBody, err = io.ReadAll(response.Body)
+	}
 	_ = response.Body.Close()
 	if err != nil {
 		t.Errorf("read client response: %v", err)
@@ -3672,6 +4386,130 @@ func runHTTPInput(
 		return err
 	}
 	return nil
+}
+
+const responseSSEFrameArrivalTimeout = 500 * time.Millisecond
+
+type responseSSEFrame struct {
+	value string
+	err   error
+}
+
+func readAndAssertResponseChunks(t *testing.T, body io.Reader, expected []Matcher) ([]byte, error) {
+	t.Helper()
+	done := make(chan struct{})
+	defer close(done)
+	frames := readResponseSSEFrames(body, done)
+	var full bytes.Buffer
+	for i, matcher := range expected {
+		timer := time.NewTimer(responseSSEFrameArrivalTimeout)
+		select {
+		case frame, ok := <-frames:
+			timer.Stop()
+			if !ok {
+				return nil, fmt.Errorf("response SSE stream ended before frame %d", i+1)
+			}
+			if frame.err != nil {
+				return nil, frame.err
+			}
+			_, _ = full.WriteString(frame.value)
+			if err := matcher.match(frame.value, true); err != nil {
+				t.Errorf("response SSE frame %d: %v", i+1, err)
+			}
+		case <-timer.C:
+			return nil, fmt.Errorf(
+				"response SSE frame %d did not arrive within %s; response may not have been flushed",
+				i+1,
+				responseSSEFrameArrivalTimeout,
+			)
+		}
+	}
+
+	extraFrames := make([]string, 0)
+	for frame := range frames {
+		if frame.err != nil {
+			return nil, frame.err
+		}
+		extraFrames = append(extraFrames, frame.value)
+		_, _ = full.WriteString(frame.value)
+	}
+	if len(extraFrames) > 0 {
+		t.Errorf("response SSE frames = %d, want %d; extras: %#v", len(expected)+len(extraFrames), len(expected), extraFrames)
+	}
+	return full.Bytes(), nil
+}
+
+func readResponseSSEFrames(body io.Reader, done <-chan struct{}) <-chan responseSSEFrame {
+	frames := make(chan responseSSEFrame)
+	go func() {
+		defer close(frames)
+		reader := bufio.NewReader(body)
+		var frame strings.Builder
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				frame.WriteString(line)
+				if line == "\n" || line == "\r\n" {
+					select {
+					case frames <- responseSSEFrame{value: frame.String()}:
+						frame.Reset()
+					case <-done:
+						return
+					}
+				}
+			}
+			if errors.Is(err, io.EOF) {
+				if frame.Len() > 0 {
+					select {
+					case frames <- responseSSEFrame{err: errors.New("response SSE stream ended with an unterminated frame")}:
+					case <-done:
+					}
+				}
+				return
+			}
+			if err != nil {
+				select {
+				case frames <- responseSSEFrame{err: fmt.Errorf("read response SSE stream: %w", err)}:
+				case <-done:
+				}
+				return
+			}
+		}
+	}()
+	return frames
+}
+
+func TestReadAndAssertResponseChunksReassemblesSplitSSEFrame(t *testing.T) {
+	frame := "data: first\n\n"
+
+	body, err := readAndAssertResponseChunks(
+		t,
+		iotest.OneByteReader(strings.NewReader(frame)),
+		[]Matcher{{Equals: &frame}},
+	)
+	if err != nil {
+		t.Fatalf("read split SSE frame: %v", err)
+	}
+	if string(body) != frame {
+		t.Fatalf("response body = %q, want %q", body, frame)
+	}
+}
+
+func TestReadAndAssertResponseChunksSeparatesCoalescedSSEFrames(t *testing.T) {
+	first := "data: first\n\n"
+	second := "data: second\r\n\r\n"
+
+	body, err := readAndAssertResponseChunks(
+		t,
+		strings.NewReader(first+second),
+		[]Matcher{{Equals: &first}, {Equals: &second}},
+	)
+	if err != nil {
+		t.Fatalf("read coalesced SSE frames: %v", err)
+	}
+	if string(body) != first+second {
+		t.Fatalf("response body = %q, want %q", body, first+second)
+	}
 }
 
 func applyHMACSignature(request *http.Request, spec HMACSignature, now time.Time) {
@@ -4036,7 +4874,10 @@ func fixtureAssertionsConfigured(assertion HTTPAssertion) bool {
 
 func assertOutput(t *testing.T, expected HTTPOutput, response *http.Response, body string) {
 	t.Helper()
-	if response.StatusCode != expected.Status {
+	if expected.recordStatus != nil {
+		expected.recordStatus(response.StatusCode)
+	}
+	if len(expected.StatusCounts) == 0 && response.StatusCode != expected.Status {
 		t.Errorf("response status = %d, want %d", response.StatusCode, expected.Status)
 	}
 	assertHeaders(t, "response", expected.Headers, response.Header)

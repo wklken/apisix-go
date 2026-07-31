@@ -43,6 +43,17 @@ type preparedProviderRequest struct {
 	anthropicConversion bool
 }
 
+type countingReadCloser struct {
+	io.ReadCloser
+	bytesRead int64
+}
+
+func (r *countingReadCloser) Read(body []byte) (int, error) {
+	read, err := r.ReadCloser.Read(body)
+	r.bytesRead += int64(read)
+	return read, err
+}
+
 const (
 	priority = 1040
 	name     = "ai-proxy"
@@ -339,6 +350,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			base.WriteJSONMessage(w, status, err.Error())
 			return
 		}
+		if err := p.validateProviderRequest(body, protocol); err != nil {
+			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		r = ai_runtime.WithExecution(r, "ai-proxy-"+p.config.Provider, func(
 			w http.ResponseWriter,
 			r *http.Request,
@@ -353,6 +368,19 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		ai_runtime.FromRequest(r).Execute(w, r)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func (p *Plugin) validateProviderRequest(body []byte, protocol ai_protocols.Protocol) error {
+	if p.config.Provider != "bedrock" {
+		return nil
+	}
+	if protocol != ai_protocols.BedrockConverse {
+		return fmt.Errorf("bedrock provider does not support %s protocol", protocol.OverrideKey)
+	}
+	if p.requestModel(body) == "" {
+		return fmt.Errorf("could not resolve upstream path: bedrock requires options.model or request body model")
+	}
+	return nil
 }
 
 func (p *Plugin) executeProviderRequest(
@@ -390,14 +418,50 @@ func (p *Plugin) executeProviderRequest(
 		defer cancel()
 		proxyReq = proxyReq.WithContext(deadlineContext)
 	}
+	upstreamStarted := time.Now()
+	registerUpstreamTargetVars(r, proxyReq)
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
+		registerUpstreamResponseTime(r, time.Since(upstreamStarted))
 		base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	responseBody := &countingReadCloser{ReadCloser: resp.Body}
+	resp.Body = responseBody
 	p.writeProviderResponse(w, r, prepared, started, resp)
+	registerUpstreamResponseVars(
+		r,
+		resp.StatusCode,
+		time.Since(upstreamStarted),
+		responseBody.bytesRead,
+	)
+}
+
+func registerUpstreamTargetVars(r *http.Request, upstream *http.Request) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$upstream_addr", upstream.URL.Host)
+	apisixctx.RegisterRequestVar(r, "$upstream_uri", upstream.URL.RequestURI())
+	apisixctx.RegisterRequestVar(r, "$upstream_host", upstream.URL.Hostname())
+}
+
+func registerUpstreamResponseVars(r *http.Request, status int, elapsed time.Duration, responseLength int64) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$upstream_status", fmt.Sprintf("%d", status))
+	registerUpstreamResponseTime(r, elapsed)
+	apisixctx.RegisterRequestVar(r, "$upstream_response_length", responseLength)
+}
+
+func registerUpstreamResponseTime(r *http.Request, elapsed time.Duration) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	apisixctx.RegisterRequestVar(r, "$upstream_response_time", fmt.Sprintf("%.3f", elapsed.Seconds()))
 }
 
 func (p *Plugin) registerRequestIdentity(r *http.Request, body []byte, protocol ai_protocols.Protocol) {
@@ -658,7 +722,11 @@ func (p *Plugin) buildProviderRequest(
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(providerBody))
+	method := http.MethodPost
+	if protocol == ai_protocols.Passthrough {
+		method = r.Method
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, endpoint, bytes.NewReader(providerBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM request: %w", err)
 	}
@@ -668,6 +736,18 @@ func (p *Plugin) buildProviderRequest(
 		req.Header.Set(header, value)
 	}
 	query := req.URL.Query()
+	if protocol == ai_protocols.Passthrough {
+		if req.URL.Path == "" || req.URL.Path == "/" {
+			req.URL.Path = r.URL.Path
+			req.URL.RawPath = r.URL.RawPath
+		}
+		for key, values := range r.URL.Query() {
+			query.Del(key)
+			for _, value := range values {
+				query.Add(key, value)
+			}
+		}
+	}
 	for key, value := range p.config.Auth.Query {
 		query.Set(key, value)
 	}
@@ -728,7 +808,10 @@ func copyForwardHeaders(dst, src http.Header) {
 
 func (p *Plugin) endpoint(protocol ai_protocols.Protocol, body []byte) (string, error) {
 	if p.config.Override.Endpoint != "" {
-		if p.config.Provider == "openai-compatible" {
+		if protocol == ai_protocols.Passthrough {
+			return p.config.Override.Endpoint, nil
+		}
+		if p.config.Provider == "openai" || p.config.Provider == "openai-compatible" {
 			return appendProtocolEndpoint(p.config.Override.Endpoint, protocol)
 		}
 		if p.config.Provider == "bedrock" {
@@ -815,6 +898,7 @@ func appendBedrockEndpoint(endpoint string, model string, streaming bool) (strin
 		suffix = "/converse-stream"
 	}
 	parsed.Path = "/model/" + model + suffix
+	parsed.RawPath = "/model/" + strings.ReplaceAll(url.QueryEscape(model), "+", "%20") + suffix
 	return parsed.String(), nil
 }
 
@@ -1025,6 +1109,7 @@ func modelFromBody(body []byte) string {
 
 func (p *Plugin) transport() http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
 	transport.MaxIdleConnsPerHost = p.config.KeepalivePool
 	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
 	if p.config.Keepalive != nil && !*p.config.Keepalive {

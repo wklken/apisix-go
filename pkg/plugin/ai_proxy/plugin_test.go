@@ -1513,9 +1513,9 @@ func TestHandlerRejectsNonStreamingOversizedContentLength(t *testing.T) {
 	defer stop()
 
 	p := newTestPlugin(t, Config{
-		Provider:          "openai-compatible",
-		Override:          Override{Endpoint: upstream.URL + "/v1/oversized"},
-		MaxResponseBytes:  1024,
+		Provider:         "openai-compatible",
+		Override:         Override{Endpoint: upstream.URL + "/v1/oversized"},
+		MaxResponseBytes: 1024,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 	  "model":"test-model",
@@ -1621,7 +1621,11 @@ func TestHandlerRegistersLLMMetadataVarsForToolCallsAndCache(t *testing.T) {
 
 func TestHandlerRegistersLLMMetadataVarsForSafetyIdentifier(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+		_, _ = w.Write(
+			[]byte(
+				`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+			),
+		)
 	}))
 	defer upstream.Close()
 	p := newTestPlugin(t, Config{

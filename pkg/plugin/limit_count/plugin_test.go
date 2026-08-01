@@ -774,7 +774,15 @@ func TestSlidingWindowCommitFlushesPermittedDeltaAfterLimitReached(t *testing.T)
 	if err != nil || remaining != 0 {
 		t.Fatalf("consume quota = remaining %d, error %v; want remaining 0", remaining, err)
 	}
-	if _, _, err := limiter.incoming(context.Background(), "commit-regression", 3, now); !errors.Is(err, errSlidingWindowRejected) {
+	if _, _, err := limiter.incoming(
+		context.Background(),
+		"commit-regression",
+		3,
+		now,
+	); !errors.Is(
+		err,
+		errSlidingWindowRejected,
+	) {
 		t.Fatalf("over-limit incoming error = %v, want %v", err, errSlidingWindowRejected)
 	}
 	remaining, _, err = limiter.commit(context.Background(), "commit-regression", 3, now)
@@ -795,7 +803,15 @@ func TestSlidingWindowCountersAreIsolatedByPluginName(t *testing.T) {
 	if _, _, err := limitCount.incoming(context.Background(), "same-key", 2, now); err != nil {
 		t.Fatalf("limit-count consume quota error = %v", err)
 	}
-	if _, _, err := limitCount.incoming(context.Background(), "same-key", 1, now); !errors.Is(err, errSlidingWindowRejected) {
+	if _, _, err := limitCount.incoming(
+		context.Background(),
+		"same-key",
+		1,
+		now,
+	); !errors.Is(
+		err,
+		errSlidingWindowRejected,
+	) {
 		t.Fatalf("limit-count over-limit error = %v, want %v", err, errSlidingWindowRejected)
 	}
 	remaining, _, err := graphqlLimitCount.incoming(context.Background(), "same-key", 1, now)
@@ -903,10 +919,14 @@ func TestSlidingWindowResponseHeadersStayRoundedAcrossAcceptedAndRejectedRequest
 		if response.Code != statuses[i] {
 			t.Fatalf("request %d response status = %d, want %d", i+1, response.Code, statuses[i])
 		}
-		if remaining := response.Header().Get(headers.remaining); !regexp.MustCompile(`^[0-9]+$`).MatchString(remaining) {
+		if remaining := response.Header().
+			Get(headers.remaining); !regexp.MustCompile(`^[0-9]+$`).
+			MatchString(remaining) {
 			t.Fatalf("request %d remaining header = %q, want an integer", i+1, remaining)
 		}
-		if reset := response.Header().Get(headers.reset); !regexp.MustCompile(`^[0-9]+(?:\.[0-9]{1,2})?$`).MatchString(reset) {
+		if reset := response.Header().
+			Get(headers.reset); !regexp.MustCompile(`^[0-9]+(?:\.[0-9]{1,2})?$`).
+			MatchString(reset) {
 			t.Fatalf("request %d reset header = %q, want at most two decimal places", i+1, reset)
 		}
 	}
@@ -976,7 +996,15 @@ func TestDelayedSyncRejectsAfterLocallyReservedQuotaIsExhausted(t *testing.T) {
 			t.Fatalf("request %d remaining = %d, want %d", request+1, remaining, 6-request)
 		}
 	}
-	if _, _, err := syncer.incoming(context.Background(), "example-1.com", 1, now); !errors.Is(err, errDelayedSyncRejected) {
+	if _, _, err := syncer.incoming(
+		context.Background(),
+		"example-1.com",
+		1,
+		now,
+	); !errors.Is(
+		err,
+		errDelayedSyncRejected,
+	) {
 		t.Fatalf("eighth request error = %v, want %v", err, errDelayedSyncRejected)
 	}
 }

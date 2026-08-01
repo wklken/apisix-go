@@ -66,7 +66,8 @@ func ForwardOpenAIAsAnthropicSSE(
 					return state.usage, writeErr
 				}
 				producedOutput = true
-			}		}
+			}
+		}
 		if err != nil {
 			if err == io.EOF {
 				break

@@ -1734,18 +1734,23 @@ already-implemented branch.
   metadata reload, errors, and shutdown flush. Package/race, exact
   real-process normal/race, source/corpus/target, scoped lint, build, and diff
   gates pass.
-- [ ] `ai-proxy` — provider smoke, the main OpenAI cases, official endpoint
-  proxying, passthrough routing, flush timing, and upstream-variable cases now
-  use real provider fixtures and streaming assertions. The conversion has
-  already found and fixed passthrough method/path/query precedence, Bedrock
-  validation and model URL escaping, logical SSE frame timing, and
-  `$upstream_*` registration. All 19 `ai-proxy-request-body-override.t` blocks
-  are now independent real provider cases covering strict option/protocol
-  schemas, raw-body preservation, protocol-specific token fields, single and
-  multi overrides, deep merge/force semantics, conversion ordering, and option
-  precedence. Anthropic, the remaining protocol conversion, stream limits,
-  client disconnect observability, Vertex AI, and the remaining generic source
-  groups keep this item unchecked.
+- [x] `ai-proxy` — all 303 pinned blocks across the 19 sources are
+  independent standalone cases. The corpus covers provider smoke and the
+  main OpenAI cases, official endpoint proxying, passthrough routing,
+  flush timing, upstream variables, request-body override, Anthropic
+  request/response/streaming conversion, Bedrock single and multi
+  SigV4/EventStream routes, Vertex AI chat/embeddings/GCP/health checks,
+  client disconnect observability, stream limits and duration aborts,
+  fixture-based provider behavior, and the built-in LLM access-log
+  variables. The conversion fixed production defects: invalid Anthropic
+  client requests return 400, streaming aborts log their exceeded
+  limits, client disconnects are detected and logged, malformed
+  tool_call arguments fall back instead of aborting, tool_choice and
+  json_object formats are dropped when unrepresentable, strict
+  json_schema normalization matches APISIX, tool messages precede
+  trailing text, and `$llm_has_tool_calls`/`$llm_tool_count`/
+  `$llm_end_user_id`/`$llm_cache_*`/`$llm_reasoning_tokens` are
+  registered for streaming and non-streaming responses.
 
 ### Updated Parallel Execution Waves
 

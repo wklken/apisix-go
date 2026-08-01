@@ -20,8 +20,8 @@ type failingWriter struct {
 	failFrom int
 }
 
-func (w *failingWriter) Header() http.Header         { return w.writer.Header() }
-func (w *failingWriter) WriteHeader(status int)      { w.writer.WriteHeader(status) }
+func (w *failingWriter) Header() http.Header    { return w.writer.Header() }
+func (w *failingWriter) WriteHeader(status int) { w.writer.WriteHeader(status) }
 func (w *failingWriter) Write(body []byte) (int, error) {
 	w.writes++
 	if w.writes >= w.failFrom {
@@ -128,6 +128,4 @@ func encodeTestAWSEventStreamMessage(t *testing.T, name string, payload string) 
 	return append(frame, byte(messageCRC>>24), byte(messageCRC>>16), byte(messageCRC>>8), byte(messageCRC))
 }
 
-var (
-	_ io.Writer = (*failingWriter)(nil)
-)
+var _ io.Writer = (*failingWriter)(nil)

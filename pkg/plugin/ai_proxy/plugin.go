@@ -1164,9 +1164,9 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 	}
 	if len(requestBody) > 0 {
 		var request struct {
-			User            string `json:"user"`
-			SafetyID        string `json:"safety_identifier"`
-			Metadata        struct {
+			User     string `json:"user"`
+			SafetyID string `json:"safety_identifier"`
+			Metadata struct {
 				UserID string `json:"user_id"`
 			} `json:"metadata"`
 		}
@@ -1193,7 +1193,7 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Response struct {
-			Output []any `json:"output"`
+			Output []any          `json:"output"`
 			Usage  map[string]any `json:"usage"`
 		} `json:"response"`
 		Usage map[string]any `json:"usage"`

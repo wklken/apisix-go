@@ -4434,7 +4434,12 @@ func readAndAssertResponseChunks(t *testing.T, body io.Reader, expected []Matche
 		_, _ = full.WriteString(frame.value)
 	}
 	if len(extraFrames) > 0 {
-		t.Errorf("response SSE frames = %d, want %d; extras: %#v", len(expected)+len(extraFrames), len(expected), extraFrames)
+		t.Errorf(
+			"response SSE frames = %d, want %d; extras: %#v",
+			len(expected)+len(extraFrames),
+			len(expected),
+			extraFrames,
+		)
 	}
 	return full.Bytes(), nil
 }

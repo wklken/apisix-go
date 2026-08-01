@@ -76,7 +76,11 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 			continue
 		}
 		if len(testCase.Fixtures) != 1 {
-			t.Fatalf("case %q fixtures = %d, want exactly one asserted provider fixture", testCase.Name, len(testCase.Fixtures))
+			t.Fatalf(
+				"case %q fixtures = %d, want exactly one asserted provider fixture",
+				testCase.Name,
+				len(testCase.Fixtures),
+			)
 		}
 		cases = append(cases, testCase)
 	}
@@ -115,7 +119,11 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 		}
 		if testNumber <= 2 {
 			if fixture.ExpectRequests == nil || *fixture.ExpectRequests != 0 {
-				t.Errorf("case %d %q must assert invalid config makes zero provider requests", testNumber, testCase.Name)
+				t.Errorf(
+					"case %d %q must assert invalid config makes zero provider requests",
+					testNumber,
+					testCase.Name,
+				)
 			}
 		} else if len(fixture.Expect) == 0 || fixture.Expect[0]["body"] == nil {
 			t.Errorf("case %d %q provider fixture lacks a body assertion", testNumber, testCase.Name)
@@ -125,7 +133,11 @@ func TestRequestBodyOverrideManifestMapsEveryPinnedBlockToIndependentBehavior(t 
 			testCase.Steps[0].Input["path"] == nil ||
 			testCase.Steps[0].Output["status"] == nil ||
 			(testCase.Steps[0].Output["body"] == nil && testCase.Steps[0].Output["chunks"] == nil) {
-			t.Errorf("case %d %q lacks one behavior-specific real-process request/response assertion", testNumber, testCase.Name)
+			t.Errorf(
+				"case %d %q lacks one behavior-specific real-process request/response assertion",
+				testNumber,
+				testCase.Name,
+			)
 		}
 	}
 }
@@ -169,7 +181,11 @@ func TestProtocolConversionManifestMapsEveryPinnedBlockToIndependentBehavior(t *
 			continue
 		}
 		if len(testCase.Fixtures) != 1 {
-			t.Fatalf("case %q fixtures = %d, want exactly one asserted provider fixture", testCase.Name, len(testCase.Fixtures))
+			t.Fatalf(
+				"case %q fixtures = %d, want exactly one asserted provider fixture",
+				testCase.Name,
+				len(testCase.Fixtures),
+			)
 		}
 		cases = append(cases, testCase)
 	}
@@ -219,7 +235,11 @@ func TestProtocolConversionManifestMapsEveryPinnedBlockToIndependentBehavior(t *
 			testCase.Steps[0].Input["path"] == nil ||
 			testCase.Steps[0].Output["status"] == nil ||
 			(testCase.Steps[0].Output["body"] == nil && testCase.Steps[0].Output["chunks"] == nil) {
-			t.Errorf("case %d %q lacks one behavior-specific real-process request/response assertion", testNumber, testCase.Name)
+			t.Errorf(
+				"case %d %q lacks one behavior-specific real-process request/response assertion",
+				testNumber,
+				testCase.Name,
+			)
 		}
 	}
 }

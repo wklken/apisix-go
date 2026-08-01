@@ -110,6 +110,118 @@ func TestStandaloneManifestMapsEveryLocalSourceBlockToIndependentCase(t *testing
 		if !containsLimitReqConfig(testCase.Config) {
 			t.Errorf("case %d %q has no real limit-req resource config", testNumber, testCase.Name)
 		}
+		if testNumber == 2 {
+			if !strings.Contains(testCase.Name, "misfiled-limit-conn") {
+				t.Errorf("case 2 name %q does not classify the pinned misfiled limit-conn test", testCase.Name)
+			}
+			if !containsPluginConfig(testCase.Config, "limit-conn") {
+				t.Error("case 2 does not preserve the pinned misfiled limit-conn configuration")
+			}
+		}
+		if len(testCase.Steps) == 0 {
+			if len(testCase.Input) == 0 || len(testCase.Output) == 0 {
+				t.Errorf("case %d %q has no executable request/response assertion", testNumber, testCase.Name)
+			}
+			continue
+		}
+		for stepIndex, step := range testCase.Steps {
+			if len(step.Input) == 0 || len(step.Output) == 0 {
+				t.Errorf(
+					"case %d %q step %d has no request/response assertion",
+					testNumber,
+					testCase.Name,
+					stepIndex+1,
+				)
+			}
+		}
+	}
+}
+
+func TestStandaloneManifestMapsEveryRedisSourceBlockToIndependentCase(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "t", "plugin", "limit-req.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var manifest struct {
+		Sources []struct {
+			Commit string `yaml:"commit"`
+			File   string `yaml:"file"`
+			Tests  int    `yaml:"tests"`
+		} `yaml:"sources"`
+		Cases []limitReqManifestCase `yaml:"cases"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+
+	const (
+		sourceFile   = "t/plugin/limit-req-redis.t"
+		sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+		sourceTests  = 30
+	)
+	assertLocalSourceCasesDoNotUseYAMLAliases(t, data, sourceFile)
+	sourceFound := false
+	for _, source := range manifest.Sources {
+		if source.File != sourceFile {
+			continue
+		}
+		sourceFound = true
+		if source.Commit != sourceCommit || source.Tests != sourceTests {
+			t.Fatalf(
+				"%s source = commit %q tests %d, want commit %q tests %d",
+				sourceFile,
+				source.Commit,
+				source.Tests,
+				sourceCommit,
+				sourceTests,
+			)
+		}
+	}
+	if !sourceFound {
+		t.Fatalf("source %s is not declared", sourceFile)
+	}
+
+	targetCases := make([]limitReqManifestCase, 0, sourceTests)
+	for _, testCase := range manifest.Cases {
+		if testCase.Source.File == sourceFile {
+			targetCases = append(targetCases, testCase)
+		}
+	}
+	if len(targetCases) != sourceTests {
+		t.Fatalf("%s cases = %d, want exactly %d", sourceFile, len(targetCases), sourceTests)
+	}
+
+	genericName := regexp.MustCompile(`(?i)(placeholder|generic|probe|block-[0-9]+|source-[0-9]+)`)
+	names := make(map[string]struct{}, sourceTests)
+	for i, testCase := range targetCases {
+		testNumber := i + 1
+		if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != testNumber {
+			t.Fatalf(
+				"case %d %q source tests = %v, want [%d]",
+				testNumber,
+				testCase.Name,
+				testCase.Source.Tests,
+				testNumber,
+			)
+		}
+		if !strings.HasSuffix(testCase.Name, "-test-"+strconv.Itoa(testNumber)) {
+			t.Errorf("case %d name %q does not end in its source identity", testNumber, testCase.Name)
+		}
+		if genericName.MatchString(testCase.Name) {
+			t.Errorf("case %d has generic name %q", testNumber, testCase.Name)
+		}
+		if _, exists := names[testCase.Name]; exists {
+			t.Errorf("case %d duplicates behavior name %q", testNumber, testCase.Name)
+		}
+		names[testCase.Name] = struct{}{}
+		if !containsLimitReqConfig(testCase.Config) {
+			t.Errorf("case %d %q has no real limit-req resource config", testNumber, testCase.Name)
+		}
+		if testNumber != 24 && !containsConfigValue(testCase.Config, "policy", "redis") {
+			t.Errorf("case %d %q does not exercise the pinned Redis policy", testNumber, testCase.Name)
+		}
 		if len(testCase.Steps) == 0 {
 			if len(testCase.Input) == 0 || len(testCase.Output) == 0 {
 				t.Errorf("case %d %q has no executable request/response assertion", testNumber, testCase.Name)
@@ -186,28 +298,62 @@ func yamlNodeUsesAliasOrMerge(node *yaml.Node) bool {
 }
 
 func containsLimitReqConfig(value any) bool {
+	return containsPluginConfig(value, name)
+}
+
+func containsPluginConfig(value any, pluginName string) bool {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if key == name {
+			if key == pluginName {
 				if _, ok := child.(map[string]any); ok {
 					return true
 				}
 			}
-			if containsLimitReqConfig(child) {
+			if containsPluginConfig(child, pluginName) {
 				return true
 			}
 		}
 	case []any:
-		return slices.ContainsFunc(typed, containsLimitReqConfig)
+		return slices.ContainsFunc(typed, func(child any) bool {
+			return containsPluginConfig(child, pluginName)
+		})
 	case map[any]any:
 		for key, child := range typed {
-			if fmt.Sprint(key) == name {
+			if fmt.Sprint(key) == pluginName {
 				if _, ok := child.(map[string]any); ok {
 					return true
 				}
 			}
-			if containsLimitReqConfig(child) {
+			if containsPluginConfig(child, pluginName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsConfigValue(value any, key string, expected any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for currentKey, child := range typed {
+			if currentKey == key && child == expected {
+				return true
+			}
+			if containsConfigValue(child, key, expected) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(typed, func(child any) bool {
+			return containsConfigValue(child, key, expected)
+		})
+	case map[any]any:
+		for currentKey, child := range typed {
+			if fmt.Sprint(currentKey) == key && child == expected {
+				return true
+			}
+			if containsConfigValue(child, key, expected) {
 				return true
 			}
 		}

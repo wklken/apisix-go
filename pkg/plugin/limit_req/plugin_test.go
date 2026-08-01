@@ -1,12 +1,14 @@
 package limit_req
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -346,6 +348,71 @@ func TestHandlerUsesRedisLimiter(t *testing.T) {
 	}
 }
 
+func TestHandlerLogsRedisLimiterError(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Rate:      1,
+		Burst:     0,
+		Key:       "remote_addr",
+		Policy:    "redis",
+		RedisHost: "127.0.0.1",
+	})
+	p.redisLimiter = &fakeRedisLimiter{
+		err: errors.New("WRONGPASS invalid username-password pair or user is disabled"),
+	}
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("limit-req-redis-error-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "WRONGPASS") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	res := performRequest(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})), "192.0.2.41:12345")
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusInternalServerError)
+	}
+
+	select {
+	case entry := <-entries:
+		want := "failed to limit req: WRONGPASS invalid username-password pair or user is disabled"
+		if entry.Message != want {
+			t.Fatalf("log message = %q, want %q", entry.Message, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Redis limiter error was not logged")
+	}
+}
+
+func TestLogRedisConnectionReuseReportsPoolHits(t *testing.T) {
+	entries := make(chan logger.Entry, 2)
+	stop := logger.ReplaceObserver("limit-req-redis-reuse-test", func(entry logger.Entry) {
+		if strings.HasPrefix(entry.Message, "redis connection reused times:") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	logRedisConnectionReuse(fakeRedisPoolStatsProvider{hits: 0})
+	logRedisConnectionReuse(fakeRedisPoolStatsProvider{hits: 1})
+
+	for _, want := range []string{
+		"redis connection reused times: 0",
+		"redis connection reused times: 1",
+	} {
+		select {
+		case entry := <-entries:
+			if entry.Message != want {
+				t.Fatalf("log message = %q, want %q", entry.Message, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("did not observe %q", want)
+		}
+	}
+}
+
 func TestHandlerRejectsWhenRedisLimiterRejects(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Rate:        1,
@@ -448,6 +515,14 @@ type fakeRedisLimiter struct {
 	delay   time.Duration
 	allowed bool
 	err     error
+}
+
+type fakeRedisPoolStatsProvider struct {
+	hits uint32
+}
+
+func (f fakeRedisPoolStatsProvider) PoolStats() *redis.PoolStats {
+	return &redis.PoolStats{Hits: f.hits}
 }
 
 func (f *fakeRedisLimiter) incoming(key string, rate float64, burst float64) (time.Duration, bool, error) {

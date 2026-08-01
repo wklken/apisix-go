@@ -52,34 +52,530 @@ cases:
         input: {method: GET, path: /limit-req, headers: {}}
         output:
           status: 429
-  - name: limit-req-redis
-    source: {file: t/plugin/limit-req-redis.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]}
+  - name: limit-req-redis-valid-schema-installs-route-test-1
+    source: {file: t/plugin/limit-req-redis.t, tests: [1]}
     config:
       routes:
-        - id: limit-req-redis
-          uri: /limit-req
+        - id: limit-req-redis-test-01
+          uri: /hello
           plugins:
-            limit-req: {rate: 1, burst: 1, nodelay: true, rejected_code: 429, rejected_msg: limit reached, key: remote_addr}
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: limit-req upstream}]
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
     steps:
-      - name: first-request
-        input: {method: GET, path: /limit-req, headers: {}}
+      - name: valid-redis-schema-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-route-connects-to-redis-test-2
+    source: {file: t/plugin/limit-req-redis.t, tests: [2]}
+    config:
+      routes:
+        - id: limit-req-redis-test-02
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: configured-redis-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-rate-four-burst-one-allows-four-test-3
+    source: {file: t/plugin/limit-req-redis.t, tests: [3]}
+    config:
+      routes:
+        - id: limit-req-redis-test-03
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 4, at_most: 4}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: all-four-pipelined-equivalent-requests-pass
+        repeat: 4
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-burst-rejects-tenth-request-test-4
+    source: {file: t/plugin/limit-req-redis.t, tests: [4]}
+    config:
+      routes:
+        - id: limit-req-redis-test-04
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 9, at_most: 9}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: first-six-requests-pass
+        repeat: 6
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: seventh-request-passes-before-rate-window-resets
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+      - name: final-three-contend-for-two-admissions
+        repeat: 3
+        concurrency: 3
+        input: {method: GET, path: /hello}
+        output: {status_counts: {200: 2, 503: 1}}
+
+  - name: limit-req-redis-connection-is-reused-test-5
+    source: {file: t/plugin/limit-req-redis.t, tests: [5]}
+    config:
+      routes:
+        - id: limit-req-redis-test-05
+          uri: /hello
+          plugins:
+            limit-req: {rate: 20, burst: 1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 2, at_most: 2}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: first-request-opens-redis-connection
+        input: {method: GET, path: /hello}
+        output: {status: 200}
+      - name: second-request-reuses-redis-connection
+        input: {method: GET, path: /hello}
         output:
           status: 200
-          body: {equals: limit-req upstream}
-      - name: burst-request
-        input: {method: GET, path: /limit-req, headers: {}}
+          logs: {matches: '(?s)redis connection reused times: 0.*redis connection reused times: 1'}
+
+  - name: limit-req-redis-authenticated-route-proxies-test-6
+    source: {file: t/plugin/limit-req-redis.t, tests: [6]}
+    config:
+      routes:
+        - id: limit-req-redis-test-06
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}', redis_username: alice, redis_password: somepassword}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: somepassword}]}}
+    steps:
+      - name: authenticated-redis-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-authenticated-small-burst-rejects-followups-test-7
+    source: {file: t/plugin/limit-req-redis.t, tests: [7]}
+    config:
+      routes:
+        - id: limit-req-redis-test-07
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}', redis_username: alice, redis_password: somepassword}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: somepassword}]}}
+    steps:
+      - {name: first-authenticated-request-passes, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+      - {name: following-three-authenticated-requests-are-rejected, repeat: 3, input: {method: GET, path: /hello}, output: {status: 503}}
+
+  - name: limit-req-redis-wrong-password-is-runtime-checked-test-8
+    source: {file: t/plugin/limit-req-redis.t, tests: [8]}
+    config:
+      routes:
+        - id: limit-req-redis-test-08
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}', redis_username: alice, redis_password: someerrorpassword}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+      - name: redis
+        kind: redis
+        network_respond: [{payload: "-WRONGPASS invalid username-password pair or user is disabled.\r\n"}]
+        redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: someerrorpassword}]}
+    steps:
+      - name: wrong-password-request-fails-before-upstream
+        input: {method: GET, path: /hello}
+        output: {status: 500, body: {equals: "failed to limit req\n"}}
+
+  - name: limit-req-redis-wrong-password-error-is-logged-test-9
+    source: {file: t/plugin/limit-req-redis.t, tests: [9]}
+    config:
+      routes:
+        - id: limit-req-redis-test-09
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}', redis_username: alice, redis_password: someerrorpassword}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+      - name: redis
+        kind: redis
+        network_respond: [{payload: "-WRONGPASS invalid username-password pair or user is disabled.\r\n"}]
+        redis: {ignore_negotiation: true, allow_unasserted_commands: true, auth: [{username: alice, password: someerrorpassword}]}
+    steps:
+      - name: wrong-password-returns-500-and-preserves-cause
+        input: {method: GET, path: /hello}
         output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: rejected-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 429
+          status: 500
+          body: {equals: "failed to limit req\n"}
+          logs: {matches: 'failed to limit req: WRONGPASS invalid username-password pair or user is disabled'}
+
+  - name: limit-req-redis-missing-host-rejects-route-test-10
+    source: {file: t/plugin/limit-req-redis.t, tests: [10]}
+    config:
+      routes:
+        - id: limit-req-redis-test-10
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis}
+    input: {method: GET, path: /hello}
+    output:
+      status: 404
+      logs: {matches: 'build route limit-req-redis-test-10 fail:.*limit-req.*redis_host'}
+
+  - name: limit-req-redis-disabled-plugin-bypasses-redis-test-11
+    source: {file: t/plugin/limit-req-redis.t, tests: [11]}
+    config:
+      routes:
+        - id: limit-req-redis-test-11
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}', _meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: disabled-plugin-does-not-touch-redis, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-disabled-plugin-allows-four-test-12
+    source: {file: t/plugin/limit-req-redis.t, tests: [12]}
+    config:
+      routes:
+        - id: limit-req-redis-test-12
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}', _meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 4, at_most: 4}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: all-four-requests-bypass-disabled-plugin, repeat: 4, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-server-addr-key-proxies-test-13
+    source: {file: t/plugin/limit-req-redis.t, tests: [13]}
+    config:
+      routes:
+        - id: limit-req-redis-test-13
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 2, rejected_code: 503, key: server_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: server-address-key-reaches-upstream, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-default-rejected-code-is-503-test-14
+    source: {file: t/plugin/limit-req-redis.t, tests: [14]}
+    config:
+      routes:
+        - id: limit-req-redis-test-14
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: first-request-passes, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+      - {name: second-request-uses-default-503, input: {method: GET, path: /hello}, output: {status: 503}}
+
+  - name: limit-req-redis-consumer-plugin-proxies-test-15
+    source: {file: t/plugin/limit-req-redis.t, tests: [15]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+      routes:
+        - id: limit-req-redis-test-15
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: consumer-bound-redis-plugin-proxies, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-key-auth-route-activates-consumer-plugin-test-16
+    source: {file: t/plugin/limit-req-redis.t, tests: [16]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+      routes:
+        - id: limit-req-redis-test-16
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: authenticated-route-uses-consumer-redis-quota, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-consumer-rate-three-burst-two-allows-three-test-17
+    source: {file: t/plugin/limit-req-redis.t, tests: [17]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+      routes:
+        - id: limit-req-redis-test-17
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 3, at_most: 3}, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: all-three-consumer-requests-pass, repeat: 3, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-updated-consumer-plugin-proxies-test-18
+    source: {file: t/plugin/limit-req-redis.t, tests: [18]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 403, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+      routes:
+        - id: limit-req-redis-test-18
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: updated-consumer-plugin-reaches-upstream, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-updated-consumer-rejects-followups-test-19
+    source: {file: t/plugin/limit-req-redis.t, tests: [19]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 403, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+      routes:
+        - id: limit-req-redis-test-19
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: first-consumer-request-passes, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: following-three-consumer-requests-are-rejected, repeat: 3, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 403}}
+
+  - name: limit-req-redis-empty-consumer-name-route-proxies-test-20
+    source: {file: t/plugin/limit-req-redis.t, tests: [20]}
+    config:
+      routes:
+        - id: limit-req-redis-test-20
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: consumer-name-key-route-proxies, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-empty-consumer-name-falls-back-to-client-ip-test-21
+    source: {file: t/plugin/limit-req-redis.t, tests: [21]}
+    config:
+      routes:
+        - id: limit-req-redis-test-21
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: empty-consumer-name-uses-client-ip
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'The value of the configured key is empty, use client IP instead'}}
+
+  - name: limit-req-redis-missing-consumer-rejects-authentication-test-22
+    source: {file: t/plugin/limit-req-redis.t, tests: [22]}
+    config:
+      routes:
+        - id: limit-req-redis-test-22
+          uri: /hello
+          plugins:
+            key-auth: {}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: deleted-consumer-key-is-invalid
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 401, body: {equals: '{"message":"Invalid API key in request"}'}, logs: {matches: 'failed to find consumer: invalid api key'}}
+
+  - name: limit-req-redis-missing-route-returns-not-found-test-23
+    source: {file: t/plugin/limit-req-redis.t, tests: [23]}
+    config:
+      services:
+        - id: limit-req-redis-test-23-service
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+    fixtures:
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: deleted-route-is-not-routable, input: {method: GET, path: /hello}, output: {status: 404}}
+
+  - name: limit-req-redis-zero-rate-rejects-route-test-24
+    source: {file: t/plugin/limit-req-redis.t, tests: [24]}
+    config:
+      routes:
+        - id: limit-req-redis-test-24
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0, burst: 0, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /hello}
+    output: {status: 404, logs: {matches: 'build route limit-req-redis-test-24 fail:.*limit-req.*rate.*must be > 0'}}
+
+  - name: limit-req-redis-high-rate-route-proxies-test-25
+    source: {file: t/plugin/limit-req-redis.t, tests: [25]}
+    config:
+      routes:
+        - id: limit-req-redis-test-25
+          uri: /hello
+          plugins:
+            limit-req: {rate: 100, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: high-rate-route-reaches-upstream, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-atomic-script-stores-single-hash-test-26
+    source: {file: t/plugin/limit-req-redis.t, tests: [26]}
+    config:
+      routes:
+        - id: limit-req-redis-test-26
+          uri: /hello
+          plugins:
+            limit-req: {rate: 100, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - name: redis
+        kind: redis
+        redis:
+          ignore_negotiation: true
+          allow_unasserted_commands: true
+          hashes:
+            'plugin-limit-req:route:limit-req-redis-test-26:127.0.0.1':
+              excess: {equals: "1"}
+              last: {matches: '^[0-9]{13}$'}
+    steps:
+      - name: first-request-creates-hash-state
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {not_matches: 'failed to limit req'}}
+
+  - name: limit-req-redis-burst-zero-route-proxies-test-27
+    source: {file: t/plugin/limit-req-redis.t, tests: [27]}
+    config:
+      routes:
+        - id: limit-req-redis-test-27
+          uri: /hello
+          plugins:
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: burst-zero-route-admits-first-request, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-first-request-always-admitted-test-28
+    source: {file: t/plugin/limit-req-redis.t, tests: [28]}
+    config:
+      routes:
+        - id: limit-req-redis-test-28
+          uri: /hello
+          plugins:
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: first-request-with-no-state-passes, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+      - {name: immediate-second-request-is-rejected, input: {method: GET, path: /hello}, output: {status: 503}}
+
+  - name: limit-req-redis-atomic-concurrency-route-proxies-test-29
+    source: {file: t/plugin/limit-req-redis.t, tests: [29]}
+    config:
+      routes:
+        - id: limit-req-redis-test-29
+          uri: /hello
+          plugins:
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: concurrency-route-admits-first-request, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-atomic-script-admits-one-of-five-test-30
+    source: {file: t/plugin/limit-req-redis.t, tests: [30]}
+    config:
+      routes:
+        - id: limit-req-redis-test-30
+          uri: /hello
+          plugins:
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr, policy: redis, redis_host: '{{FIXTURE.redis.HOST}}', redis_port: '{{FIXTURE.redis.PORT}}'}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: exactly-one-concurrent-request-is-admitted
+        repeat: 5
+        concurrency: 5
+        input: {method: GET, path: /hello}
+        output: {status_counts: {200: 1, 503: 4}}
   - name: limit-req-shared-counter-consumer-plugin-enforces-quota-test-1
     source: {file: t/plugin/limit-req-shared-counter.t, tests: [1]}
     config:

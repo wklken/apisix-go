@@ -385,6 +385,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			logger.Errorf("failed to limit req: %v", err)
 			http.Error(w, "failed to limit req", http.StatusInternalServerError)
 			return
 		}
@@ -464,6 +465,14 @@ func (p *Plugin) consumerBucketStore() *bucketStore {
 type redisReqLimiter struct {
 	client redis.UniversalClient
 	now    func() time.Time
+}
+
+type redisPoolStatsProvider interface {
+	PoolStats() *redis.PoolStats
+}
+
+func logRedisConnectionReuse(client redisPoolStatsProvider) {
+	logger.Debugf("redis connection reused times: %d", client.PoolStats().Hits)
 }
 
 func (p *Plugin) newRedisLimiter() reqLimiter {
@@ -558,6 +567,7 @@ func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (tim
 		burst,
 		ttl.Milliseconds(),
 	).Result()
+	logRedisConnectionReuse(l.client)
 	if err != nil {
 		return 0, false, err
 	}

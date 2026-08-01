@@ -7860,76 +7860,565 @@ cases:
         - name: endpoint-and-auth-query-parameters-are-both-preserved
           input: {method: POST, path: /anything, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'}
           output: {status: 200, body: {matches: '"content":"query params preserved"'}}
-    - config:
+    - name: llm-vars-nonstreaming-write-basic-tokens
+      source: {file: t/plugin/ai-proxy3.t, tests: [1, 2]}
+      config:
         routes:
-            - id: ai-proxy-source-19
+            - id: ai-proxy3-basic
+              uri: /anything
               plugins:
                 ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                  provider: openai
+                  auth: {query: {api_key: apikey}}
+                  options: {model: gpt-3.5-turbo, max_tokens: 512, temperature: 1.0}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Model: $llm_model
+                      X-LLM-Prompt-Tokens: $llm_prompt_tokens
+                      X-LLM-Completion-Tokens: $llm_completion_tokens
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: openai
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
-              headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+              path: {equals: '/v1/chat/completions?api_key=apikey'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-19
-      source:
-        file: t/plugin/ai-proxy3.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":23,"completion_tokens":8,"total_tokens":31}}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: nonstreaming-request-registers-llm-token-vars
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}],"model":"gpt-4"}'
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            body: {matches: '1 \+ 1 = 2\.'}
+            headers:
+              X-LLM-Model: {equals: gpt-4o}
+              X-LLM-Prompt-Tokens: {equals: '23'}
+              X-LLM-Completion-Tokens: {equals: '8'}
+
+    - name: llm-vars-null-content-response
+      source: {file: t/plugin/ai-proxy3.t, tests: [3, 4]}
+      config:
+        routes:
+            - id: ai-proxy3-null-content
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer token}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"model":"gpt-3.5-turbo","choices":[{"message":{"role":"assistant","content":null},"finish_reason":"stop"}],"usage":null}'}
+      steps:
+        - name: null-content-response-passes-through
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"What is 1+1?"}],"model":"gpt-4"}'
+          output:
+            status: 200
+            body: {matches: '"role":"assistant"'}
+
+    - name: llm-vars-streaming-aggregates-tokens
+      source: {file: t/plugin/ai-proxy3.t, tests: [5, 6]}
+      config:
+        routes:
+            - id: ai-proxy3-streaming-vars
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: self-hosted
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer token
+                      options:
+                        model: gpt-3.5-turbo
+                        stream: true
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Model: $llm_model
+                      X-LLM-Prompt-Tokens: $llm_prompt_tokens
+                      X-LLM-Completion-Tokens: $llm_completion_tokens
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"system","content":"some content"}],"model":"gpt-3.5-turbo","stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"1\",\"model\":\"gpt-3.5-turbo\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":20}}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: streaming-request-registers-aggregated-token-vars
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"system","content":"some content"}],"model":"gpt-4","stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Model: {equals: gpt-3.5-turbo}
+              X-LLM-Prompt-Tokens: {equals: '15'}
+              X-LLM-Completion-Tokens: {equals: '20'}
+
+    - name: llm-vars-builtin-nonstreaming
+      source: {file: t/plugin/ai-proxy3.t, tests: [7, 8]}
+      config:
+        routes:
+            - id: ai-proxy3-builtin-nonstream
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+                      X-LLM-Tool-Count: $llm_tool_count
+                      X-LLM-End-User: $llm_end_user_id
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"What is 1+1?"}],"model":"gpt-4o","user":"alice"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":23,"completion_tokens":8,"total_tokens":31}}'}
+      steps:
+        - name: nonstreaming-builtin-vars-registered
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"What is 1+1?"}],"model":"gpt-4o","user":"alice"}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Has-Tool-Calls: {equals: 'false'}
+              X-LLM-Tool-Count: {equals: '0'}
+              X-LLM-End-User: {equals: alice}
+
+    - name: llm-vars-streaming-tool-calls
+      source: {file: t/plugin/ai-proxy3.t, tests: [13]}
+      config:
+        routes:
+            - id: ai-proxy3-stream-tool-vars
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+                      X-LLM-Tool-Count: $llm_tool_count
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+                - "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":10}}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: streaming-tool-call-delta-registers-tool-vars
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"What is the weather?"}],"model":"gpt-4o","stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Has-Tool-Calls: {equals: 'true'}
+              X-LLM-Tool-Count: {equals: '1'}
+
+    - name: llm-vars-cached-tokens
+      source: {file: t/plugin/ai-proxy3.t, tests: [10]}
+      config:
+        routes:
+            - id: ai-proxy3-cached-tokens
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Cache-Read: $llm_cache_read_input_tokens
+                      X-LLM-Cache-Creation: $llm_cache_creation_input_tokens
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":15,"total_tokens":45,"prompt_tokens_details":{"cached_tokens":10,"cache_creation_input_tokens":5}}}'}
+      steps:
+        - name: cached-tokens-registered
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"Solve this"}],"model":"gpt-4o"}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Cache-Read: {equals: '10'}
+              X-LLM-Cache-Creation: {equals: '5'}
+
+    - name: llm-vars-tool-calls-nonstreaming
+      source: {file: t/plugin/ai-proxy3.t, tests: [11]}
+      config:
+        routes:
+            - id: ai-proxy3-tool-nonstream
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+                      X-LLM-Tool-Count: $llm_tool_count
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"","role":"assistant","tool_calls":[{"id":"t1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":20,"total_tokens":70}}'}
+      steps:
+        - name: nonstreaming-tool-calls-register-tool-vars
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"What is the weather?"}],"model":"gpt-4o","tools":[{"type":"function","function":{"name":"get_weather","parameters":{}}}]}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Has-Tool-Calls: {equals: 'true'}
+              X-LLM-Tool-Count: {equals: '1'}
+
+    - name: llm-vars-safety-identifier
+      source: {file: t/plugin/ai-proxy3.t, tests: [12]}
+      config:
+        routes:
+            - id: ai-proxy3-safety-id
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-End-User: $llm_end_user_id
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"messages":[{"role":"user","content":"Hello"}],"model":"gpt-4o","safety_identifier":"user-xyz"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":23,"completion_tokens":8,"total_tokens":31}}'}
+      steps:
+        - name: safety-identifier-maps-to-end-user-id
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"Hello"}],"model":"gpt-4o","safety_identifier":"user-xyz"}'
+          output:
+            status: 200
+            headers:
+              X-LLM-End-User: {equals: user-xyz}
+
+    - name: llm-vars-responses-streaming-cache-and-reasoning
+      source: {file: t/plugin/ai-proxy3.t, tests: [14, 15]}
+      config:
+        routes:
+            - id: ai-proxy3-responses-vars
+              uri: /ai/v1/responses
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o-mini}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Cache-Read: $llm_cache_read_input_tokens
+                      X-LLM-Reasoning: $llm_reasoning_tokens
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/responses}
+              body: {json_equals: '{"input":"Hello","model":"gpt-4o-mini","stream":true}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n"
+                - "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-4o-mini\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}],\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25}}}\n\n"
+      steps:
+        - name: responses-streaming-registers-cache-and-reasoning
+          input:
+            method: POST
+            path: /ai/v1/responses
+            headers: {Content-Type: application/json}
+            body: '{"input":"Hello","model":"gpt-4o-mini","stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Cache-Read: {equals: ''}
+              X-LLM-Reasoning: {equals: ''}
+
+    - name: llm-vars-responses-streaming-tool-call
+      source: {file: t/plugin/ai-proxy3.t, tests: [16]}
+      config:
+        routes:
+            - id: ai-proxy3-responses-tool
+              uri: /ai/v1/responses
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o-mini}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+                      X-LLM-Tool-Count: $llm_tool_count
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/responses}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"name\":\"get_weather\",\"arguments\":\"{}\",\"call_id\":\"call_1\"}}\n\n"
+                - "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-4o-mini\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25}}}\n\n"
+      steps:
+        - name: responses-streaming-function-call-registers-tool-vars
+          input:
+            method: POST
+            path: /ai/v1/responses
+            headers: {Content-Type: application/json}
+            body: '{"input":"What is the weather?","model":"gpt-4o-mini","stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Has-Tool-Calls: {equals: 'true'}
+              X-LLM-Tool-Count: {equals: '1'}
+
+    - name: llm-vars-streaming-cache-and-reasoning
+      source: {file: t/plugin/ai-proxy3.t, tests: [17]}
+      config:
+        routes:
+            - id: ai-proxy3-stream-cache
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Cache-Read: $llm_cache_read_input_tokens
+                      X-LLM-Cache-Creation: $llm_cache_creation_input_tokens
+                      X-LLM-Reasoning: $llm_reasoning_tokens
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":10,\"cache_creation_input_tokens\":5},\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: streaming-cache-and-reasoning-tokens-registered
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"Solve this"}],"model":"gpt-4o","stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Cache-Read: {equals: '10'}
+              X-LLM-Cache-Creation: {equals: '5'}
+              X-LLM-Reasoning: {equals: '7'}
+
+    - name: llm-vars-responses-nonstreaming-cache
+      source: {file: t/plugin/ai-proxy3.t, tests: [18]}
+      config:
+        routes:
+            - id: ai-proxy3-responses-nonstream
+              uri: /ai/v1/responses
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o-mini}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Cache-Read: $llm_cache_read_input_tokens
+                      X-LLM-Reasoning: $llm_reasoning_tokens
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/responses}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"r1","object":"response","created":1723780938,"model":"gpt-4o-mini","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":40,"output_tokens":20,"total_tokens":60,"input_tokens_details":{"cached_tokens":12}}}'}
+      steps:
+        - name: responses-nonstreaming-cache-tokens-registered
+          input:
+            method: POST
+            path: /ai/v1/responses
+            headers: {Content-Type: application/json}
+            body: '{"input":"Solve this","model":"gpt-4o-mini"}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Cache-Read: {equals: '12'}
+              X-LLM-Reasoning: {equals: ''}
+
+    - name: llm-vars-nonstreaming-reasoning-tokens
+      source: {file: t/plugin/ai-proxy3.t, tests: [9]}
+      config:
+        routes:
+            - id: ai-proxy3-stream-reasoning
+              uri: /log-vars
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth:
+                    header: {Authorization: Bearer test-key}
+                  options: {model: gpt-4o}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: streaming-request-registers-has-tool-calls-false
+          input:
+            method: POST
+            path: /log-vars
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"Hello"}],"model":"gpt-4o","stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Has-Tool-Calls: {equals: 'false'}
+
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7

@@ -83,6 +83,24 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 		if model, ok := response["model"].(string); ok {
 			usage.Model = model
 		}
+		if output, ok := response["output"].([]any); ok {
+			for _, rawItem := range output {
+				item, _ := rawItem.(map[string]any)
+				switch item["type"] {
+				case "function_call":
+					usage.ToolCalls++
+				case "message":
+					if content, ok := item["content"].([]any); ok {
+						for _, rawPart := range content {
+							part, _ := rawPart.(map[string]any)
+							if part["type"] == "function_call" {
+								usage.ToolCalls++
+							}
+						}
+					}
+				}
+			}
+		}
 		mergeOpenAIUsage(usage, response["usage"], true)
 	case ai_protocols.AnthropicMessages:
 		if message, ok := event["message"].(map[string]any); ok {
@@ -97,6 +115,15 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 			usage.ToolCalls++
 		}
 	default:
+		if choices, ok := event["choices"].([]any); ok {
+			for _, rawChoice := range choices {
+				choice, _ := rawChoice.(map[string]any)
+				delta, _ := choice["delta"].(map[string]any)
+				if toolCalls, ok := delta["tool_calls"].([]any); ok {
+					usage.ToolCalls += int64(len(toolCalls))
+				}
+			}
+		}
 		mergeOpenAIUsage(usage, event["usage"], false)
 	}
 }
@@ -107,6 +134,11 @@ func mergeOpenAIUsage(usage *Usage, value any, responses bool) {
 		return
 	}
 	mergeRaw(usage.Raw, raw)
+	for _, key := range []string{"prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "output_tokens_details"} {
+		if details, ok := raw[key].(map[string]any); ok {
+			usage.Raw[key] = details
+		}
+	}
 	if responses {
 		usage.PromptTokens = numericUsage(raw["input_tokens"])
 		usage.CompletionTokens = numericUsage(raw["output_tokens"])

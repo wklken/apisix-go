@@ -1192,15 +1192,38 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Response struct {
+			Output []any `json:"output"`
+			Usage  map[string]any `json:"usage"`
+		} `json:"response"`
 		Usage map[string]any `json:"usage"`
 	}
 	if len(responseBody) > 0 && json.Unmarshal(responseBody, &decoded) == nil {
 		if usage == nil {
 			usage = decoded.Usage
+			if usage == nil {
+				usage = decoded.Response.Usage
+			}
 		}
 		toolCalls := 0
 		for _, choice := range decoded.Choices {
 			toolCalls += len(choice.Message.ToolCalls)
+		}
+		for _, rawItem := range decoded.Response.Output {
+			item, _ := rawItem.(map[string]any)
+			switch item["type"] {
+			case "function_call":
+				toolCalls++
+			case "message":
+				if content, ok := item["content"].([]any); ok {
+					for _, rawPart := range content {
+						part, _ := rawPart.(map[string]any)
+						if part["type"] == "function_call" {
+							toolCalls++
+						}
+					}
+				}
+			}
 		}
 		if toolCalls > 0 {
 			apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", true)
@@ -1219,6 +1242,8 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 func registerLLMTokenDetailVars(r *http.Request, usage map[string]any) {
 	var promptDetails map[string]any
 	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+		promptDetails = details
+	} else if details, ok := usage["input_tokens_details"].(map[string]any); ok {
 		promptDetails = details
 	}
 	if cached := numericToken(usage["cached_tokens"]); cached > 0 {

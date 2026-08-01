@@ -1115,6 +1115,9 @@ func registerStreamingLLMRequestVars(r *http.Request, requestBody []byte, usage 
 			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
 		})
 	}
+	apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", usage.ToolCalls > 0)
+	apisixctx.RegisterRequestVar(r, "$llm_tool_count", usage.ToolCalls)
+	registerLLMMetadataVars(r, requestBody, nil, usage.Raw)
 }
 
 func registerLLMRequestVars(
@@ -1152,6 +1155,102 @@ func registerLLMRequestVars(
 		apisixctx.RegisterRequestVar(r, "$llm_completion_tokens", responseMetadata.CompletionTokens)
 	}
 	registerUsageContextVars(r, responseBody, responseMetadata.PromptTokens, responseMetadata.CompletionTokens)
+	registerLLMMetadataVars(r, requestBody, responseBody, nil)
+}
+
+func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody []byte, streamUsage map[string]any) {
+	if apisixctx.GetRequestVars(r) == nil {
+		return
+	}
+	if len(requestBody) > 0 {
+		var request struct {
+			User            string `json:"user"`
+			SafetyID        string `json:"safety_identifier"`
+			Metadata        struct {
+				UserID string `json:"user_id"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(requestBody, &request) == nil {
+			endUserID := request.User
+			if endUserID == "" {
+				endUserID = request.SafetyID
+			}
+			if endUserID == "" {
+				endUserID = request.Metadata.UserID
+			}
+			if endUserID != "" {
+				apisixctx.RegisterRequestVar(r, "$llm_end_user_id", endUserID)
+			}
+		}
+	}
+
+	usage := streamUsage
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				ToolCalls []any `json:"tool_calls"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage map[string]any `json:"usage"`
+	}
+	if len(responseBody) > 0 && json.Unmarshal(responseBody, &decoded) == nil {
+		if usage == nil {
+			usage = decoded.Usage
+		}
+		toolCalls := 0
+		for _, choice := range decoded.Choices {
+			toolCalls += len(choice.Message.ToolCalls)
+		}
+		if toolCalls > 0 {
+			apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", true)
+			apisixctx.RegisterRequestVar(r, "$llm_tool_count", toolCalls)
+		} else {
+			apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", false)
+			apisixctx.RegisterRequestVar(r, "$llm_tool_count", 0)
+		}
+	}
+
+	if usage != nil {
+		registerLLMTokenDetailVars(r, usage)
+	}
+}
+
+func registerLLMTokenDetailVars(r *http.Request, usage map[string]any) {
+	var promptDetails map[string]any
+	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+		promptDetails = details
+	}
+	if cached := numericToken(usage["cached_tokens"]); cached > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_cache_read_input_tokens", cached)
+	} else if cached := numericToken(usage["cache_read_input_tokens"]); cached > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_cache_read_input_tokens", cached)
+	} else if cached := numericToken(promptDetails["cached_tokens"]); cached > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_cache_read_input_tokens", cached)
+	}
+	if created := numericToken(usage["cache_creation_input_tokens"]); created > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_cache_creation_input_tokens", created)
+	} else if created := numericToken(promptDetails["cache_creation_input_tokens"]); created > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_cache_creation_input_tokens", created)
+	}
+	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
+		if reasoning := numericToken(details["reasoning_tokens"]); reasoning > 0 {
+			apisixctx.RegisterRequestVar(r, "$llm_reasoning_tokens", reasoning)
+		}
+	}
+}
+
+func numericToken(value any) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	default:
+		return 0
+	}
 }
 
 func registerUsageContextVars(r *http.Request, responseBody []byte, promptTokens, completionTokens int64) {

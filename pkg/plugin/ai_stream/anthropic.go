@@ -170,6 +170,7 @@ func (s *anthropicStreamState) convertChunk(
 		contentIndex, exists := s.toolCallIndices[index]
 		function, _ := toolCall["function"].(map[string]any)
 		if !exists {
+			s.usage.ToolCalls++
 			events = append(events, s.closeCurrentBlock()...)
 			contentIndex = s.nextContentIndex
 			s.nextContentIndex++

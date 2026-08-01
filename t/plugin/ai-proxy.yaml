@@ -1,120 +1,2496 @@
 cases:
-    - config:
+    - name: anthropic-converts-simple-text-message
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [1, 2]}
+      config:
         routes:
-            - id: ai-proxy-source-1
+            - id: ai-proxy-anthropic-simple
+              uri: /v1/messages
               plugins:
-                ai-proxy:
-                    auth:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
                         header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: openai
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
+              path: {equals: /v1/chat/completions}
               headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+                Authorization: {equals: Bearer test-token}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-1
-      source:
-        file: t/plugin/ai-proxy-anthropic.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
-            - 29
-            - 30
-            - 31
-            - 32
-            - 33
-            - 34
-            - 35
-            - 36
-            - 37
-            - 38
-            - 39
-            - 40
-            - 41
-            - 42
-            - 43
-            - 44
-            - 45
-            - 46
-            - 47
-            - 48
-            - 49
-            - 50
-            - 51
-            - 52
-            - 53
-            - 54
-            - 55
-            - 56
-            - 57
-            - 58
-            - 59
-            - 60
-            - 61
-            - 62
-            - 63
-            - 64
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"1 + 1 = 2.","type":"message"},"type":"message","stop_reason":"end_turn"}]}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: anthropic-text-request-converts-to-openai
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            body: {matches: '(?s)"type":"text".*"stop_reason":"end_turn".*"type":"message"'}
+
+    - name: anthropic-system-prompt-as-string
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [3]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-system-string
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":512,"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok","type":"message"}}]}'}
+      steps:
+        - name: anthropic-string-system-converts-to-openai-system
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":512,"system":"You are helpful.","messages":[{"role":"user","content":"Hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"type":"message"'}
+
+    - name: anthropic-system-content-blocks-with-cache-control
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [4]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-system-blocks
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":512,"messages":[{"role":"system","content":"You are a coding assistant.Always write tests."},{"role":"user","content":"Hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok","type":"message"}}]}'}
+      steps:
+        - name: anthropic-system-blocks-convert-with-cache-control-stripped
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":512,"system":[{"type":"text","text":"You are a coding assistant.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Always write tests."}],"messages":[{"role":"user","content":"Hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"type":"message"'}
+
+    - name: anthropic-tool-use-in-assistant-message
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [5]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-use-history
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":1024,"messages":[{"role":"user","content":"What is the weather?"},{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"SF\"}"}}]},{"role":"tool","tool_call_id":"call_abc","content":"Sunny, 72F"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok","type":"message"}}]}'}
+      steps:
+        - name: anthropic-tool-use-history-converts-to-tool-calls
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"What is the weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"call_abc","name":"get_weather","input":{"location":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_abc","content":"Sunny, 72F"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"type":"message"'}
+
+    - name: anthropic-response-with-tool-calls
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [6]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-response
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_abc123","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}'}
+      steps:
+        - name: anthropic-response-tool-calls-convert-to-tool-use
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Get the weather"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)"id":"call_abc123".*"name":"get_weather".*"type":"tool_use".*"stop_reason":"tool_use"'}
+
+    - name: anthropic-response-with-reasoning-content
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [7, 8]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-reasoning
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"The answer is 42","reasoning_content":"Let me think step by step"}}],"usage":{"prompt_tokens":30,"completion_tokens":5,"total_tokens":35,"prompt_tokens_details":{"cached_tokens":10,"cache_creation_input_tokens":5}}}'}
+      steps:
+        - name: anthropic-reasoning-content-converts-to-thinking-block
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Think about this"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)"signature":"".*"thinking":"Let me think step by step".*"type":"thinking".*"text":"The answer is 42"'}
+
+    - name: anthropic-response-error-passthrough
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [9]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-error
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"error":{"type":"invalid_request_error","message":"model does not exist"}}'}
+      steps:
+        - name: anthropic-error-response-passes-through
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"nonexistent","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)"message":"model does not exist".*"type":"invalid_request_error".*"type":"error"'}
+
+    - name: anthropic-multiple-tool-calls-with-text
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [10]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-multi-tools
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"Let me check both","tool_calls":[{"id":"t1","type":"function","function":{"name":"get_weather","arguments":"{}"}},{"id":"t2","type":"function","function":{"name":"get_time","arguments":"{}"}}]}}]}'}
+      steps:
+        - name: anthropic-multiple-tool-calls-convert-with-text-block
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"check weather and time"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)("type":"text".*Let me check both.*"type":"tool_use".*get_weather.*get_time)|("text":"Let me check both".*"type":"text".*get_weather.*get_time)'}
+
+    - name: anthropic-null-details-and-message-fields
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [11]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-null
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"hi","type":"text"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'}
+      steps:
+        - name: null-details-request-returns-token-counts
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"test-model","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)"input_tokens":10.*"output_tokens":5'}
+
+    - name: anthropic-null-usage-request
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [12]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-null-usage
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"hi"}}]}'}
+      steps:
+        - name: null-usage-request-returns-zero-input-tokens
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"test-model","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"input_tokens":0'}
+
+    - name: anthropic-null-message-fields
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [13]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-null-message
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":null}}]}'}
+      steps:
+        - name: null-message-content-returns-text-type
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"test-model","max_tokens":100,"messages":[{"role":"user","content":"test"}]}'
+          output:
+            status: 200
+            body: {matches: '"type":"text"'}
+
+    - name: anthropic-null-function-in-tool-calls
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [14]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-null-function
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"t1","type":"function","function":null}]}}]}'}
+      steps:
+        - name: null-function-tool-call-still-produces-tool-use
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"test-model","max_tokens":100,"messages":[{"role":"user","content":"call tool"}]}'
+          output:
+            status: 200
+            body: {matches: '"type":"tool_use"'}
+
+    - name: anthropic-whitelist-body-fields
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [15]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-whitelist
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":1024,"messages":[{"role":"user","content":"Hello"}],"reasoning_effort":"high","user":"test"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-unknown-fields-are-not-forwarded
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"metadata":{"user_id":"test"},"top_k":5,"thinking":{"type":"enabled","budget_tokens":8000},"unknown_field":"should not appear","messages":[{"role":"user","content":"Hello"}]}'
+          output:
+            status: 200
+            body: {matches: '"type":"message"|"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-tool-choice-conversion
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [16, 17]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-choice
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","description":null,"parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"f"}},"parallel_tool_calls":false}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-choice-with-disable-parallel-converts
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"f","input_schema":{}}],"tool_choice":{"type":"tool","name":"f","disable_parallel_tool_use":true}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-thinking-budget-thresholds
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [18]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-thinking
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-thinking-budget-maps-to-reasoning-effort
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":32000}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-image-content-block
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [19]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-image
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,abc123"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-image-block-converts-to-image-url
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc123"}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-document-content-block
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [20]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-document
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"Summarize this PDF"},{"type":"image_url","image_url":{"url":"data:application/pdf;base64,JVBER"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-document-block-converts-to-image-url
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"Summarize this PDF"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBER"}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-tool-result-array-content
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [21]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-result
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"Screenshot taken"},{"type":"image_url","image_url":{"url":"data:image/png;base64,img"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-result-array-converts-with-image
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"Screenshot taken"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"img"}}]}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-empty-tools-omitted
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [22]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-empty-tools
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-empty-tools-do-not-produce-tools-field
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+    - name: anthropic-response-format-json-schema
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [23]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-format-json-schema
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema","json_schema":{"name":"structured_output","strict":true,"schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"],"additionalProperties":false}}}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-response-format-json-schema-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"]}}}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-json-object-output-format-omitted
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [24]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-object-output-format-omitted
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-json-object-output-format-omitted-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"output_format":{"type":"json_object"}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-tool-cache-control-stripped
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [25]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-cache-control-stripped
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"search","description":"Search the web","parameters":{"type":"object"}}}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-cache-control-stripped-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"search","description":"Search the web","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-tool-use-empty-input
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [26]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-use-empty-input
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"assistant","tool_calls":[{"id":"call_empty","type":"function","function":{"name":"get_time","arguments":"{}"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-use-empty-input-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call_empty","name":"get_time","input":{}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-header-conversion
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [27]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-conversion
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-header-conversion-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-header-preserves-existing-auth
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [28]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-preserves-existing-auth
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-header-preserves-existing-auth-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-billing-header-cch-stripped
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [29]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-header-cch-stripped
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"system","content":"x-anthropic-billing-header:abc=123"},{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-billing-header-cch-stripped-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"system":[{"type":"text","text":"x-anthropic-billing-header:abc=123;cch=456"}],"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-streaming-reasoning-to-thinking
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [30]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-reasoning-to-thinking
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me \"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{\"content\":\"The answer\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-streaming-reasoning-to-thinking-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)content_block_start\n.*"thinking":"".*"thinking":"Let me ".*"type":"thinking_delta".*content_block_start.*"type":"text".*"text":"The answer".*message_stop'}
+
+
+    - name: anthropic-streaming-null-finish-reason
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [31]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-null-finish-reason
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-streaming-null-finish-reason-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)content_block_delta.*"text":"hi".*message_stop'}
+
+
+    - name: anthropic-streaming-usage-deferred
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [32]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-usage-deferred
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-streaming-usage-deferred-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)event: message_delta.*"input_tokens":4.*"output_tokens":2.*event: message_stop'}
+
+
+    - name: anthropic-streaming-dynamic-block-index
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [33]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-dynamic-block-index
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{\"content\":\"text\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-streaming-dynamic-block-index-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)content_block_start.*"thinking":"".*"type":"thinking".*"thinking":"think".*"type":"thinking_delta".*"text":"text".*"type":"text_delta".*message_stop'}
+
+
+    - name: anthropic-streaming-ignores-after-stop
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [34]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-ignores-after-stop
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{\"content\":\"late\"},\"finish_reason\":null}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-streaming-ignores-after-stop-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)content_block_delta.*"text":"hi".*message_stop'}
+
+
+    - name: anthropic-multiple-tool-results
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [35]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-results
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"tool","tool_call_id":"call_1","content":"result 1"},{"role":"tool","tool_call_id":"call_2","content":"result 2"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-multiple-tool-results-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"result 1"},{"type":"tool_result","tool_use_id":"call_2","content":"result 2"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-text-with-tool-results
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [36]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-with-tool-results
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"tool","tool_call_id":"call_1","content":"done"},{"role":"user","content":"Here are the results:"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-text-with-tool-results-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"Here are the results:"},{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-mixed-text-tool-use
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [37]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-text-tool-use
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"assistant","content":"Let me search for that.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"query\":\"test\"}"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-mixed-text-tool-use-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"assistant","content":[{"type":"text","text":"Let me search for that."},{"type":"tool_use","id":"call_1","name":"search","input":{"query":"test"}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-stop-sequences
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [38]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-sequences
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stop":["END","STOP"]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-stop-sequences-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stop_sequences":["END","STOP"]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-image-url-source
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [39]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-url-source
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"Describe this"},{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-image-url-source-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"Describe this"},{"type":"image","source":{"type":"url","url":"https://example.com/image.png"}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-stream-options-include-usage
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [40]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-options-include-usage
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-stream-options-include-usage-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"Hi"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)content_block_delta.*"text":"ok".*message_stop'}
+
+
+    - name: anthropic-cache-control-stripped-all
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [41]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-control-stripped-all
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"system","content":"System prompt"},{"role":"user","content":[{"type":"text","text":"Hello"}]}],"tools":[{"type":"function","function":{"name":"my_tool","description":"A tool","parameters":{"type":"object"}}}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-cache-control-stripped-all-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"system":[{"type":"text","text":"System prompt","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"Hello","cache_control":{"type":"ephemeral"}}]}],"tools":[{"name":"my_tool","description":"A tool","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-metadata-user-id
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [42]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-user-id
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"Hi"}],"user":"user-123"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-metadata-user-id-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"metadata":{"user_id":"user-123"},"messages":[{"role":"user","content":"Hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-builtin-tools-skipped
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [43]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tools-skipped
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"normal_tool","description":"A normal tool","parameters":{"type":"object"}}}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-builtin-tools-skipped-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"computer_20241022","name":"computer","display_width_px":1024},{"type":"bash_20250124","name":"bash"},{"type":"text_editor_20250124","name":"text_editor"},{"name":"normal_tool","description":"A normal tool","input_schema":{"type":"object"}}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-ping-sse-passthrough
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [44]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-sse-passthrough
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - ": ping\n\n"
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-ping-sse-passthrough-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)content_block_delta.*"text":"ok"' }
+
+
+    - name: anthropic-service-tier
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [46]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tier
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"Hi"}],"service_tier":"auto"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-service-tier-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"service_tier":"auto","messages":[{"role":"user","content":"Hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-tool-choice-dropped-without-tools
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [52]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-choice-dropped-without-tools
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-choice-dropped-without-tools-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"auto"}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-malformed-tool-args-fallback
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [54]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-args-fallback
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"partial answer","tool_calls":[{"id":"call_1","type":"function","function":{"name":"do_it","arguments":"{not valid json"}}]},"finish_reason":"tool_calls"}]}'}
+      steps:
+        - name: anthropic-malformed-tool-args-fallback-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)"text":"partial answer".*"type":"text".*"name":"do_it".*"type":"tool_use"'}
+
+
+    - name: anthropic-nonobject-tool-args-fallback
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [55]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-args-fallback
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"answer","tool_calls":[{"id":"call_1","type":"function","function":{"name":"do_it","arguments":"123"}}]},"finish_reason":"tool_calls"}]}'}
+      steps:
+        - name: anthropic-nonobject-tool-args-fallback-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)"text":"answer".*"type":"text".*"name":"do_it".*"type":"tool_use"'}
+
+
+    - name: anthropic-tool-results-before-text
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [56]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-results-before-text
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"start"},{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"get_a","arguments":"{}"}},{"id":"call_b","type":"function","function":{"name":"get_b","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_a","content":"a"},{"role":"tool","tool_call_id":"call_b","content":"b"},{"role":"user","content":"also explain briefly"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-results-before-text-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"start"},{"role":"assistant","content":[{"type":"tool_use","id":"call_a","name":"get_a","input":{}},{"type":"tool_use","id":"call_b","name":"get_b","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_a","content":"a"},{"type":"tool_result","tool_use_id":"call_b","content":"b"},{"type":"text","text":"also explain briefly"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-media-with-tool-results
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [57]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-with-tool-results
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"tool","tool_call_id":"call_1","content":"done"},{"role":"user","content":[{"type":"text","text":"look at this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,img"}}]}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-media-with-tool-results-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"},{"type":"text","text":"look at this"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"img"}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-tool-result-only
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [58]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-result-only
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"tool","tool_call_id":"call_1","content":"done"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-result-only-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"done"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-adaptive-thinking-effort
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [59]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-thinking-effort
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-adaptive-thinking-effort-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-output-format-beta
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [60]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-format-beta
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema","json_schema":{"name":"structured_output","strict":true,"schema":{"type":"object","additionalProperties":false,"required":[]}}}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-output-format-beta-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"output_format":{"type":"json_schema","schema":{"type":"object","additionalProperties":false}}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-tool-history-sanitized-name
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [61]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-history-sanitized-name
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-history-sanitized-name-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"tools":[{"name":"my tool!x","description":"Invalid chars","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"tool_use","id":"call_2","name":"my tool!x","input":{}}]}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-content-shaping-by-role
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [63]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-shaping-by-role
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"a"}]},{"role":"assistant","content":"xy"},{"role":"user","content":[{"type":"text","text":"b"},{"type":"text","text":"c"}]},{"role":"assistant","content":"z"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-content-shaping-by-role-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"a"}]},{"role":"assistant","content":[{"type":"text","text":"x"},{"type":"text","text":"y"}]},{"role":"user","content":[{"type":"text","text":"b"},{"type":"text","text":"c"}]},{"role":"assistant","content":"z"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+
+    - name: anthropic-tool-choice-declared-name
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [64]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-choice-declared-name
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","max_completion_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"my_tool_x","description":null,"parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"my_tool_x"}}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-tool-choice-declared-name-step
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"my tool!x","input_schema":{}}],"tool_choice":{"type":"tool","name":"my tool!x"}}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-tool-name-sanitization
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [45]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-sanitize
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {matches: '"name":"my_tool_x"' }
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-invalid-char-tool-name-sanitized
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"Hi"}],"tools":[{"name":"my tool!x","description":"Invalid chars","input_schema":{"type":"object"}}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-streaming-done-emits-message-stop
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [53]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-stream-done
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"x\",\"model\":\"m\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: anthropic-stream-without-content-still-emits-message-stop
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)event: message_start.*event: message_stop'}
+
+    - name: anthropic-tool-name-ownership
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [62]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-tool-ownership
+              uri: /v1/messages
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: openai-backend
+                      provider: openai-compatible
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-token
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {matches: '"name":"get_weather"'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'}
+      steps:
+        - name: anthropic-colliding-tool-names-stay-unique
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"model":"m","max_tokens":100,"tools":[{"name":"get weather","description":"A","input_schema":{"type":"object"}},{"name":"get_weather","description":"B","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":\[\{"text":"ok","type":"text"\}\]'}
+
+    - name: anthropic-native-streaming-total-tokens
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [47, 48]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-native-stream
+              uri: /v1/messages
+              plugins:
+                ai-proxy:
+                  provider: anthropic
+                  auth:
+                    header: {x-api-key: test-key}
+                  options: {model: claude-3-5-sonnet-20241022}
+                  override: {endpoint: '{{FIXTURE.anthropic.URL}}/v1/messages'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Model: $llm_model
+                      X-LLM-Prompt-Tokens: $llm_prompt_tokens
+                      X-LLM-Completion-Tokens: $llm_completion_tokens
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+      fixtures:
+        - name: anthropic
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              headers:
+                X-Api-Key: {equals: test-key}
+              body: {json_equals: '{"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"stream":true}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n"
+                - "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"
+                - "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n"
+                - "event: message_stop\ndata: {}\n\n"
+      steps:
+        - name: anthropic-native-streaming-aggregates-split-usage
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Model: {equals: claude-3-5-sonnet-20241022}
+              X-LLM-Prompt-Tokens: {equals: '10'}
+              X-LLM-Completion-Tokens: {equals: '8'}
+              X-LLM-Has-Tool-Calls: {equals: 'false'}
+
+    - name: anthropic-native-streaming-tool-use-detected
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [49]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-native-tool
+              uri: /v1/messages
+              plugins:
+                ai-proxy:
+                  provider: anthropic
+                  auth:
+                    header: {x-api-key: test-key}
+                  options: {model: claude-3-5-sonnet-20241022}
+                  override: {endpoint: '{{FIXTURE.anthropic.URL}}/v1/messages'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Has-Tool-Calls: $llm_has_tool_calls
+                      X-LLM-Tool-Count: $llm_tool_count
+      fixtures:
+        - name: anthropic
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              headers:
+                X-Api-Key: {equals: test-key}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"usage\":{\"input_tokens\":20,\"output_tokens\":0}}}\n\n"
+                - "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n"
+                - "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+                - "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n"
+                - "event: message_stop\ndata: {}\n\n"
+      steps:
+        - name: anthropic-native-streaming-detects-tool-use
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"What is the weather?"}],"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Has-Tool-Calls: {equals: 'true'}
+              X-LLM-Tool-Count: {equals: '1'}
+
+    - name: anthropic-native-nonstreaming-cache-tokens
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [50]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-native-cache
+              uri: /v1/messages
+              plugins:
+                ai-proxy:
+                  provider: anthropic
+                  auth:
+                    header: {x-api-key: test-key}
+                  options: {model: claude-3-5-sonnet-20241022}
+                  override: {endpoint: '{{FIXTURE.anthropic.URL}}/v1/messages'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Cache-Read: $llm_cache_read_input_tokens
+                      X-LLM-Cache-Creation: $llm_cache_creation_input_tokens
+      fixtures:
+        - name: anthropic
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              headers:
+                X-Api-Key: {equals: test-key}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-sonnet-20241022","content":[{"type":"text","text":"Hello"}],"stop_reason":"end_turn","usage":{"input_tokens":50,"output_tokens":30,"cache_read_input_tokens":200,"cache_creation_input_tokens":100}}'}
+      steps:
+        - name: anthropic-native-nonstreaming-reports-cache-tokens
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"model":"claude-3-5-sonnet-20241022","max_tokens":1024}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Cache-Read: {equals: '200'}
+              X-LLM-Cache-Creation: {equals: '100'}
+
+    - name: anthropic-native-streaming-cache-tokens
+      source: {file: t/plugin/ai-proxy-anthropic.t, tests: [51]}
+      config:
+        routes:
+            - id: ai-proxy-anthropic-native-stream-cache
+              uri: /v1/messages
+              plugins:
+                ai-proxy:
+                  provider: anthropic
+                  auth:
+                    header: {x-api-key: test-key}
+                  options: {model: claude-3-5-sonnet-20241022}
+                  override: {endpoint: '{{FIXTURE.anthropic.URL}}/v1/messages'}
+                  ssl_verify: false
+                response-rewrite:
+                  headers:
+                    set:
+                      X-LLM-Cache-Read: $llm_cache_read_input_tokens
+                      X-LLM-Cache-Creation: $llm_cache_creation_input_tokens
+      fixtures:
+        - name: anthropic
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              headers:
+                X-Api-Key: {equals: test-key}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"usage\":{\"input_tokens\":50,\"output_tokens\":0,\"cache_read_input_tokens\":200,\"cache_creation_input_tokens\":100}}}\n\n"
+                - "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"
+                - "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":30}}\n\n"
+                - "event: message_stop\ndata: {}\n\n"
+      steps:
+        - name: anthropic-native-streaming-reports-cache-tokens
+          input:
+            method: POST
+            path: /v1/messages
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}],"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"stream":true}'
+          output:
+            status: 200
+            headers:
+              X-LLM-Cache-Read: {equals: '200'}
+              X-LLM-Cache-Creation: {equals: '100'}
+
     - name: azure-openai-chat-request
       source:
         file: t/plugin/ai-proxy-azure-openai.t

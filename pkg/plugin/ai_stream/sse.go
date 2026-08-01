@@ -17,6 +17,7 @@ type Usage struct {
 	Raw              map[string]any
 	PromptTokens     int64
 	CompletionTokens int64
+	ToolCalls        int64
 }
 
 func ForwardSSE(
@@ -91,6 +92,10 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 			mergeAnthropicUsage(usage, message["usage"])
 		}
 		mergeAnthropicUsage(usage, event["usage"])
+		if contentBlocks, ok := event["content_block"].(map[string]any); ok &&
+			contentBlocks["type"] == "tool_use" {
+			usage.ToolCalls++
+		}
 	default:
 		mergeOpenAIUsage(usage, event["usage"], false)
 	}

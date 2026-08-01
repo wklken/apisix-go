@@ -1589,6 +1589,60 @@ func TestHandlerRejectsNonStreamingOversizedChunkedBody(t *testing.T) {
 	}
 }
 
+func TestHandlerRegistersLLMMetadataVarsForToolCallsAndCache(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+		  "model":"gpt-4o","choices":[{"message":{"content":"","tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":"{}"}},{"id":"t2","type":"function","function":{"name":"g","arguments":"{}"}}]}}],
+		  "usage":{"prompt_tokens":30,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":10,"cache_creation_input_tokens":5},"completion_tokens_details":{"reasoning_tokens":7}}
+		}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"user":"alice"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called")
+	})).ServeHTTP(rr, req)
+
+	assertLLMRequestVar(t, req, "$llm_end_user_id", "alice")
+	assertLLMRequestVar(t, req, "$llm_has_tool_calls", true)
+	assertLLMRequestVar(t, req, "$llm_tool_count", 2)
+	assertLLMRequestVar(t, req, "$llm_cache_read_input_tokens", int64(10))
+	assertLLMRequestVar(t, req, "$llm_cache_creation_input_tokens", int64(5))
+	assertLLMRequestVar(t, req, "$llm_reasoning_tokens", int64(7))
+}
+
+func TestHandlerRegistersLLMMetadataVarsForSafetyIdentifier(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"safety_identifier":"user-xyz"
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called")
+	})).ServeHTTP(rr, req)
+
+	assertLLMRequestVar(t, req, "$llm_end_user_id", "user-xyz")
+	assertLLMRequestVar(t, req, "$llm_has_tool_calls", false)
+	assertLLMRequestVar(t, req, "$llm_tool_count", 0)
+}
+
 func TestHandlerPublishesConfiguredLoggingSummaryAndPayloads(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{

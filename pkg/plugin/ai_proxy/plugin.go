@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -15,6 +16,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
@@ -59,6 +61,8 @@ const (
 	priority = 1040
 	name     = "ai-proxy"
 )
+
+var errInvalidClientRequest = errors.New("invalid client request")
 
 const schema = `
 {
@@ -426,7 +430,11 @@ func (p *Plugin) executeProviderRequest(
 	defer doneMetric()
 	prepared, err := p.prepareProviderRequest(body, protocol)
 	if err != nil {
-		base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
+		status := http.StatusBadGateway
+		if errors.Is(err, errInvalidClientRequest) {
+			status = http.StatusBadRequest
+		}
+		base.WriteJSONMessage(w, status, err.Error())
 		return
 	}
 	proxyReq, err := p.buildProviderRequest(r, prepared.providerBody, prepared.providerProtocol)
@@ -522,7 +530,7 @@ func (p *Plugin) prepareProviderRequest(
 	}
 	converted, toolNameMap, err := ai_protocols.ConvertAnthropicMessagesToOpenAI(body)
 	if err != nil {
-		return prepared, fmt.Errorf("convert Anthropic request to OpenAI Chat: %w", err)
+		return prepared, fmt.Errorf("%w: convert Anthropic request to OpenAI Chat: %v", errInvalidClientRequest, err)
 	}
 	var convertedBody map[string]any
 	if err := json.Unmarshal(converted, &convertedBody); err != nil {
@@ -956,15 +964,18 @@ func (p *Plugin) writeProviderResponse(
 ) {
 	if requestIsStreaming(prepared.clientBody, prepared.clientProtocol) {
 		for field, values := range resp.Header {
+			if prepared.anthropicConversion && strings.EqualFold(field, "Content-Length") {
+				continue
+			}
 			for _, value := range values {
 				w.Header().Add(field, value)
 			}
 		}
-		w.WriteHeader(resp.StatusCode)
 		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond
 		streamWriter := ai_stream.NewFlushWriter(w, flushInterval, func() {
 			ai_runtime.MarkFirstToken(r, started)
 		})
+		streamWriter.WriteHeader(resp.StatusCode)
 		var usage ai_stream.Usage
 		var err error
 		if prepared.providerProtocol == ai_protocols.BedrockConverse {
@@ -985,9 +996,16 @@ func (p *Plugin) writeProviderResponse(
 			)
 		}
 		streamWriter.Close()
-		if err == nil {
-			registerStreamingLLMRequestVars(r, prepared.clientBody, usage)
+		if err != nil {
+			if errors.Is(err, ai_stream.ErrNoStreamOutput) && !streamWriter.Wrote() {
+				logger.Errorf("%v", err)
+				base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			logger.Errorf("failed to forward streaming response: %v", err)
+			return
 		}
+		registerStreamingLLMRequestVars(r, prepared.clientBody, usage)
 		return
 	}
 	bodyReader := io.Reader(resp.Body)

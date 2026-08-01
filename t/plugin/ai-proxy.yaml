@@ -1304,86 +1304,785 @@ cases:
         - name: configured-auth-query-overrides-client-value
           input: {method: POST, path: '/plugin_proxy_rewrite_args?akey=attacker&zname=foo', headers: {Content-Type: application/json}, body: '{"prompt":"x"}'}
           output: {status: 200, body: {matches: '(?s)akey: secret.*zname: foo'}}
-    - config:
+    - name: protocol-conversion-detects-anthropic-uri
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [1]}
+      config:
         routes:
-            - id: ai-proxy-source-11
-              plugins:
-                ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+          - id: protocol-conversion-detect-anthropic
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: provider
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
-              headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+              path: {equals: /v1/chat/completions}
+              headers: {Authorization: {equals: Bearer token}}
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"route setup"}]}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-11
-      source:
-        file: t/plugin/ai-proxy-protocol-conversion.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
-            - 22
-            - 23
-            - 24
-            - 25
-            - 26
-            - 27
-            - 28
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"case-1","model":"gpt-4o","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"case-1-detected"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
-            method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+        - name: exact-messages-uri-converts-request-and-response
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json, Authorization: Bearer token}, body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"route setup"}]}'}
+          output: {status: 200, body: {matches: '"text":"case-1-detected"'}}
+
+    - name: protocol-conversion-converts-anthropic-nonstream
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [2]}
+      config:
+        routes:
+          - id: protocol-conversion-anthropic-nonstream
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              headers: {Authorization: {equals: Bearer token}}
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hello"}]}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/json}
+              body: '{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"1 + 1 = 2.","role":"assistant"}}],"created":1723780938,"id":"chatcmpl-9wiSIg5LYrrpxwsr2PubSQnbtod1P","model":"gpt-4o-2024-05-13","object":"chat.completion","system_fingerprint":"fp_abc28019ad","usage":{"completion_tokens":8,"prompt_tokens":23,"total_tokens":31}}'
+      steps:
+        - name: anthropic-wire-response-contains-converted-text
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json, Authorization: Bearer token}, body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hello"}]}'}
+          output: {status: 200, body: {matches: '"text":"1 \+ 1 = 2\."'}}
+
+    - name: protocol-conversion-rejects-missing-messages
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [3]}
+      config:
+        routes:
+          - id: protocol-conversion-missing-messages
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"unexpected":"case-3"}'}]
+      steps:
+        - name: missing-messages-is-client-error
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json, Authorization: Bearer token}, body: '{"model":"claude-3-5-sonnet-20241022"}'}
+          output: {status: 400, body: {matches: 'missing messages'}}
+
+    - name: protocol-conversion-rejects-malformed-json
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [4]}
+      config:
+        routes:
+          - id: protocol-conversion-malformed-json
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"unexpected":"case-4"}'}]
+      steps:
+        - name: malformed-json-is-client-error
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json, Authorization: Bearer token}, body: 'this is not valid json'}
+          output: {status: 400, body: {matches: 'could not parse JSON request body'}}
+
+    - name: protocol-conversion-rejects-nonarray-messages
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [5]}
+      config:
+        routes:
+          - id: protocol-conversion-nonarray-messages
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"unexpected":"case-5"}'}]
+      steps:
+        - name: nonarray-messages-is-client-error
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json, Authorization: Bearer token}, body: '{"model":"claude-3-5-sonnet-20241022","messages":"hello"}'}
+          output: {status: 400, body: {matches: 'missing messages'}}
+
+    - name: protocol-conversion-rejects-empty-messages
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [6]}
+      config:
+        routes:
+          - id: protocol-conversion-empty-messages
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"unexpected":"case-6"}'}]
+      steps:
+        - name: empty-messages-is-client-error
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json, Authorization: Bearer token}, body: '{"model":"claude-3-5-sonnet-20241022","messages":[]}'}
+          output: {status: 400, body: {matches: 'missing messages'}}
+
+    - name: protocol-conversion-configures-anthropic-stream-route
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [7]}
+      config:
+        routes:
+          - id: protocol-conversion-stream-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: claude-3-5-sonnet-20241022, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"case-7\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"route ready\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: configured-stream-route-produces-anthropic-events
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"ignored","messages":[{"role":"user","content":"Hi"}]}'}
+          output: {status: 200, body: {matches: '(?s)event: message_start.*"text":"route ready".*event: message_stop'}}
+
+    - name: protocol-conversion-converts-openai-sse-to-anthropic
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [8]}
+      config:
+        routes:
+          - id: protocol-conversion-stream
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: claude-3-5-sonnet-20241022, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":5,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: converted-stream-has-complete-anthropic-event-sequence
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"Hello"'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":" world"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '(?s)^event: message_delta\n.*"input_tokens":5.*"output_tokens":5'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-configures-system-prompt-route
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [9]}
+      config:
+        routes:
+          - id: protocol-conversion-system-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"route setup"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"case-9","model":"gpt-4o","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"system route ready"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}'}
+      steps:
+        - name: system-route-converts-system-message
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-3-5-sonnet-20241022","system":"You are a helpful assistant.","messages":[{"role":"user","content":"route setup"}]}'}
+          output: {status: 200, body: {matches: '"text":"system route ready"'}}
+
+    - name: protocol-conversion-moves-system-prompt-first
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [10]}
+      config:
+        routes:
+          - id: protocol-conversion-system-prompt
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"hello"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"chatcmpl-sys","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"system prompt ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'}
+      steps:
+        - name: provider-sees-system-message-before-user
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-3-5-sonnet-20241022","system":"You are a helpful assistant.","messages":[{"role":"user","content":"hello"}]}'}
+          output: {status: 200, body: {matches: '"text":"system prompt ok"'}}
+
+    - name: protocol-conversion-configures-tool-route
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [11]}
+      config:
+        routes:
+          - id: protocol-conversion-tool-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {matches: '"name":"get_weather".*"parameters".*"location"'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"chatcmpl-tool","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_abc123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}}'}
+      steps:
+        - name: configured-tool-route-converts-tool-response
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"Weather?"}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"location":{"type":"string"}}}}]}'}
+          output: {status: 200, body: {json_equals: '{"content":[{"id":"call_abc123","input":{"location":"Paris"},"name":"get_weather","type":"tool_use"}],"id":"chatcmpl-tool","model":"gpt-4o","role":"assistant","stop_reason":"tool_use","type":"message","usage":{"input_tokens":20,"output_tokens":10}}'}}
+
+    - name: protocol-conversion-roundtrips-tool-calling
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [12]}
+      config:
+        routes:
+          - id: protocol-conversion-tools
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {matches: '"name":"get_weather".*"parameters".*"required":\["location"\]'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"chatcmpl-tool","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_abc123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}}'}
+      steps:
+        - name: tool-use-stop-reason-and-input-are-restored
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"What is the weather in Paris?"}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}]}'}
+          output: {status: 200, body: {json_equals: '{"content":[{"id":"call_abc123","input":{"location":"Paris"},"name":"get_weather","type":"tool_use"}],"id":"chatcmpl-tool","model":"gpt-4o","role":"assistant","stop_reason":"tool_use","type":"message","usage":{"input_tokens":20,"output_tokens":10}}'}}
+
+    - name: protocol-conversion-configures-null-finish-stream
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [13]}
+      config:
+        routes:
+          - id: protocol-conversion-null-finish-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"chatcmpl-null\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-null\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-null\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: null-finish-stream-route-reaches-final-content
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output: {status: 200, body: {matches: '(?s)"text":"!".*event: message_stop'}}
+
+    - name: protocol-conversion-null-finish-emits-one-stop
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [14]}
+      config:
+        routes:
+          - id: protocol-conversion-null-finish
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"chatcmpl-null\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-null\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-null\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: json-null-does-not-close-stream-early
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 200
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"Hi"'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"!"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '^event: message_delta\n'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-configures-double-finish-stream
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [15]}
+      config:
+        routes:
+          - id: protocol-conversion-double-finish-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: configured-double-finish-route-completes
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output: {status: 200, body: {matches: '(?s)"text":"Hi".*"text":"!".*event: message_stop'}}
+
+    - name: protocol-conversion-deduplicates-double-finish
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [16]}
+      config:
+        routes:
+          - id: protocol-conversion-double-finish
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: two-finish-chunks-produce-no-empty-delta-and-one-stop
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 200
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"Hi"'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"!"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '^event: message_delta\n'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-configures-deepseek-null-usage-stream
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [17]}
+      config:
+        routes:
+          - id: protocol-conversion-deepseek-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: deepseek-chat, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: configured-deepseek-route-preserves-content
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output: {status: 200, body: {matches: '(?s)"text":"Hi".*"text":"!".*event: message_stop'}}
+
+    - name: protocol-conversion-ignores-null-usage
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [18]}
+      config:
+        routes:
+          - id: protocol-conversion-deepseek-null-usage
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: deepseek-chat, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"ds-1\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: null-usage-chunks-do-not-crash-or-drop-content
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 200
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"Hi"'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"!"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '(?s)^event: message_delta\n.*"input_tokens":5.*"output_tokens":2'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-configures-role-content-first-chunk
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [19]}
+      config:
+        routes:
+          - id: protocol-conversion-role-content-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\",\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: configured-role-content-route-preserves-first-token
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output: {status: 200, body: {matches: '(?s)"text":"hello".*"text":" world".*event: message_stop'}}
+
+    - name: protocol-conversion-preserves-first-role-content
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [20]}
+      config:
+        routes:
+          - id: protocol-conversion-first-role-content
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\",\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: role-and-content-in-first-chunk-keep-content
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 200
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"hello"'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":" world"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '^event: message_delta\n'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-emits-blank-line-sse-terminators
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [21]}
+      config:
+        routes:
+          - id: protocol-conversion-sse-terminators
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"case-21\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"terminator\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: every-converted-event-ends-with-a-blank-line
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output:
+            status: 200
+            chunks:
+              - {matches: '(?s)^event: message_start\ndata: .*\n\n$'}
+              - {matches: '(?s)^event: content_block_start\ndata: .*\n\n$'}
+              - {matches: '(?s)^event: content_block_delta\ndata: .*"text":"terminator".*\n\n$'}
+              - {matches: '(?s)^event: content_block_stop\ndata: .*\n\n$'}
+              - {matches: '(?s)^event: message_delta\ndata: .*\n\n$'}
+              - {matches: '(?s)^event: message_stop\ndata: .*\n\n$'}
+
+    - name: protocol-conversion-ignores-empty-sse-data
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [22]}
+      config:
+        routes:
+          - id: protocol-conversion-empty-sse-data
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"chatcmpl-empty\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\ndata: \n\ndata: {\"id\":\"chatcmpl-empty\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: empty-data-frame-produces-no-event-or-warning
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 200
+            logs: {not_matches: 'decode OpenAI SSE chunk'}
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"Hi"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '^event: message_delta\n'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-preserves-sse-edge-payloads
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [23]}
+      config:
+        routes:
+          - id: protocol-conversion-sse-edge-payloads
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              body_repeat:
+                prefix: "data: {\"id\":\"case-23\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\""
+                value: x
+                count: 8192
+                suffix: "\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"line1\\nline2 \\\"hello\\\"\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":8193}}\n\ndata: [DONE]\n\n"
+      steps:
+        - name: empty-large-and-special-content-survive-sse-encoding
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output:
+            status: 200
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*x{1000}'}
+              - {matches: '(?s)^event: content_block_delta\n.*line1\\nline2.*\\?"hello\\?"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '^event: message_delta\n'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-configures-usage-only-final-chunk
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [24]}
+      config:
+        routes:
+          - id: protocol-conversion-usage-final-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\ndata: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: configured-usage-route-emits-final-usage
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output: {status: 200, body: {matches: '(?s)"input_tokens":10.*"output_tokens":5.*event: message_stop'}}
+
+    - name: protocol-conversion-emits-usage-after-stop-chunk
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [25]}
+      config:
+        routes:
+          - id: protocol-conversion-usage-final
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}],\"usage\":null}\n\ndata: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\ndata: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: usage-only-chunk-is-folded-into-message-delta
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 200
+            logs: {not_matches: '"level":"error"'}
+            chunks:
+              - {matches: '^event: message_start\n'}
+              - {matches: '^event: content_block_start\n'}
+              - {matches: '(?s)^event: content_block_delta\n.*"text":"Hi"'}
+              - {matches: '^event: content_block_stop\n'}
+              - {matches: '(?s)^event: message_delta\n.*"input_tokens":10.*"output_tokens":5'}
+              - {matches: '^event: message_stop\n'}
+
+    - name: protocol-conversion-surfaces-stream-error-at-warning
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [26]}
+      config:
+        routes:
+          - id: protocol-conversion-stream-error
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: gpt-4o, stream: true}
+                override: {endpoint: '{{FIXTURE.provider.URL}}'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: error-event-is-converted-and-logged-at-warning
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"Hi"}]}'}
+          output:
+            status: 200
+            body: {matches: '("type":"error".*"type":"overloaded_error".*"message":"Overloaded")|("message":"Overloaded".*"type":"overloaded_error".*"type":"error")'}
+            logs: {matches: '(?i)warn.*overloaded_error.*Overloaded'}
+
+    - name: protocol-conversion-configures-mismatched-endpoint
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [27]}
+      config:
+        routes:
+          - id: protocol-conversion-mismatch-route
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: test-model}
+                override: {endpoint: '{{FIXTURE.provider.URL}}/v1/messages'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              body: {json_equals: '{"model":"test-model","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "data: {\"id\":\"case-27\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"route valid\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"}
+      steps:
+        - name: override-endpoint-path-is-used-after-conversion
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"client-model","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output: {status: 200, body: {matches: '(?s)"text":"route valid".*event: message_stop'}}
+
+    - name: protocol-conversion-rejects-mismatched-stream-format
+      source: {file: t/plugin/ai-proxy-protocol-conversion.t, tests: [28]}
+      config:
+        routes:
+          - id: protocol-conversion-mismatch
+            uri: /v1/messages
+            plugins:
+              ai-proxy:
+                provider: openai-compatible
+                auth: {header: {Authorization: Bearer token}}
+                options: {model: test-model}
+                override: {endpoint: '{{FIXTURE.provider.URL}}/v1/messages'}
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              body: {json_equals: '{"model":"test-model","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: text/event-stream}, body: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test-model\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\nevent: message_stop\ndata: {}\n\n"}
+      steps:
+        - name: mismatched-anthropic-sse-returns-bad-gateway
+          input: {method: POST, path: /v1/messages, headers: {Content-Type: application/json}, body: '{"model":"test-model","messages":[{"role":"user","content":"Hi"}],"stream":true}'}
+          output:
+            status: 502
+            body: {matches: 'streaming response completed without producing any output'}
+            logs: {matches: 'streaming response completed without producing any output'}
     - name: request-body-override-rejects-unknown-llm-option
       source: {file: t/plugin/ai-proxy-request-body-override.t, tests: [1]}
       config:

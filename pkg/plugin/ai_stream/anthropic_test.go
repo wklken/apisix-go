@@ -4,6 +4,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 func TestForwardOpenAIAsAnthropicSSEDefersStopUntilUsage(t *testing.T) {
@@ -58,5 +61,58 @@ func TestForwardOpenAIAsAnthropicSSEConvertsToolCallAndRestoresName(t *testing.T
 		if !strings.Contains(output, expected) {
 			t.Fatalf("converted stream missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestForwardOpenAIAsAnthropicSSEConvertsAndWarnsOnError(t *testing.T) {
+	body := "data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n" +
+		"data: [DONE]\n\n"
+	rr := httptest.NewRecorder()
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-stream-anthropic-error-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "overloaded_error") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	_, err := ForwardOpenAIAsAnthropicSSE(rr, strings.NewReader(body), 0, nil)
+	if err != nil {
+		t.Fatalf("ForwardOpenAIAsAnthropicSSE() error = %v", err)
+	}
+	output := rr.Body.String()
+	for _, expected := range []string{
+		"event: error", `"type":"error"`, `"type":"overloaded_error"`, `"message":"Overloaded"`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("converted error stream missing %q:\n%s", expected, output)
+		}
+	}
+	select {
+	case entry := <-entries:
+		if entry.Level != "WARN" || entry.Message !=
+			"Anthropic SSE error: type=overloaded_error, message=Overloaded" {
+			t.Fatalf("warning entry = %#v", entry)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Anthropic SSE error was not logged at warning level")
+	}
+}
+
+func TestForwardOpenAIAsAnthropicSSEReturnsErrorWithoutWritingForMismatchedFormat(t *testing.T) {
+	body := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"type\":\"message\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+		"event: message_stop\n" +
+		"data: {}\n\n"
+	rr := httptest.NewRecorder()
+
+	_, err := ForwardOpenAIAsAnthropicSSE(rr, strings.NewReader(body), 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "streaming response completed without producing any output") {
+		t.Fatalf("ForwardOpenAIAsAnthropicSSE() error = %v, want no-output error", err)
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("mismatched stream output = %q, want empty", rr.Body.String())
 	}
 }

@@ -14,6 +14,7 @@ type FlushWriter struct {
 	mu        sync.Mutex
 	pending   bool
 	wrote     bool
+	status    int
 	stop      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
@@ -37,8 +38,22 @@ func (w *FlushWriter) Header() http.Header {
 
 func (w *FlushWriter) WriteHeader(statusCode int) {
 	w.mu.Lock()
-	w.writer.WriteHeader(statusCode)
-	w.mu.Unlock()
+	defer w.mu.Unlock()
+	w.status = statusCode
+}
+
+// Status returns the pending response status, or 0 when no status was set.
+func (w *FlushWriter) Status() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.status
+}
+
+// Wrote reports whether any body bytes have been written.
+func (w *FlushWriter) Wrote() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.wrote
 }
 
 func (w *FlushWriter) Write(body []byte) (int, error) {
@@ -46,6 +61,9 @@ func (w *FlushWriter) Write(body []byte) (int, error) {
 	first := !w.wrote
 	w.wrote = true
 	w.pending = true
+	if first && w.status != 0 {
+		w.writer.WriteHeader(w.status)
+	}
 	written, err := w.writer.Write(body)
 	w.mu.Unlock()
 	if first && w.onFirst != nil {

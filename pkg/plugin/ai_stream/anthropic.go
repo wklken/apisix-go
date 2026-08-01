@@ -2,6 +2,7 @@ package ai_stream
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -9,7 +10,10 @@ import (
 	"strings"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 )
+
+var ErrNoStreamOutput = errors.New("streaming response completed without producing any output")
 
 type anthropicStreamState struct {
 	started          bool
@@ -42,6 +46,7 @@ func ForwardOpenAIAsAnthropicSSE(
 	}
 	reader := bufio.NewReader(body)
 	var total int64
+	producedOutput := false
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
@@ -57,6 +62,7 @@ func ForwardOpenAIAsAnthropicSSE(
 				if writeErr := writeAnthropicSSEEvent(w, event); writeErr != nil {
 					return state.usage, writeErr
 				}
+				producedOutput = true
 			}
 		}
 		if err != nil {
@@ -71,7 +77,11 @@ func ForwardOpenAIAsAnthropicSSE(
 			if err := writeAnthropicSSEEvent(w, event); err != nil {
 				return state.usage, err
 			}
+			producedOutput = true
 		}
+	}
+	if !producedOutput {
+		return state.usage, ErrNoStreamOutput
 	}
 	return state.usage, nil
 }
@@ -102,8 +112,25 @@ func (s *anthropicStreamState) convertChunk(
 	if usage, ok := chunk["usage"].(map[string]any); ok {
 		s.mergeUsage(usage)
 	}
+	if streamError, ok := chunk["error"].(map[string]any); ok {
+		errorType := stringValue(streamError["type"])
+		message := stringValue(streamError["message"])
+		logger.Warnf("Anthropic SSE error: type=%s, message=%s", errorType, message)
+		s.done = true
+		return []anthropicSSEEvent{newAnthropicSSEEvent("error", map[string]any{
+			"type": "error", "error": streamError,
+		})}
+	}
 	if s.done {
 		return s.flushPendingStop()
+	}
+	choices, _ := chunk["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		return nil
 	}
 	events := make([]anthropicSSEEvent, 0)
 	if !s.started {
@@ -117,11 +144,6 @@ func (s *anthropicStreamState) convertChunk(
 			},
 		}))
 	}
-	choices, _ := chunk["choices"].([]any)
-	if len(choices) == 0 {
-		return events
-	}
-	choice, _ := choices[0].(map[string]any)
 	delta, _ := choice["delta"].(map[string]any)
 	if reasoning := stringValue(firstValue(delta["reasoning_content"], delta["reasoning"])); reasoning != "" {
 		events = append(events, s.ensureBlock("thinking", map[string]any{

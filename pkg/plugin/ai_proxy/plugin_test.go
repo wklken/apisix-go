@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	observabilitymetrics "github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
@@ -866,6 +868,51 @@ func TestHandlerConvertsAnthropicMessagesThroughOpenAIProvider(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsInvalidAnthropicMessagesBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing messages", body: `{"model":"claude-3-5-sonnet-20241022"}`},
+		{name: "non-array messages", body: `{"model":"claude-3-5-sonnet-20241022","messages":"hello"}`},
+		{name: "empty messages", body: `{"model":"claude-3-5-sonnet-20241022","messages":[]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstreamCalls int
+			p := newTestPlugin(t, Config{
+				Provider: "openai-compatible",
+				Override: Override{Endpoint: "http://127.0.0.1/v1/chat/completions"},
+			})
+			p.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+				}, nil
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for invalid Anthropic request")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("response code = %d, want 400; body = %q", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "missing messages") {
+				t.Fatalf("response body = %q, want missing messages", rr.Body.String())
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+		})
+	}
+}
+
 func TestVertexEmbeddingsEndpoint(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Provider:     "vertex-ai",
@@ -1181,6 +1228,10 @@ func TestHandlerForwardsOpenAIChatSSEAndRegistersUsage(t *testing.T) {
 }
 
 func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
+	streamBody := "data: {\"id\":\"chat-1\",\"model\":\"gpt-stream\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
+		"data: [DONE]\n\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer client-key" || r.Header.Get("X-Api-Key") != "" ||
 			r.Header.Get("Anthropic-Version") != "" {
@@ -1194,12 +1245,8 @@ func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
 			t.Fatalf("converted stream request = %#v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(
-			"data: {\"id\":\"chat-1\",\"model\":\"gpt-stream\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
-				"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
-				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n" +
-				"data: [DONE]\n\n",
-		))
+		w.Header().Set("Content-Length", strconv.Itoa(len(streamBody)))
+		_, _ = w.Write([]byte(streamBody))
 	}))
 	defer upstream.Close()
 	p := newTestPlugin(t, Config{
@@ -1235,11 +1282,67 @@ func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
 	if strings.Contains(output, `"choices"`) || strings.Contains(output, "data: [DONE]") {
 		t.Fatalf("OpenAI events leaked into Anthropic stream:\n%s", output)
 	}
+	if got := rr.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("converted Anthropic stream Content-Length = %q, want omitted", got)
+	}
 	assertLLMRequestVar(t, req, "$request_type", "ai_stream")
 	assertLLMRequestVar(t, req, "$llm_model", "gpt-stream")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(4))
 	assertLLMRequestVar(t, req, "$llm_completion_tokens", int64(2))
 	assertUsageRequestVars(t, req, float64(4), int64(6))
+}
+
+func TestHandlerReturnsBadGatewayWhenAnthropicStreamProducesNoOutput(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_123\",\"type\":\"message\"}}\n\n" +
+				"event: content_block_delta\n" +
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+				"event: message_stop\n" +
+				"data: {}\n\n",
+		))
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-stream-no-output-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "streaming response completed without producing any output") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/messages"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+	  "model":"test-model","stream":true,
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for mismatched stream")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "streaming response completed without producing any output") {
+		t.Fatalf("response body = %q, want no-output message", rr.Body.String())
+	}
+	select {
+	case entry := <-entries:
+		if entry.Level != "ERROR" {
+			t.Fatalf("log level = %s, want ERROR", entry.Level)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mismatched stream error was not logged")
+	}
 }
 
 func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {

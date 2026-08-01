@@ -551,8 +551,7 @@ cases:
     - name: limit-count-consumer-isolation-set-route-with-key-auth-test-1
       source:
         file: t/plugin/limit-count-consumer-isolation.t
-        tests:
-            - 1
+        tests: [1]
       config:
         consumers:
             - plugins:
@@ -561,29 +560,23 @@ cases:
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack1
-            - plugins:
-                key-auth:
-                    key: jack2
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 429
-                    show_limit_quota_header: true
-                    time_window: 60
-              username: jack2
         routes:
-            - id: consumer-limit-count
+            - id: consumer-isolation-route-setup-test-1
               plugins:
                 key-auth: {}
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /consumer-isolation-route-setup
       fixtures:
         - count:
             at_least: 1
@@ -591,26 +584,39 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /consumer-isolation-route-setup
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - kind: redis
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:consumer-isolation-route-setup-test-1:consumer:jack1:127\.0\.0\.1$': "1"
       steps:
         - input:
             headers:
                 apikey: jack1
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-first-request
+            path: /consumer-isolation-route-setup
+          name: key-auth-route-runs-the-consumer-limit
           output:
+            body:
+                equals: limit-count upstream
+            headers:
+                X-RateLimit-Limit:
+                    equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
     - name: limit-count-consumer-isolation-add-consumer-jack1-with-limit-count-test-2
       source:
         file: t/plugin/limit-count-consumer-isolation.t
-        tests:
-            - 2
+        tests: [2]
       config:
         consumers:
             - plugins:
@@ -619,29 +625,23 @@ cases:
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack1
-            - plugins:
-                key-auth:
-                    key: jack2
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 429
-                    show_limit_quota_header: true
-                    time_window: 60
-              username: jack2
         routes:
-            - id: consumer-limit-count
+            - id: consumer-isolation-jack1-setup-test-2
               plugins:
                 key-auth: {}
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /consumer-isolation-jack1-setup
       fixtures:
         - count:
             at_least: 1
@@ -649,57 +649,64 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /consumer-isolation-jack1-setup
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - kind: redis
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:consumer-isolation-jack1-setup-test-2:consumer:jack1:127\.0\.0\.1$': "1"
       steps:
         - input:
             headers:
                 apikey: jack1
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-first-request
+            path: /consumer-isolation-jack1-setup
+          name: jack1-consumer-limit-is-live
           output:
+            body:
+                equals: limit-count upstream
+            headers:
+                X-RateLimit-Limit:
+                    equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
     - name: limit-count-consumer-isolation-add-consumer-jack2-with-limit-count-test-3
       source:
         file: t/plugin/limit-count-consumer-isolation.t
-        tests:
-            - 3
+        tests: [3]
       config:
         consumers:
-            - plugins:
-                key-auth:
-                    key: jack1
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    rejected_code: 429
-                    show_limit_quota_header: true
-                    time_window: 60
-              username: jack1
             - plugins:
                 key-auth:
                     key: jack2
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack2
         routes:
-            - id: consumer-limit-count
+            - id: consumer-isolation-jack2-setup-test-3
               plugins:
                 key-auth: {}
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /consumer-isolation-jack2-setup
       fixtures:
         - count:
             at_least: 1
@@ -707,26 +714,39 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /consumer-isolation-jack2-setup
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - kind: redis
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:consumer-isolation-jack2-setup-test-3:consumer:jack2:127\.0\.0\.1$': "1"
       steps:
         - input:
             headers:
                 apikey: jack2
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-first-request
+            path: /consumer-isolation-jack2-setup
+          name: jack2-consumer-limit-is-live
           output:
+            body:
+                equals: limit-count upstream
+            headers:
+                X-RateLimit-Limit:
+                    equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
     - name: limit-count-consumer-isolation-jack1-hits-limit-test-4
       source:
         file: t/plugin/limit-count-consumer-isolation.t
-        tests:
-            - 4
+        tests: [4]
       config:
         consumers:
             - plugins:
@@ -735,7 +755,11 @@ cases:
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack1
@@ -745,19 +769,23 @@ cases:
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack2
         routes:
-            - id: consumer-limit-count
+            - id: consumer-isolation-jack1-limit-test-4
               plugins:
                 key-auth: {}
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /consumer-isolation-jack1-limit
       fixtures:
         - count:
             at_least: 2
@@ -765,42 +793,70 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /consumer-isolation-jack1-limit
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - kind: redis
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:consumer-isolation-jack1-limit-test-4:consumer:jack1:127\.0\.0\.1$': "4"
       steps:
         - input:
             headers:
                 apikey: jack1
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-first-request
+            path: /consumer-isolation-jack1-limit
+          name: jack1-first-request-is-allowed
           output:
+            headers:
+                X-RateLimit-Limit:
+                    equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
         - input:
             headers:
                 apikey: jack1
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-second-request
+            path: /consumer-isolation-jack1-limit
+          name: jack1-second-request-exhausts-its-quota
           output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
             status: 200
         - input:
             headers:
                 apikey: jack1
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-own-quota-rejects-third
+            path: /consumer-isolation-jack1-limit
+          name: jack1-third-request-is-rejected
           output:
-            status: 429
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+        - input:
+            headers:
+                apikey: jack1
+            method: GET
+            path: /consumer-isolation-jack1-limit
+          name: jack1-fourth-request-remains-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
     - name: limit-count-consumer-isolation-jack2-starts-fresh-isolated-from-jack1-test-5
       source:
         file: t/plugin/limit-count-consumer-isolation.t
-        tests:
-            - 5
+        tests: [5]
       config:
         consumers:
             - plugins:
@@ -809,7 +865,11 @@ cases:
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack1
@@ -819,57 +879,123 @@ cases:
                 limit-count:
                     count: 2
                     key: remote_addr
-                    rejected_code: 429
+                    policy: redis
+                    redis_host: '{{FIXTURE.redis.HOST}}'
+                    redis_port: '{{FIXTURE.redis.PORT}}'
+                    redis_timeout: 1001
+                    rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
               username: jack2
         routes:
-            - id: consumer-limit-count
+            - id: consumer-isolation-jack2-fresh-test-5
               plugins:
                 key-auth: {}
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /consumer-isolation-jack2-fresh
       fixtures:
         - count:
-            at_least: 2
-            at_most: 2
+            at_least: 4
+            at_most: 4
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /consumer-isolation-jack2-fresh
           kind: http
           name: primary
           respond:
             - body: limit-count upstream
               status: 200
+        - kind: redis
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:consumer-isolation-jack2-fresh-test-5:consumer:jack1:127\.0\.0\.1$': "4"
+                '^limit-count:route:consumer-isolation-jack2-fresh-test-5:consumer:jack2:127\.0\.0\.1$': "4"
       steps:
         - input:
             headers:
+                apikey: jack1
+            method: GET
+            path: /consumer-isolation-jack2-fresh
+          name: prerequisite-jack1-first-request-is-allowed
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: jack1
+            method: GET
+            path: /consumer-isolation-jack2-fresh
+          name: prerequisite-jack1-second-request-is-allowed
+          output:
+            status: 200
+        - input:
+            headers:
+                apikey: jack1
+            method: GET
+            path: /consumer-isolation-jack2-fresh
+          name: prerequisite-jack1-third-request-is-rejected
+          output:
+            status: 503
+        - input:
+            headers:
+                apikey: jack1
+            method: GET
+            path: /consumer-isolation-jack2-fresh
+          name: prerequisite-jack1-fourth-request-is-rejected
+          output:
+            status: 503
+        - input:
+            headers:
                 apikey: jack2
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-first-request
+            path: /consumer-isolation-jack2-fresh
+          name: isolated-jack2-first-request-starts-fresh
           output:
+            headers:
+                X-RateLimit-Limit:
+                    equals: "2"
+                X-RateLimit-Remaining:
+                    equals: "1"
             status: 200
         - input:
             headers:
                 apikey: jack2
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-second-request
+            path: /consumer-isolation-jack2-fresh
+          name: isolated-jack2-second-request-exhausts-its-own-quota
           output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
             status: 200
         - input:
             headers:
                 apikey: jack2
             method: GET
-            path: /limit-count
-          name: authenticated-consumer-own-quota-rejects-third
+            path: /consumer-isolation-jack2-fresh
+          name: isolated-jack2-third-request-is-rejected
           output:
-            status: 429
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
+        - input:
+            headers:
+                apikey: jack2
+            method: GET
+            path: /consumer-isolation-jack2-fresh
+          name: isolated-jack2-fourth-request-remains-rejected
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+            status: 503
     - name: limit-count-redis-cluster-set-route-missing-redis-cluster-nodes-test-1
       source:
         file: t/plugin/limit-count-redis-cluster.t
@@ -1921,35 +2047,33 @@ cases:
     - name: limit-count-redis-cluster2-update-route-use-new-limit-configuration-test-1
       source:
         file: t/plugin/limit-count-redis-cluster2.t
-        tests:
-            - 1
+        tests: [1]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis-cluster2-updated-limit-test-1
               plugins:
                 limit-count:
                     count: 2
                     key: remote_addr
                     policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
+                    redis_cluster_name: redis-cluster-1
                     redis_cluster_nodes:
                         - '{{FIXTURE.redis.ADDR}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
+                        - '{{FIXTURE.redis.ADDR}}'
                     time_window: 60
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis-cluster2-update
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 2
+            at_most: 2
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                matches: ^/redis-cluster2-update(?:-ready)?$
           kind: http
           name: primary
           respond:
@@ -1957,55 +2081,117 @@ cases:
               status: 200
         - kind: redis-cluster
           name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster2-updated-limit-test-1:127\.0\.0\.1$': "3"
       steps:
-        - input:
+        - config:
+            routes:
+                - id: redis-cluster2-update-ready-test-1
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /redis-cluster2-update-ready
+                - id: redis-cluster2-updated-limit-test-1
+                  plugins:
+                    limit-count:
+                        count: 1
+                        key: remote_addr
+                        policy: redis-cluster
+                        redis_cluster_name: redis-cluster-1
+                        redis_cluster_nodes:
+                            - '{{FIXTURE.redis.ADDR}}'
+                            - '{{FIXTURE.redis.ADDR}}'
+                        time_window: 60
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /redis-cluster2-update
+          config_probe:
+            input:
+                method: GET
+                path: /redis-cluster2-update-ready
+            output:
+                body:
+                    equals: limit-count upstream
+                status: 200
+          input:
             method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
+            path: /redis-cluster2-update
+          name: updated-count-one-allows-the-first-request
           output:
             body:
                 equals: limit-count upstream
             headers:
                 X-RateLimit-Limit:
-                    equals: "2"
+                    equals: "1"
+                X-RateLimit-Remaining:
+                    equals: "0"
+                X-RateLimit-Reset:
+                    matches: ^(?:59|60)$
             status: 200
+          wait: 3s
+        - input:
+            method: GET
+            path: /redis-cluster2-update
+          name: updated-count-one-rejects-the-second-request-with-a-lower-reset
+          output:
+            headers:
+                X-RateLimit-Limit:
+                    equals: "1"
+                X-RateLimit-Remaining:
+                    equals: "0"
+                X-RateLimit-Reset:
+                    matches: ^5[5-8]$
+            status: 503
+          wait: 3s
+        - input:
+            method: GET
+            path: /redis-cluster2-update
+          name: updated-count-one-keeps-decreasing-reset-on-the-third-request
+          output:
+            headers:
+                X-RateLimit-Limit:
+                    equals: "1"
+                X-RateLimit-Remaining:
+                    equals: "0"
+                X-RateLimit-Reset:
+                    matches: ^5[1-4]$
+            status: 503
     - name: limit-count-redis-cluster2-test-header-x-ratelimit-reset-shouldn-t-be-set-to-0-after-request-be-rejected-test-2
       source:
         file: t/plugin/limit-count-redis-cluster2.t
-        tests:
-            - 2
+        tests: [2]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis-cluster2-positive-reset-test-2
               plugins:
                 limit-count:
-                    count: 1
+                    count: 2
                     key: remote_addr
                     policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
+                    redis_cluster_name: redis-cluster-1
                     redis_cluster_nodes:
                         - '{{FIXTURE.redis.ADDR}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
+                        - '{{FIXTURE.redis.ADDR}}'
                     time_window: 60
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis-cluster2-positive-reset
       fixtures:
         - count:
-            at_least: 1
-            at_most: 1
+            at_least: 2
+            at_most: 2
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis-cluster2-positive-reset
           kind: http
           name: primary
           respond:
@@ -2013,51 +2199,69 @@ cases:
               status: 200
         - kind: redis-cluster
           name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster2-positive-reset-test-2:127\.0\.0\.1$': "3"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: first-response-has-integer-quota-headers
+            path: /redis-cluster2-positive-reset
+          name: first-accepted-request-has-positive-reset
           output:
             headers:
                 X-RateLimit-Remaining:
-                    equals: "0"
+                    equals: "1"
                 X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    matches: ^[1-9][0-9]*$
             status: 200
+          wait: 1s
         - input:
             method: GET
-            path: /limit-count
-          name: rejection-retains-nonzero-reset
+            path: /redis-cluster2-positive-reset
+          name: second-accepted-request-keeps-positive-reset
           output:
             headers:
                 X-RateLimit-Remaining:
                     equals: "0"
                 X-RateLimit-Reset:
-                    matches: ^[1-9][0-9]+$
+                    matches: ^[1-9][0-9]*$
+            status: 200
+          wait: 1s
+        - input:
+            method: GET
+            path: /redis-cluster2-positive-reset
+          name: rejected-request-keeps-positive-reset
+          output:
+            headers:
+                X-RateLimit-Remaining:
+                    equals: "0"
+                X-RateLimit-Reset:
+                    matches: ^[1-9][0-9]*$
             status: 503
     - name: limit-count-redis-cluster3-modified-redis-script-cost-2-test-1
       source:
         file: t/plugin/limit-count-redis-cluster3.t
-        tests:
-            - 1
+        tests: [1]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis-cluster3-cost-test-1
               plugins:
                 limit-count:
+                    allow_degradation: false
                     cost: 2
                     count: 3
                     key: remote_addr
+                    key_type: var
                     policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
+                    redis_cluster_name: redis-cluster-1
                     redis_cluster_nodes:
                         - '{{FIXTURE.redis.ADDR}}'
+                        - '{{FIXTURE.redis.ADDR}}'
+                    redis_cluster_ssl: false
+                    redis_cluster_ssl_verify: false
+                    redis_timeout: 1000
                     rejected_code: 503
                     show_limit_quota_header: true
                     time_window: 60
@@ -2065,7 +2269,7 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis-cluster3-cost
       fixtures:
         - count:
             at_least: 1
@@ -2073,7 +2277,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis-cluster3-cost
           kind: http
           name: primary
           respond:
@@ -2081,45 +2285,48 @@ cases:
               status: 200
         - kind: redis-cluster
           name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster3-cost-test-1:127\.0\.0\.1$': "2"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: configured-cost-controls-consumed-quota
+            path: /redis-cluster3-cost
+          name: cost-two-consumes-two-cluster-counts
           output:
+            body:
+                equals: limit-count upstream
             headers:
+                X-RateLimit-Limit:
+                    equals: "3"
                 X-RateLimit-Remaining:
                     equals: "1"
             status: 200
     - name: limit-count-redis-cluster3-set-route-with-single-node-in-redis-cluster-nodes-and-redis-cluster-name-test-2
       source:
         file: t/plugin/limit-count-redis-cluster3.t
-        tests:
-            - 2
+        tests: [2]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis-cluster3-single-node-setup-test-2
               plugins:
                 limit-count:
                     count: 2
                     key: remote_addr
                     policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
+                    redis_cluster_name: redis-cluster-1
                     redis_cluster_nodes:
                         - '{{FIXTURE.redis.ADDR}}'
+                    redis_timeout: 1001
                     rejected_code: 503
-                    show_limit_quota_header: true
                     time_window: 60
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis-cluster3-single-node-setup
       fixtures:
         - count:
             at_least: 1
@@ -2127,7 +2334,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis-cluster3-single-node-setup
           kind: http
           name: primary
           respond:
@@ -2135,47 +2342,43 @@ cases:
               status: 200
         - kind: redis-cluster
           name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster3-single-node-setup-test-2:127\.0\.0\.1$': "1"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
+            path: /redis-cluster3-single-node-setup
+          name: single-cluster-node-configures-a-live-route
           output:
             body:
                 equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
             status: 200
     - name: limit-count-redis-cluster3-up-the-limit-for-single-node-in-redis-cluster-nodes-test-3
       source:
         file: t/plugin/limit-count-redis-cluster3.t
-        tests:
-            - 3
+        tests: [3]
       config:
         routes:
-            - id: limit-count-route
+            - id: redis-cluster3-single-node-limit-test-3
               plugins:
                 limit-count:
                     count: 2
                     key: remote_addr
                     policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
+                    redis_cluster_name: redis-cluster-1
                     redis_cluster_nodes:
                         - '{{FIXTURE.redis.ADDR}}'
+                    redis_timeout: 1001
                     rejected_code: 503
-                    show_limit_quota_header: true
                     time_window: 60
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
+              uri: /redis-cluster3-single-node-limit
       fixtures:
         - count:
             at_least: 2
@@ -2183,7 +2386,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis-cluster3-single-node-limit
           kind: http
           name: primary
           respond:
@@ -2191,207 +2394,57 @@ cases:
               status: 200
         - kind: redis-cluster
           name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster3-single-node-limit-test-3:127\.0\.0\.1$': "3"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: allowed-request-1
+            path: /redis-cluster3-single-node-limit
+          name: first-single-node-request-is-allowed
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
             status: 200
         - input:
             method: GET
-            path: /limit-count
-          name: allowed-request-2
+            path: /redis-cluster3-single-node-limit
+          name: second-single-node-request-is-allowed
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
             status: 200
         - input:
             method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
+            path: /redis-cluster3-single-node-limit
+          name: third-single-node-request-is-rejected
           output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
             status: 503
     - name: limit-count-redis-cluster3-set-route-with-redis-cluster-nodes-as-environment-variables-and-redis-cluster-name-test-4
       source:
         file: t/plugin/limit-count-redis-cluster3.t
-        tests:
-            - 4
+        tests: [4]
+      environment:
+        REDIS_NODE_0: '{{FIXTURE.redis.ADDR}}'
+        REDIS_NODE_1: '{{FIXTURE.redis.ADDR}}'
       config:
         routes:
-            - id: limit-count-route
+            - id: redis-cluster3-environment-setup-test-4
               plugins:
                 limit-count:
                     count: 2
                     key: remote_addr
                     policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
+                    redis_cluster_name: redis-cluster-1
                     redis_cluster_nodes:
-                        - '{{FIXTURE.redis.ADDR}}'
+                        - '$ENV://REDIS_NODE_0'
+                        - '$ENV://REDIS_NODE_1'
+                    redis_timeout: 1001
                     rejected_code: 503
-                    show_limit_quota_header: true
                     time_window: 60
               upstream:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 2
-            at_most: 2
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis-cluster
-          name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-1
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 503
-    - name: limit-count-redis-cluster3-up-the-limit-with-environment-variables-for-redis-cluster-nodes-test-5
-      source:
-        file: t/plugin/limit-count-redis-cluster3.t
-        tests:
-            - 5
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
-                    redis_cluster_nodes:
-                        - '{{FIXTURE.redis.ADDR}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
-      fixtures:
-        - count:
-            at_least: 2
-            at_most: 2
-          expect:
-            - method: GET
-              path:
-                matches: ^/limit-count(?:-b)?$
-          kind: http
-          name: primary
-          respond:
-            - body: limit-count upstream
-              status: 200
-        - kind: redis-cluster
-          name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
-      steps:
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-1
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "1"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: allowed-request-2
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 200
-        - input:
-            method: GET
-            path: /limit-count
-          name: request-over-limit-is-rejected
-          output:
-            headers:
-                X-RateLimit-Remaining:
-                    equals: "0"
-            status: 503
-    - name: limit-count-redis-cluster3-check-redis-cluster-keepalive-param-test-6
-      source:
-        file: t/plugin/limit-count-redis-cluster3.t
-        tests:
-            - 6
-      config:
-        routes:
-            - id: limit-count-route
-              plugins:
-                limit-count:
-                    count: 2
-                    key: remote_addr
-                    policy: redis-cluster
-                    redis_cluster_name: fixture-cluster
-                    redis_cluster_nodes:
-                        - '{{FIXTURE.redis.ADDR}}'
-                    rejected_code: 503
-                    show_limit_quota_header: true
-                    time_window: 60
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /limit-count
+              uri: /redis-cluster3-environment-setup
       fixtures:
         - count:
             at_least: 1
@@ -2399,7 +2452,7 @@ cases:
           expect:
             - method: GET
               path:
-                matches: ^/limit-count(?:-b)?$
+                equals: /redis-cluster3-environment-setup
           kind: http
           name: primary
           respond:
@@ -2407,22 +2460,139 @@ cases:
               status: 200
         - kind: redis-cluster
           name: redis
-          network_expect:
-            - payload:
-                matches: .*
-          network_respond:
-            - payload: ignored
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster3-environment-setup-test-4:127\.0\.0\.1$': "1"
       steps:
         - input:
             method: GET
-            path: /limit-count
-          name: configured-limit-allows-request
+            path: /redis-cluster3-environment-setup
+          name: environment-cluster-nodes-configure-a-live-route
           output:
             body:
                 equals: limit-count upstream
-            headers:
-                X-RateLimit-Limit:
-                    equals: "2"
+            status: 200
+    - name: limit-count-redis-cluster3-up-the-limit-with-environment-variables-for-redis-cluster-nodes-test-5
+      source:
+        file: t/plugin/limit-count-redis-cluster3.t
+        tests: [5]
+      environment:
+        REDIS_NODE_0: '{{FIXTURE.redis.ADDR}}'
+        REDIS_NODE_1: '{{FIXTURE.redis.ADDR}}'
+      config:
+        routes:
+            - id: redis-cluster3-environment-limit-test-5
+              plugins:
+                limit-count:
+                    count: 2
+                    key: remote_addr
+                    policy: redis-cluster
+                    redis_cluster_name: redis-cluster-1
+                    redis_cluster_nodes:
+                        - '$ENV://REDIS_NODE_0'
+                        - '$ENV://REDIS_NODE_1'
+                    redis_timeout: 1001
+                    rejected_code: 503
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /redis-cluster3-environment-limit
+      fixtures:
+        - count:
+            at_least: 2
+            at_most: 2
+          expect:
+            - method: GET
+              path:
+                equals: /redis-cluster3-environment-limit
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+        - kind: redis-cluster
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster3-environment-limit-test-5:127\.0\.0\.1$': "3"
+      steps:
+        - input:
+            method: GET
+            path: /redis-cluster3-environment-limit
+          name: first-environment-node-request-is-allowed
+          output:
+            status: 200
+        - input:
+            method: GET
+            path: /redis-cluster3-environment-limit
+          name: second-environment-node-request-is-allowed
+          output:
+            status: 200
+        - input:
+            method: GET
+            path: /redis-cluster3-environment-limit
+          name: third-environment-node-request-is-rejected
+          output:
+            status: 503
+    - name: limit-count-redis-cluster3-check-redis-cluster-keepalive-param-test-6
+      source:
+        file: t/plugin/limit-count-redis-cluster3.t
+        tests: [6]
+      config:
+        routes:
+            - id: redis-cluster3-keepalive-test-6
+              plugins:
+                limit-count:
+                    count: 2
+                    key: remote_addr
+                    policy: redis-cluster
+                    redis_cluster_name: redis-cluster-1
+                    redis_cluster_nodes:
+                        - '{{FIXTURE.redis.ADDR}}'
+                    redis_keepalive_pool: 100
+                    redis_keepalive_timeout: 10000
+                    redis_timeout: 1001
+                    rejected_code: 503
+                    time_window: 60
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /redis-cluster3-keepalive
+      fixtures:
+        - count:
+            at_least: 1
+            at_most: 1
+          expect:
+            - method: GET
+              path:
+                equals: /redis-cluster3-keepalive
+          kind: http
+          name: primary
+          respond:
+            - body: limit-count upstream
+              status: 200
+        - kind: redis-cluster
+          name: redis
+          redis:
+            allow_unasserted_commands: true
+            ignore_negotiation: true
+            value_matches:
+                '^limit-count:route:redis-cluster3-keepalive-test-6:127\.0\.0\.1$': "1"
+      steps:
+        - input:
+            method: GET
+            path: /redis-cluster3-keepalive
+          name: configured-cluster-keepalive-runs-a-live-request
+          output:
+            body:
+                equals: limit-count upstream
             status: 200
     - name: limit-count-redis-delayed-sync-setup-routes-test-1
       source: {file: t/plugin/limit-count-redis-delayed-sync.t, tests: [1]}

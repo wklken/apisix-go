@@ -612,6 +612,16 @@ func (p *Plugin) PostInit() error {
 			p.config.Redis.RedisSSLVerify = &b
 		}
 	case "redis-cluster":
+		for i, node := range p.config.RedisCluster.RedisClusterNodes {
+			if !strings.HasPrefix(strings.ToUpper(node), "$ENV://") {
+				continue
+			}
+			resolved, err := store.ResolveSecretReference(node)
+			if err != nil {
+				return fmt.Errorf("resolve limit-count Redis cluster node %d: %w", i, err)
+			}
+			p.config.RedisCluster.RedisClusterNodes[i] = resolved
+		}
 		if len(p.config.RedisCluster.RedisClusterNodes) == 0 {
 			return fmt.Errorf("redis_cluster_nodes is required")
 		}
@@ -741,6 +751,17 @@ func (p *Plugin) scopedKey(key string) string {
 		return "route:" + p.routeID + ":" + key
 	}
 	return "route:unknown:" + key
+}
+
+func (p *Plugin) consumerScopedKey(r *http.Request, key string) string {
+	if !apisixctx.ConsumerPluginOverrides(r, name) {
+		return key
+	}
+	consumerName, _ := apisixctx.GetApisixVar(r, "$consumer_name").(string)
+	if consumerName == "" {
+		return key
+	}
+	return "consumer:" + consumerName + ":" + key
 }
 
 func (p *Plugin) registerGroup() error {
@@ -1115,6 +1136,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if !ok {
 					continue
 				}
+				key = p.consumerScopedKey(r, key)
 				count, timeWindow, err := p.resolveRuleLimit(r, rule)
 				if err != nil {
 					if *p.config.AllowDegradation {
@@ -1177,7 +1199,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		key := p.resolveKey(r)
+		key := p.consumerScopedKey(r, p.resolveKey(r))
 		count, timeWindow, err := p.resolveLimit(r)
 		if err != nil {
 			if *p.config.AllowDegradation {

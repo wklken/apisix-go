@@ -16,10 +16,14 @@ import (
 
 func TestStandaloneManifestDuplicateBacklogOnlyDecreases(t *testing.T) {
 	const (
-		maxHistoricalDuplicateGroups = 27
-		maxHistoricalDuplicateCases  = 150
-		currentSourcePrefix          = "limit-count-redis3-"
+		maxHistoricalDuplicateGroups = 26
+		maxHistoricalDuplicateCases  = 142
 	)
+	currentSourcePrefixes := []string{
+		"limit-count-consumer-isolation-",
+		"limit-count-redis-cluster2-",
+		"limit-count-redis-cluster3-",
+	}
 
 	path := filepath.Join("..", "..", "..", "t", "plugin", "limit-count.yaml")
 	data, err := os.ReadFile(path)
@@ -57,7 +61,9 @@ func TestStandaloneManifestDuplicateBacklogOnlyDecreases(t *testing.T) {
 			largest = names
 		}
 		for _, name := range names {
-			if strings.HasPrefix(name, currentSourcePrefix) {
+			if slices.ContainsFunc(currentSourcePrefixes, func(prefix string) bool {
+				return strings.HasPrefix(name, prefix)
+			}) {
 				currentSourceDuplicates = append(currentSourceDuplicates, name)
 			}
 		}
@@ -65,7 +71,7 @@ func TestStandaloneManifestDuplicateBacklogOnlyDecreases(t *testing.T) {
 	if len(currentSourceDuplicates) > 0 {
 		t.Fatalf(
 			"%s cases still have duplicated normalized behavior: %v",
-			currentSourcePrefix,
+			strings.Join(currentSourcePrefixes, ", "),
 			currentSourceDuplicates,
 		)
 	}

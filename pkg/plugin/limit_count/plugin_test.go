@@ -350,6 +350,68 @@ func TestHandlerUsesHTTPVariableKey(t *testing.T) {
 	}
 }
 
+func TestHandlerScopesConsumerPluginQuotaByConsumerName(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:        1,
+		TimeWindow:   60,
+		Key:          "remote_addr",
+		RejectedCode: http.StatusTooManyRequests,
+	})
+	p.SetResourceContext(resource.Route{ID: "consumer-route"}, resource.Service{})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := func(consumer string) int {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "192.0.2.1:1234"
+		r = apisixctx.WithApisixVars(r, map[string]string{"$consumer_name": consumer})
+		r = apisixctx.WithConsumerPluginOverrides(r, map[string]struct{}{name: {}})
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		return recorder.Code
+	}
+
+	if status := request("jack1"); status != http.StatusNoContent {
+		t.Fatalf("jack1 first status = %d, want %d", status, http.StatusNoContent)
+	}
+	if status := request("jack1"); status != http.StatusTooManyRequests {
+		t.Fatalf("jack1 second status = %d, want %d", status, http.StatusTooManyRequests)
+	}
+	if status := request("jack2"); status != http.StatusNoContent {
+		t.Fatalf("jack2 first status = %d, want isolated quota status %d", status, http.StatusNoContent)
+	}
+}
+
+func TestHandlerRouteQuotaRemainsSharedAcrossAuthenticatedConsumers(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:        1,
+		TimeWindow:   60,
+		Key:          "remote_addr",
+		RejectedCode: http.StatusTooManyRequests,
+	})
+	p.SetResourceContext(resource.Route{ID: "shared-route"}, resource.Service{})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := func(consumer string) int {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "192.0.2.1:1234"
+		r = apisixctx.WithApisixVars(r, map[string]string{"$consumer_name": consumer})
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		return recorder.Code
+	}
+
+	if status := request("jack1"); status != http.StatusNoContent {
+		t.Fatalf("jack1 route status = %d, want %d", status, http.StatusNoContent)
+	}
+	if status := request("jack2"); status != http.StatusTooManyRequests {
+		t.Fatalf("jack2 route status = %d, want shared quota status %d", status, http.StatusTooManyRequests)
+	}
+}
+
 func TestPostInitResolvesEnvironmentVariableKey(t *testing.T) {
 	t.Setenv("LIMIT_COUNT_KEY", "remote_addr")
 
@@ -377,6 +439,26 @@ func TestPostInitResolvesRedisHostEnvironmentReference(t *testing.T) {
 	}
 	if options := p.redisOptions(); options.Addr != "127.0.0.2:6379" {
 		t.Fatalf("Redis address = %q, want 127.0.0.2:6379", options.Addr)
+	}
+}
+
+func TestPostInitResolvesRedisClusterNodeEnvironmentReferences(t *testing.T) {
+	t.Setenv("LIMIT_COUNT_REDIS_NODE_0", "127.0.0.1:5000")
+	t.Setenv("LIMIT_COUNT_REDIS_NODE_1", "127.0.0.1:5001")
+
+	p := newTestPlugin(t, Config{
+		Count:             2,
+		TimeWindow:        60,
+		Policy:            "redis-cluster",
+		RedisClusterNodes: []string{"$ENV://LIMIT_COUNT_REDIS_NODE_0", "$ENV://LIMIT_COUNT_REDIS_NODE_1"},
+		RedisClusterName:  "redis-cluster-1",
+	})
+	want := []string{"127.0.0.1:5000", "127.0.0.1:5001"}
+	if !slices.Equal(p.config.RedisCluster.RedisClusterNodes, want) {
+		t.Fatalf("resolved Redis cluster nodes = %#v, want %#v", p.config.RedisCluster.RedisClusterNodes, want)
+	}
+	if options := p.redisClusterOptions(); !slices.Equal(options.Addrs, want) {
+		t.Fatalf("Redis cluster addresses = %#v, want %#v", options.Addrs, want)
 	}
 }
 

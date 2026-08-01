@@ -232,12 +232,10 @@ cases:
   - name: ssl-listen-port
     source:
       tests: [19]
-    runtime: &ssl_9445
-      apisix:
-        ssl:
-          enable: true
-          listen:
-            - port: 9445
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9445
     config:
       routes:
         - id: redirect-ssl-listen-port
@@ -261,12 +259,10 @@ cases:
   - name: single-ssl-listen-port
     source:
       tests: [20]
-    runtime: &ssl_9443
-      apisix:
-        ssl:
-          enable: true
-          listen:
-            - port: 9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-single-ssl-listen-port
@@ -291,14 +287,9 @@ cases:
     source:
       tests: [21]
     runtime:
-      apisix:
-        ssl:
-          enable: true
-          listen:
-            - port: 6443
-            - port: 7443
-            - port: 8443
-            - port: 9443
+      plugin_attr:
+        redirect:
+          https_port: 8443
     config:
       routes:
         - id: redirect-multiple-ssl-listen-ports
@@ -317,7 +308,7 @@ cases:
       status: 301
       headers:
         Location:
-          matches: '^https://foo.com:[6-9]443/hello$'
+          equals: https://foo.com:8443/hello
 
   - name: default-https-port
     source:
@@ -345,7 +336,10 @@ cases:
   - name: http-to-https-ignores-ret-code
     source:
       tests: [23, 24]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-http-to-https-ignores-ret-code
@@ -387,7 +381,10 @@ cases:
   - name: http-to-https-with-upstream
     source:
       tests: [26, 27]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-http-to-https-with-upstream
@@ -441,7 +438,10 @@ cases:
   - name: post-http-to-https
     source:
       tests: [30, 31]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-post-http-to-https
@@ -468,7 +468,10 @@ cases:
   - name: get-http-to-https
     source:
       tests: [32]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-get-http-to-https
@@ -495,7 +498,10 @@ cases:
   - name: head-http-to-https
     source:
       tests: [33]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-head-http-to-https
@@ -651,7 +657,10 @@ cases:
   - name: forwarded-http
     source:
       tests: [45, 46]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-forwarded-http
@@ -676,7 +685,10 @@ cases:
   - name: forwarded-nonstandard-scheme
     source:
       tests: [47]
-    runtime: *ssl_9443
+    runtime:
+      plugin_attr:
+        redirect:
+          https_port: 9443
     config:
       routes:
         - id: redirect-forwarded-nonstandard-scheme

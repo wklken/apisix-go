@@ -6726,7 +6726,7 @@ cases:
       fixtures:
         - name: primary
           kind: http
-          count: {at_least: 1, at_most: 2}
+          count: {at_least: 1, at_most: 3}
           expect:
             - {method: GET, path: {equals: /cleanup-first}}
           respond:

@@ -15,6 +15,9 @@ import (
 
 var ErrNoStreamOutput = errors.New("streaming response completed without producing any output")
 
+// ErrClientDisconnected reports a client that aborted the streaming response.
+var ErrClientDisconnected = errors.New("client disconnected during AI streaming")
+
 type anthropicStreamState struct {
 	started          bool
 	done             bool
@@ -63,8 +66,7 @@ func ForwardOpenAIAsAnthropicSSE(
 					return state.usage, writeErr
 				}
 				producedOutput = true
-			}
-		}
+			}		}
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -295,7 +297,7 @@ func writeAnthropicSSEEvent(w http.ResponseWriter, event anthropicSSEEvent) erro
 		return fmt.Errorf("encode Anthropic SSE event: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.typeName, encoded); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrClientDisconnected, err)
 	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()

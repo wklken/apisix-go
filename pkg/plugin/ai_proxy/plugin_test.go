@@ -1345,6 +1345,59 @@ func TestHandlerReturnsBadGatewayWhenAnthropicStreamProducesNoOutput(t *testing.
 	}
 }
 
+func TestHandlerWarnsWhenStreamingClientContextCancels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"},\"finish_reason\":null}]}\n\n"))
+			w.(http.Flusher).Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-stream-cancel-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "client disconnected during AI streaming") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider: "openai-compatible",
+		Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model","stream":true,
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for streaming request")
+	}))
+	go handler.ServeHTTP(rr, req)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case entry := <-entries:
+		if entry.Level != "WARN" {
+			t.Fatalf("log level = %s, want WARN", entry.Level)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client disconnect was not logged at warning level")
+	}
+}
+
 func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1388,6 +1441,151 @@ func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {
 	}
 	if apisixctx.GetRequestVar(req, "$llm_request_done") != true {
 		t.Fatalf("$llm_request_done = %#v", apisixctx.GetRequestVar(req, "$llm_request_done"))
+	}
+}
+
+func TestHandlerLogsStreamDurationExceeded(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"tok\"},\"finish_reason\":null}]}\n\n"))
+			w.(http.Flusher).Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-stream-duration-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "max_stream_duration_ms exceeded") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	flushInterval := 0
+	p := newTestPlugin(t, Config{
+		Provider:                 "openai-compatible",
+		Override:                 Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		MaxStreamDurationMS:      50,
+		StreamingFlushIntervalMS: &flushInterval,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model","stream":true,
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for bounded stream")
+	})).ServeHTTP(rr, req)
+
+	select {
+	case entry := <-entries:
+		if entry.Level != "ERROR" {
+			t.Fatalf("log level = %s, want ERROR", entry.Level)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream duration abort was not logged")
+	}
+}
+
+func TestHandlerRejectsNonStreamingOversizedContentLength(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100000")
+		_, _ = w.Write([]byte(strings.Repeat("x", 100000)))
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-cl-precheck-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "exceeds max_response_bytes") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider:          "openai-compatible",
+		Override:          Override{Endpoint: upstream.URL + "/v1/oversized"},
+		MaxResponseBytes:  1024,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model",
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for oversized response")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+	}
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "Content-Length 100000 exceeds max_response_bytes 1024") {
+			t.Fatalf("log message = %q", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversized Content-Length was not logged")
+	}
+}
+
+func TestHandlerRejectsNonStreamingOversizedChunkedBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		flusher, _ := w.(http.Flusher)
+		for range 10 {
+			_, _ = w.Write([]byte(strings.Repeat("x", 10000)))
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	entries := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver("ai-proxy-chunked-limit-test", func(entry logger.Entry) {
+		if strings.Contains(entry.Message, "exceeds max_response_bytes") {
+			entries <- entry
+		}
+	})
+	defer stop()
+
+	p := newTestPlugin(t, Config{
+		Provider:         "openai-compatible",
+		Override:         Override{Endpoint: upstream.URL + "/v1/oversized_chunked"},
+		MaxResponseBytes: 1024,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+	  "model":"test-model",
+	  "messages":[{"role":"user","content":"Hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler called for oversized chunked response")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("response code = %d, want 502; body = %q", rr.Code, rr.Body.String())
+	}
+	select {
+	case entry := <-entries:
+		if !strings.Contains(entry.Message, "exceeds max_response_bytes 1024") {
+			t.Fatalf("log message = %q", entry.Message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversized chunked body was not logged")
 	}
 }
 

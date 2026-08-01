@@ -377,6 +377,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			status := http.StatusBadRequest
 			if strings.Contains(err.Error(), "max_req_body_size") {
 				status = http.StatusRequestEntityTooLarge
+				logger.Errorf("failed to read request body: %v", err)
 			}
 			base.WriteJSONMessage(w, status, err.Error())
 			return
@@ -997,9 +998,21 @@ func (p *Plugin) writeProviderResponse(
 		}
 		streamWriter.Close()
 		if err != nil {
+			if r.Context().Err() != nil {
+				logger.Warnf("client disconnected during AI streaming")
+				return
+			}
 			if errors.Is(err, ai_stream.ErrNoStreamOutput) && !streamWriter.Wrote() {
 				logger.Errorf("%v", err)
 				base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			if errors.Is(err, ai_stream.ErrClientDisconnected) {
+				logger.Warnf("%v", err)
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+				logger.Errorf("aborting AI stream: max_stream_duration_ms exceeded")
 				return
 			}
 			logger.Errorf("failed to forward streaming response: %v", err)
@@ -1009,6 +1022,15 @@ func (p *Plugin) writeProviderResponse(
 		return
 	}
 	bodyReader := io.Reader(resp.Body)
+	if p.config.MaxResponseBytes > 0 && resp.ContentLength > p.config.MaxResponseBytes {
+		logger.Errorf(
+			"aborting AI response: Content-Length %d exceeds max_response_bytes %d",
+			resp.ContentLength,
+			p.config.MaxResponseBytes,
+		)
+		base.WriteJSONMessage(w, http.StatusBadGateway, "max_response_bytes exceeded")
+		return
+	}
 	if p.config.MaxResponseBytes > 0 {
 		bodyReader = io.LimitReader(resp.Body, p.config.MaxResponseBytes+1)
 	}
@@ -1018,6 +1040,10 @@ func (p *Plugin) writeProviderResponse(
 		return
 	}
 	if p.config.MaxResponseBytes > 0 && int64(len(body)) > p.config.MaxResponseBytes {
+		logger.Errorf(
+			"aborting AI response: body size exceeds max_response_bytes %d",
+			p.config.MaxResponseBytes,
+		)
 		base.WriteJSONMessage(w, http.StatusBadGateway, "max_response_bytes exceeded")
 		return
 	}

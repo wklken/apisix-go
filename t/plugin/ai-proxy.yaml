@@ -376,62 +376,96 @@ cases:
             body:
                 equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
-    - config:
+    - name: client-disconnect-aborts-upstream-read
+      source: {file: t/plugin/ai-proxy-client-disconnect.t, tests: [1, 2]}
+      config:
         routes:
-            - id: ai-proxy-source-5
+            - id: ai-proxy-client-disconnect
+              uri: /anything
               plugins:
                 ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  options:
+                    model: gpt-4
+                    stream: true
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}'
+                  provider: openai
+                  ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: provider
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
+              path: {equals: /v1/chat/completions}
               headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+                Authorization: {equals: Bearer token}
+              body: {json_equals: '{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-5
-      source:
-        file: t/plugin/ai-proxy-client-disconnect.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks: ["data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"tok\"},\"index\":0,\"finish_reason\":null}],\"usage\":null}\n\n"]
+              chunk_delay: 30ms
+              chunk_repeat: 2000
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: disconnected-client-logs-and-aborts-upstream
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"hi"}]}'
+            disconnect_after_bytes: 250
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            logs: {matches: 'client disconnected during AI streaming'}
+
+    - name: client-disconnect-with-async-flush-aborts-upstream
+      source: {file: t/plugin/ai-proxy-client-disconnect.t, tests: [3, 4]}
+      config:
+        routes:
+            - id: ai-proxy-client-disconnect-async-flush
+              uri: /anything-async-flush
+              plugins:
+                ai-proxy:
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  options:
+                    model: gpt-4
+                    stream: true
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}'
+                  provider: openai
+                  ssl_verify: false
+                  streaming_flush_interval_ms: 50
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              headers:
+                Authorization: {equals: Bearer token}
+              body: {json_equals: '{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks: ["data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"tok\"},\"index\":0,\"finish_reason\":null}],\"usage\":null}\n\n"]
+              chunk_delay: 30ms
+              chunk_repeat: 2000
+      steps:
+        - name: async-flush-disconnected-client-logs-and-aborts-upstream
+          input:
+            method: POST
+            path: /anything-async-flush
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"hi"}]}'
+            disconnect_after_bytes: 250
+          output:
+            status: 200
+            logs: {matches: 'client disconnected during AI streaming'}
     - config:
         routes:
             - id: ai-proxy-source-6
@@ -2636,69 +2670,237 @@ cases:
         - name: request-body-overwrites-mapped-llm-option
           input: {method: POST, path: /request-body-override-order, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hi"}]}'}
           output: {status: 200, body: {json_equals: '{"choices":[{"message":{"role":"assistant","content":"case-19-request-body-wins"}}]}'}}
-    - config:
+    - name: stream-limits-duration-aborts-runaway-stream
+      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [1, 2]}
+      config:
         routes:
-            - id: ai-proxy-source-13
+            - id: ai-proxy-stream-duration-limit
+              uri: /anything
               plugins:
                 ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  options:
+                    model: gpt-3.5-turbo
+                    stream: true
+                  max_stream_duration_ms: 500
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}'
+                  provider: openai
+                  ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: provider
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
+              path: {equals: /v1/chat/completions}
               headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+                Authorization: {equals: Bearer token}
+              body: {json_equals: '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-13
-      source:
-        file: t/plugin/ai-proxy-stream-limits.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks: ["data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"token\"},\"index\":0,\"finish_reason\":null}],\"usage\":null}\n\n"]
+              chunk_delay: 10ms
+              chunk_repeat: 10000
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: stream-aborts-within-duration-budget
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"hi"}]}'
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            elapsed_less_than: 5s
+            logs: {matches: 'aborting AI stream: max_stream_duration_ms exceeded'}
+
+    - name: stream-limits-bytes-aborts-runaway-stream
+      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [3, 4]}
+      config:
+        routes:
+            - id: ai-proxy-stream-bytes-limit
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  options:
+                    model: gpt-3.5-turbo
+                    stream: true
+                  max_response_bytes: 2048
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}'
+                  provider: openai
+                  ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              headers:
+                Authorization: {equals: Bearer token}
+              body: {json_equals: '{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks: ["data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"token\"},\"index\":0,\"finish_reason\":null}],\"usage\":null}\n\n"]
+              chunk_delay: 10ms
+              chunk_repeat: 10000
+      steps:
+        - name: stream-aborts-after-byte-budget
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 200
+            elapsed_less_than: 5s
+            logs: {matches: 'max_response_bytes exceeded'}
+
+    - name: stream-limits-nonstreaming-oversized-content-length
+      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [5, 6]}
+      config:
+        routes:
+            - id: ai-proxy-nonstreaming-cl-limit
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  options:
+                    model: gpt-3.5-turbo
+                  max_response_bytes: 1024
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}/v1/oversized'
+                  provider: openai
+                  ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/oversized}
+              headers:
+                Authorization: {equals: Bearer token}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/json, Content-Length: "100000"}
+              body: 'xxxxxxxxxxxxxxxxxxxx'
+      steps:
+        - name: oversized-content-length-returns-bad-gateway
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 502
+            logs: {matches: 'aborting AI response: Content-Length 100000 exceeds max_response_bytes 1024'}
+
+    - name: stream-limits-schema-rejects-zero-duration
+      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [7]}
+      config:
+        routes:
+            - id: ai-proxy-zero-duration
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  auth:
+                    header:
+                      Authorization: Bearer x
+                  max_stream_duration_ms: 0
+                  options:
+                    model: gpt-3.5-turbo
+                  provider: openai
+      steps:
+        - name: zero-duration-route-is-rejected
+          input: {method: GET, path: /anything}
+          output:
+            status: 404
+            logs: {matches: 'validate plugin ai-proxy config:.*max_stream_duration_ms'}
+
+    - name: stream-limits-chunked-oversized-body
+      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [8, 9]}
+      config:
+        routes:
+            - id: ai-proxy-chunked-limit
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  options:
+                    model: gpt-3.5-turbo
+                  max_response_bytes: 1024
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}/v1/oversized_chunked'
+                  provider: openai
+                  ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/oversized_chunked}
+              headers:
+                Authorization: {equals: Bearer token}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/json}
+              chunks: ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
+              chunk_delay: 10ms
+              chunk_repeat: 10
+      steps:
+        - name: chunked-oversized-body-returns-bad-gateway
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":"hi"}]}'
+          output:
+            status: 502
+            logs: {matches: 'aborting AI response: body size exceeds max_response_bytes 1024'}
+
+    - name: stream-limits-request-body-size-rejects-413
+      source: {file: t/plugin/ai-proxy-stream-limits.t, tests: [10, 11]}
+      config:
+        routes:
+            - id: ai-proxy-req-body-limit
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  auth:
+                    header:
+                      Authorization: Bearer token
+                  max_req_body_size: 10
+                  options:
+                    model: gpt-3.5-turbo
+                  override:
+                    endpoint: '{{FIXTURE.provider.URL}}'
+                  provider: openai
+                  ssl_verify: false
+      fixtures:
+        - name: provider
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: '{"choices":[]}'}]
+      steps:
+        - name: oversized-request-body-is-rejected
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"messages": [{"role": "user", "content": "this request body is well over ten bytes"}]}'
+          output:
+            status: 413
+            logs: {matches: 'request body exceeds max_req_body_size'}
     - name: upstream-variable-route-is-runnable
       source: {file: t/plugin/ai-proxy-upstream-vars.t, tests: [1]}
       config:

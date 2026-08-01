@@ -37,7 +37,7 @@ func ForwardSSE(
 			}
 			mergeSSEUsage(&usage, protocol, line)
 			if _, writeErr := io.WriteString(w, line); writeErr != nil {
-				return usage, writeErr
+				return usage, fmt.Errorf("%w: %v", ErrClientDisconnected, writeErr)
 			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()

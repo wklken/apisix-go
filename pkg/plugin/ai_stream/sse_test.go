@@ -1,12 +1,35 @@
 package ai_stream
 
 import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
+
+type failingWriter struct {
+	writer   http.ResponseWriter
+	writes   int
+	failFrom int
+}
+
+func (w *failingWriter) Header() http.Header         { return w.writer.Header() }
+func (w *failingWriter) WriteHeader(status int)      { w.writer.WriteHeader(status) }
+func (w *failingWriter) Write(body []byte) (int, error) {
+	w.writes++
+	if w.writes >= w.failFrom {
+		return 0, errors.New("broken pipe")
+	}
+	return w.writer.Write(body)
+}
+func (w *failingWriter) Flush() {}
 
 func TestForwardSSEMergesAnthropicUsageAndPreservesWireBody(t *testing.T) {
 	body := "event: message_start\n" +
@@ -49,3 +72,62 @@ func TestForwardSSEEnforcesByteLimit(t *testing.T) {
 		t.Fatal("ForwardSSE() error = nil, want byte limit error")
 	}
 }
+
+func TestForwardSSEIdentifiesClientDisconnectOnWriteFailure(t *testing.T) {
+	rr := httptest.NewRecorder()
+	failing := &failingWriter{writer: rr, failFrom: 1}
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
+
+	_, err := ForwardSSE(failing, strings.NewReader(body), ai_protocols.OpenAIChat, 0)
+	if err == nil || !errors.Is(err, ErrClientDisconnected) {
+		t.Fatalf("ForwardSSE() error = %v, want ErrClientDisconnected", err)
+	}
+}
+
+func TestForwardAnthropicSSEIdentifiesClientDisconnectOnWriteFailure(t *testing.T) {
+	rr := httptest.NewRecorder()
+	failing := &failingWriter{writer: rr, failFrom: 1}
+	body := "data: {\"id\":\"chat-1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	_, err := ForwardOpenAIAsAnthropicSSE(failing, strings.NewReader(body), 0, nil)
+	if err == nil || !errors.Is(err, ErrClientDisconnected) {
+		t.Fatalf("ForwardOpenAIAsAnthropicSSE() error = %v, want ErrClientDisconnected", err)
+	}
+}
+
+func TestForwardAWSEventStreamIdentifiesClientDisconnectOnWriteFailure(t *testing.T) {
+	rr := httptest.NewRecorder()
+	failing := &failingWriter{writer: rr, failFrom: 1}
+	payload := encodeTestAWSEventStreamMessage(t, "test", "")
+	body := strings.NewReader(string(payload))
+
+	_, err := ForwardAWSEventStream(failing, body, 0)
+	if err == nil || !errors.Is(err, ErrClientDisconnected) {
+		t.Fatalf("ForwardAWSEventStream() error = %v, want ErrClientDisconnected", err)
+	}
+}
+
+func encodeTestAWSEventStreamMessage(t *testing.T, name string, payload string) []byte {
+	t.Helper()
+	var headers bytes.Buffer
+	headers.WriteByte(byte(len(name)))
+	headers.WriteString(name)
+	headers.WriteByte(7)
+	_ = binary.Write(&headers, binary.BigEndian, uint16(len(payload)))
+	headers.WriteString(payload)
+	totalLength := 16 + headers.Len() + len(payload)
+	frame := make([]byte, 12, totalLength)
+	binary.BigEndian.PutUint32(frame[:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(headers.Len()))
+	binary.BigEndian.PutUint32(frame[8:12], crc32.ChecksumIEEE(frame[:8]))
+	frame = append(frame, headers.Bytes()...)
+	frame = append(frame, payload...)
+	messageCRC := crc32.ChecksumIEEE(frame)
+	return append(frame, byte(messageCRC>>24), byte(messageCRC>>16), byte(messageCRC>>8), byte(messageCRC))
+}
+
+var (
+	_ io.Writer = (*failingWriter)(nil)
+)

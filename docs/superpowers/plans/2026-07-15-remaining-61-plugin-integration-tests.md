@@ -851,8 +851,22 @@ The original checked state was not supported by the manifests. This audit compar
   cases covering concurrent/in-flight counters, dynamic variables,
   route/global/consumer scope, Redis authentication/reuse, TLS, SNI, and
   HTTP/2 behavior.
-- [ ] `limit-count` — 80 of 252 pinned blocks are independent real standalone cases; fixed/sliding window, delayed-sync, Sentinel/Cluster, group sharing, metadata, reset header, and state-transition sources remain.
-- [ ] `limit-req` — 37 of 89 pinned blocks are independent real standalone cases; the two Redis source families remain.
+- [x] `limit-count` — all 252 pinned blocks are independent real standalone
+  cases covering fixed/sliding windows, delayed sync, Sentinel/Cluster,
+  group sharing, metadata, reset headers, state transitions, consumer
+  isolation, and Redis environment references. Consumer plugin overrides
+  scope quota by consumer name while route quota stays shared; Redis
+  cluster nodes accept `$ENV://` references. Package/race, exact
+  real-process, corpus, scoped lint, build, and diff gates pass.
+- [x] `limit-req` — all 89 pinned blocks are independent real standalone
+  cases covering delayed versus nodelay execution, combination keys and
+  fallback diagnostics, consumer counters shared across routes but
+  isolated across consumers, SNI TLS, parallel HTTP/2, local schema,
+  disabled, default rejection, consumer authentication/lifecycle,
+  zero/negative-rate blocks, the Redis source family, and the Redis
+  cluster source family including TLS, keepalive, and consumer-scoped
+  keys. Package/race, exact real-process, corpus, scoped lint, build,
+  and diff gates pass.
 - [x] `graphql-limit-count` — all 26 pinned blocks map one-to-one to independent real standalone cases covering local/Redis/Cluster quota state, depth costs, shorthand/JSON parsing, fragments and bounded cycles, schema errors, and runtime `graphql.max_size`.
 - [x] `proxy-cache` — all 76 pinned disk and memory blocks map exactly once to
   independent standalone cases covering schema and zone validation, MISS/HIT,

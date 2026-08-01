@@ -24,34 +24,391 @@ sources:
     file: t/plugin/limit-req3.t
     tests: 3
 cases:
-  - name: limit-req-redis-cluster
-    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]}
+  - name: limit-req-redis-cluster-valid-schema-installs-route-test-1
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [1]}
     config:
       routes:
-        - id: limit-req-redis-cluster
-          uri: /limit-req
+        - id: limit-req-redis-cluster-test-01
+          uri: /hello
           plugins:
-            limit-req: {rate: 1, burst: 1, nodelay: true, rejected_code: 429, rejected_msg: limit reached, key: remote_addr}
+            limit-req: {rate: 1, burst: 0, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
           upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
     fixtures:
-      - name: primary
-        kind: http
-        respond: [{status: 200, body: limit-req upstream}]
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
     steps:
-      - name: first-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: burst-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 200
-          body: {equals: limit-req upstream}
-      - name: rejected-request
-        input: {method: GET, path: /limit-req, headers: {}}
-        output:
-          status: 429
+      - name: valid-cluster-schema-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-cluster-ssl-route-proxies-test-2
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [2]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-02
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}'], redis_cluster_ssl: true, redis_cluster_ssl_verify: false}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {tls: true, ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: tls-cluster-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-cluster-rate-four-burst-one-allows-four-test-3
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [3]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-03
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 4, at_most: 4}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: all-four-pipelined-equivalent-requests-pass
+        repeat: 4
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-cluster-burst-rejects-tenth-request-test-4
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [4]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-04
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 9, at_most: 9}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: first-six-requests-pass
+        repeat: 6
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: seventh-request-passes-before-rate-window-resets
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+        wait: 1s
+      - name: final-three-contend-for-two-admissions
+        repeat: 3
+        concurrency: 3
+        input: {method: GET, path: /hello}
+        output: {status_counts: {200: 2, 503: 1}}
+
+  - name: limit-req-redis-cluster-updated-route-proxies-test-5
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [5]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-05
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: updated-cluster-route-proxies
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+
+  - name: limit-req-redis-cluster-low-rate-rejects-followups-test-6
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [6]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-06
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: first-request-passes
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: following-three-requests-are-rejected
+        repeat: 3
+        input: {method: GET, path: /hello}
+        output: {status: 503}
+
+  - name: limit-req-redis-cluster-negative-rate-rejects-route-test-7
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [7]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-07
+          uri: /hello
+          plugins:
+            limit-req: {rate: -1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+    fixtures:
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: negative-rate-route-is-rejected
+        input: {method: GET, path: /hello}
+        output: {status: 404, logs: {matches: 'build route limit-req-redis-cluster-test-07 fail:.*limit-req.*rate'}}
+
+  - name: limit-req-redis-cluster-disabled-plugin-bypasses-cluster-test-8
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [8]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-08
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}'], _meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: disabled-plugin-does-not-touch-cluster, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-disabled-plugin-allows-four-test-9
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [9]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-09
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 503, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}'], _meta: {disable: true}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 4, at_most: 4}, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: all-four-requests-bypass-disabled-plugin, repeat: 4, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-server-addr-key-proxies-test-10
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [10]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-10
+          uri: /hello
+          plugins:
+            limit-req: {rate: 4, burst: 2, rejected_code: 503, key: server_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: server-address-key-reaches-upstream, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-default-rejected-code-is-503-test-11
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [11]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-11
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0.1, burst: 0.1, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: first-request-passes
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - name: second-request-uses-default-503
+        input: {method: GET, path: /hello}
+        output: {status: 503}
+
+  - name: limit-req-redis-cluster-consumer-plugin-proxies-test-12
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [12]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+      routes:
+        - id: limit-req-redis-cluster-test-12
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: consumer-bound-cluster-plugin-proxies, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-key-auth-route-activates-consumer-plugin-test-13
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [13]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+      routes:
+        - id: limit-req-redis-cluster-test-13
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: authenticated-route-uses-consumer-cluster-quota, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-consumer-rate-three-burst-two-allows-three-test-14
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [14]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+      routes:
+        - id: limit-req-redis-cluster-test-14
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, count: {at_least: 3, at_most: 3}, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: all-three-consumer-requests-pass, repeat: 3, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-updated-consumer-plugin-proxies-test-15
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [15]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 403, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+      routes:
+        - id: limit-req-redis-cluster-test-15
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: updated-consumer-plugin-reaches-upstream, input: {method: GET, path: /hello, headers: {apikey: auth-jack}}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-updated-consumer-rejects-followups-test-16
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [16]}
+    config:
+      consumers:
+        - username: new_consumer
+          plugins:
+            key-auth: {key: auth-jack}
+            limit-req: {rate: 0.1, burst: 0.1, rejected_code: 403, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+      routes:
+        - id: limit-req-redis-cluster-test-16
+          uri: /hello
+          plugins: {key-auth: {}}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}, headers: {X-Consumer-Username: {equals: new_consumer}}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: first-consumer-request-passes
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 200, body: {equals: hello world}}
+      - name: following-three-consumer-requests-are-rejected
+        repeat: 3
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 403}
+
+  - name: limit-req-redis-cluster-consumer-name-key-route-proxies-test-17
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [17]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-17
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: consumer-name-key-route-proxies, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+
+  - name: limit-req-redis-cluster-empty-consumer-name-falls-back-to-client-ip-test-18
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [18]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-18
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: empty-consumer-name-uses-client-ip
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}, logs: {matches: 'The value of the configured key is empty, use client IP instead'}}
+
+  - name: limit-req-redis-cluster-missing-consumer-rejects-authentication-test-19
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [19]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-19
+          uri: /hello
+          plugins:
+            key-auth: {}
+            limit-req: {rate: 3, burst: 2, rejected_code: 403, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - name: deleted-consumer-key-is-invalid
+        input: {method: GET, path: /hello, headers: {apikey: auth-jack}}
+        output: {status: 401, body: {equals: '{"message":"Invalid API key in request"}'}, logs: {matches: 'failed to find consumer: invalid api key'}}
+
+  - name: limit-req-redis-cluster-missing-route-returns-not-found-test-20
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [20]}
+    config:
+      services:
+        - id: limit-req-redis-cluster-test-20-service
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: remote_addr, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}']}
+    fixtures:
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: deleted-route-is-not-routable, input: {method: GET, path: /hello}, output: {status: 404}}
+
+  - name: limit-req-redis-cluster-zero-rate-rejects-route-test-21
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [21]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-21
+          uri: /hello
+          plugins:
+            limit-req: {rate: 0, burst: 0, rejected_code: 503, key: remote_addr}
+    input: {method: GET, path: /hello}
+    output: {status: 404, logs: {matches: 'build route limit-req-redis-cluster-test-21 fail:.*limit-req.*rate.*must be > 0'}}
+
+  - name: limit-req-redis-cluster-keepalive-route-proxies-test-22
+    source: {file: t/plugin/limit-req-redis-cluster.t, tests: [22]}
+    config:
+      routes:
+        - id: limit-req-redis-cluster-test-22
+          uri: /hello
+          plugins:
+            limit-req: {rate: 2, burst: 1, key: consumer_name, policy: redis-cluster, redis_cluster_name: test, redis_cluster_nodes: ['{{FIXTURE.redis.ADDR}}'], redis_keepalive_timeout: 10000, redis_keepalive_pool: 100}
+          upstream: {type: roundrobin, nodes: {"{{FIXTURE.primary.ADDR}}": 1}}
+    fixtures:
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200, body: hello world}]}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true}}
+    steps:
+      - {name: keepalive-configured-route-proxies, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
   - name: limit-req-redis-valid-schema-installs-route-test-1
     source: {file: t/plugin/limit-req-redis.t, tests: [1]}
     config:

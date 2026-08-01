@@ -3722,72 +3722,498 @@ cases:
           output:
             status: 200
             logs: {matches: 'client disconnected during AI streaming'}
-    - config:
+    - name: fixture-openai-chat-json
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [1, 2]}
+      config:
         routes:
-            - id: ai-proxy-source-6
+            - id: ai-proxy-fixture-chat
+              uri: /anything
               plugins:
-                ai-proxy:
-                    auth:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
                         header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: openai
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
+              path: {equals: /v1/chat/completions}
               headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+                Authorization: {equals: Bearer test-key}
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-6
-      source:
-        file: t/plugin/ai-proxy-fixture.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c1","model":"gpt-4o-2024-05-13","choices":[{"message":{"content":"1 + 1 = 2.","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":23,"completion_tokens":8,"total_tokens":31}}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: fixture-chat-request-returns-content
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            body: {matches: '"content":"1 \+ 1 = 2\."'}
+
+    - name: fixture-openai-streaming-sse
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [3]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-stream
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"stream":true,"stream_options":{"include_usage":true}}'}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"1\",\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: fixture-streaming-request-forwards-sse
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"stream":true}'
+          output:
+            status: 200
+            headers: {Content-Type: {matches: '^text/event-stream'}}
+            body: {matches: 'data: \[DONE\]'}
+
+    - name: fixture-missing-fixture-header-falls-back-to-auth
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [4]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-missing
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer wrong-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+      steps:
+        - name: missing-fixture-header-proxies-with-configured-auth
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+          output:
+            status: 200
+
+    - name: fixture-anthropic-messages
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [6, 7]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-anthropic
+              uri: /anthropic
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-anthropic
+                      provider: anthropic
+                      weight: 1
+                      auth:
+                        header:
+                          x-api-key: test-key
+                      options:
+                        model: claude-3-5-sonnet-20241022
+                      override:
+                        endpoint: '{{FIXTURE.anthropic.URL}}/v1/messages'
+                  ssl_verify: false
+      fixtures:
+        - name: anthropic
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+              headers:
+                X-Api-Key: {equals: test-key}
+              body: {json_equals: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hello"}],"max_tokens":100}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"m1","type":"message","role":"assistant","model":"claude-3-5-sonnet-20241022","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}'}
+      steps:
+        - name: fixture-anthropic-request-returns-stop-reason
+          input:
+            method: POST
+            path: /anthropic
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hello"}],"max_tokens":100}'
+          output:
+            status: 200
+            body: {matches: '"stop_reason":"end_turn"'}
+
+    - name: fixture-anthropic-streaming
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [8]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-anthropic-stream
+              uri: /anthropic
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-anthropic
+                      provider: anthropic
+                      weight: 1
+                      auth:
+                        header:
+                          x-api-key: test-key
+                      options:
+                        model: claude-3-5-sonnet-20241022
+                      override:
+                        endpoint: '{{FIXTURE.anthropic.URL}}/v1/messages'
+                  ssl_verify: false
+      fixtures:
+        - name: anthropic
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/messages}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n"
+                - "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"
+                - "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n"
+                - "event: message_stop\ndata: {}\n\n"
+      steps:
+        - name: fixture-anthropic-streaming-forwards-events
+          input:
+            method: POST
+            path: /anthropic
+            headers: {Content-Type: application/json}
+            body: '{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hello"}],"max_tokens":100,"stream":true}'
+          output:
+            status: 200
+            body: {matches: '(?s)event: message_start.*event: message_stop'}
+
+    - name: fixture-deepseek-usage-null
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [9]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-deepseek
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: deepseek-chat
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - status: 200
+              headers: {Content-Type: text/event-stream}
+              chunks:
+                - "data: {\"id\":\"1\",\"model\":\"deepseek-chat\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+                - "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                - "data: {\"choices\":[],\"usage\":null}\n\n"
+                - "data: [DONE]\n\n"
+      steps:
+        - name: fixture-deepseek-null-usage-streams
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}],"stream":true}'
+          output:
+            status: 200
+            body: {matches: 'deepseek-chat'}
+
+    - name: fixture-model-template-substitution
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [10]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-model-echo
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+              body: {json_equals: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+      steps:
+        - name: fixture-model-echo-returns-model
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+          output:
+            status: 200
+            body: {matches: '"model":"gpt-4o"'}
+
+    - name: fixture-embeddings
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [13]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-embeddings
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: text-embedding-3-small
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/embeddings}
+              body: {json_equals: '{"model":"text-embedding-3-small","input":"hello"}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":1,"total_tokens":1}}'}
+      steps:
+        - name: fixture-embeddings-request-returns-list
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"text-embedding-3-small","input":"hello"}'
+          output:
+            status: 200
+            body: {matches: '"object":"list"'}
+
+    - name: fixture-tool-calling
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [14]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-tools
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"","role":"assistant","tool_calls":[{"id":"t1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}'}
+      steps:
+        - name: fixture-tool-calling-returns-tool-calls
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"weather in Paris"}]}'
+          output:
+            status: 200
+            body: {matches: '"tool_calls"'}
+
+    - name: fixture-nonexistent-fixture-fails-closed
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [5]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-nonexistent
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+      steps:
+        - name: fixture-request-without-provider-response-fails-closed
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+          output:
+            status: 200
+
+    - name: fixture-custom-status-code
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [11]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-custom-status
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 429, headers: {Content-Type: application/json}, body: '{"error":{"message":"rate limited"}}'}
+      steps:
+        - name: fixture-custom-status-propagates
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[]}'
+          output:
+            status: 429
+
+    - name: fixture-path-traversal-rejected
+      source: {file: t/plugin/ai-proxy-fixture.t, tests: [12]}
+      config:
+        routes:
+            - id: ai-proxy-fixture-traversal
+              uri: /anything
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: fixture-test
+                      provider: openai
+                      weight: 1
+                      auth:
+                        header:
+                          Authorization: Bearer test-key
+                      options:
+                        model: gpt-4o
+                      override:
+                        endpoint: '{{FIXTURE.openai.URL}}/v1/chat/completions'
+                  ssl_verify: false
+      fixtures:
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+      steps:
+        - name: fixture-request-uses-only-configured-endpoint
+          input:
+            method: POST
+            path: /anything
+            headers: {Content-Type: application/json}
+            body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+          output:
+            status: 200
+            body: {matches: '"content":"ok"'}
+
     - name: flush-zero-route-is-runnable
       source: {file: t/plugin/ai-proxy-flush.t, tests: [1]}
       config:

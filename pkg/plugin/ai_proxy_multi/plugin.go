@@ -1401,7 +1401,7 @@ func (p *Plugin) endpoint(
 		if protocol == ai_protocols.Passthrough {
 			return instance.Override.Endpoint, nil
 		}
-		if instance.Provider == "openai-compatible" {
+		if instance.Provider == "openai-compatible" || instance.Provider == "openai" {
 			return appendProtocolEndpoint(instance.Override.Endpoint, protocol)
 		}
 		if instance.Provider == "bedrock" {

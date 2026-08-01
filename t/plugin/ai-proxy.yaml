@@ -234,148 +234,1028 @@ cases:
               - {matches: '^data: .*"content":" 1 = 2\.".*\n\n$'}
               - {matches: '^data: .*"finish_reason":"stop".*\n\n$'}
               - {equals: "data: [DONE]\n\n"}
-    - config:
+    - name: bedrock-single-converse-request
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [1, 2]}
+      config:
         routes:
-            - id: ai-proxy-source-3
+            - id: ai-proxy-bedrock-single-converse
+              uri: /single-ai/converse
               plugins:
                 ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: bedrock
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
               headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+                Authorization: {matches: '^AWS4-HMAC-SHA256 '}
+                X-Amz-Date: {matches: '^[0-9]{8}T[0-9]{6}Z$'}
+              body: {json_equals: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-3
-      source:
-        file: t/plugin/ai-proxy-bedrock-single.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":13,"outputTokens":2,"totalTokens":15}}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: bedrock-converse-request-returns-converted-text
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /single-ai/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
-    - config:
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-single-system-prompt
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [3]}
+      config:
         routes:
-            - id: ai-proxy-source-4
+            - id: ai-proxy-bedrock-single-system
+              uri: /single-ai/converse
               plugins:
                 ai-proxy:
-                    auth:
-                        header:
-                            Authorization: Bearer integration
-                    override:
-                        endpoint: '{{FIXTURE.sink.URL}}'
-                    provider: openai-compatible
-                    ssl_verify: false
-              upstream:
-                nodes:
-                    '{{FIXTURE.primary.ADDR}}': 1
-                type: roundrobin
-              uri: /v1/chat/completions
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
       fixtures:
-        - kind: http
-          name: primary
-          respond:
-            - body: hello world
-              headers: {}
-              status: 200
-        - kind: http
-          name: sink
+        - name: bedrock
+          kind: http
           expect:
             - method: POST
-              path: {matches: '^/.*'}
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
               headers:
-                Authorization: {equals: Bearer integration}
-              body: {matches: 'integration|hello'}
+                Authorization: {matches: '^AWS4-HMAC-SHA256 '}
+              body: {json_equals: '{"system":[{"text":"You are a mathematician"}],"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}],"inferenceConfig":{"maxTokens":1024}}'}
           respond:
-            - body: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
-              headers: {}
-              status: 200
-      name: ai-proxy-source-4
-      source:
-        file: t/plugin/ai-proxy-bedrock.t
-        tests:
-            - 1
-            - 2
-            - 3
-            - 4
-            - 5
-            - 6
-            - 7
-            - 8
-            - 9
-            - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":13,"outputTokens":2,"totalTokens":15}}'}
       steps:
-        - input:
-            body: '{"model":"integration","messages":[{"role":"user","content":"hello"}]}'
-            headers:
-                Content-Type: application/json
+        - name: bedrock-system-prompt-preserves-system-and-config
+          input:
             method: POST
-            path: /v1/chat/completions
-          name: provider-request-is-asserted
+            path: /single-ai/converse
+            headers: {Content-Type: application/json}
+            body: '{"system":[{"text":"You are a mathematician"}],"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}],"inferenceConfig":{"maxTokens":1024}}'
           output:
-            body:
-                equals: '{"choices":[{"message":{"role":"assistant","content":"integration response"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
             status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-single-token-usage-in-response
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [4]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-usage
+              uri: /single-ai/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":13,"outputTokens":2,"totalTokens":15}}'}
+      steps:
+        - name: bedrock-response-usage-surfaces-input-tokens
+          input:
+            method: POST
+            path: /single-ai/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"inputTokens":13'}
+
+    - name: bedrock-single-missing-aws-secret-rejects-route
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [5]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-missing-secret
+              uri: /single-ai/converse2
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      steps:
+        - name: bedrock-missing-secret-route-is-rejected
+          input: {method: GET, path: /single-ai/converse2}
+          output:
+            status: 404
+            logs: {matches: 'build route ai-proxy-bedrock-single-missing-secret fail:.*bedrock.*aws'}
+
+    - name: bedrock-single-unsupported-protocol-rejected
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [6, 7]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-unsupported
+              uri: /single-ai/bedrock-chat
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: unexpected}]
+      steps:
+        - name: bedrock-non-converse-uri-returns-client-error
+          input:
+            method: POST
+            path: /single-ai/bedrock-chat
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 400
+            body: {matches: 'does not support openai-chat protocol'}
+
+    - name: bedrock-single-arn-model-url-encoding
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [8, 9]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-arn
+              uri: /single-ai/arn/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test123
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Ftest123/converse'}
+              headers:
+                Authorization: {matches: '^AWS4-HMAC-SHA256 '}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-arn-model-reaches-encoded-path
+          input:
+            method: POST
+            path: /single-ai/arn/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-single-session-token-propagation
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [10, 11]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-session
+              uri: /single-ai/session/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      session_token: FwoGZXIvYXdzEXAMPLESESSIONTOKEN
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+              headers:
+                X-Amz-Security-Token: {equals: FwoGZXIvYXdzEXAMPLESESSIONTOKEN}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"session_token_seen=FwoGZXIvYXdzEXAMPLESESSIONTOKEN"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-session-token-reaches-upstream-header
+          input:
+            method: POST
+            path: /single-ai/session/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: 'session_token_seen=FwoGZXIvYXdzEXAMPLESESSIONTOKEN'}
+
+    - name: bedrock-single-default-endpoint-schema
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [12]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-default
+              uri: /single-ai/default/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      steps:
+        - name: bedrock-default-endpoint-route-installs
+          input: {method: GET, path: /single-ai/default/converse}
+          output: {status: 400, logs: {not_matches: 'build route ai-proxy-bedrock-single-default fail'}}
+
+    - name: bedrock-single-body-model-path
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [13, 14]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-body-model
+              uri: /single-ai/body-model-only/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-body-model-builds-converse-path
+          input:
+            method: POST
+            path: /single-ai/body-model-only/converse
+            headers: {Content-Type: application/json}
+            body: '{"model":"anthropic.claude-3-5-sonnet-20241022-v2:0","messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-single-missing-model-rejected
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [15]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-missing-model
+              uri: /single-ai/body-model-only/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: unexpected}]
+      steps:
+        - name: bedrock-missing-model-returns-clear-error
+          input:
+            method: POST
+            path: /single-ai/body-model-only/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 400
+            body: {matches: 'could not resolve upstream path'}
+
+    - name: bedrock-single-stream-eventstream
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [16, 17]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-stream
+              uri: /single-ai/stream/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse-stream'}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/vnd.amazon.eventstream}
+              aws_event_stream:
+                - headers: {":message-type": "event", ":event-type": "messageStart"}
+                  payload: '{"role":"assistant"}'
+                - headers: {":message-type": "event", ":event-type": "contentBlockDelta"}
+                  payload: '{"delta":{"type":"text","text":"Hello"}}'
+                - headers: {":message-type": "event", ":event-type": "messageStop"}
+                  payload: '{}'
+                - headers: {":message-type": "event", ":event-type": "metadata"}
+                  payload: '{"usage":{"inputTokens":15,"outputTokens":20}}'
+      steps:
+        - name: bedrock-stream-forwards-eventstream-chunks
+          input:
+            method: POST
+            path: /single-ai/stream/converse
+            headers: {Content-Type: application/json}
+            body: '{"stream":true,"messages":[{"role":"user","content":[{"text":"Say hi"}]}]}'
+          output:
+            status: 200
+            headers: {Content-Type: {matches: '^application/vnd.amazon.eventstream'}}
+            body: {matches: '(?s)messageStart.*contentBlockDelta.*Hello.*messageStop.*metadata'}
+
+    - name: bedrock-single-nonstream-on-stream-route
+      source: {file: t/plugin/ai-proxy-bedrock-single.t, tests: [18]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-single-nonstream
+              uri: /single-ai/stream/converse
+              plugins:
+                ai-proxy:
+                  auth:
+                    aws:
+                      access_key_id: AKIAIOSFODNN7EXAMPLE
+                      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  options:
+                    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  override:
+                    endpoint: '{{FIXTURE.bedrock.URL}}'
+                  provider: bedrock
+                  provider_conf:
+                    region: us-east-1
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-nonstream-request-still-hits-converse
+          input:
+            method: POST
+            path: /single-ai/stream/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+    - name: bedrock-multi-converse-request
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [1, 2]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-converse
+              uri: /ai/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+              headers:
+                Authorization: {matches: '^AWS4-HMAC-SHA256 '}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":13,"outputTokens":2,"totalTokens":15}}'}
+      steps:
+        - name: bedrock-multi-converse-returns-converted-text
+          input:
+            method: POST
+            path: /ai/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-multi-system-prompt
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [3]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-system
+              uri: /ai/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+              body: {json_equals: '{"system":[{"text":"You are a mathematician"}],"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}],"inferenceConfig":{"maxTokens":1024}}'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":13,"outputTokens":2,"totalTokens":15}}'}
+      steps:
+        - name: bedrock-multi-system-prompt-preserves-system
+          input:
+            method: POST
+            path: /ai/converse
+            headers: {Content-Type: application/json}
+            body: '{"system":[{"text":"You are a mathematician"}],"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}],"inferenceConfig":{"maxTokens":1024}}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-multi-token-usage
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [4]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-usage
+              uri: /ai/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":13,"outputTokens":2,"totalTokens":15}}'}
+      steps:
+        - name: bedrock-multi-response-usage-surfaces-tokens
+          input:
+            method: POST
+            path: /ai/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"inputTokens":13'}
+
+    - name: bedrock-multi-missing-aws-secret-rejects-route
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [5]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-missing-secret
+              uri: /ai/converse2
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-bad
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  ssl_verify: false
+      steps:
+        - name: bedrock-multi-missing-secret-route-is-rejected
+          input: {method: GET, path: /ai/converse2}
+          output:
+            status: 404
+            logs: {matches: 'build route ai-proxy-bedrock-multi-missing-secret fail:.*bedrock.*aws'}
+
+    - name: bedrock-multi-unsupported-protocol-rejected
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [6, 7]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-unsupported
+              uri: /ai/bedrock-chat
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: unexpected}]
+      steps:
+        - name: bedrock-multi-non-converse-uri-returns-client-error
+          input:
+            method: POST
+            path: /ai/bedrock-chat
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 400
+            body: {matches: 'does not support openai-chat protocol'}
+
+    - name: bedrock-multi-arn-model-url-encoding
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [8, 9]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-arn
+              uri: /ai/arn/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-arn
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test123
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Ftest123/converse'}
+              headers:
+                Authorization: {matches: '^AWS4-HMAC-SHA256 '}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-multi-arn-model-reaches-encoded-path
+          input:
+            method: POST
+            path: /ai/arn/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-multi-session-token-propagation
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [10, 11]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-session
+              uri: /ai/session/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-session
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                          session_token: FwoGZXIvYXdzEXAMPLESESSIONTOKEN
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+              headers:
+                X-Amz-Security-Token: {equals: FwoGZXIvYXdzEXAMPLESESSIONTOKEN}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"session_token_seen=FwoGZXIvYXdzEXAMPLESESSIONTOKEN"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-multi-session-token-reaches-upstream
+          input:
+            method: POST
+            path: /ai/session/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: 'session_token_seen=FwoGZXIvYXdzEXAMPLESESSIONTOKEN'}
+
+    - name: bedrock-multi-default-endpoint-schema
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [12]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-default
+              uri: /ai/default/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-default-endpoint
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                  ssl_verify: false
+      steps:
+        - name: bedrock-multi-default-endpoint-route-installs
+          input: {method: GET, path: /ai/default/converse}
+          output: {status: 400, logs: {not_matches: 'build route ai-proxy-bedrock-multi-default fail'}}
+
+    - name: bedrock-multi-route-without-model-passes-schema
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [13]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-body-model
+              uri: /ai/body-model/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-body-model
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-multi-route-without-model-installs-and-proxies
+          input:
+            method: POST
+            path: /ai/body-model/converse
+            headers: {Content-Type: application/json}
+            body: '{"model":"anthropic.claude-3-5-sonnet-20241022-v2:0","messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-multi-body-model-path
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [14, 15]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-body-only
+              uri: /ai/body-model-only/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-body-only
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-multi-body-model-builds-converse-path
+          input:
+            method: POST
+            path: /ai/body-model-only/converse
+            headers: {Content-Type: application/json}
+            body: '{"model":"anthropic.claude-3-5-sonnet-20241022-v2:0","messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
+
+    - name: bedrock-multi-missing-model-rejected
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [16]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-missing-model
+              uri: /ai/body-model-only/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-body-only
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect_requests: 0
+          respond: [{status: 200, body: unexpected}]
+      steps:
+        - name: bedrock-multi-missing-model-returns-clear-error
+          input:
+            method: POST
+            path: /ai/body-model-only/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 400
+            body: {matches: 'could not resolve upstream path'}
+
+    - name: bedrock-multi-stream-eventstream
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [17, 18]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-stream
+              uri: /ai/stream/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-stream
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse-stream'}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/vnd.amazon.eventstream}
+              aws_event_stream:
+                - headers: {":message-type": "event", ":event-type": "messageStart"}
+                  payload: '{"role":"assistant"}'
+                - headers: {":message-type": "event", ":event-type": "contentBlockDelta"}
+                  payload: '{"delta":{"type":"text","text":"Hello"}}'
+                - headers: {":message-type": "event", ":event-type": "messageStop"}
+                  payload: '{}'
+                - headers: {":message-type": "event", ":event-type": "metadata"}
+                  payload: '{"usage":{"inputTokens":15,"outputTokens":20}}'
+      steps:
+        - name: bedrock-multi-stream-forwards-eventstream-chunks
+          input:
+            method: POST
+            path: /ai/stream/converse
+            headers: {Content-Type: application/json}
+            body: '{"stream":true,"messages":[{"role":"user","content":[{"text":"Say hi"}]}]}'
+          output:
+            status: 200
+            headers: {Content-Type: {matches: '^application/vnd.amazon.eventstream'}}
+            body: {matches: '(?s)messageStart.*contentBlockDelta.*Hello.*messageStop.*metadata'}
+
+    - name: bedrock-multi-stream-aggregates-usage
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [19]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-stream-usage
+              uri: /ai/stream/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-stream
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse-stream'}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/vnd.amazon.eventstream}
+              aws_event_stream:
+                - headers: {":message-type": "event", ":event-type": "messageStart"}
+                  payload: '{"role":"assistant"}'
+                - headers: {":message-type": "event", ":event-type": "contentBlockDelta"}
+                  payload: '{"delta":{"type":"text","text":"Hello"}}'
+                - headers: {":message-type": "event", ":event-type": "messageStop"}
+                  payload: '{}'
+                - headers: {":message-type": "event", ":event-type": "metadata"}
+                  payload: '{"usage":{"inputTokens":15,"outputTokens":20}}'
+      steps:
+        - name: bedrock-multi-stream-aggregates-token-usage
+          input:
+            method: POST
+            path: /ai/stream/converse
+            headers: {Content-Type: application/json}
+            body: '{"stream":true,"messages":[{"role":"user","content":[{"text":"hi"}]}]}'
+          output:
+            status: 200
+            body: {matches: '(?s)messageStart.*contentBlockDelta.*Hello.*messageStop.*metadata.*inputTokens.*outputTokens'}
+
+    - name: bedrock-multi-nonstream-on-stream-route
+      source: {file: t/plugin/ai-proxy-bedrock.t, tests: [20]}
+      config:
+        routes:
+            - id: ai-proxy-bedrock-multi-nonstream
+              uri: /ai/stream/converse
+              plugins:
+                ai-proxy-multi:
+                  instances:
+                    - name: bedrock-stream
+                      provider: bedrock
+                      weight: 1
+                      auth:
+                        aws:
+                          access_key_id: AKIAIOSFODNN7EXAMPLE
+                          secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                      provider_conf:
+                        region: us-east-1
+                      options:
+                        model: anthropic.claude-3-5-sonnet-20241022-v2:0
+                      override:
+                        endpoint: '{{FIXTURE.bedrock.URL}}'
+                  ssl_verify: false
+      fixtures:
+        - name: bedrock
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: '/model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse'}
+          respond:
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"output":{"message":{"role":"assistant","content":[{"type":"text","text":"Hello!"}]}},"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}'}
+      steps:
+        - name: bedrock-multi-nonstream-request-hits-converse
+          input:
+            method: POST
+            path: /ai/stream/converse
+            headers: {Content-Type: application/json}
+            body: '{"messages":[{"role":"user","content":[{"text":"What is 1+1?"}]}]}'
+          output:
+            status: 200
+            body: {matches: '"text":"Hello!"'}
     - name: client-disconnect-aborts-upstream-read
       source: {file: t/plugin/ai-proxy-client-disconnect.t, tests: [1, 2]}
       config:

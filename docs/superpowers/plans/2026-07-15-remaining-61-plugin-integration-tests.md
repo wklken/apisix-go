@@ -689,7 +689,7 @@ git commit -m "test(plugin): convert AI proxy provider matrix"
 - Consumes: all 99 manifests, `docs/plugins.md`, and the pinned Apache checkout.
 - Produces: zero semantic failures, verified counts, honest documentation, and a ready PR.
 
-- [ ] **Step 1: Recount pinned sources independently of YAML**
+- [x] **Step 1: Recount pinned sources independently of YAML**
 
 ```bash
 git -C .cache/apache-apisix checkout c3d7d5ec69774121f53d2e20d29d09c816795dd7
@@ -699,7 +699,7 @@ bash -lc 'source .envrc && go test ./t/plugin -run "TestManifestCorpusValidates|
 
 Expected: all tests PASS; 98 source-backed plugin names plus `redirect2`; zero case/variant target-plugin failures. Compare every manifest `source.tests` with the corresponding `rg` count, including nested source paths.
 
-- [ ] **Step 2: Run the complete real-process suite**
+- [x] **Step 2: Run the complete real-process suite**
 
 ```bash
 bash -lc 'source .envrc && make test-integration'
@@ -707,7 +707,7 @@ bash -lc 'source .envrc && make test-integration'
 
 Expected: PASS with no skipped tests, no placeholder manifests, no leaked child processes/listeners, and no external network dependency.
 
-- [ ] **Step 3: Update documentation from live counts**
+- [x] **Step 3: Update documentation from live counts**
 
 Record the verified complete-manifest counts in the README and plugin status
 docs. Document all added fixture kinds and `{{WORK_DIR}}`; remove stale design

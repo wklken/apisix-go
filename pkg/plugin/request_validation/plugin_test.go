@@ -100,7 +100,13 @@ func TestHandlerAcceptsObjectAndArrayForAPISIXLegacyTableType(t *testing.T) {
 			"Content-Type": "application/json",
 		})
 		if res.Code != http.StatusNoContent {
-			t.Fatalf("body %s: response code = %d, want %d; response = %q", body, res.Code, http.StatusNoContent, res.Body.String())
+			t.Fatalf(
+				"body %s: response code = %d, want %d; response = %q",
+				body,
+				res.Code,
+				http.StatusNoContent,
+				res.Body.String(),
+			)
 		}
 	}
 }

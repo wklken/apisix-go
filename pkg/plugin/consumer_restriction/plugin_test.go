@@ -45,7 +45,9 @@ func TestMissingIdentityNamesTheRestrictionTargetLikeAPISIX(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"message":"The request is rejected, please check the service_id for this request"}` {
+	if got := strings.TrimSpace(
+		rr.Body.String(),
+	); got != `{"message":"The request is rejected, please check the service_id for this request"}` {
 		t.Fatalf("body = %q", got)
 	}
 }

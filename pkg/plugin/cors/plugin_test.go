@@ -276,7 +276,12 @@ func TestHandlerPreservesOptionalResponseWriterInterfaces(t *testing.T) {
 	})).ServeHTTP(writer, req)
 
 	if !writer.flushed || !writer.hijacked || writer.pushed != "/stream" {
-		t.Fatalf("underlying capabilities called = flush %t, hijack %t, push %q", writer.flushed, writer.hijacked, writer.pushed)
+		t.Fatalf(
+			"underlying capabilities called = flush %t, hijack %t, push %q",
+			writer.flushed,
+			writer.hijacked,
+			writer.pushed,
+		)
 	}
 }
 

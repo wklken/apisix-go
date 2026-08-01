@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -270,10 +271,7 @@ func parseJSON(data []byte) (any, error) {
 }
 
 func normalizeAPISIXSchema(schema map[string]any) map[string]any {
-	normalized := make(map[string]any, len(schema))
-	for key, value := range schema {
-		normalized[key] = value
-	}
+	normalized := maps.Clone(schema)
 	if schemaType, ok := normalized["type"].(string); ok {
 		switch schemaType {
 		case "table":

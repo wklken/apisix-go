@@ -71,3 +71,61 @@ func TestGCPTokenSourceRejectsMissingServiceAccount(t *testing.T) {
 		t.Fatal("Token() error = nil, want missing service account error")
 	}
 }
+
+func TestGCPTokenSourceRejectsMissingServiceAccountFromConfig(t *testing.T) {
+	t.Setenv("GCP_SERVICE_ACCOUNT", "")
+	source := NewGCPTokenSource()
+	if _, err := source.Token(t.Context(), http.DefaultClient, GCPConfig{ServiceAccountJSON: ""}); err == nil {
+		t.Fatal("Token() error = nil, want missing service account error")
+	}
+}
+
+func TestGCPTokenSourceCachesWithMaxTTL(t *testing.T) {
+	var tokenCalls atomic.Int64
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"cached-token","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	serviceAccount, err := json.Marshal(map[string]any{
+		"client_email":   "service@example.test",
+		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})),
+		"private_key_id": "key-id",
+		"token_uri":      tokenServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("marshal service account: %v", err)
+	}
+	source := NewGCPTokenSource()
+	now := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
+	source.now = func() time.Time { return now }
+	config := GCPConfig{ServiceAccountJSON: string(serviceAccount), MaxTTL: 5}
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
+		if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+	}
+	if tokenCalls.Load() != 1 {
+		t.Fatalf("token endpoint calls = %d, want 1 (cached)", tokenCalls.Load())
+	}
+
+	source.now = func() time.Time { return now.Add(6 * time.Second) }
+	req := httptest.NewRequest(http.MethodPost, "https://vertex.example.test", nil)
+	if err := source.Apply(req.Context(), tokenServer.Client(), req, config); err != nil {
+		t.Fatalf("Apply() after TTL error = %v", err)
+	}
+	if tokenCalls.Load() != 2 {
+		t.Fatalf("token endpoint calls after TTL = %d, want 2", tokenCalls.Load())
+	}
+}

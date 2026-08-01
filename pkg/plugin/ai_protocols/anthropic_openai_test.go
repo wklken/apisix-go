@@ -91,3 +91,72 @@ func TestConvertAnthropicMessagesRejectsMissingMessages(t *testing.T) {
 		t.Fatalf("error = %v, want missing messages", err)
 	}
 }
+
+func TestConvertAnthropicResponseFormatStrictSchema(t *testing.T) {
+	converted, _, err := ConvertAnthropicMessagesToOpenAI([]byte(`{
+	  "model":"m","max_tokens":100,
+	  "messages":[{"role":"user","content":"hi"}],
+	  "output_format":{"type":"json_schema","schema":{
+	    "type":"object",
+	    "properties":{"a":{"type":"string"},"b":{"type":"object","properties":{"c":{"type":"string"}}}},
+	    "required":["a"]
+	  }}
+	}`))
+	if err != nil {
+		t.Fatalf("ConvertAnthropicMessagesToOpenAI() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(converted, &body); err != nil {
+		t.Fatalf("decode converted request: %v", err)
+	}
+	format := body["response_format"].(map[string]any)
+	jsonSchema := format["json_schema"].(map[string]any)
+	if format["type"] != "json_schema" || jsonSchema["name"] != "structured_output" || jsonSchema["strict"] != true {
+		t.Fatalf("response_format = %#v", format)
+	}
+	schema := jsonSchema["schema"].(map[string]any)
+	if schema["additionalProperties"] != false {
+		t.Fatalf("top-level additionalProperties = %#v, want false", schema["additionalProperties"])
+	}
+	required := schema["required"].([]any)
+	if len(required) != 2 || required[0] != "a" || required[1] != "b" {
+		t.Fatalf("strict required = %#v, want [a b]", required)
+	}
+	properties := schema["properties"].(map[string]any)
+	if a := properties["a"].(map[string]any); a["additionalProperties"] != nil {
+		t.Fatalf("string property a must not gain additionalProperties: %#v", a)
+	}
+	if b := properties["b"].(map[string]any); b["additionalProperties"] != false {
+		t.Fatalf("nested object property b must gain additionalProperties: %#v", b)
+	}
+}
+
+func TestConvertAnthropicResponseFormatNonObjectSchemas(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format string
+		wantRF bool
+	}{
+		{"json_object never maps", `{"type":"json_object"}`, false},
+		{"schema-less json_schema omitted", `{"type":"json_schema"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			converted, _, err := ConvertAnthropicMessagesToOpenAI([]byte(`{
+			  "model":"m","max_tokens":100,
+			  "messages":[{"role":"user","content":"hi"}],
+			  "output_format":` + tc.format + `
+			}`))
+			if err != nil {
+				t.Fatalf("ConvertAnthropicMessagesToOpenAI() error = %v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(converted, &body); err != nil {
+				t.Fatalf("decode converted request: %v", err)
+			}
+			_, hasRF := body["response_format"]
+			if hasRF != tc.wantRF {
+				t.Fatalf("response_format present = %v, want %v", hasRF, tc.wantRF)
+			}
+		})
+	}
+}

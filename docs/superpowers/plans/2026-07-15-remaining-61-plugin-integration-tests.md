@@ -714,7 +714,7 @@ docs. Document all added fixture kinds and `{{WORK_DIR}}`; remove stale design
 statements that live external services or explicit skips remain unsupported.
 Mark every checkbox in this plan only after its command has passed.
 
-- [ ] **Step 4: Run repository completion gates**
+- [x] **Step 4: Run repository completion gates**
 
 ```bash
 bash -lc 'source .envrc && go test ./... -count=1'
@@ -726,7 +726,7 @@ git status --short
 
 Expected: all commands PASS; `git status --short` contains only the intended source, manifest, harness, plan, and documentation files; remove the generated `./apisix` binary if present.
 
-- [ ] **Step 5: Perform merge-level review**
+- [x] **Step 5: Perform merge-level review**
 
 Use `agent-skills:code-review-and-quality`. Review target-plugin authenticity, fixture self-fulfilling assertions, source-number grouping, process/network cleanup, protocol parser bounds, secret leakage, flaky waits/randomness, and unrelated diffs. Repair only verified findings and rerun affected focused plus final gates.
 

@@ -350,6 +350,110 @@ func TestStandaloneManifestMapsEveryRedisClusterSourceBlockToIndependentCase(t *
 	}
 }
 
+func TestStandaloneManifestMapsEveryRemainingSourceBlockToIndependentCase(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "t", "plugin", "limit-req.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var manifest struct {
+		Sources []struct {
+			Commit string `yaml:"commit"`
+			File   string `yaml:"file"`
+			Tests  int    `yaml:"tests"`
+		} `yaml:"sources"`
+		Cases []limitReqManifestCase `yaml:"cases"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+
+	const sourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
+	remainingSources := []string{
+		"t/plugin/limit-req-shared-counter.t",
+		"t/plugin/limit-req2.t",
+		"t/plugin/limit-req3.t",
+	}
+	for _, sourceFile := range remainingSources {
+		t.Run(sourceFile, func(t *testing.T) {
+			sourceTests := 0
+			sourceFound := false
+			for _, source := range manifest.Sources {
+				if source.File != sourceFile {
+					continue
+				}
+				sourceFound = true
+				sourceTests = source.Tests
+				if source.Commit != sourceCommit || source.Tests <= 0 {
+					t.Fatalf(
+						"%s source = commit %q tests %d, want commit %q with tests",
+						sourceFile,
+						source.Commit,
+						source.Tests,
+						sourceCommit,
+					)
+				}
+			}
+			if !sourceFound {
+				t.Fatalf("source %s is not declared", sourceFile)
+			}
+
+			assertLocalSourceCasesDoNotUseYAMLAliases(t, data, sourceFile)
+			targetCases := make([]limitReqManifestCase, 0, sourceTests)
+			for _, testCase := range manifest.Cases {
+				if testCase.Source.File == sourceFile {
+					targetCases = append(targetCases, testCase)
+				}
+			}
+			if len(targetCases) != sourceTests {
+				t.Fatalf("%s cases = %d, want exactly %d", sourceFile, len(targetCases), sourceTests)
+			}
+
+			genericName := regexp.MustCompile(`(?i)(placeholder|generic|probe|block-[0-9]+|source-[0-9]+)`)
+			names := make(map[string]struct{}, sourceTests)
+			for i, testCase := range targetCases {
+				testNumber := i + 1
+				if len(testCase.Source.Tests) != 1 || testCase.Source.Tests[0] != testNumber {
+					t.Fatalf(
+						"case %d %q source tests = %v, want [%d]",
+						testNumber,
+						testCase.Name,
+						testCase.Source.Tests,
+						testNumber,
+					)
+				}
+				if genericName.MatchString(testCase.Name) {
+					t.Errorf("case %d has generic name %q", testNumber, testCase.Name)
+				}
+				if _, exists := names[testCase.Name]; exists {
+					t.Errorf("case %d duplicates behavior name %q", testNumber, testCase.Name)
+				}
+				names[testCase.Name] = struct{}{}
+				if !containsLimitReqConfig(testCase.Config) {
+					t.Errorf("case %d %q has no real limit-req resource config", testNumber, testCase.Name)
+				}
+				if len(testCase.Steps) == 0 {
+					if len(testCase.Input) == 0 || len(testCase.Output) == 0 {
+						t.Errorf("case %d %q has no executable request/response assertion", testNumber, testCase.Name)
+					}
+					continue
+				}
+				for stepIndex, step := range testCase.Steps {
+					if len(step.Input) == 0 || len(step.Output) == 0 {
+						t.Errorf(
+							"case %d %q step %d has no request/response assertion",
+							testNumber,
+							testCase.Name,
+							stepIndex+1,
+						)
+					}
+				}
+			}
+		})
+	}
+}
+
 func assertLocalSourceCasesDoNotUseYAMLAliases(t *testing.T, data []byte, sourceFile string) {
 	t.Helper()
 

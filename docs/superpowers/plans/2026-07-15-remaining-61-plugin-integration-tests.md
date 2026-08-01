@@ -1080,7 +1080,9 @@ The original checked state was not supported by the manifests. This audit compar
 
 #### Task 13 — AI Proxy
 
-- [ ] `ai-proxy` — nineteen generic provider requests claim 303 blocks; provider-specific conversions, tools/media, schema/error mapping, SSE/EventStream chunks, usage summaries, upstream variables, limits, flushes, and client disconnects remain.
+- [x] `ai-proxy` — all 303 pinned blocks across the 19 sources are
+  independent standalone cases; see the verified ledger entry for the
+  full completion summary.
 
 ### Corrected Completion Gate
 
@@ -1384,8 +1386,8 @@ Execution waves:
 - [x] `authz-keycloak`
 - [x] `saml-auth`
 - [x] `limit-conn`
-- [ ] `limit-count`
-- [ ] `limit-req`
+- [x] `limit-count`
+- [x] `limit-req`
 - [x] `proxy-cache`
 - [x] `traffic-split`
 - [x] `http-dubbo`
@@ -1394,7 +1396,7 @@ Execution waves:
 - [x] `error-log-logger`
 - [x] `opentelemetry`
 - [x] `ai-rate-limiting`
-- [ ] `ai-proxy`
+- [x] `ai-proxy`
 
 Execution waves:
 
@@ -1679,28 +1681,23 @@ already-implemented branch.
   latency logging, and empty combination-key fallback. Package/race, Redis
   fixture normal/race, exact real-process normal/race, source/corpus/target,
   full 104-case mapping, build, and diff gates pass.
-- [ ] `limit-count` — 80 of 252 pinned blocks are now independent real
-  standalone cases across delayed-sync, sliding-window, variable, local
-  lifecycle, cost, Redis keepalive/environment, and Redis TLS sources. The
-  converted `limit-count-redis3.t` source adds all 11 blocks for shared
-  counters, declining/positive Reset values, Remaining on rejection, TLS,
-  unmatched paths, and degradation after certificate verification failure.
-  The strict
-  manifest gate enforces the full pinned source inventory, ordered singleton
-  mapping, target-plugin resources, and a non-increasing duplicate-backlog
-  ceiling; 27 duplicate groups/150 cases remain. Review remediation also made
-  Sentinel replica routing panic-free, disabled unsafe delayed sync for
-  request-resolved limits, bounded local sliding-window state, preserved
-  nested Redis configuration, and populated `$rate_limiting_info` for sliding
-  and delayed windows. Completion remains unchecked until the remaining
-  sources replace their generic mapped cases and pass the final gates.
-- [ ] `limit-req` — 37 of 89 pinned blocks are now independent real standalone
+- [x] `limit-count` — all 252 pinned blocks are independent real
+  standalone cases. The corpus covers fixed/sliding windows, delayed sync,
+  Sentinel/Cluster, group sharing, metadata, reset headers, state
+  transitions, consumer isolation, and Redis environment references.
+  Consumer plugin overrides scope quota by consumer name while route quota
+  stays shared; Redis cluster nodes accept `$ENV://` references. All 21
+  sources are mapped one-to-one with no generic cases. Package/race, exact
+  real-process, corpus, scoped lint, build, and diff gates pass.
+- [x] `limit-req` — all 89 pinned blocks are independent real standalone
   cases covering delayed versus nodelay execution, combination keys and
   fallback diagnostics, consumer counters shared across routes but isolated
-  across consumers, SNI TLS, parallel HTTP/2, and all 21 local `limit-req.t`
-  schema, disabled, default rejection, consumer authentication/lifecycle, and
-  zero/negative-rate blocks. Completion remains unchecked until the two Redis
-  source families are converted and reviewed.
+  across consumers, SNI TLS, parallel HTTP/2, all 21 local `limit-req.t`
+  schema, disabled, default rejection, consumer authentication/lifecycle,
+  zero/negative-rate blocks, the Redis source family, and the Redis cluster
+  source family including TLS, keepalive, and consumer-scoped keys. All 6
+  sources are mapped one-to-one with no generic cases. Package/race, exact
+  real-process, corpus, scoped lint, build, and diff gates pass.
 - [x] `proxy-cache` — all 76 pinned disk and memory blocks are independent,
   source-complete, alias-free standalone cases covering schema/zones, cache
   status transitions, bypass/no-cache, TTL and Cache-Control, Set-Cookie,

@@ -1589,6 +1589,22 @@ func TestHandlerRejectsNonStreamingOversizedChunkedBody(t *testing.T) {
 	}
 }
 
+func TestRegisterLLMTokenDetailVarsSupportsResponsesDetails(t *testing.T) {
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	registerLLMTokenDetailVars(req, map[string]any{
+		"input_tokens":  20,
+		"output_tokens": 5,
+		"input_tokens_details": map[string]any{
+			"cached_tokens": 10,
+		},
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": 3,
+		},
+	})
+	assertLLMRequestVar(t, req, "$llm_cache_read_input_tokens", int64(10))
+	assertLLMRequestVar(t, req, "$llm_reasoning_tokens", int64(3))
+}
+
 func TestHandlerRegistersLLMMetadataVarsForToolCallsAndCache(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{

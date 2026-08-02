@@ -1239,6 +1239,8 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 	}
 }
 
+
+
 func registerLLMTokenDetailVars(r *http.Request, usage map[string]any) {
 	var promptDetails map[string]any
 	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
@@ -1258,10 +1260,14 @@ func registerLLMTokenDetailVars(r *http.Request, usage map[string]any) {
 	} else if created := numericToken(promptDetails["cache_creation_input_tokens"]); created > 0 {
 		apisixctx.RegisterRequestVar(r, "$llm_cache_creation_input_tokens", created)
 	}
+	var completionDetails map[string]any
 	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
-		if reasoning := numericToken(details["reasoning_tokens"]); reasoning > 0 {
-			apisixctx.RegisterRequestVar(r, "$llm_reasoning_tokens", reasoning)
-		}
+		completionDetails = details
+	} else if details, ok := usage["output_tokens_details"].(map[string]any); ok {
+		completionDetails = details
+	}
+	if reasoning := numericToken(completionDetails["reasoning_tokens"]); reasoning > 0 {
+		apisixctx.RegisterRequestVar(r, "$llm_reasoning_tokens", reasoning)
 	}
 }
 

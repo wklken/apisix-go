@@ -8655,7 +8655,7 @@ cases:
               headers: {Content-Type: text/event-stream}
               chunks:
                 - "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n"
-                - "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-4o-mini\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}],\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25}}}\n\n"
+                - "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-4o-mini\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}],\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25,\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}\n\n"
       steps:
         - name: responses-streaming-registers-cache-and-reasoning
           input:
@@ -8666,8 +8666,8 @@ cases:
           output:
             status: 200
             headers:
-              X-LLM-Cache-Read: {equals: ''}
-              X-LLM-Reasoning: {equals: ''}
+              X-LLM-Cache-Read: {equals: '10'}
+              X-LLM-Reasoning: {equals: '3'}
 
     - name: llm-vars-responses-streaming-tool-call
       source: {file: t/plugin/ai-proxy3.t, tests: [16]}
@@ -8787,7 +8787,7 @@ cases:
             - method: POST
               path: {equals: /v1/responses}
           respond:
-            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"r1","object":"response","created":1723780938,"model":"gpt-4o-mini","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":40,"output_tokens":20,"total_tokens":60,"input_tokens_details":{"cached_tokens":12}}}'}
+            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"r1","object":"response","created":1723780938,"model":"gpt-4o-mini","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":40,"output_tokens":20,"total_tokens":60,"input_tokens_details":{"cached_tokens":12},"output_tokens_details":{"reasoning_tokens":8}}}'}
       steps:
         - name: responses-nonstreaming-cache-tokens-registered
           input:
@@ -8799,7 +8799,7 @@ cases:
             status: 200
             headers:
               X-LLM-Cache-Read: {equals: '12'}
-              X-LLM-Reasoning: {equals: ''}
+              X-LLM-Reasoning: {equals: '8'}
 
     - name: llm-vars-nonstreaming-reasoning-tokens
       source: {file: t/plugin/ai-proxy3.t, tests: [9]}

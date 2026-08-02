@@ -1018,6 +1018,9 @@ func (p *Plugin) writeProviderResponse(
 			logger.Errorf("failed to forward streaming response: %v", err)
 			return
 		}
+		if !streamWriter.Wrote() {
+			w.WriteHeader(resp.StatusCode)
+		}
 		registerStreamingLLMRequestVars(r, prepared.clientBody, usage)
 		return
 	}

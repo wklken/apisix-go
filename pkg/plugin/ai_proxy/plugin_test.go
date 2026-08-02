@@ -1292,6 +1292,46 @@ func TestHandlerConvertsOpenAIStreamBackToAnthropicSSE(t *testing.T) {
 	assertUsageRequestVars(t, req, float64(4), int64(6))
 }
 
+func TestHandlerPreservesUpstreamStatusForEmptySSE(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+	}{
+		{name: "no content", status: http.StatusNoContent},
+		{name: "service unavailable", status: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(test.status)
+			}))
+			defer upstream.Close()
+
+			p := newTestPlugin(t, Config{
+				Provider: "openai-compatible",
+				Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+			  "model":"test-model","stream":true,
+			  "messages":[{"role":"user","content":"Hi"}]
+			}`))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler called for empty stream")
+			})).ServeHTTP(rr, req)
+
+			if rr.Code != test.status {
+				t.Fatalf("response code = %d, want %d; body = %q", rr.Code, test.status, rr.Body.String())
+			}
+			if rr.Body.Len() != 0 {
+				t.Fatalf("response body = %q, want empty", rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandlerReturnsBadGatewayWhenAnthropicStreamProducesNoOutput(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

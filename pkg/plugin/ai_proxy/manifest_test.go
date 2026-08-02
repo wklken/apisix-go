@@ -1,6 +1,7 @@
 package ai_proxy
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,6 +330,151 @@ func TestBuiltinVariablesManifestPreservesPinnedStreamingToolSemantics(t *testin
 		}
 		if toolCount.Equals == nil || *toolCount.Equals != "0" {
 			t.Errorf("case %q X-LLM-Tool-Count equals = %v, want pinned streaming count 0", wantName, toolCount.Equals)
+		}
+	}
+}
+
+func TestFixtureFamilyManifestPreservesPinnedErrorBehavior(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "t", "plugin", "ai-proxy.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var manifest struct {
+		Cases []struct {
+			Name   string `yaml:"name"`
+			Source struct {
+				File  string `yaml:"file"`
+				Tests []int  `yaml:"tests"`
+			} `yaml:"source"`
+			Fixtures []struct {
+				Respond []struct {
+					Status int    `yaml:"status"`
+					Body   string `yaml:"body"`
+				} `yaml:"respond"`
+			} `yaml:"fixtures"`
+			Steps []struct {
+				Output struct {
+					Status int `yaml:"status"`
+					Body   struct {
+						Equals  *string `yaml:"equals"`
+						Matches *string `yaml:"matches"`
+					} `yaml:"body"`
+				} `yaml:"output"`
+			} `yaml:"steps"`
+		} `yaml:"cases"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+
+	expectations := map[int]struct {
+		name        string
+		fixtureCode int
+		fixtureBody string
+		outputCode  int
+		outputBody  string
+	}{
+		4: {
+			name:        "fixture-missing-fixture-header-falls-back-to-auth",
+			fixtureCode: http.StatusUnauthorized, fixtureBody: "Unauthorized",
+			outputCode: http.StatusUnauthorized, outputBody: "Unauthorized",
+		},
+		5: {
+			name:        "fixture-nonexistent-fixture-fails-closed",
+			fixtureCode: http.StatusInternalServerError, fixtureBody: "fixture not found",
+			outputCode: http.StatusInternalServerError, outputBody: "fixture not found",
+		},
+		12: {
+			name:        "fixture-path-traversal-rejected",
+			fixtureCode: http.StatusOK, fixtureBody: "blocked: invalid fixture name",
+			outputCode: http.StatusOK, outputBody: "blocked: invalid fixture name",
+		},
+	}
+
+	for number, want := range expectations {
+		var found *struct {
+			Name   string `yaml:"name"`
+			Source struct {
+				File  string `yaml:"file"`
+				Tests []int  `yaml:"tests"`
+			} `yaml:"source"`
+			Fixtures []struct {
+				Respond []struct {
+					Status int    `yaml:"status"`
+					Body   string `yaml:"body"`
+				} `yaml:"respond"`
+			} `yaml:"fixtures"`
+			Steps []struct {
+				Output struct {
+					Status int `yaml:"status"`
+					Body   struct {
+						Equals  *string `yaml:"equals"`
+						Matches *string `yaml:"matches"`
+					} `yaml:"body"`
+				} `yaml:"output"`
+			} `yaml:"steps"`
+		}
+		for i := range manifest.Cases {
+			testCase := &manifest.Cases[i]
+			if testCase.Source.File != "t/plugin/ai-proxy-fixture.t" {
+				continue
+			}
+			containsNumber := false
+			for _, sourceNumber := range testCase.Source.Tests {
+				if sourceNumber == number {
+					containsNumber = true
+				}
+			}
+			if !containsNumber {
+				continue
+			}
+			found = testCase
+			break
+		}
+		if found == nil {
+			t.Fatalf("%s: no case maps ai-proxy-fixture.t test %d", path, number)
+		}
+		if found.Name != want.name {
+			t.Errorf("case for test %d has name %q, want %q", number, found.Name, want.name)
+		}
+		var fixtureCode int
+		var fixtureBody string
+		for _, fixture := range found.Fixtures {
+			if len(fixture.Respond) == 0 {
+				continue
+			}
+			response := fixture.Respond[0]
+			fixtureCode = response.Status
+			fixtureBody = response.Body
+		}
+		if fixtureCode != want.fixtureCode || !strings.Contains(fixtureBody, want.fixtureBody) {
+			t.Errorf(
+				"case %q fixture responds (%d, %q), want (%d, %q)",
+				found.Name,
+				fixtureCode,
+				fixtureBody,
+				want.fixtureCode,
+				want.fixtureBody,
+			)
+		}
+		if len(found.Steps) != 1 {
+			t.Errorf("case %q steps = %d, want 1", found.Name, len(found.Steps))
+			continue
+		}
+		output := found.Steps[0].Output
+		if output.Status != want.outputCode {
+			t.Errorf("case %q output status = %d, want %d", found.Name, output.Status, want.outputCode)
+		}
+		outputBody := ""
+		if output.Body.Equals != nil {
+			outputBody = *output.Body.Equals
+		} else if output.Body.Matches != nil {
+			outputBody = *output.Body.Matches
+		}
+		if !strings.Contains(outputBody, want.outputBody) {
+			t.Errorf("case %q output body = %q, want pinned %q", found.Name, outputBody, want.outputBody)
 		}
 	}
 }

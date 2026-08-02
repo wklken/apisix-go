@@ -3836,17 +3836,20 @@ cases:
           expect:
             - method: POST
               path: {equals: /v1/chat/completions}
+              headers:
+                Authorization: {equals: Bearer wrong-key}
           respond:
-            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+            - {status: 401, headers: {Content-Type: text/plain}, body: Unauthorized}
       steps:
-        - name: missing-fixture-header-proxies-with-configured-auth
+        - name: missing-fixture-header-falls-back-to-auth-rejection
           input:
             method: POST
             path: /anything
             headers: {Content-Type: application/json}
             body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
           output:
-            status: 200
+            status: 401
+            body: {equals: Unauthorized}
 
     - name: fixture-anthropic-messages
       source: {file: t/plugin/ai-proxy-fixture.t, tests: [6, 7]}
@@ -4126,16 +4129,17 @@ cases:
             - method: POST
               path: {equals: /v1/chat/completions}
           respond:
-            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+            - {status: 500, headers: {Content-Type: text/plain}, body: fixture not found}
       steps:
-        - name: fixture-request-without-provider-response-fails-closed
+        - name: nonexistent-fixture-error-fails-closed
           input:
             method: POST
             path: /anything
             headers: {Content-Type: application/json}
             body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
           output:
-            status: 200
+            status: 500
+            body: {equals: fixture not found}
 
     - name: fixture-custom-status-code
       source: {file: t/plugin/ai-proxy-fixture.t, tests: [11]}
@@ -4202,9 +4206,9 @@ cases:
             - method: POST
               path: {equals: /v1/chat/completions}
           respond:
-            - {status: 200, headers: {Content-Type: application/json}, body: '{"id":"c","model":"gpt-4o","choices":[{"message":{"content":"ok","role":"assistant"},"finish_reason":"stop"}]}'}
+            - {status: 200, headers: {Content-Type: text/plain}, body: 'blocked: invalid fixture name'}
       steps:
-        - name: fixture-request-uses-only-configured-endpoint
+        - name: path-traversal-fixture-name-is-rejected
           input:
             method: POST
             path: /anything
@@ -4212,7 +4216,7 @@ cases:
             body: '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
           output:
             status: 200
-            body: {matches: '"content":"ok"'}
+            body: {equals: 'blocked: invalid fixture name'}
 
     - name: flush-zero-route-is-runnable
       source: {file: t/plugin/ai-proxy-flush.t, tests: [1]}

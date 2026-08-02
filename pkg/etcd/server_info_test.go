@@ -11,6 +11,7 @@ import (
 type fakeServerInfoLeaseClient struct {
 	nextLeaseID clientv3.LeaseID
 	grantCount  int
+	grantTTL    int64
 	putCount    int
 	keepCount   int
 	lastKey     string
@@ -34,9 +35,10 @@ func (f *fakeServerInfoLeaseClient) Put(
 
 func (f *fakeServerInfoLeaseClient) Grant(
 	_ context.Context,
-	_ int64,
+	ttl int64,
 ) (*clientv3.LeaseGrantResponse, error) {
 	f.grantCount++
+	f.grantTTL = ttl
 	if f.grantErr != nil {
 		return nil, f.grantErr
 	}
@@ -73,6 +75,9 @@ func TestServerInfoReporterCreatesLeasePutsValueAndRenews(t *testing.T) {
 
 	if client.grantCount != 1 {
 		t.Fatalf("Grant calls = %d, want one lease reused across reports", client.grantCount)
+	}
+	if client.grantTTL != 60 {
+		t.Fatalf("Grant TTL = %d, want configured 60 seconds", client.grantTTL)
 	}
 	if client.putCount != 2 {
 		t.Fatalf("Put calls = %d, want two reports", client.putCount)

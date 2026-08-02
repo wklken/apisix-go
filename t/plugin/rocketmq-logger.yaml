@@ -2660,3 +2660,11 @@ cases:
                     hello world
             status: 200
           wait: 200ms
+      after_shutdown:
+        - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+          bbolt_json:
+            bucket: routes
+            key: rocketmq-042
+            fields:
+              /plugins/rocketmq-logger/secret_key: 77+NmbYqNfN+oLm0aX5akg==
+            forbidden_matches: [bar]

@@ -264,50 +264,39 @@ cases:
   - name: remove-plugin
     source:
       tests: [22, 23, 24, 25]
-    variants:
-      - name: enabled-denylist
+    config:
+      routes:
+        - id: ua-removal
+          uri: /hello
+          plugins:
+            ua-restriction:
+              denylist:
+                - '(Baiduspider)/(\d+)\.(\d+)'
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - *hello_response
+    steps:
+      - name: denied-while-enabled
+        input: &spider_input
+          path: /hello
+          headers:
+            User-Agent: Baiduspider/1.0
+        output: *denied
+      - name: remove-plugin-and-reload
         config:
           routes:
-            - id: ua-removal-enabled
+            - id: ua-removal
               uri: /hello
-              plugins:
-                ua-restriction:
-                  denylist:
-                    - '(Baiduspider)/(\d+)\.(\d+)'
+              plugins: {}
               upstream: *fixture_upstream
-        fixtures:
-          - name: primary
-            kind: http
-            respond:
-              - *hello_response
-        steps:
-          - name: denied-while-enabled
-            input: &spider_input
-              path: /hello
-              headers:
-                User-Agent: Baiduspider/1.0
-            output: *denied
-      - name: removed
-        config:
-          routes:
-            - id: ua-removal-removed
-              uri: /hello
-              plugins:
-                ua-restriction:
-                  _meta:
-                    disable: true
-              upstream: *fixture_upstream
-        fixtures:
-          - name: primary
-            kind: http
-            expect:
-              - *hello_expect
-            respond:
-              - *hello_response
-        steps:
-          - name: allowed-after-removal
-            input: *spider_input
-            output: *allowed
+        config_probe:
+          input: *spider_input
+          output: *allowed
+        input: *spider_input
+        output: *allowed
 
   - name: disabled-plugin
     source:

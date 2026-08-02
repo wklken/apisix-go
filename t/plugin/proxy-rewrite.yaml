@@ -549,6 +549,14 @@ cases:
             equals: v2
       respond: *hello_response
     output: *hello_output
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: proxy-rewrite-clean-standalone-config
+          fields:
+            /plugins/proxy-rewrite/uri: /uri/plugin_proxy_rewrite
+            /plugins/proxy-rewrite/headers/X-Api: v2
 
   - name: header-request-variables
     source:

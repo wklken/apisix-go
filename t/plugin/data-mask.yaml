@@ -322,12 +322,33 @@ cases:
                   name: token
                   action: replace
                   value: "*****"
-          upstream: *upstream
-    input:
-      path: /hello?password=secret&token=mytoken
-    upstream:
-      expect:
-        path:
-          equals: /hello?token=%2A%2A%2A%2A%2A
-      respond: *done_response
-    output: *done_output
+            file-logger:
+              path: '{{WORK_DIR}}/data-mask-access.log'
+              log_format:
+                request_line: $request_line
+          upstream:
+            type: roundrobin
+            nodes:
+              '{{FIXTURE.primary.ADDR}}': 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: GET
+            path:
+              equals: /hello?token=%2A%2A%2A%2A%2A
+        respond:
+          - status: 200
+            body: done
+    steps:
+      - name: masked-request-line-is-written-to-file
+        input:
+          path: /hello?password=secret&token=mytoken
+        output: *done_output
+        file_assertions:
+          - path: {equals: '{{WORK_DIR}}/data-mask-access.log'}
+            body:
+              matches: '"request_line":"GET /hello\?token=%2A%2A%2A%2A%2A HTTP/1\.1"'
+          - path: {equals: '{{WORK_DIR}}/data-mask-access.log'}
+            body:
+              not_matches: '(password=secret|token=mytoken)'

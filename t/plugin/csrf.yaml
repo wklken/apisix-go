@@ -290,10 +290,18 @@ cases:
           uri: /hello
           plugins:
             csrf:
-              key: $encrypted://mt39FazQccyMqt4ctoRV7w==
+              key: userkey
               expires: 1000000000
           upstream: *fixture_route
     input:
       path: /hello
     upstream: *fixture
     output: *success_with_cookie
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: csrf-encrypted-key
+          fields:
+            /plugins/csrf/key: mt39FazQccyMqt4ctoRV7w==
+          forbidden_matches: [userkey]

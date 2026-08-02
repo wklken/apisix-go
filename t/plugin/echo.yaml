@@ -129,6 +129,14 @@ cases:
           equals: https://www.iresty.com
       body:
         equals: before the body modification hello world
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: echo-clean-standalone-config
+          fields:
+            /plugins/echo/before_body: 'before the body modification '
+            /plugins/echo/headers/Location: https://www.iresty.com
 
   - name: replace-chunked-body
     source:

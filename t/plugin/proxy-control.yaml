@@ -22,12 +22,14 @@ cases:
     input:
       method: POST
       path: /hello
-      body: "123451234512345"
+      body_repeat:
+        value: "12345"
+        count: 10240
     upstream:
       expect:
         method: POST
         body:
-          equals: "123451234512345"
+          matches: '^(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){240}$'
       respond: &fixture_response
         status: 200
         body: hello world
@@ -50,11 +52,13 @@ cases:
     input:
       method: POST
       path: /hello
-      body: "123451234512345"
+      body_repeat:
+        value: "12345"
+        count: 10240
     upstream:
       expect:
         method: POST
         body:
-          equals: "123451234512345"
+          matches: '^(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){1000}(12345){240}$'
       respond: *fixture_response
     output: *success

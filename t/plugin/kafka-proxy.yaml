@@ -85,9 +85,17 @@ cases:
             kafka-proxy:
               sasl:
                 username: admin
-                password: $encrypted://y4Z3aqo51xrt3f9UziNUrg==
+                password: admin-secret
           upstream: *upstream
     input:
       path: /opentracing
     upstream: *fixture
     output: *done
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: kafka-proxy-encrypted-password
+          fields:
+            /plugins/kafka-proxy/sasl/password: y4Z3aqo51xrt3f9UziNUrg==
+          forbidden_matches: [admin-secret]

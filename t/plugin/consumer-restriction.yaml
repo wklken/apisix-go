@@ -161,16 +161,32 @@ cases:
   - name: removal-disables-consumer-restriction
     source: {file: t/plugin/consumer-restriction.t, tests: [31, 32, 33, 34]}
     config:
+      consumers:
+        - {username: jack1, plugins: {basic-auth: {username: jack2019, password: '123456'}}}
+        - {username: jack2, plugins: {basic-auth: {username: jack2020, password: '123456'}}}
       routes:
-        - id: consumer-restriction-removed
+        - id: consumer-restriction-lifecycle
           uri: /hello
-          plugins: {consumer-restriction: {_meta: {disable: true}, whitelist: [jack1]}}
+          plugins: {basic-auth: {}, consumer-restriction: {whitelist: [jack1], allowed_by_methods: [{user: jack1, methods: [POST]}]}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: jack1-is-not-authenticated-but-passes, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: jack2-is-not-authenticated-but-passes, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: missing-authorization-passes, input: {method: GET, path: /hello}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack1-is-allowed-before-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack2-is-rejected-before-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - name: remove-plugin-and-reload
+        config:
+          routes:
+            - id: consumer-restriction-lifecycle
+              uri: /hello
+              plugins: {}
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        config_probe:
+          input: {method: GET, path: /hello}
+          output: {status: 200, body: {equals: hello world}}
+        input: {method: GET, path: /hello}
+        output: {status: 200, body: {equals: hello world}}
+      - {name: jack1-is-allowed-after-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
+      - {name: jack2-is-allowed-after-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: consumer-plugin-whitelists-service-id
     source: {file: t/plugin/consumer-restriction.t, tests: [35, 36, 37, 38]}
@@ -288,20 +304,25 @@ cases:
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 200, body: {equals: hello world}}
 
-  - name: consumer-plugin-whitelists-route-id
-    source: {file: t/plugin/consumer-restriction.t, tests: [47, 48]}
+  - name: consumer-plugin-route-id-update-and-cleans-up-resources
+    source: {file: t/plugin/consumer-restriction.t, tests: [47, 48, 49, 50, 51, 52, 53]}
     config:
       consumers:
         - username: jack
           plugins:
             hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
             consumer-restriction: {type: route_id, whitelist: ['1'], rejected_code: 401}
+      services:
+        - id: '1'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+        - id: '2'
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
       routes:
         - id: '1'
           uri: /hello
           methods: [GET]
+          service_id: '2'
           plugins: {hmac-auth: {}}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - name: matching-route-is-allowed
@@ -313,24 +334,33 @@ cases:
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
         output: {status: 200, body: {equals: hello world}}
-
-  - name: consumer-plugin-blacklists-route-id-and-cleans-up-resources
-    source: {file: t/plugin/consumer-restriction.t, tests: [49, 50, 51, 52, 53]}
-    config:
-      consumers:
-        - username: jack
-          plugins:
-            hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
-            consumer-restriction: {type: route_id, blacklist: ['1'], rejected_code: 401}
-      routes:
-        - id: '1'
-          uri: /hello
-          methods: [GET]
-          plugins: {hmac-auth: {}}
-          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-    fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
-    steps:
-      - name: blacklisted-route-is-rejected
+      - name: update-consumer-to-blacklist
+        config:
+          consumers:
+            - username: jack
+              plugins:
+                hmac-auth: {key_id: my-access-key, secret_key: my-secret-key}
+                consumer-restriction: {type: route_id, blacklist: ['1'], rejected_code: 401}
+          services:
+            - id: '1'
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+            - id: '2'
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+          routes:
+            - id: '1'
+              uri: /hello
+              methods: [GET]
+              service_id: '2'
+              plugins: {hmac-auth: {}}
+        config_probe:
+          input:
+            method: GET
+            path: /hello
+            hmac: *current_hmac
+            headers:
+              X-Custom-Header-A: asld$%dfasf
+              X-Custom-Header-B: 23879fmsldfk
+          output: {status: 401, body: {equals: '{"message":"The route_id is forbidden."}'}}
         input:
           method: GET
           path: /hello

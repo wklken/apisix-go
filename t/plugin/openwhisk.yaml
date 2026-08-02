@@ -79,7 +79,7 @@ cases:
           plugins:
             openwhisk:
               api_host: "{{FIXTURE.openwhisk.URL}}"
-              service_token: $encrypted://pe14btxogtzJ4qPM/W2qj0AQeUK/O5oegLkKJLkkSEsKUIjP+bgyO+qsTXuLrY/h/esLKrRulD2TOtf+Zt/Us+hxZ/svsMwXZqZ9T9/2wWyi8SKALLfTUZDiV69mxCwD2zNBze1jslMlPtdA9JFIOQ==
+              service_token: "23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP"
               namespace: guest
               action: test-params
     fixtures:
@@ -136,6 +136,14 @@ cases:
           status: 200
           body:
             equals: '{"hello":"world"}'
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: openwhisk-test-params
+          fields:
+            /plugins/openwhisk/service_token: pe14btxogtzJ4qPM/W2qj0AQeUK/O5oegLkKJLkkSEsKUIjP+bgyO+qsTXuLrY/h/esLKrRulD2TOtf+Zt/Us+hxZ/svsMwXZqZ9T9/2wWyi8SKALLfTUZDiV69mxCwD2zNBze1jslMlPtdA9JFIOQ==
+          forbidden_matches: ['23bc46b1-71f6-4ed5-8c54-816aa4f8c502:123zO3xZCLrMN6v2BKK1dXYFpXlPkccOFqm12CdAsMgRU4VrNZ9lyGVCGuMDGIwP']
 
   - name: non-existent-action
     source:

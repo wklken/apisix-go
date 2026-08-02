@@ -285,7 +285,7 @@ cases:
               callback_url: "{{APISIX_URL}}/anything/callback"
               endpoint_addr: "{{FIXTURE.casdoor.URL}}"
               client_id: 7ceb9b7fda4a9061ec1c
-              client_secret: $encrypted://YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
+              client_secret: 3416238e1edf915eac08b8fe345b2b95cdba7e04
     fixtures:
       - name: casdoor
         kind: http
@@ -306,6 +306,14 @@ cases:
           path: /anything/callback?code=aaa&state={{CAPTURE.state}}
         output:
           status: 302
+    after_shutdown:
+      - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+        bbolt_json:
+          bucket: routes
+          key: authz-casdoor-encrypted-secret
+          fields:
+            /plugins/authz-casdoor/client_secret: YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S
+          forbidden_matches: [3416238e1edf915eac08b8fe345b2b95cdba7e04]
 
   - name: session-cookie-scoped-per-client-id
     source:

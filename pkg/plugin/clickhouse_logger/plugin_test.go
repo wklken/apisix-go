@@ -230,6 +230,62 @@ func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 	}
 }
 
+func TestSendBatchDeliversToEachConfiguredEndpoint(t *testing.T) {
+	seen := make(chan int, 2)
+	servers := make([]*httptest.Server, 2)
+	for index := range servers {
+		servers[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := io.ReadAll(r.Body); err != nil {
+				t.Errorf("read endpoint %d request body: %v", index, err)
+			}
+			seen <- index
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(servers[index].Close)
+	}
+
+	oldRandomEndpointIndex := randomEndpointIndex
+	next := 0
+	randomEndpointIndex = func(n int) int {
+		if n != len(servers) {
+			t.Fatalf("random endpoint count = %d, want %d", n, len(servers))
+		}
+		index := next
+		next = (next + 1) % n
+		return index
+	}
+	t.Cleanup(func() { randomEndpointIndex = oldRandomEndpointIndex })
+
+	sslVerify := false
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{servers[0].URL, servers[1].URL},
+		User:          "default",
+		Password:      "secret",
+		Database:      "analytics",
+		LogTable:      "apisix_logs",
+		Timeout:       1,
+		SSLVerify:     &sslVerify,
+	})
+	t.Cleanup(func() { p.BatchProcessor.Stop() })
+
+	for range servers {
+		if _, err := p.SendBatch([]map[string]any{{"path": "/orders"}}, 1); err != nil {
+			t.Fatalf("SendBatch() error = %v", err)
+		}
+	}
+
+	for want := range servers {
+		select {
+		case got := <-seen:
+			if got != want {
+				t.Fatalf("delivery %d reached endpoint %d, want endpoint %d", want, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for delivery %d", want)
+		}
+	}
+}
+
 func TestSendPostsClickHouseInsert(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan string, 1)

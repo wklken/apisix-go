@@ -150,7 +150,7 @@ cases:
                 aws-lambda:
                   function_uri: "http://{{UPSTREAM_ADDR}}/generic"
                   authorization:
-                    apikey: $encrypted://KmjDqNkKEE39RiuQS4o2wg==
+                    apikey: test-api-key
         input:
           path: /aws
         upstream:
@@ -162,6 +162,14 @@ cases:
             status: 200
             body: invoked
         output: *invoked
+        after_shutdown:
+          - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+            bbolt_json:
+              bucket: routes
+              key: aws-lambda-encrypted-api-key
+              fields:
+                /plugins/aws-lambda/authorization/apikey: KmjDqNkKEE39RiuQS4o2wg==
+              forbidden_matches: [test-api-key]
       - name: iam
         runtime: *encrypted_runtime
         config:
@@ -173,8 +181,8 @@ cases:
                   function_uri: "http://{{UPSTREAM_ADDR}}/generic"
                   authorization:
                     iam:
-                      accesskey: $encrypted://3KasmnibINRmuBZzJcd7bQ==
-                      secretkey: $encrypted://2Mtlm8PbJyuq5TDBGVaWiQ==
+                      accesskey: test-access-key
+                      secretkey: test-secret-key
         input:
           path: /aws
         upstream:
@@ -186,6 +194,15 @@ cases:
             status: 200
             body: invoked
         output: *invoked
+        after_shutdown:
+          - path: {equals: '{{WORK_DIR}}/apisix-go-store.db'}
+            bbolt_json:
+              bucket: routes
+              key: aws-lambda-encrypted-iam
+              fields:
+                /plugins/aws-lambda/authorization/iam/accesskey: 3KasmnibINRmuBZzJcd7bQ==
+                /plugins/aws-lambda/authorization/iam/secretkey: 2Mtlm8PbJyuq5TDBGVaWiQ==
+              forbidden_matches: [test-access-key, test-secret-key]
 
   - name: canonical-query-signing
     source:

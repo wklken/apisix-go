@@ -261,27 +261,48 @@ cases:
   - name: disabled-plugin
     source:
       tests: [17, 18, 25]
-    runtime: *ip_runtime
+    runtime: *real_ip_runtime
     config:
       routes:
-        - id: ip-disabled
+        - id: ip-lifecycle
           uri: /hello
           plugins:
+            real-ip: *real_ip
             ip-restriction:
               blacklist: [127.0.0.0/24]
-              _meta:
-                disable: true
-          upstream:
-            type: roundrobin
-            nodes:
-              "{{UPSTREAM_ADDR}}": 1
-    input:
-      path: /hello
-    upstream:
-      respond:
-        status: 200
-        body: hello world
-    output: *hello_output
+          upstream: *fixture_upstream
+    fixtures:
+      - name: primary
+        kind: http
+        respond:
+          - status: 200
+            body: hello world
+    steps:
+      - name: denied-while-enabled
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 127.0.0.1
+        output: *default_denied
+      - name: remove-plugin-and-reload
+        config:
+          routes:
+            - id: ip-lifecycle
+              uri: /hello
+              plugins:
+                real-ip: *real_ip
+              upstream: *fixture_upstream
+        config_probe:
+          input:
+            path: /hello
+            headers:
+              X-Forwarded-For: 127.0.0.1
+          output: *hello_output
+        input:
+          path: /hello
+          headers:
+            X-Forwarded-For: 127.0.0.1
+        output: *hello_output
 
   - name: ipv6-blacklist
     source:

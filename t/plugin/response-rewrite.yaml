@@ -1,12 +1,21 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/response-rewrite.t
-  tests: 27
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/response-rewrite.t
+    tests: 27
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/response-rewrite2.t
+    tests: 25
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/response-rewrite3.t
+    tests: 22
 
 cases:
   - name: schema-sanity
     source:
+      file: t/plugin/response-rewrite.t
       tests: [1]
     config:
       routes:
@@ -37,6 +46,7 @@ cases:
 
   - name: reject-invalid-status
     source:
+      file: t/plugin/response-rewrite.t
       tests: [2]
     config:
       routes:
@@ -53,6 +63,7 @@ cases:
 
   - name: reject-invalid-config
     source:
+      file: t/plugin/response-rewrite.t
       tests: [3]
     config:
       routes:
@@ -69,6 +80,7 @@ cases:
 
   - name: rewrite-headers-and-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [4, 5]
     config:
       routes:
@@ -104,6 +116,7 @@ cases:
 
   - name: rewrite-body-preserve-headers
     source:
+      file: t/plugin/response-rewrite.t
       tests: [6, 7]
     config:
       routes:
@@ -146,6 +159,7 @@ cases:
 
   - name: rewrite-location-and-status
     source:
+      file: t/plugin/response-rewrite.t
       tests: [8, 9]
     config:
       routes:
@@ -168,6 +182,7 @@ cases:
 
   - name: empty-header-value
     source:
+      file: t/plugin/response-rewrite.t
       tests: [10]
     config:
       routes:
@@ -184,6 +199,7 @@ cases:
 
   - name: reject-array-header-value
     source:
+      file: t/plugin/response-rewrite.t
       tests: [11]
     config:
       routes:
@@ -200,6 +216,7 @@ cases:
 
   - name: base64-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [12, 13]
     config:
       routes:
@@ -220,6 +237,7 @@ cases:
 
   - name: reject-invalid-base64
     source:
+      file: t/plugin/response-rewrite.t
       tests: [14]
     config:
       routes:
@@ -235,6 +253,7 @@ cases:
 
   - name: admin-etcd-clean-serialization
     source:
+      file: t/plugin/response-rewrite.t
       tests: [15]
     config:
       routes:
@@ -265,6 +284,7 @@ cases:
 
   - name: valid-status-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [16]
     config:
       routes:
@@ -286,6 +306,7 @@ cases:
 
   - name: reject-invalid-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [17]
     config:
       routes:
@@ -301,6 +322,7 @@ cases:
 
   - name: matching-status-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [18, 19]
     config:
       routes:
@@ -326,6 +348,7 @@ cases:
 
   - name: nonmatching-status-expression
     source:
+      file: t/plugin/response-rewrite.t
       tests: [20]
     config:
       routes:
@@ -351,6 +374,7 @@ cases:
 
   - name: empty-base64-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [21]
     config:
       routes:
@@ -366,6 +390,7 @@ cases:
 
   - name: nil-base64-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [22]
     config:
       routes:
@@ -380,6 +405,7 @@ cases:
 
   - name: response-header-variables
     source:
+      file: t/plugin/response-rewrite.t
       tests: [23, 24]
     config:
       routes:
@@ -406,6 +432,7 @@ cases:
 
   - name: empty-body
     source:
+      file: t/plugin/response-rewrite.t
       tests: [25, 26]
     config:
       routes:
@@ -425,6 +452,7 @@ cases:
 
   - name: add-header-without-colon
     source:
+      file: t/plugin/response-rewrite.t
       tests: [27]
     config:
       routes:
@@ -446,3 +474,834 @@ cases:
           equals: a
       body:
         equals: upstream
+
+  - name: filter-schema-sanity
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: response-rewrite-filter-sanity
+          uri: /hello
+          plugins:
+            response-rewrite:
+              filters:
+                - regex: l
+                  replace: m
+                - regex: Hello
+                  scope: global
+                  replace: World
+                  options: jo
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: hemlo world
+
+  - name: filter-rejects-missing-replace
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [3]
+    config:
+      routes:
+        - id: response-rewrite-missing-replace
+          uri: /hello
+          plugins:
+            response-rewrite:
+              filters:
+                - regex: Hello
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output:
+      logs:
+        matches: 'build route response-rewrite-missing-replace.*response-rewrite'
+
+  - name: filter-rejects-invalid-scope
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [4]
+    config:
+      routes:
+        - id: response-rewrite-invalid-scope
+          uri: /hello
+          plugins:
+            response-rewrite:
+              filters:
+                - regex: Hello
+                  scope: two
+                  replace: World
+                  options: jo
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output:
+      logs:
+        matches: 'build route response-rewrite-invalid-scope.*scope.*enum'
+
+  - name: filter-rejects-empty-regex
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [5]
+    config:
+      routes:
+        - id: response-rewrite-empty-regex
+          uri: /hello
+          plugins:
+            response-rewrite:
+              filters:
+                - regex: ""
+                  replace: world
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output:
+      logs:
+        matches: 'build route response-rewrite-empty-regex.*response-rewrite'
+
+  - name: filter-rejects-invalid-options
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [6]
+    config:
+      routes:
+        - id: response-rewrite-invalid-options
+          uri: /hello
+          plugins:
+            response-rewrite:
+              filters:
+                - regex: hello
+                  replace: HELLO
+                  options: h
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output:
+      logs:
+        matches: 'build route response-rewrite-invalid-options.*response-rewrite'
+
+  - name: filters-vars-match
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [7, 8]
+    config:
+      routes:
+        - id: response-rewrite-filters-vars
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: hello
+                  replace: test
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: test world
+
+  - name: filter-global-substitute
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [9, 10]
+    config:
+      routes:
+        - id: response-rewrite-global
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: l
+                  replace: t
+                  scope: global
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: hetto wortd
+
+  - name: filter-replace-empty
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [11, 12]
+    config:
+      routes:
+        - id: response-rewrite-replace-empty
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: hello
+                  replace: ""
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: ' world'
+
+  - name: filter-replace-words
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [13, 14]
+    config:
+      routes:
+        - id: response-rewrite-replace-words
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: '\w\S+$'
+                  replace: "*"
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: hello *
+
+  - name: multiple-filters
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [15, 16]
+    config:
+      routes:
+        - id: response-rewrite-multiple-filters
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: hello
+                  replace: HELLO
+                - regex: L
+                  replace: T
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: HETLO world
+
+  - name: filter-no-match
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [17, 18]
+    config:
+      routes:
+        - id: response-rewrite-no-match
+          uri: /hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: test
+                  replace: TEST
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      body:
+        equals: hello world
+
+  - name: headers-add
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [20, 21]
+    config:
+      routes:
+        - id: response-rewrite-headers-add
+          uri: /hello
+          plugins:
+            response-rewrite:
+              headers:
+                add:
+                  - "Cache-Control: no-cache"
+                  - "Cache-Control : max-age=0, must-revalidate"
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      headers:
+        Cache-Control:
+          values: ['no-cache', 'max-age=0, must-revalidate']
+      body:
+        equals: hello world
+
+  - name: headers-set
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [22, 23]
+    config:
+      routes:
+        - id: response-rewrite-headers-set
+          uri: /hello
+          plugins:
+            response-rewrite:
+              headers:
+                add:
+                  - "Cache-Control: no-cache"
+                set:
+                  Cache-Control: max-age=0, must-revalidate
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      headers:
+        Cache-Control:
+          equals: max-age=0, must-revalidate
+      body:
+        equals: hello world
+
+  - name: headers-remove
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [24, 25]
+    config:
+      routes:
+        - id: response-rewrite-headers-remove
+          uri: /hello
+          plugins:
+            response-rewrite:
+              headers:
+                add:
+                  - "Set-Cookie: <cookie-name>=<cookie-value>; Max-Age=<number>"
+                set:
+                  Cache-Control: max-age=0, must-revalidate
+                remove:
+                  - Set-Cookie
+                  - Cache-Control
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    input:
+      path: /hello
+    output:
+      status: 200
+      headers:
+        Cache-Control:
+          absent: true
+        Set-Cookie:
+          absent: true
+      body:
+        equals: hello world
+
+  - name: headers-schema-rejection
+    source:
+      file: t/plugin/response-rewrite2.t
+      tests: [19]
+    config:
+      routes:
+        - id: response-rewrite-headers-schema
+          uri: /hello
+          plugins:
+            response-rewrite:
+              headers:
+                add:
+                  - "headers:"
+          upstream: *fixture_route
+    upstream:
+      respond:
+        status: 200
+        body: hello world
+    output:
+      logs:
+        matches: 'build route response-rewrite-headers-schema.*response-rewrite'
+
+  - name: gzip-upstream-preserved
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: response-rewrite-gzip-pass
+          uri: /gzip_hello
+
+          plugins:
+            response-rewrite: {}
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /gzip_hello
+      headers:
+        Accept-Encoding: gzip
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: gzip
+        body: !!binary |
+          H4sIAAAAAAAC/8tIzcnJVyjPL8pJ4QIALTsIrwwAAAA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: gzip
+      gzip_body:
+        equals: "hello world\n"
+
+  - name: gzip-body-rewrite
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [3, 4]
+    config:
+      routes:
+        - id: response-rewrite-gzip-body
+          uri: /gzip_hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              body: "new body\n"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /gzip_hello
+      headers:
+        Accept-Encoding: gzip
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: gzip
+        body: !!binary |
+          H4sIAAAAAAAC/8tIzcnJVyjPL8pJ4QIALTsIrwwAAAA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      body:
+        equals: "new body\n"
+
+  - name: gzip-filter-decode
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [5, 6]
+    config:
+      routes:
+        - id: response-rewrite-gzip-filter
+          uri: /gzip_hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: hello
+                  replace: test
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /gzip_hello
+      headers:
+        Accept-Encoding: gzip
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: gzip
+        body: !!binary |
+          H4sIAAAAAAAC/8tIzcnJVyjPL8pJ4QIALTsIrwwAAAA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      body:
+        equals: "test world\n"
+
+  - name: deflate-body-rewrite
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [7, 8]
+    config:
+      routes:
+        - id: response-rewrite-deflate-body
+          uri: /echo
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              body: "new body\n"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /echo
+      headers:
+        Content-Encoding: deflate
+      body: fake body with mock content encoding header
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: deflate
+        body: old body
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      body:
+        equals: "new body\n"
+
+  - name: deflate-filter-warning
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [9, 10]
+    config:
+      routes:
+        - id: response-rewrite-deflate-filter
+          uri: /echo
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: hello
+                  replace: test
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /echo
+      headers:
+        Content-Encoding: deflate
+      body: fake body with mock content encoding header
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: deflate
+        body: old body
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      logs:
+        matches: 'filters may not work as expected due to unsupported compression encoding type: deflate'
+
+  - name: gzip-headers-only
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [11, 12]
+    config:
+      routes:
+        - id: response-rewrite-gzip-headers
+          uri: /gzip_hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              headers:
+                set:
+                  X-Server-id: 3
+                  X-Server-status: "on"
+                  Content-Type: ""
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /gzip_hello
+      headers:
+        Accept-Encoding: gzip
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: gzip
+        body: !!binary |
+          H4sIAAAAAAAC/8tIzcnJVyjPL8pJ4QIALTsIrwwAAAA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: gzip
+        X-Server-id:
+          equals: "3"
+        X-Server-status:
+          equals: "on"
+        Content-Type:
+          equals: ""
+      gzip_body:
+        equals: "hello world\n"
+
+  - name: deflate-headers-only
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [13, 14]
+    config:
+      routes:
+        - id: response-rewrite-deflate-headers
+          uri: /echo
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              headers:
+                set:
+                  X-Server-id: 3
+                  X-Server-status: "on"
+                  Content-Type: ""
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /echo
+      headers:
+        Content-Encoding: deflate
+      body: fake body with mock content encoding header
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: deflate
+        body: old body
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: deflate
+        X-Server-id:
+          equals: "3"
+        X-Server-status:
+          equals: "on"
+        Content-Type:
+          equals: ""
+      body:
+        equals: old body
+
+  - name: brotli-upstream-preserved
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [15, 16]
+    config:
+      routes:
+        - id: response-rewrite-brotli-pass
+          uri: /brotli_hello
+
+          plugins:
+            response-rewrite: {}
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /brotli_hello
+      headers:
+        Accept-Encoding: br
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: br
+        body: !!binary |
+          GyMAAKQUQHoQRRZhRi6Tx9OtkwA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: br
+      brotli_body:
+        equals: "hello world hello world hello world\n"
+
+  - name: brotli-body-rewrite
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [17, 18]
+    config:
+      routes:
+        - id: response-rewrite-brotli-body
+          uri: /brotli_hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              body: "new body\n"
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /brotli_hello
+      headers:
+        Accept-Encoding: br
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: br
+        body: !!binary |
+          GyMAAKQUQHoQRRZhRi6Tx9OtkwA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      body:
+        equals: "new body\n"
+
+  - name: brotli-filter-decode
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [19, 20]
+    config:
+      routes:
+        - id: response-rewrite-brotli-filter
+          uri: /brotli_hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              filters:
+                - regex: hello
+                  replace: test
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /brotli_hello
+      headers:
+        Accept-Encoding: br
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: br
+        body: !!binary |
+          GyMAAKQUQHoQRRZhRi6Tx9OtkwA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          absent: true
+      body:
+        equals: "test world hello world hello world\n"
+
+  - name: brotli-headers-only
+    source:
+      file: t/plugin/response-rewrite3.t
+      tests: [21, 22]
+    config:
+      routes:
+        - id: response-rewrite-brotli-headers
+          uri: /brotli_hello
+          plugins:
+            response-rewrite:
+              vars:
+                - [status, '==', 200]
+              headers:
+                set:
+                  X-Server-id: 3
+                  X-Server-status: "on"
+                  Content-Type: ""
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /brotli_hello
+      headers:
+        Accept-Encoding: br
+    upstream:
+      respond:
+        status: 200
+        headers:
+          Content-Encoding: br
+        body: !!binary |
+          GyMAAKQUQHoQRRZhRi6Tx9OtkwA=
+    output:
+      status: 200
+      headers:
+        Content-Encoding:
+          equals: br
+        X-Server-id:
+          equals: "3"
+        X-Server-status:
+          equals: "on"
+        Content-Type:
+          equals: ""
+      brotli_body:
+        equals: "hello world hello world hello world\n"

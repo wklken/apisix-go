@@ -14,6 +14,7 @@ import (
 
 	brotlidec "github.com/andybalholm/brotli"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	pluginexpr "github.com/wklken/apisix-go/pkg/plugin/expr"
 )
@@ -349,10 +350,15 @@ func (p *Plugin) rewrite(r *http.Request, resp *responseRecorder) {
 	if len(p.config.Filters) > 0 {
 		body := resp.body
 		canFilter := true
-		if resp.header.Get("Content-Encoding") != "" {
+		if encoding := resp.header.Get("Content-Encoding"); encoding != "" {
 			decoded, ok := decodeFilterBody(resp)
 			if !ok {
 				canFilter = false
+				resp.header.Del("Content-Encoding")
+				logger.Errorf(
+					"filters may not work as expected due to unsupported compression encoding type: %s",
+					encoding,
+				)
 			} else {
 				body = decoded
 				resp.header.Del("Content-Encoding")
@@ -385,8 +391,12 @@ func (p *Plugin) varsMatched(r *http.Request, resp *responseRecorder) bool {
 
 func (h Headers) apply(r *http.Request, resp *responseRecorder) {
 	header := resp.header
-	for _, field := range h.Remove {
-		header.Del(field)
+	for _, entry := range h.Add {
+		field, value, ok := strings.Cut(entry, ":")
+		if !ok {
+			continue
+		}
+		header.Add(strings.TrimSpace(field), resolveValue(r, resp, strings.TrimSpace(value)))
 	}
 	for field, value := range h.LegacySet {
 		resolved := resolveValue(r, resp, value)
@@ -399,27 +409,30 @@ func (h Headers) apply(r *http.Request, resp *responseRecorder) {
 	for field, value := range h.Set {
 		header.Set(field, resolveValue(r, resp, value))
 	}
-	for _, entry := range h.Add {
-		field, value, ok := strings.Cut(entry, ":")
-		if !ok {
-			continue
-		}
-		header.Add(strings.TrimSpace(field), resolveValue(r, resp, strings.TrimSpace(value)))
+	for _, field := range h.Remove {
+		header.Del(field)
 	}
 }
 
 func compileFilterPattern(pattern string, options string) (*regexp.Regexp, error) {
-	prefix := ""
-	if strings.Contains(options, "i") {
-		prefix += "(?i)"
+	var prefix strings.Builder
+	for _, flag := range options {
+		switch flag {
+		case 'i':
+			prefix.WriteString("(?i)")
+		case 'm':
+			prefix.WriteString("(?m)")
+		case 's':
+			prefix.WriteString("(?s)")
+		case 'o':
+			// no-op: "o" is accepted by APISIX's gsub flags but has no Go equivalent
+		case 'j':
+			// no-op: "j" is accepted by APISIX's gsub flags but has no Go equivalent
+		default:
+			return nil, fmt.Errorf("unknown flag %q (flags %q)", string(flag), options)
+		}
 	}
-	if strings.Contains(options, "m") {
-		prefix += "(?m)"
-	}
-	if strings.Contains(options, "s") {
-		prefix += "(?s)"
-	}
-	return regexp.Compile(prefix + pattern)
+	return regexp.Compile(prefix.String() + pattern)
 }
 
 func replaceFirstString(pattern *regexp.Regexp, body string, replacement string) string {

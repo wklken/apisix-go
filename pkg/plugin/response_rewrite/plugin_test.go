@@ -405,10 +405,28 @@ func TestHandlerSkipsFiltersWhenEncodedBodyCannotBeDecoded(t *testing.T) {
 			if got := res.Body.String(); got != "secret token" {
 				t.Fatalf("body = %q, want encoded body left unfiltered", got)
 			}
-			if got := res.Header().Get("Content-Encoding"); got != tt.encoding {
-				t.Fatalf("Content-Encoding = %q, want %q", got, tt.encoding)
+			// The upstream clears Content-Encoding whenever filters are
+			// configured (clear_header_as_body_modified in header_filter),
+			// even when the decoder cannot run.
+			if got := res.Header().Get("Content-Encoding"); got != "" {
+				t.Fatalf("Content-Encoding = %q, want cleared after body-modified filters", got)
 			}
 		})
+	}
+}
+
+func TestHandlerWarnsWhenFiltersSeeUnsupportedEncoding(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Filters: []Filter{{Regex: `secret`, Replace: "redacted", Scope: "global"}},
+	})
+
+	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "deflate")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("secret token"))
+	})
+	if got := res.Body.String(); got != "secret token" {
+		t.Fatalf("body = %q, want encoded body left unfiltered", got)
 	}
 }
 
@@ -594,4 +612,53 @@ func brotliBody(t *testing.T, value string) []byte {
 		t.Fatalf("close brotli body: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func TestPostInitRejectsUnknownFilterOptionsFlag(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			Filters: []Filter{{Regex: "hello", Replace: "HELLO", Options: "h"}},
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want unknown flag rejection")
+	}
+	if !strings.Contains(err.Error(), `unknown flag "h"`) {
+		t.Fatalf("PostInit() error = %v, want unknown flag message", err)
+	}
+}
+
+func TestHandlerRemoveWinsOverAddForSameHeader(t *testing.T) {
+	p := &Plugin{
+		config: Config{
+			Headers: Headers{
+				Add:    []string{"Set-Cookie: <cookie-name>=<cookie-value>; Max-Age=<number>"},
+				Set:    map[string]string{"Cache-Control": "max-age=0, must-revalidate"},
+				Remove: []string{"Set-Cookie", "Cache-Control"},
+			},
+		},
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v", err)
+	}
+
+	rr := performRequest(p, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Set-Cookie", "session=1")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	})
+	if got := rr.Header().Get("Set-Cookie"); got != "" {
+		t.Fatalf("Set-Cookie = %q, want removed after add", got)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "" {
+		t.Fatalf("Cache-Control = %q, want removed after set", got)
+	}
 }

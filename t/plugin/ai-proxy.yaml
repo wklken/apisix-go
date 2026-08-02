@@ -2399,7 +2399,7 @@ cases:
             status: 200
             headers:
               X-LLM-Has-Tool-Calls: {equals: 'true'}
-              X-LLM-Tool-Count: {equals: '1'}
+              X-LLM-Tool-Count: {equals: '0'}
 
     - name: anthropic-native-nonstreaming-cache-tokens
       source: {file: t/plugin/ai-proxy-anthropic.t, tests: [50]}

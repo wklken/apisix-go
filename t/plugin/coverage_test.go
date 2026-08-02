@@ -29,6 +29,16 @@ var (
 
 const pinnedAPISIXSourceCommit = "c3d7d5ec69774121f53d2e20d29d09c816795dd7"
 
+func manifestYAMLFiles() ([]string, error) {
+	files, err := filepath.Glob("*.yaml")
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(files, func(file string) bool {
+		return file == corpusScopeFile
+	}), nil
+}
+
 func TestSupportedPluginManifestSelection(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "plugins.md"))
 	if err != nil {
@@ -53,7 +63,7 @@ func TestSupportedPluginManifestSelection(t *testing.T) {
 		t.Fatalf("complete manifest set problems = %v", problems)
 	}
 
-	files, err := filepath.Glob("*.yaml")
+	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
 	}
@@ -84,7 +94,7 @@ func TestSupportedPluginManifestSelection(t *testing.T) {
 }
 
 func TestManifestCorpusValidates(t *testing.T) {
-	files, err := filepath.Glob("*.yaml")
+	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
 	}
@@ -226,7 +236,7 @@ func firstYAMLAnchorOrAlias(node *yaml.Node) *yaml.Node {
 
 func TestSourceCoverage(t *testing.T) {
 	sourceRoot := apacheAPISIXSourceRoot(t)
-	files, err := filepath.Glob("*.yaml")
+	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
 	}
@@ -268,6 +278,15 @@ func TestSourceCoverage(t *testing.T) {
 
 func apacheAPISIXSourceRoot(t *testing.T) string {
 	t.Helper()
+	if sourceRoot, ok := optionalApacheAPISIXSourceRoot(t); ok {
+		return sourceRoot
+	}
+	t.Skip("pinned Apache APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
+	return ""
+}
+
+func optionalApacheAPISIXSourceRoot(t *testing.T) (string, bool) {
+	t.Helper()
 	candidates := []string{os.Getenv("APISIX_SOURCE_DIR")}
 	if root := os.Getenv("APISIX_GO_ROOT"); root != "" {
 		candidates = append(candidates, filepath.Join(root, ".cache", "apache-apisix"))
@@ -280,11 +299,10 @@ func apacheAPISIXSourceRoot(t *testing.T) string {
 		}
 		if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
 			assertPinnedSourceCheckout(t, candidate)
-			return candidate
+			return candidate, true
 		}
 	}
-	t.Skip("pinned Apache APISIX source checkout is unavailable; set APISIX_SOURCE_DIR to run source coverage")
-	return ""
+	return "", false
 }
 
 func assertPinnedSourceCheckout(t *testing.T, root string) {
@@ -484,7 +502,7 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 }
 
 func TestManifestCorpusExercisesTargetPlugins(t *testing.T) {
-	files, err := filepath.Glob("*.yaml")
+	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover manifests: %v", err)
 	}

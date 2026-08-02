@@ -1,0 +1,1913 @@
+commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+sources:
+  - file: t/plugin/acl.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58]
+    owner: acl
+    disposition: converted
+    manifest: acl.yaml
+    reason: mapped by the acl standalone manifest
+  - file: t/plugin/acl2.t
+    test_numbers: [1, 2, 3, 4]
+    owner: acl
+    disposition: converted
+    manifest: acl.yaml
+    reason: mapped by the acl standalone manifest
+  - file: t/plugin/ai-aliyun-content-moderation.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72]
+    owner: ai-aliyun-content-moderation
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/ai-aws-content-moderation-secrets.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: ai-aws-content-moderation
+    disposition: converted
+    manifest: ai-aws-content-moderation.yaml
+    reason: mapped by the ai-aws-content-moderation standalone manifest
+  - file: t/plugin/ai-aws-content-moderation.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    owner: ai-aws-content-moderation
+    disposition: converted
+    manifest: ai-aws-content-moderation.yaml
+    reason: mapped by the ai-aws-content-moderation standalone manifest
+  - file: t/plugin/ai-aws-content-moderation2.t
+    test_numbers: [1, 2]
+    owner: ai-aws-content-moderation
+    disposition: converted
+    manifest: ai-aws-content-moderation.yaml
+    reason: mapped by the ai-aws-content-moderation standalone manifest
+  - file: t/plugin/ai-cache-semantic.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]
+    owner: ai-cache
+    disposition: blocked_design
+    reason: unregistered AI cache subsystem; Task 6 scope decision required
+  - file: t/plugin/ai-cache-streaming.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+    owner: ai-cache
+    disposition: blocked_design
+    reason: unregistered AI cache subsystem; Task 6 scope decision required
+  - file: t/plugin/ai-cache.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+    owner: ai-cache
+    disposition: blocked_design
+    reason: unregistered AI cache subsystem; Task 6 scope decision required
+  - file: t/plugin/ai-lakera-guard-chain.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-lakera-guard
+    disposition: blocked_design
+    reason: unregistered AI guard subsystem; Task 6 scope decision required
+  - file: t/plugin/ai-lakera-guard-secrets.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: ai-lakera-guard
+    disposition: blocked_design
+    reason: unregistered AI guard subsystem; Task 6 scope decision required
+  - file: t/plugin/ai-lakera-guard.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+    owner: ai-lakera-guard
+    disposition: blocked_design
+    reason: unregistered AI guard subsystem; Task 6 scope decision required
+  - file: t/plugin/ai-prompt-decorator.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: ai-prompt-decorator
+    disposition: converted
+    manifest: ai-prompt-decorator.yaml
+    reason: mapped by the ai-prompt-decorator standalone manifest
+  - file: t/plugin/ai-prompt-guard.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]
+    owner: ai-prompt-guard
+    disposition: converted
+    manifest: ai-prompt-guard.yaml
+    reason: mapped by the ai-prompt-guard standalone manifest
+  - file: t/plugin/ai-prompt-template.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    owner: ai-prompt-template
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/ai-proxy-anthropic.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-azure-openai.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-bedrock-single.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-bedrock.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-client-disconnect.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-fixture.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-flush.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-gemini.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-kafka-log.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest; kafka summaries/payloads logging integration GREEN
+  - file: t/plugin/ai-proxy-kafka-log.t
+    test_numbers: [7, 8]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: uses ai-proxy-multi plugin (Deferred separate subsystem); Task 5 decision required
+  - file: t/plugin/ai-proxy-kafka-log.t
+    test_numbers: [9]
+    owner: ai-proxy
+    disposition: blocked_runtime
+    reason: Lua unit test of base.set_logging internal function; no real-process surface
+  - file: t/plugin/ai-proxy-multi-chash-healthcheck-stable-ring.t
+    test_numbers: [1]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi-construct-upstream-panic.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi-construct-upstream.t
+    test_numbers: [1, 2]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi-domain-healthcheck-repro.t
+    test_numbers: [1]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi-domain-healthcheck.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi-healthcheck-stale-picker.t
+    test_numbers: [1]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi-retry.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi.balancer.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi.openai-compatible.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-multi3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: ai-proxy-multi
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/ai-proxy-openrouter.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-passthrough.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-protocol-conversion.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-request-body-override.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-stream-limits.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-upstream-vars.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy-vertex-ai.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy.openai-compatible.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-proxy3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: ai-proxy
+    disposition: converted
+    manifest: ai-proxy.yaml
+    reason: mapped by the ai-proxy standalone manifest
+  - file: t/plugin/ai-rag.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: ai-rag
+    disposition: converted
+    manifest: ai-rag.yaml
+    reason: mapped by the ai-rag standalone manifest
+  - file: t/plugin/ai-rate-limiting-consumer-isolation.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: ai-rate-limiting
+    disposition: converted
+    manifest: ai-rate-limiting.yaml
+    reason: mapped by the ai-rate-limiting standalone manifest
+  - file: t/plugin/ai-rate-limiting-expression.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: ai-rate-limiting
+    disposition: converted
+    manifest: ai-rate-limiting.yaml
+    reason: mapped by the ai-rate-limiting standalone manifest
+  - file: t/plugin/ai-rate-limiting.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+    owner: ai-rate-limiting
+    disposition: converted
+    manifest: ai-rate-limiting.yaml
+    reason: mapped by the ai-rate-limiting standalone manifest
+  - file: t/plugin/ai-request-rewrite.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: ai-request-rewrite
+    disposition: converted
+    manifest: ai-request-rewrite.yaml
+    reason: mapped by the ai-request-rewrite standalone manifest
+  - file: t/plugin/ai-request-rewrite2.t
+    test_numbers: [1, 2, 3, 4]
+    owner: ai-request-rewrite
+    disposition: converted
+    manifest: ai-request-rewrite.yaml
+    reason: mapped by the ai-request-rewrite standalone manifest
+  - file: t/plugin/ai-transport-http.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: ai-transport-http
+    disposition: blocked_design
+    reason: AI transport subsystem; Task 6 scope decision required
+  - file: t/plugin/ai.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: ai
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/ai2.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: ai
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/ai3.t
+    test_numbers: [1, 2]
+    owner: ai
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/ai4.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: ai
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/ai5.t
+    test_numbers: [1, 2]
+    owner: ai
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/api-breaker.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: api-breaker
+    disposition: converted
+    manifest: api-breaker.yaml
+    reason: mapped by the api-breaker standalone manifest
+  - file: t/plugin/attach-consumer-label.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: attach-consumer-label
+    disposition: converted
+    manifest: attach-consumer-label.yaml
+    reason: mapped by the attach-consumer-label standalone manifest
+  - file: t/plugin/authz-casbin.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: authz-casbin
+    disposition: converted
+    manifest: authz-casbin.yaml
+    reason: mapped by the authz-casbin standalone manifest
+  - file: t/plugin/authz-casdoor.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: authz-casdoor
+    disposition: converted
+    manifest: authz-casdoor.yaml
+    reason: mapped by the authz-casdoor standalone manifest
+  - file: t/plugin/authz-keycloak.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: authz-keycloak
+    disposition: converted
+    manifest: authz-keycloak.yaml
+    reason: mapped by the authz-keycloak standalone manifest
+  - file: t/plugin/authz-keycloak2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    owner: authz-keycloak
+    disposition: converted
+    manifest: authz-keycloak.yaml
+    reason: mapped by the authz-keycloak standalone manifest
+  - file: t/plugin/authz-keycloak3.t
+    test_numbers: [1, 2, 3]
+    owner: authz-keycloak
+    disposition: converted
+    manifest: authz-keycloak.yaml
+    reason: mapped by the authz-keycloak standalone manifest
+  - file: t/plugin/authz-keycloak4.t
+    test_numbers: [1, 2, 3, 4]
+    owner: authz-keycloak
+    disposition: converted
+    manifest: authz-keycloak.yaml
+    reason: mapped by the authz-keycloak standalone manifest
+  - file: t/plugin/authz-keycloak5.t
+    test_numbers: [1]
+    owner: authz-keycloak
+    disposition: converted
+    manifest: authz-keycloak.yaml
+    reason: mapped by the authz-keycloak standalone manifest
+  - file: t/plugin/aws-lambda.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    owner: aws-lambda
+    disposition: converted
+    manifest: aws-lambda.yaml
+    reason: mapped by the aws-lambda standalone manifest
+  - file: t/plugin/azure-functions.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: azure-functions
+    disposition: converted
+    manifest: azure-functions.yaml
+    reason: mapped by the azure-functions standalone manifest
+  - file: t/plugin/basic-auth-anonymous-consumer.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: basic-auth
+    disposition: converted
+    manifest: basic-auth.yaml
+    reason: mapped by the basic-auth standalone manifest
+  - file: t/plugin/basic-auth-realm.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: basic-auth
+    disposition: converted
+    manifest: basic-auth.yaml
+    reason: mapped by the basic-auth standalone manifest
+  - file: t/plugin/basic-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    owner: basic-auth
+    disposition: converted
+    manifest: basic-auth.yaml
+    reason: mapped by the basic-auth standalone manifest
+  - file: t/plugin/batch-requests-grpc.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: batch-requests
+    disposition: converted
+    manifest: batch-requests.yaml
+    reason: mapped by the batch-requests standalone manifest
+  - file: t/plugin/batch-requests.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    owner: batch-requests
+    disposition: converted
+    manifest: batch-requests.yaml
+    reason: mapped by the batch-requests standalone manifest
+  - file: t/plugin/batch-requests2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: batch-requests
+    disposition: converted
+    manifest: batch-requests.yaml
+    reason: mapped by the batch-requests standalone manifest
+  - file: t/plugin/body-transformer-multipart.t
+    test_numbers: [1, 2]
+    owner: body-transformer
+    disposition: converted
+    manifest: body-transformer.yaml
+    reason: mapped by the body-transformer standalone manifest; multipart request/response conversion integration GREEN
+  - file: t/plugin/body-transformer-multipart.t
+    test_numbers: [3, 4]
+    owner: body-transformer
+    disposition: blocked_design
+    reason: requires context._multipart:set_simple()/tostring() Lua object helpers; exact multipart helper semantics remain deferred per docs/plugins.md
+  - file: t/plugin/body-transformer.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: body-transformer
+    disposition: converted
+    manifest: body-transformer.yaml
+    reason: mapped by the body-transformer standalone manifest
+  - file: t/plugin/body-transformer2.t
+    test_numbers: [3]
+    owner: body-transformer
+    disposition: converted
+    manifest: body-transformer.yaml
+    reason: mapped by the body-transformer standalone manifest; key-auth rejection integration GREEN
+  - file: t/plugin/body-transformer2.t
+    test_numbers: [1, 2]
+    owner: body-transformer
+    disposition: blocked_design
+    reason: template executes arbitrary Lua (local core = require, core.json.encode, context mutation); arbitrary Lua remains deferred per docs/plugins.md
+  - file: t/plugin/brotli.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
+    owner: brotli
+    disposition: converted
+    manifest: brotli.yaml
+    reason: mapped by the brotli standalone manifest
+  - file: t/plugin/cas-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: cas-auth
+    disposition: converted
+    manifest: cas-auth.yaml
+    reason: mapped by the cas-auth standalone manifest
+  - file: t/plugin/chaitin-waf-reject.t
+    test_numbers: [1, 2, 3, 4]
+    owner: chaitin-waf
+    disposition: converted
+    manifest: chaitin-waf.yaml
+    reason: mapped by the chaitin-waf standalone manifest; block-mode reject and monitor-mode pass-through integration GREEN
+  - file: t/plugin/chaitin-waf-timeout.t
+    test_numbers: [1, 2]
+    owner: chaitin-waf
+    disposition: converted
+    manifest: chaitin-waf.yaml
+    reason: mapped by the chaitin-waf standalone manifest; read-timeout fallback integration GREEN
+  - file: t/plugin/chaitin-waf.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: chaitin-waf
+    disposition: converted
+    manifest: chaitin-waf.yaml
+    reason: mapped by the chaitin-waf standalone manifest
+  - file: t/plugin/clickhouse-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: clickhouse-logger
+    disposition: converted
+    manifest: clickhouse-logger.yaml
+    reason: mapped by the clickhouse-logger standalone manifest
+  - file: t/plugin/clickhouse-logger2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: clickhouse-logger
+    disposition: converted
+    manifest: clickhouse-logger.yaml
+    reason: mapped by the clickhouse-logger standalone manifest
+  - file: t/plugin/clickhouse-logger3.t
+    test_numbers: [1, 2, 3]
+    owner: clickhouse-logger
+    disposition: converted
+    manifest: clickhouse-logger.yaml
+    reason: mapped by the clickhouse-logger standalone manifest
+  - file: t/plugin/client-control.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: client-control
+    disposition: converted
+    manifest: client-control.yaml
+    reason: mapped by the client-control standalone manifest
+  - file: t/plugin/consumer-bug-fix.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: consumer framework
+    disposition: non_plugin
+    reason: consumer framework regression tests, not a single plugin behavior
+  - file: t/plugin/consumer-restriction.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53]
+    owner: consumer-restriction
+    disposition: converted
+    manifest: consumer-restriction.yaml
+    reason: mapped by the consumer-restriction standalone manifest
+  - file: t/plugin/consumer-restriction2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: consumer-restriction
+    disposition: converted
+    manifest: consumer-restriction.yaml
+    reason: mapped by the consumer-restriction standalone manifest
+  - file: t/plugin/cors.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
+    owner: cors
+    disposition: converted
+    manifest: cors.yaml
+    reason: mapped by the cors standalone manifest
+  - file: t/plugin/cors2.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: cors
+    disposition: converted
+    manifest: cors.yaml
+    reason: mapped by the cors standalone manifest
+  - file: t/plugin/cors3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: cors
+    disposition: converted
+    manifest: cors.yaml
+    reason: mapped by the cors standalone manifest
+  - file: t/plugin/cors4.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    owner: cors
+    disposition: converted
+    manifest: cors.yaml
+    reason: mapped by the cors standalone manifest
+  - file: t/plugin/csrf.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: csrf
+    disposition: converted
+    manifest: csrf.yaml
+    reason: mapped by the csrf standalone manifest
+  - file: t/plugin/custom_sort_plugins.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: plugin framework
+    disposition: non_plugin
+    reason: plugin sorting framework ordering tests, not a plugin behavior
+  - file: t/plugin/data-mask.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: data-mask
+    disposition: converted
+    manifest: data-mask.yaml
+    reason: mapped by the data-mask standalone manifest
+  - file: t/plugin/datadog.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: datadog
+    disposition: converted
+    manifest: datadog.yaml
+    reason: mapped by the datadog standalone manifest
+  - file: t/plugin/degraphql.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: degraphql
+    disposition: converted
+    manifest: degraphql.yaml
+    reason: mapped by the degraphql standalone manifest
+  - file: t/plugin/dingtalk-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: dingtalk-auth
+    disposition: converted
+    manifest: dingtalk-auth.yaml
+    reason: mapped by the dingtalk-auth standalone manifest
+  - file: t/plugin/dubbo-proxy/route.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: dubbo-proxy
+    disposition: blocked_design
+    reason: registered non-default protocol subsystem; Task 6 separate subsystem decision required
+  - file: t/plugin/dubbo-proxy/upstream.t
+    test_numbers: [1, 2, 3, 4]
+    owner: dubbo-proxy
+    disposition: blocked_design
+    reason: registered non-default protocol subsystem; Task 6 separate subsystem decision required
+  - file: t/plugin/echo.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: echo
+    disposition: converted
+    manifest: echo.yaml
+    reason: mapped by the echo standalone manifest
+  - file: t/plugin/elasticsearch-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    owner: elasticsearch-logger
+    disposition: converted
+    manifest: elasticsearch-logger.yaml
+    reason: mapped by the elasticsearch-logger standalone manifest
+  - file: t/plugin/elasticsearch-logger2.t
+    test_numbers: [1, 2, 3, 5, 6, 7, 8, 9]
+    owner: elasticsearch-logger
+    disposition: converted
+    manifest: elasticsearch-logger.yaml
+    reason: mapped by the elasticsearch-logger standalone manifest; pending-drop, header auth, and index-variable integration GREEN
+  - file: t/plugin/elasticsearch-logger2.t
+    test_numbers: [4, 10]
+    owner: elasticsearch-logger
+    disposition: blocked_runtime
+    reason: Lua unit tests of internal _resolve_index_vars (os.date "*t" table fallback); no real-process surface
+  - file: t/plugin/error-log-logger-clickhouse.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    owner: error-log-logger
+    disposition: converted
+    manifest: error-log-logger.yaml
+    reason: mapped by the error-log-logger standalone manifest
+  - file: t/plugin/error-log-logger-kafka.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: error-log-logger
+    disposition: converted
+    manifest: error-log-logger.yaml
+    reason: mapped by the error-log-logger standalone manifest
+  - file: t/plugin/error-log-logger-skywalking.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: error-log-logger
+    disposition: converted
+    manifest: error-log-logger.yaml
+    reason: mapped by the error-log-logger standalone manifest
+  - file: t/plugin/error-log-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: error-log-logger
+    disposition: converted
+    manifest: error-log-logger.yaml
+    reason: mapped by the error-log-logger standalone manifest
+  - file: t/plugin/error-page.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: error-page
+    disposition: converted
+    manifest: error-page.yaml
+    reason: mapped by the error-page standalone manifest
+  - file: t/plugin/example.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: example-plugin
+    disposition: converted
+    manifest: example-plugin.yaml
+    reason: mapped by the example-plugin standalone manifest
+  - file: t/plugin/exit-transformer.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: exit-transformer
+    disposition: converted
+    manifest: exit-transformer.yaml
+    reason: mapped by the exit-transformer standalone manifest
+  - file: t/plugin/ext-plugin/conf_token.t
+    test_numbers: [1, 2]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/ext-plugin/extra-info.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/ext-plugin/http-req-call.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/ext-plugin/request-body.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/ext-plugin/response.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/ext-plugin/sanity.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/ext-plugin/sanity2.t
+    test_numbers: [1]
+    owner: ext-plugin-pre/post-req/resp
+    disposition: blocked_runtime
+    reason: external plugin runner protocol; unregistered defaults
+  - file: t/plugin/fault-injection.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+    owner: fault-injection
+    disposition: converted
+    manifest: fault-injection.yaml
+    reason: mapped by the fault-injection standalone manifest
+  - file: t/plugin/fault-injection2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: fault-injection
+    disposition: converted
+    manifest: fault-injection.yaml
+    reason: mapped by the fault-injection standalone manifest
+  - file: t/plugin/feishu-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: feishu-auth
+    disposition: converted
+    manifest: feishu-auth.yaml
+    reason: mapped by the feishu-auth standalone manifest
+  - file: t/plugin/file-logger-reopen.t
+    test_numbers: [1, 2, 3]
+    owner: file-logger
+    disposition: converted
+    manifest: file-logger.yaml
+    reason: mapped by the file-logger standalone manifest
+  - file: t/plugin/file-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+    owner: file-logger
+    disposition: converted
+    manifest: file-logger.yaml
+    reason: mapped by the file-logger standalone manifest
+  - file: t/plugin/file-logger2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: file-logger
+    disposition: converted
+    manifest: file-logger.yaml
+    reason: mapped by the file-logger standalone manifest
+  - file: t/plugin/forward-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: forward-auth
+    disposition: converted
+    manifest: forward-auth.yaml
+    reason: mapped by the forward-auth standalone manifest
+  - file: t/plugin/forward-auth2.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: forward-auth
+    disposition: converted
+    manifest: forward-auth.yaml
+    reason: mapped by the forward-auth standalone manifest
+  - file: t/plugin/forward-auth3.t
+    test_numbers: [1, 2]
+    owner: forward-auth
+    disposition: converted
+    manifest: forward-auth.yaml
+    reason: mapped by the forward-auth standalone manifest
+  - file: t/plugin/google-cloud-logging.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    owner: google-cloud-logging
+    disposition: converted
+    manifest: google-cloud-logging.yaml
+    reason: mapped by the google-cloud-logging standalone manifest
+  - file: t/plugin/google-cloud-logging2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: google-cloud-logging
+    disposition: converted
+    manifest: google-cloud-logging.yaml
+    reason: mapped by the google-cloud-logging standalone manifest
+  - file: t/plugin/google-cloud-logging3.t
+    test_numbers: [1]
+    owner: google-cloud-logging
+    disposition: converted
+    manifest: google-cloud-logging.yaml
+    reason: mapped by the google-cloud-logging standalone manifest
+  - file: t/plugin/graphql-limit-count.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+    owner: graphql-limit-count
+    disposition: converted
+    manifest: graphql-limit-count.yaml
+    reason: mapped by the graphql-limit-count standalone manifest
+  - file: t/plugin/graphql-proxy-cache/disk.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: graphql-proxy-cache
+    disposition: converted
+    manifest: graphql-proxy-cache.yaml
+    reason: mapped by the graphql-proxy-cache standalone manifest
+  - file: t/plugin/graphql-proxy-cache/graphql.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: graphql-proxy-cache
+    disposition: converted
+    manifest: graphql-proxy-cache.yaml
+    reason: mapped by the graphql-proxy-cache standalone manifest
+  - file: t/plugin/graphql-proxy-cache/memory.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    owner: graphql-proxy-cache
+    disposition: converted
+    manifest: graphql-proxy-cache.yaml
+    reason: mapped by the graphql-proxy-cache standalone manifest
+  - file: t/plugin/grpc-transcode-reload-bugfix.t
+    test_numbers: [1]
+    owner: grpc-transcode
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/grpc-transcode.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    owner: grpc-transcode
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/grpc-transcode2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: grpc-transcode
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/grpc-transcode3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: grpc-transcode
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/grpc-transcode4.t
+    test_numbers: [1, 2, 3]
+    owner: grpc-transcode
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/grpc-web.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: grpc-web
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/gzip.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    owner: gzip
+    disposition: converted
+    manifest: gzip.yaml
+    reason: mapped by the gzip standalone manifest
+  - file: t/plugin/hmac-auth-anonymous-consumer.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: hmac-auth
+    disposition: converted
+    manifest: hmac-auth.yaml
+    reason: mapped by the hmac-auth standalone manifest
+  - file: t/plugin/hmac-auth-realm.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: hmac-auth
+    disposition: converted
+    manifest: hmac-auth.yaml
+    reason: mapped by the hmac-auth standalone manifest
+  - file: t/plugin/hmac-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+    owner: hmac-auth
+    disposition: converted
+    manifest: hmac-auth.yaml
+    reason: mapped by the hmac-auth standalone manifest
+  - file: t/plugin/hmac-auth2.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: hmac-auth
+    disposition: converted
+    manifest: hmac-auth.yaml
+    reason: mapped by the hmac-auth standalone manifest
+  - file: t/plugin/hmac-auth3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: hmac-auth
+    disposition: converted
+    manifest: hmac-auth.yaml
+    reason: mapped by the hmac-auth standalone manifest
+  - file: t/plugin/hmac-auth4.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: hmac-auth
+    disposition: converted
+    manifest: hmac-auth.yaml
+    reason: mapped by the hmac-auth standalone manifest
+  - file: t/plugin/http-dubbo.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: http-dubbo
+    disposition: converted
+    manifest: http-dubbo.yaml
+    reason: mapped by the http-dubbo standalone manifest
+  - file: t/plugin/http-logger-json.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/http-logger-large-body.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/http-logger-log-format.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/http-logger-new-line.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/http-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/http-logger2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/http-logger3.t
+    test_numbers: [1, 2]
+    owner: http-logger
+    disposition: converted
+    manifest: http-logger.yaml
+    reason: mapped by the http-logger standalone manifest
+  - file: t/plugin/inspect.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: inspect
+    disposition: blocked_runtime
+    reason: Lua/OpenResty inspection runtime; unregistered default
+  - file: t/plugin/ip-restriction.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+    owner: ip-restriction
+    disposition: converted
+    manifest: ip-restriction.yaml
+    reason: mapped by the ip-restriction standalone manifest
+  - file: t/plugin/jwe-decrypt.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    owner: jwe-decrypt
+    disposition: converted
+    manifest: jwe-decrypt.yaml
+    reason: mapped by the jwe-decrypt standalone manifest
+  - file: t/plugin/jwt-auth-anonymous-consumer.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth-more-algo.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth-realm.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/jwt-auth4.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: jwt-auth
+    disposition: converted
+    manifest: jwt-auth.yaml
+    reason: mapped by the jwt-auth standalone manifest
+  - file: t/plugin/kafka-logger-large-body.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    owner: kafka-logger
+    disposition: converted
+    manifest: kafka-logger.yaml
+    reason: mapped by the kafka-logger standalone manifest
+  - file: t/plugin/kafka-logger-log-format.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: kafka-logger
+    disposition: converted
+    manifest: kafka-logger.yaml
+    reason: mapped by the kafka-logger standalone manifest
+  - file: t/plugin/kafka-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    owner: kafka-logger
+    disposition: converted
+    manifest: kafka-logger.yaml
+    reason: mapped by the kafka-logger standalone manifest
+  - file: t/plugin/kafka-logger2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    owner: kafka-logger
+    disposition: converted
+    manifest: kafka-logger.yaml
+    reason: mapped by the kafka-logger standalone manifest
+  - file: t/plugin/kafka-logger3.t
+    test_numbers: [1, 2]
+    owner: kafka-logger
+    disposition: converted
+    manifest: kafka-logger.yaml
+    reason: mapped by the kafka-logger standalone manifest
+  - file: t/plugin/kafka-logger4.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: kafka-logger
+    disposition: converted
+    manifest: kafka-logger.yaml
+    reason: mapped by the kafka-logger standalone manifest
+  - file: t/plugin/kafka-proxy.t
+    test_numbers: [1, 2]
+    owner: kafka-proxy
+    disposition: converted
+    manifest: kafka-proxy.yaml
+    reason: mapped by the kafka-proxy standalone manifest
+  - file: t/plugin/key-auth-anonymous-consumer.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: key-auth
+    disposition: converted
+    manifest: key-auth.yaml
+    reason: mapped by the key-auth standalone manifest
+  - file: t/plugin/key-auth-realm.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: key-auth
+    disposition: converted
+    manifest: key-auth.yaml
+    reason: mapped by the key-auth standalone manifest
+  - file: t/plugin/key-auth-upstream-domain-node.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: key-auth
+    disposition: converted
+    manifest: key-auth.yaml
+    reason: mapped by the key-auth standalone manifest
+  - file: t/plugin/key-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+    owner: key-auth
+    disposition: converted
+    manifest: key-auth.yaml
+    reason: mapped by the key-auth standalone manifest
+  - file: t/plugin/lago.t
+    test_numbers: [1, 2]
+    owner: lago
+    disposition: converted
+    manifest: lago.yaml
+    reason: mapped by the lago standalone manifest
+  - file: t/plugin/ldap-auth-realm.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: ldap-auth
+    disposition: converted
+    manifest: ldap-auth.yaml
+    reason: mapped by the ldap-auth standalone manifest
+  - file: t/plugin/ldap-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    owner: ldap-auth
+    disposition: converted
+    manifest: ldap-auth.yaml
+    reason: mapped by the ldap-auth standalone manifest
+  - file: t/plugin/limit-conn-redis-cluster.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    owner: limit-conn
+    disposition: converted
+    manifest: limit-conn.yaml
+    reason: mapped by the limit-conn standalone manifest
+  - file: t/plugin/limit-conn-redis.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+    owner: limit-conn
+    disposition: converted
+    manifest: limit-conn.yaml
+    reason: mapped by the limit-conn standalone manifest
+  - file: t/plugin/limit-conn-variable.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: limit-conn
+    disposition: converted
+    manifest: limit-conn.yaml
+    reason: mapped by the limit-conn standalone manifest
+  - file: t/plugin/limit-conn.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+    owner: limit-conn
+    disposition: converted
+    manifest: limit-conn.yaml
+    reason: mapped by the limit-conn standalone manifest
+  - file: t/plugin/limit-conn2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: limit-conn
+    disposition: converted
+    manifest: limit-conn.yaml
+    reason: mapped by the limit-conn standalone manifest
+  - file: t/plugin/limit-conn3.t
+    test_numbers: [1, 2, 3]
+    owner: limit-conn
+    disposition: converted
+    manifest: limit-conn.yaml
+    reason: mapped by the limit-conn standalone manifest
+  - file: t/plugin/limit-count-consumer-group-credentials.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-consumer-isolation.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis-cluster.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis-cluster2.t
+    test_numbers: [1, 2]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis-cluster3.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis-delayed-sync.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis-delayed-sync2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis-sentinel.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis4.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-redis5.t
+    test_numbers: [1, 2, 3]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-rules.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-sliding.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count-variable.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count4.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-count5.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: limit-count
+    disposition: converted
+    manifest: limit-count.yaml
+    reason: mapped by the limit-count standalone manifest
+  - file: t/plugin/limit-req-redis-cluster.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: limit-req
+    disposition: converted
+    manifest: limit-req.yaml
+    reason: mapped by the limit-req standalone manifest
+  - file: t/plugin/limit-req-redis.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    owner: limit-req
+    disposition: converted
+    manifest: limit-req.yaml
+    reason: mapped by the limit-req standalone manifest
+  - file: t/plugin/limit-req-shared-counter.t
+    test_numbers: [1, 2, 3]
+    owner: limit-req
+    disposition: converted
+    manifest: limit-req.yaml
+    reason: mapped by the limit-req standalone manifest
+  - file: t/plugin/limit-req.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: limit-req
+    disposition: converted
+    manifest: limit-req.yaml
+    reason: mapped by the limit-req standalone manifest
+  - file: t/plugin/limit-req2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    owner: limit-req
+    disposition: converted
+    manifest: limit-req.yaml
+    reason: mapped by the limit-req standalone manifest
+  - file: t/plugin/limit-req3.t
+    test_numbers: [1, 2, 3]
+    owner: limit-req
+    disposition: converted
+    manifest: limit-req.yaml
+    reason: mapped by the limit-req standalone manifest
+  - file: t/plugin/log-rotate.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: log-rotate
+    disposition: converted
+    manifest: log-rotate.yaml
+    reason: mapped by the log-rotate standalone manifest
+  - file: t/plugin/log-rotate2.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: log-rotate
+    disposition: converted
+    manifest: log-rotate.yaml
+    reason: mapped by the log-rotate standalone manifest
+  - file: t/plugin/log-rotate3.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: log-rotate
+    disposition: converted
+    manifest: log-rotate.yaml
+    reason: mapped by the log-rotate standalone manifest
+  - file: t/plugin/loggly.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: loggly
+    disposition: converted
+    manifest: loggly.yaml
+    reason: mapped by the loggly standalone manifest
+  - file: t/plugin/loki-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: loki-logger
+    disposition: converted
+    manifest: loki-logger.yaml
+    reason: mapped by the loki-logger standalone manifest
+  - file: t/plugin/loki-logger2.t
+    test_numbers: [1]
+    owner: loki-logger
+    disposition: converted
+    manifest: loki-logger.yaml
+    reason: mapped by the loki-logger standalone manifest
+  - file: t/plugin/mcp-bridge.t
+    test_numbers: [1]
+    owner: mcp-bridge
+    disposition: blocked_runtime
+    reason: registered Deferred default; Task 5 native/runtime decision required
+  - file: t/plugin/mocking.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: mocking
+    disposition: converted
+    manifest: mocking.yaml
+    reason: mapped by the mocking standalone manifest
+  - file: t/plugin/multi-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: multi-auth
+    disposition: converted
+    manifest: multi-auth.yaml
+    reason: mapped by the multi-auth standalone manifest
+  - file: t/plugin/multi-auth2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    owner: multi-auth
+    disposition: converted
+    manifest: multi-auth.yaml
+    reason: mapped by the multi-auth standalone manifest
+  - file: t/plugin/node-status.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: node-status
+    disposition: converted
+    manifest: node-status.yaml
+    reason: mapped by the node-status standalone manifest
+  - file: t/plugin/oas-validator.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+    owner: oas-validator
+    disposition: converted
+    manifest: oas-validator.yaml
+    reason: mapped by the oas-validator standalone manifest
+  - file: t/plugin/oas-validator2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55]
+    owner: oas-validator
+    disposition: converted
+    manifest: oas-validator.yaml
+    reason: mapped by the oas-validator standalone manifest
+  - file: t/plugin/oas-validator3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    owner: oas-validator
+    disposition: converted
+    manifest: oas-validator.yaml
+    reason: mapped by the oas-validator standalone manifest
+  - file: t/plugin/ocsp-stapling.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+    owner: ocsp-stapling
+    disposition: blocked_runtime
+    reason: NGINX-native TLS/OCSP internals
+  - file: t/plugin/opa.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: opa
+    disposition: converted
+    manifest: opa.yaml
+    reason: mapped by the opa standalone manifest
+  - file: t/plugin/opa2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: opa
+    disposition: converted
+    manifest: opa.yaml
+    reason: mapped by the opa standalone manifest
+  - file: t/plugin/opa3.t
+    test_numbers: [1, 2]
+    owner: opa
+    disposition: converted
+    manifest: opa.yaml
+    reason: mapped by the opa standalone manifest
+  - file: t/plugin/openfunction.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: openfunction
+    disposition: converted
+    manifest: openfunction.yaml
+    reason: mapped by the openfunction standalone manifest
+  - file: t/plugin/openid-connect-identity-headers.t
+    test_numbers: [1, 2, 3, 4]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect-redis.t
+    test_numbers: [1, 2, 3, 4]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect10.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect3.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect4.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect5.t
+    test_numbers: [1, 2]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect6.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect7.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect8.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/openid-connect9.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: openid-connect
+    disposition: converted
+    manifest: openid-connect.yaml
+    reason: mapped by the openid-connect standalone manifest
+  - file: t/plugin/opentelemetry.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
+    owner: opentelemetry
+    disposition: converted
+    manifest: opentelemetry.yaml
+    reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry2.t
+    test_numbers: [1, 2, 3, 4]
+    owner: opentelemetry
+    disposition: converted
+    manifest: opentelemetry.yaml
+    reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry3.t
+    test_numbers: [1, 2, 3, 4]
+    owner: opentelemetry
+    disposition: converted
+    manifest: opentelemetry.yaml
+    reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry4-bugfix-pb-state.t
+    test_numbers: [1, 2, 3]
+    owner: opentelemetry
+    disposition: converted
+    manifest: opentelemetry.yaml
+    reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry5.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: opentelemetry
+    disposition: converted
+    manifest: opentelemetry.yaml
+    reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/opentelemetry6.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    owner: opentelemetry
+    disposition: converted
+    manifest: opentelemetry.yaml
+    reason: mapped by the opentelemetry standalone manifest
+  - file: t/plugin/openwhisk.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: openwhisk
+    disposition: converted
+    manifest: openwhisk.yaml
+    reason: mapped by the openwhisk standalone manifest
+  - file: t/plugin/plugin.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    owner: plugin framework
+    disposition: non_plugin
+    reason: plugin framework registration/lifecycle tests, not a plugin behavior
+  - file: t/plugin/prometheus-ai-cache.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: prometheus+ai-cache
+    disposition: blocked_design
+    reason: prometheus AI cache metrics depend on unregistered ai-cache subsystem
+  - file: t/plugin/prometheus-ai-proxy.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+    owner: prometheus+ai-proxy
+    disposition: blocked_design
+    reason: prometheus AI proxy metrics depend on deferred ai-proxy-multi subsystem
+  - file: t/plugin/prometheus-ai-proxy2.t
+    test_numbers: [1, 2, 3]
+    owner: prometheus+ai-proxy
+    disposition: blocked_design
+    reason: prometheus AI proxy metrics depend on deferred ai-proxy-multi subsystem
+  - file: t/plugin/prometheus-label-filter.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: prometheus
+    disposition: blocked_design
+    reason: prometheus exporter internals; Task 5 separate subsystem decision required
+  - file: t/plugin/prometheus-metric-expire.t
+    test_numbers: [1]
+    owner: prometheus
+    disposition: blocked_design
+    reason: prometheus exporter internals; Task 5 separate subsystem decision required
+  - file: t/plugin/prometheus.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]
+    owner: prometheus
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/prometheus2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
+    owner: prometheus
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/prometheus3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: prometheus
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/prometheus4.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: prometheus
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/proxy-cache/disk.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    owner: proxy-cache
+    disposition: converted
+    manifest: proxy-cache.yaml
+    reason: mapped by the proxy-cache standalone manifest
+  - file: t/plugin/proxy-cache/memory.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+    owner: proxy-cache
+    disposition: converted
+    manifest: proxy-cache.yaml
+    reason: mapped by the proxy-cache standalone manifest
+  - file: t/plugin/proxy-control.t
+    test_numbers: [1, 2, 3, 4]
+    owner: proxy-control
+    disposition: converted
+    manifest: proxy-control.yaml
+    reason: mapped by the proxy-control standalone manifest
+  - file: t/plugin/proxy-mirror.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    owner: proxy-mirror
+    disposition: converted
+    manifest: proxy-mirror.yaml
+    reason: mapped by the proxy-mirror standalone manifest
+  - file: t/plugin/proxy-mirror2.t
+    test_numbers: [1, 2, 3]
+    owner: proxy-mirror
+    disposition: converted
+    manifest: proxy-mirror.yaml
+    reason: mapped by the proxy-mirror standalone manifest
+  - file: t/plugin/proxy-mirror3.t
+    test_numbers: [1, 2]
+    owner: proxy-mirror
+    disposition: converted
+    manifest: proxy-mirror.yaml
+    reason: mapped by the proxy-mirror standalone manifest
+  - file: t/plugin/proxy-rewrite.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+    owner: proxy-rewrite
+    disposition: converted
+    manifest: proxy-rewrite.yaml
+    reason: mapped by the proxy-rewrite standalone manifest
+  - file: t/plugin/proxy-rewrite2.t
+    test_numbers: [2, 3, 4, 6, 7, 8]
+    owner: proxy-rewrite
+    disposition: converted
+    manifest: proxy-rewrite.yaml
+    reason: mapped by the proxy-rewrite standalone manifest; X-Forwarded-* pass/customize/untrusted integration GREEN
+  - file: t/plugin/proxy-rewrite2.t
+    test_numbers: [1, 5]
+    owner: proxy-rewrite
+    disposition: blocked_runtime
+    reason: assert via serverless-pre-function Lua log hooks; native Lua boundary
+  - file: t/plugin/proxy-rewrite3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
+    owner: proxy-rewrite
+    disposition: converted
+    manifest: proxy-rewrite.yaml
+    reason: mapped by the proxy-rewrite standalone manifest; method/host/header/regex-uri/unsafe-uri integration GREEN
+  - file: t/plugin/proxy-rewrite3.t
+    test_numbers: [23, 24]
+    owner: proxy-rewrite
+    disposition: blocked_design
+    reason: /$uri/remain with embedded CRLF requires OpenResty URI re-encoding; exact OpenResty URI normalization remains deferred per docs/plugins.md
+  - file: t/plugin/public-api.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: public-api
+    disposition: converted
+    manifest: public-api.yaml
+    reason: mapped by the public-api standalone manifest
+  - file: t/plugin/real-ip.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    owner: real-ip
+    disposition: converted
+    manifest: real-ip.yaml
+    reason: mapped by the real-ip standalone manifest
+  - file: t/plugin/redirect.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
+    owner: redirect
+    disposition: converted
+    manifest: redirect.yaml
+    reason: mapped by the redirect standalone manifest
+  - file: t/plugin/redirect2.t
+    test_numbers: [1, 2, 3]
+    owner: redirect
+    disposition: converted
+    manifest: redirect2.yaml
+    reason: mapped by the redirect standalone manifest
+  - file: t/plugin/referer-restriction.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    owner: referer-restriction
+    disposition: converted
+    manifest: referer-restriction.yaml
+    reason: mapped by the referer-restriction standalone manifest
+  - file: t/plugin/request-id.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+    owner: request-id
+    disposition: converted
+    manifest: request-id.yaml
+    reason: mapped by the request-id standalone manifest
+  - file: t/plugin/request-id2.t
+    test_numbers: [1, 2, 3, 4]
+    owner: request-id
+    disposition: converted
+    manifest: request-id.yaml
+    reason: mapped by the request-id standalone manifest
+  - file: t/plugin/request-id3.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: request-id
+    disposition: converted
+    manifest: request-id.yaml
+    reason: mapped by the request-id standalone manifest
+  - file: t/plugin/request-validation.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53]
+    owner: request-validation
+    disposition: converted
+    manifest: request-validation.yaml
+    reason: mapped by the request-validation standalone manifest
+  - file: t/plugin/request-validation2.t
+    test_numbers: [1, 2]
+    owner: request-validation
+    disposition: converted
+    manifest: request-validation.yaml
+    reason: mapped by the request-validation standalone manifest
+  - file: t/plugin/response-rewrite.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    owner: response-rewrite
+    disposition: converted
+    manifest: response-rewrite.yaml
+    reason: mapped by the response-rewrite standalone manifest
+  - file: t/plugin/response-rewrite2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    owner: response-rewrite
+    disposition: converted
+    manifest: response-rewrite.yaml
+    reason: mapped by the response-rewrite standalone manifest; filter/header schema and behavior integration GREEN
+  - file: t/plugin/response-rewrite3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: response-rewrite
+    disposition: converted
+    manifest: response-rewrite.yaml
+    reason: mapped by the response-rewrite standalone manifest; gzip/brotli upstream decode integration GREEN
+  - file: t/plugin/rocketmq-logger-log-format.t
+    test_numbers: [1, 2, 3, 4, 5]
+    owner: rocketmq-logger
+    disposition: converted
+    manifest: rocketmq-logger.yaml
+    reason: mapped by the rocketmq-logger standalone manifest
+  - file: t/plugin/rocketmq-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    owner: rocketmq-logger
+    disposition: converted
+    manifest: rocketmq-logger.yaml
+    reason: mapped by the rocketmq-logger standalone manifest
+  - file: t/plugin/rocketmq-logger2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: rocketmq-logger
+    disposition: converted
+    manifest: rocketmq-logger.yaml
+    reason: mapped by the rocketmq-logger standalone manifest
+  - file: t/plugin/saml-auth-post.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: saml-auth
+    disposition: converted
+    manifest: saml-auth.yaml
+    reason: mapped by the saml-auth standalone manifest
+  - file: t/plugin/saml-auth.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: saml-auth
+    disposition: converted
+    manifest: saml-auth.yaml
+    reason: mapped by the saml-auth standalone manifest
+  - file: t/plugin/security-warning.t
+    test_numbers: [5, 6]
+    owner: cas-auth
+    disposition: converted
+    manifest: cas-auth.yaml
+    reason: mapped by the cas-auth standalone manifest
+  - file: t/plugin/security-warning.t
+    test_numbers: [1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: cross-plugin security-warning family
+    disposition: pending
+    reason: cross-plugin TLS security-warning family; outside current selections, Task 3/6 scope decision required
+  - file: t/plugin/security-warning2.t
+    test_numbers: [19, 20]
+    owner: wolf-rbac
+    disposition: converted
+    manifest: wolf-rbac.yaml
+    reason: mapped by the wolf-rbac standalone manifest
+  - file: t/plugin/security-warning2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22]
+    owner: cross-plugin security-warning family
+    disposition: pending
+    reason: cross-plugin TLS security-warning family; outside current selections, Task 3/6 scope decision required
+  - file: t/plugin/server-info.t
+    test_numbers: [1, 2]
+    owner: server-info
+    disposition: converted
+    manifest: server-info.yaml
+    reason: mapped by the server-info standalone manifest
+  - file: t/plugin/serverless.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+    owner: serverless-pre/post-function
+    disposition: blocked_runtime
+    reason: Lua/OpenResty runtime; bounded Go compat exists but full parity is out of scope
+  - file: t/plugin/skywalking-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: skywalking-logger
+    disposition: converted
+    manifest: skywalking-logger.yaml
+    reason: mapped by the skywalking-logger standalone manifest
+  - file: t/plugin/skywalking-logger2.t
+    test_numbers: [1]
+    owner: skywalking-logger
+    disposition: converted
+    manifest: skywalking-logger.yaml
+    reason: mapped by the skywalking-logger standalone manifest
+  - file: t/plugin/skywalking.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    owner: skywalking
+    disposition: converted
+    manifest: skywalking.yaml
+    reason: mapped by the skywalking standalone manifest
+  - file: t/plugin/skywalking2.t
+    test_numbers: [1, 2]
+    owner: skywalking
+    disposition: converted
+    manifest: skywalking.yaml
+    reason: mapped by the skywalking standalone manifest
+  - file: t/plugin/sls-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: sls-logger
+    disposition: converted
+    manifest: sls-logger.yaml
+    reason: mapped by the sls-logger standalone manifest
+  - file: t/plugin/splunk-hec-logging.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    owner: splunk-hec-logging
+    disposition: converted
+    manifest: splunk-hec-logging.yaml
+    reason: mapped by the splunk-hec-logging standalone manifest
+  - file: t/plugin/splunk-hec-logging2.t
+    test_numbers: [1]
+    owner: splunk-hec-logging
+    disposition: converted
+    manifest: splunk-hec-logging.yaml
+    reason: mapped by the splunk-hec-logging standalone manifest
+  - file: t/plugin/syslog.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: syslog
+    disposition: converted
+    manifest: syslog.yaml
+    reason: mapped by the syslog standalone manifest
+  - file: t/plugin/tcp-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    owner: tcp-logger
+    disposition: converted
+    manifest: tcp-logger.yaml
+    reason: mapped by the tcp-logger standalone manifest
+  - file: t/plugin/tencent-cloud-cls.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: tencent-cloud-cls
+    disposition: converted
+    manifest: tencent-cloud-cls.yaml
+    reason: mapped by the tencent-cloud-cls standalone manifest
+  - file: t/plugin/traffic-label.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: traffic-label
+    disposition: converted
+    manifest: traffic-label.yaml
+    reason: mapped by the traffic-label standalone manifest
+  - file: t/plugin/traffic-label2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    owner: traffic-label
+    disposition: converted
+    manifest: traffic-label.yaml
+    reason: mapped by the traffic-label standalone manifest
+  - file: t/plugin/traffic-split.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    owner: traffic-split
+    disposition: converted
+    manifest: traffic-split.yaml
+    reason: mapped by the traffic-split standalone manifest
+  - file: t/plugin/traffic-split2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: traffic-split
+    disposition: converted
+    manifest: traffic-split.yaml
+    reason: mapped by the traffic-split standalone manifest
+  - file: t/plugin/traffic-split3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: traffic-split
+    disposition: converted
+    manifest: traffic-split.yaml
+    reason: mapped by the traffic-split standalone manifest
+  - file: t/plugin/traffic-split4.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    owner: traffic-split
+    disposition: converted
+    manifest: traffic-split.yaml
+    reason: mapped by the traffic-split standalone manifest
+  - file: t/plugin/traffic-split5.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    owner: traffic-split
+    disposition: converted
+    manifest: traffic-split.yaml
+    reason: mapped by the traffic-split standalone manifest
+  - file: t/plugin/ua-restriction.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+    owner: ua-restriction
+    disposition: converted
+    manifest: ua-restriction.yaml
+    reason: mapped by the ua-restriction standalone manifest
+  - file: t/plugin/udp-logger.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    owner: udp-logger
+    disposition: converted
+    manifest: udp-logger.yaml
+    reason: mapped by the udp-logger standalone manifest
+  - file: t/plugin/uri-blocker.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+    owner: uri-blocker
+    disposition: converted
+    manifest: uri-blocker.yaml
+    reason: mapped by the uri-blocker standalone manifest
+  - file: t/plugin/wolf-rbac.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42]
+    owner: wolf-rbac
+    disposition: converted
+    manifest: wolf-rbac.yaml
+    reason: mapped by the wolf-rbac standalone manifest
+  - file: t/plugin/workflow-without-case.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: workflow
+    disposition: converted
+    manifest: workflow.yaml
+    reason: mapped by the workflow standalone manifest
+  - file: t/plugin/workflow.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    owner: workflow
+    disposition: converted
+    manifest: workflow.yaml
+    reason: mapped by the workflow standalone manifest
+  - file: t/plugin/workflow2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8]
+    owner: workflow
+    disposition: converted
+    manifest: workflow.yaml
+    reason: mapped by the workflow standalone manifest
+  - file: t/plugin/workflow3.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7]
+    owner: workflow
+    disposition: converted
+    manifest: workflow.yaml
+    reason: mapped by the workflow standalone manifest
+  - file: t/plugin/zipkin.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    owner: zipkin
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/zipkin2.t
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    owner: zipkin
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required
+  - file: t/plugin/zipkin3.t
+    test_numbers: [1, 2, 3, 4, 5, 6]
+    owner: zipkin
+    disposition: blocked_design
+    reason: registered Deferred default; Task 5 separate subsystem decision required

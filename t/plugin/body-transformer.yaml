@@ -1,12 +1,23 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/body-transformer.t
-  tests: 20
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/body-transformer.t
+    tests: 20
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/body-transformer-multipart.t
+    tests: 2
+    test_numbers: [1, 2]
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/body-transformer2.t
+    tests: 1
+    test_numbers: [3]
 
 cases:
   - name: soap-json-proxy
     source:
+      file: t/plugin/body-transformer.t
       tests: [1]
     config:
       routes:
@@ -72,6 +83,7 @@ cases:
 
   - name: json-to-json
     source:
+      file: t/plugin/body-transformer.t
       tests: [2]
     config:
       routes:
@@ -109,6 +121,7 @@ cases:
 
   - name: wrong-xml-input-format
     source:
+      file: t/plugin/body-transformer.t
       tests: [3]
     config:
       routes:
@@ -141,6 +154,7 @@ cases:
 
   - name: invalid-template-reference
     source:
+      file: t/plugin/body-transformer.t
       tests: [4]
     config:
       routes:
@@ -170,6 +184,7 @@ cases:
 
   - name: request-from-query
     source:
+      file: t/plugin/body-transformer.t
       tests: [5]
     config:
       routes:
@@ -202,6 +217,7 @@ cases:
 
   - name: html-escape
     source:
+      file: t/plugin/body-transformer.t
       tests: [6]
     variants:
       - name: escaped-expression
@@ -263,6 +279,7 @@ cases:
 
   - name: yaml-body
     source:
+      file: t/plugin/body-transformer.t
       tests: [7]
     config:
       routes:
@@ -298,6 +315,7 @@ cases:
 
   - name: escape-json
     source:
+      file: t/plugin/body-transformer.t
       tests: [8]
     config:
       routes:
@@ -330,6 +348,7 @@ cases:
 
   - name: escape-xml
     source:
+      file: t/plugin/body-transformer.t
       tests: [9]
     config:
       routes:
@@ -362,6 +381,7 @@ cases:
 
   - name: proxy-cache-cooperation
     source:
+      file: t/plugin/body-transformer.t
       tests: [10]
     config:
       routes:
@@ -437,6 +457,7 @@ cases:
 
   - name: raw-response-body
     source:
+      file: t/plugin/body-transformer.t
       tests: [11]
     config:
       routes:
@@ -467,6 +488,7 @@ cases:
 
   - name: empty-xml-value
     source:
+      file: t/plugin/body-transformer.t
       tests: [12]
     config:
       routes:
@@ -496,6 +518,7 @@ cases:
 
   - name: form-to-json
     source:
+      file: t/plugin/body-transformer.t
       tests: [13]
     config: &expression_config
       routes:
@@ -522,6 +545,7 @@ cases:
 
   - name: query-to-json
     source:
+      file: t/plugin/body-transformer.t
       tests: [14]
     config: *expression_config
     input:
@@ -539,6 +563,7 @@ cases:
 
   - name: base64-url-encoded-template
     source:
+      file: t/plugin/body-transformer.t
       tests: [15]
     config:
       routes:
@@ -570,6 +595,7 @@ cases:
 
   - name: plain-body-expression
     source:
+      file: t/plugin/body-transformer.t
       tests: [16]
     config:
       routes:
@@ -604,6 +630,7 @@ cases:
 
   - name: malformed-multipart
     source:
+      file: t/plugin/body-transformer.t
       tests: [17]
     config:
       routes:
@@ -635,6 +662,7 @@ cases:
 
   - name: reserved-template-helpers
     source:
+      file: t/plugin/body-transformer.t
       tests: [18]
     config:
       routes:
@@ -672,6 +700,7 @@ cases:
 
   - name: namespaced-xml-tree
     source:
+      file: t/plugin/body-transformer.t
       tests: [19]
     config:
       routes:
@@ -712,6 +741,7 @@ cases:
 
   - name: namespace-layout-sweep
     source:
+      file: t/plugin/body-transformer.t
       tests: [20]
     config:
       routes:
@@ -765,3 +795,129 @@ cases:
           status: 200
           body:
             matches: '"f1z{{ITERATION}}":"v1".*"f32zzzz{{ITERATION}}":"v32"'
+
+  - name: multipart-request-to-json
+    source:
+      file: t/plugin/body-transformer-multipart.t
+      tests: [1]
+    config:
+      routes:
+        - id: body-transformer-multipart-request
+          uri: /echo
+          plugins:
+            body-transformer:
+              request:
+                template: '{"foo":"{{name .. " world"}}","bar":{{age+10}}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      method: POST
+      path: /echo
+      headers:
+        Content-Type: multipart/related; boundary=AaB03x
+      body: |-
+        --AaB03x
+        Content-Disposition: form-data; name="name"
+
+        Larry
+        --AaB03x
+        Content-Disposition: form-data; name="age"
+
+        10
+        --AaB03x--
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /echo
+        body:
+          equals: '{"foo":"Larry world","bar":20}'
+      respond:
+        status: 200
+        body: ok
+    output:
+      status: 200
+      body:
+        equals: ok
+
+  - name: multipart-response-to-json
+    source:
+      file: t/plugin/body-transformer-multipart.t
+      tests: [2]
+    config:
+      routes:
+        - id: body-transformer-multipart-response
+          uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /demo
+            body-transformer:
+              response:
+                template: '{"foo":"{{name .. " world"}}","bar":{{age+10}}}'
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{UPSTREAM_ADDR}}": 1
+    input:
+      path: /hello
+    upstream:
+      expect:
+        path:
+          equals: /demo
+      respond:
+        status: 200
+        headers:
+          Content-Type: multipart/related; boundary=AaB03x
+        body: |-
+          --AaB03x
+          Content-Disposition: form-data; name="name"
+
+          Larry
+          --AaB03x
+          Content-Disposition: form-data; name="age"
+
+          10
+          --AaB03x--
+    output:
+      status: 200
+      body:
+        equals: '{"foo":"Larry world","bar":20}'
+
+  - name: key-auth-failure-preserves-body-transformer-config
+    source:
+      file: t/plugin/body-transformer2.t
+      tests: [3]
+    config:
+      routes:
+        - id: body-transformer-key-auth
+          uri: /foobar
+          plugins:
+            body-transformer:
+              request:
+                template: some-template
+            key-auth: {}
+          upstream:
+            type: roundrobin
+            nodes:
+              "{{FIXTURE.primary.ADDR}}": 1
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond:
+          - status: 200
+            body: unexpected
+    steps:
+      - name: missing-key-rejects
+        input:
+          method: POST
+          path: /foobar
+          headers:
+            Content-Type: application/json
+          body: body
+        output:
+          status: 401
+          body:
+            matches: 'Missing API key in request'

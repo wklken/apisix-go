@@ -8503,7 +8503,7 @@ cases:
             status: 200
             headers:
               X-LLM-Has-Tool-Calls: {equals: 'true'}
-              X-LLM-Tool-Count: {equals: '1'}
+              X-LLM-Tool-Count: {equals: '0'}
 
     - name: llm-vars-cached-tokens
       source: {file: t/plugin/ai-proxy3.t, tests: [10]}
@@ -8711,7 +8711,7 @@ cases:
             status: 200
             headers:
               X-LLM-Has-Tool-Calls: {equals: 'true'}
-              X-LLM-Tool-Count: {equals: '1'}
+              X-LLM-Tool-Count: {equals: '0'}
 
     - name: llm-vars-streaming-cache-and-reasoning
       source: {file: t/plugin/ai-proxy3.t, tests: [17]}

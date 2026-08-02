@@ -244,6 +244,95 @@ func TestProtocolConversionManifestMapsEveryPinnedBlockToIndependentBehavior(t *
 	}
 }
 
+func TestBuiltinVariablesManifestPreservesPinnedStreamingToolSemantics(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "t", "plugin", "ai-proxy.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var manifest struct {
+		Cases []struct {
+			Name   string `yaml:"name"`
+			Source struct {
+				File  string `yaml:"file"`
+				Tests []int  `yaml:"tests"`
+			} `yaml:"source"`
+			Fixtures []struct {
+				Respond []struct {
+					Chunks []string `yaml:"chunks"`
+				} `yaml:"respond"`
+			} `yaml:"fixtures"`
+			Steps []struct {
+				Output struct {
+					Headers map[string]struct {
+						Equals *string `yaml:"equals"`
+					} `yaml:"headers"`
+				} `yaml:"output"`
+			} `yaml:"steps"`
+		} `yaml:"cases"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+
+	expectations := map[int]string{
+		13: "llm-vars-streaming-tool-calls",
+		16: "llm-vars-responses-streaming-tool-call",
+	}
+
+	for number, wantName := range expectations {
+		var fixtureChunks []string
+		var headers map[string]struct {
+			Equals *string `yaml:"equals"`
+		}
+		found := false
+		for i := range manifest.Cases {
+			testCase := &manifest.Cases[i]
+			if testCase.Source.File != "t/plugin/ai-proxy3.t" {
+				continue
+			}
+			containsNumber := false
+			for _, sourceNumber := range testCase.Source.Tests {
+				if sourceNumber == number {
+					containsNumber = true
+				}
+			}
+			if !containsNumber {
+				continue
+			}
+			found = true
+			if testCase.Name != wantName {
+				t.Errorf("case for test %d has name %q, want %q", number, testCase.Name, wantName)
+			}
+			for _, fixture := range testCase.Fixtures {
+				for _, respond := range fixture.Respond {
+					fixtureChunks = append(fixtureChunks, respond.Chunks...)
+				}
+			}
+			if len(testCase.Steps) != 1 {
+				t.Errorf("case %q steps = %d, want 1", testCase.Name, len(testCase.Steps))
+				continue
+			}
+			headers = testCase.Steps[0].Output.Headers
+		}
+		if !found {
+			t.Fatalf("%s: no case maps ai-proxy3.t test %d", path, number)
+		}
+		if len(fixtureChunks) == 0 {
+			t.Errorf("case %q has no streaming fixture chunks", wantName)
+		}
+		hasToolCalls := headers["X-LLM-Has-Tool-Calls"]
+		toolCount := headers["X-LLM-Tool-Count"]
+		if hasToolCalls.Equals == nil || *hasToolCalls.Equals != "true" {
+			t.Errorf("case %q X-LLM-Has-Tool-Calls equals = %v, want true", wantName, hasToolCalls.Equals)
+		}
+		if toolCount.Equals == nil || *toolCount.Equals != "0" {
+			t.Errorf("case %q X-LLM-Tool-Count equals = %v, want pinned streaming count 0", wantName, toolCount.Equals)
+		}
+	}
+}
+
 func containsAIProxyRoute(config map[string]any) bool {
 	encoded, err := yaml.Marshal(config)
 	return err == nil && (strings.Contains(string(encoded), "ai-proxy:") ||

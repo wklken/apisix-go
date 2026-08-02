@@ -18,6 +18,7 @@ type Usage struct {
 	PromptTokens     int64
 	CompletionTokens int64
 	ToolCalls        int64
+	HasToolCalls     bool
 }
 
 func ForwardSSE(
@@ -88,13 +89,13 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 				item, _ := rawItem.(map[string]any)
 				switch item["type"] {
 				case "function_call":
-					usage.ToolCalls++
+					usage.HasToolCalls = true
 				case "message":
 					if content, ok := item["content"].([]any); ok {
 						for _, rawPart := range content {
 							part, _ := rawPart.(map[string]any)
 							if part["type"] == "function_call" {
-								usage.ToolCalls++
+								usage.HasToolCalls = true
 							}
 						}
 					}
@@ -112,15 +113,15 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 		mergeAnthropicUsage(usage, event["usage"])
 		if contentBlocks, ok := event["content_block"].(map[string]any); ok &&
 			contentBlocks["type"] == "tool_use" {
-			usage.ToolCalls++
+			usage.HasToolCalls = true
 		}
 	default:
 		if choices, ok := event["choices"].([]any); ok {
 			for _, rawChoice := range choices {
 				choice, _ := rawChoice.(map[string]any)
 				delta, _ := choice["delta"].(map[string]any)
-				if toolCalls, ok := delta["tool_calls"].([]any); ok {
-					usage.ToolCalls += int64(len(toolCalls))
+				if toolCalls, ok := delta["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+					usage.HasToolCalls = true
 				}
 			}
 		}

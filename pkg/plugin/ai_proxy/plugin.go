@@ -1115,7 +1115,7 @@ func registerStreamingLLMRequestVars(r *http.Request, requestBody []byte, usage 
 			"total_tokens":      usage.PromptTokens + usage.CompletionTokens,
 		})
 	}
-	apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", usage.ToolCalls > 0)
+	apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", usage.HasToolCalls)
 	apisixctx.RegisterRequestVar(r, "$llm_tool_count", usage.ToolCalls)
 	registerLLMMetadataVars(r, requestBody, nil, usage.Raw)
 }
@@ -1192,6 +1192,7 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Output   []any `json:"output"`
 		Response struct {
 			Output []any          `json:"output"`
 			Usage  map[string]any `json:"usage"`
@@ -1209,22 +1210,8 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 		for _, choice := range decoded.Choices {
 			toolCalls += len(choice.Message.ToolCalls)
 		}
-		for _, rawItem := range decoded.Response.Output {
-			item, _ := rawItem.(map[string]any)
-			switch item["type"] {
-			case "function_call":
-				toolCalls++
-			case "message":
-				if content, ok := item["content"].([]any); ok {
-					for _, rawPart := range content {
-						part, _ := rawPart.(map[string]any)
-						if part["type"] == "function_call" {
-							toolCalls++
-						}
-					}
-				}
-			}
-		}
+		toolCalls += responsesOutputToolCalls(decoded.Response.Output)
+		toolCalls += responsesOutputToolCalls(decoded.Output)
 		if toolCalls > 0 {
 			apisixctx.RegisterRequestVar(r, "$llm_has_tool_calls", true)
 			apisixctx.RegisterRequestVar(r, "$llm_tool_count", toolCalls)
@@ -1239,7 +1226,26 @@ func registerLLMMetadataVars(r *http.Request, requestBody []byte, responseBody [
 	}
 }
 
-
+func responsesOutputToolCalls(output []any) int {
+	toolCalls := 0
+	for _, rawItem := range output {
+		item, _ := rawItem.(map[string]any)
+		switch item["type"] {
+		case "function_call":
+			toolCalls++
+		case "message":
+			if content, ok := item["content"].([]any); ok {
+				for _, rawPart := range content {
+					part, _ := rawPart.(map[string]any)
+					if part["type"] == "function_call" {
+						toolCalls++
+					}
+				}
+			}
+		}
+	}
+	return toolCalls
+}
 
 func registerLLMTokenDetailVars(r *http.Request, usage map[string]any) {
 	var promptDetails map[string]any

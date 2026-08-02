@@ -64,6 +64,21 @@ func TestForwardOpenAIAsAnthropicSSEConvertsToolCallAndRestoresName(t *testing.T
 	}
 }
 
+func TestForwardOpenAIAsAnthropicSSEToolFragmentsSetPresenceNotCount(t *testing.T) {
+	body := "data: {\"id\":\"chat-1\",\"model\":\"gpt-4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"lookup_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	rr := httptest.NewRecorder()
+
+	usage, err := ForwardOpenAIAsAnthropicSSE(rr, strings.NewReader(body), 0, nil)
+	if err != nil {
+		t.Fatalf("ForwardOpenAIAsAnthropicSSE() error = %v", err)
+	}
+	if !usage.HasToolCalls || usage.ToolCalls != 0 {
+		t.Fatalf("usage = %#v, want HasToolCalls true and ToolCalls 0", usage)
+	}
+}
+
 func TestForwardOpenAIAsAnthropicSSEConvertsAndWarnsOnError(t *testing.T) {
 	body := "data: {\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n" +
 		"data: [DONE]\n\n"

@@ -1605,6 +1605,17 @@ func TestRegisterLLMTokenDetailVarsSupportsResponsesDetails(t *testing.T) {
 	assertLLMRequestVar(t, req, "$llm_reasoning_tokens", int64(3))
 }
 
+func TestRegisterLLMMetadataVarsCountsTopLevelResponsesToolCalls(t *testing.T) {
+	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	registerLLMMetadataVars(req, []byte(`{"input":"What is the weather?","model":"gpt-4o-mini"}`), []byte(`{
+	  "id":"r1","object":"response","model":"gpt-4o-mini",
+	  "output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{}"}],
+	  "usage":{"input_tokens":40,"output_tokens":20,"total_tokens":60}
+	}`), nil)
+	assertLLMRequestVar(t, req, "$llm_has_tool_calls", true)
+	assertLLMRequestVar(t, req, "$llm_tool_count", 1)
+}
+
 func TestHandlerRegistersLLMMetadataVarsForToolCallsAndCache(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{

@@ -1,12 +1,21 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/chaitin-waf.t
-  tests: 15
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/chaitin-waf.t
+    tests: 15
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/chaitin-waf-reject.t
+    tests: 4
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/chaitin-waf-timeout.t
+    tests: 2
 
 cases:
   - name: metadata-rejects-empty-nodes
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [1]
     config:
       routes:
@@ -26,6 +35,7 @@ cases:
 
   - name: metadata-requires-node-host
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [2]
     config:
       routes:
@@ -46,6 +56,7 @@ cases:
 
   - name: default-pass
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [3, 4]
     config: &pass_config
       routes:
@@ -102,6 +113,7 @@ cases:
 
   - name: conditional-match
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [5, 6, 7]
     config:
       routes:
@@ -143,6 +155,7 @@ cases:
 
   - name: mode-off
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [8, 9]
     config:
       routes:
@@ -180,6 +193,7 @@ cases:
 
   - name: real-client-ip-disabled
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [10, 11, 12]
     config:
       routes:
@@ -228,6 +242,7 @@ cases:
 
   - name: real-client-ip-from-trusted-forwarded-for
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [13, 14]
     runtime:
       apisix:
@@ -266,6 +281,7 @@ cases:
 
   - name: spoofed-forwarded-for-from-untrusted-peer
     source:
+      file: t/plugin/chaitin-waf.t
       tests: [15]
     runtime:
       apisix:
@@ -299,3 +315,143 @@ cases:
             X-Forwarded-For: 192.0.2.10
             Trigger: 'true'
         output: *pass_output
+
+  - name: block-mode-reject
+    source:
+      file: t/plugin/chaitin-waf-reject.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: chaitin-waf-reject
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              mode: block
+              upstream:
+                servers: [httpbun.org]
+          upstream: *primary_upstream
+      plugin_metadata:
+        - id: chaitin-waf
+          mode: block
+          nodes:
+            - host: "{{FIXTURE.waf.HOST}}"
+              port: "{{FIXTURE.waf.PORT}}"
+    fixtures:
+      - *primary_fixture
+      - name: waf
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+        respond:
+          - status: 403
+            body: '{"status":403,"event_id":"b3c6ce574dc24f09a01f634a39dca83b"}'
+    steps:
+      - name: reject
+        input:
+          path: /hello
+        output:
+          status: 403
+          headers:
+            X-APISIX-CHAITIN-WAF:
+              equals: 'yes'
+            X-APISIX-CHAITIN-WAF-STATUS:
+              equals: '403'
+            X-APISIX-CHAITIN-WAF-ACTION:
+              equals: reject
+            X-APISIX-CHAITIN-WAF-TIME:
+              matches: '^[0-9]+$'
+          body:
+            matches: '^\{.*"event_id":\s*"b3c6ce574dc24f09a01f634a39dca83b".*\}\s*$'
+
+  - name: monitor-mode-reject-passes-through
+    source:
+      file: t/plugin/chaitin-waf-reject.t
+      tests: [3, 4]
+    config:
+      routes:
+        - id: chaitin-waf-monitor
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              mode: monitor
+              match:
+                - vars:
+                    - [http_waf, '==', 'true']
+          upstream: *primary_upstream
+      plugin_metadata:
+        - id: chaitin-waf
+          nodes:
+            - host: "{{FIXTURE.waf.HOST}}"
+              port: "{{FIXTURE.waf.PORT}}"
+    fixtures:
+      - *primary_fixture
+      - name: waf
+        kind: http
+        expect:
+          - path:
+              equals: /hello
+        respond:
+          - status: 403
+            body: '{"status":403,"event_id":"b3c6ce574dc24f09a01f634a39dca83b"}'
+    steps:
+      - name: monitor-reject-passes-through
+        input:
+          path: /hello
+          headers:
+            Waf: 'true'
+        output:
+          status: 200
+          headers:
+            X-APISIX-CHAITIN-WAF:
+              equals: 'yes'
+            X-APISIX-CHAITIN-WAF-STATUS:
+              equals: '403'
+            X-APISIX-CHAITIN-WAF-ACTION:
+              equals: reject
+            X-APISIX-CHAITIN-WAF-TIME:
+              matches: '^[0-9]+$'
+          body:
+            equals: hello world
+
+  - name: read-timeout-falls-back
+    source:
+      file: t/plugin/chaitin-waf-timeout.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: chaitin-waf-timeout
+          uri: /hello
+          plugins:
+            chaitin-waf:
+              upstream:
+                servers: [httpbun.org]
+              config:
+                read_timeout: 200
+          upstream: *primary_upstream
+      plugin_metadata:
+        - id: chaitin-waf
+          nodes:
+            - host: "{{FIXTURE.waf.HOST}}"
+              port: "{{FIXTURE.waf.PORT}}"
+    fixtures:
+      - *primary_fixture
+      - name: waf
+        kind: http
+        respond:
+          - status: 200
+            body: '{"status":200}'
+            delay: 2s
+    steps:
+      - name: timeout
+        input:
+          path: /hello
+        output:
+          status: 200
+          headers:
+            X-APISIX-CHAITIN-WAF:
+              equals: timeout
+            X-APISIX-CHAITIN-WAF-TIME:
+              matches: '^[0-9]+$'
+          body:
+            equals: hello world

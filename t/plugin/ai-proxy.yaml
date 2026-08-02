@@ -8849,6 +8849,185 @@ cases:
             headers:
               X-LLM-Has-Tool-Calls: {equals: 'false'}
 
+
+    - name: kafka-log-summaries-and-payloads
+      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [1, 2]}
+      config:
+        routes:
+            - id: ai-proxy-kafka-summaries-payloads
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth: {header: {Authorization: Bearer token}}
+                  options: {model: gpt-35-turbo-instruct, max_tokens: 512, temperature: 1.0}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                  logging: {summaries: true, payloads: true}
+                kafka-logger:
+                  broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}
+                  kafka_topic: test2
+                  key: key1
+                  timeout: 1
+                  producer_type: sync
+                  batch_max_size: 1
+                  log_format:
+                    llm_summary: '$llm_summary'
+                    llm_request: '$llm_request'
+                    llm_response_text: '$llm_response_text'
+                    llm_model: '$llm_model'
+                    llm_tool_count: '$llm_tool_count'
+                    llm_cache_read_input_tokens: '$llm_cache_read_input_tokens'
+                    llm_cache_creation_input_tokens: '$llm_cache_creation_input_tokens'
+                    llm_reasoning_tokens: '$llm_reasoning_tokens'
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      fixtures:
+        - name: primary
+          kind: http
+          respond:
+            - {status: 200, body: upstream-ok}
+        - name: openai
+          kind: http
+          expect:
+            - method: POST
+              path: {equals: /v1/chat/completions}
+          respond:
+            - status: 200
+              headers: {Content-Type: application/json}
+              body: '{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'
+        - name: sink
+          kind: kafka
+          kafka:
+            topics: [test2]
+          network_expect:
+            - payload: {matches: '(?s).*llm_request.*llm_response_text.*llm_summary.*gpt-35-turbo-instruct.*'}
+          network_respond:
+            - {}
+      steps:
+        - name: request-with-summaries-and-payloads
+          input:
+            method: POST
+            path: /anything
+            headers:
+              Content-Type: application/json
+              Authorization: Bearer token
+            body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+          output:
+            status: 200
+
+    - name: kafka-log-summaries-no-payload
+      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [3, 4]}
+      config:
+        routes:
+            - id: ai-proxy-kafka-summaries-only
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth: {header: {Authorization: Bearer token}}
+                  options: {model: gpt-35-turbo-instruct, max_tokens: 512, temperature: 1.0}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                  logging: {summaries: true, payloads: false}
+                kafka-logger:
+                  broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}
+                  kafka_topic: test2
+                  key: key1
+                  timeout: 1
+                  producer_type: sync
+                  batch_max_size: 1
+                  log_format:
+                    llm_summary: '$llm_summary'
+                    llm_model: '$llm_model'
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      fixtures:
+        - name: primary
+          kind: http
+          respond:
+            - {status: 200, body: upstream-ok}
+        - name: openai
+          kind: http
+          respond:
+            - status: 200
+              headers: {Content-Type: application/json}
+              body: '{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'
+        - name: sink
+          kind: kafka
+          kafka:
+            topics: [test2]
+          network_expect:
+            - payload: {matches: '(?s).*llm_summary.*gpt-35-turbo-instruct.*'}
+              forbidden_matches: ['llm_request', 'llm_response_text']
+          network_respond:
+            - {}
+      steps:
+        - name: request-summaries-only
+          input:
+            method: POST
+            path: /anything
+            headers:
+              Content-Type: application/json
+              Authorization: Bearer token
+            body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+          output:
+            status: 200
+
+    - name: kafka-log-no-summary-no-payload
+      source: {file: t/plugin/ai-proxy-kafka-log.t, tests: [5, 6]}
+      config:
+        routes:
+            - id: ai-proxy-kafka-no-logging
+              uri: /anything
+              plugins:
+                ai-proxy:
+                  provider: openai
+                  auth: {header: {Authorization: Bearer token}}
+                  options: {model: gpt-35-turbo-instruct, max_tokens: 512, temperature: 1.0}
+                  override: {endpoint: '{{FIXTURE.openai.URL}}'}
+                  ssl_verify: false
+                  logging: {summaries: false, payloads: false}
+                kafka-logger:
+                  broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}
+                  kafka_topic: test2
+                  key: key1
+                  timeout: 1
+                  producer_type: sync
+                  batch_max_size: 1
+                  log_format:
+                    route_id: '$route_id'
+              upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+      fixtures:
+        - name: primary
+          kind: http
+          respond:
+            - {status: 200, body: upstream-ok}
+        - name: openai
+          kind: http
+          respond:
+            - status: 200
+              headers: {Content-Type: application/json}
+              body: '{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}'
+        - name: sink
+          kind: kafka
+          kafka:
+            topics: [test2]
+          network_expect:
+            - payload: {matches: '.+'}
+              forbidden_matches: ['llm_summary', 'llm_request', 'llm_response_text']
+          network_respond:
+            - {}
+      steps:
+        - name: request-no-logging
+          input:
+            method: POST
+            path: /anything
+            headers:
+              Content-Type: application/json
+              Authorization: Bearer token
+            body: '{"messages":[{"role":"system","content":"You are a mathematician"},{"role":"user","content":"What is 1+1?"}]}'
+          output:
+            status: 200
+
 sources:
     - repository: https://github.com/apache/apisix
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
@@ -8926,3 +9105,8 @@ sources:
       commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
       file: t/plugin/ai-proxy3.t
       tests: 18
+    - repository: https://github.com/apache/apisix
+      commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+      file: t/plugin/ai-proxy-kafka-log.t
+      tests: 6
+      test_numbers: [1, 2, 3, 4, 5, 6]

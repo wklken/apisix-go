@@ -21,6 +21,72 @@ func TestLoadManifestRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestManifestAcceptsCaseLevelSerialFlag(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 2
+cases:
+  - name: fixed-port
+    serial: true
+    source:
+      tests: [1]
+    config:
+      routes: []
+    input:
+      path: /hello
+    output:
+      status: 200
+  - name: ordinary
+    source:
+      tests: [2]
+    config:
+      routes: []
+    input:
+      path: /hello
+    output:
+      status: 200
+`)
+
+	manifest, err := loadManifest("serial.yaml", data)
+	if err != nil {
+		t.Fatalf("loadManifest() error = %v", err)
+	}
+	if !manifest.Cases[0].Serial {
+		t.Fatal("serial = false, want true")
+	}
+	if manifest.Cases[1].Serial {
+		t.Fatal("ordinary case serial = true, want false")
+	}
+}
+
+func TestManifestRejectsSerialOnVariant(t *testing.T) {
+	data := []byte(`source:
+  repository: https://github.com/apache/apisix
+  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+  file: t/plugin/example.t
+  tests: 1
+cases:
+  - name: fixed-port
+    source:
+      tests: [1]
+    variants:
+      - name: child
+        serial: true
+        config:
+          routes: []
+        output:
+          logs:
+            matches: ready
+`)
+
+	_, err := loadManifest("serial-variant.yaml", data)
+	if err == nil || !strings.Contains(err.Error(), "field serial not found") {
+		t.Fatalf("loadManifest() error = %v, want variant serial field rejection", err)
+	}
+}
+
 func TestManifestRejectsMissingSourceNumber(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].Source.Tests = []int{1, 3}

@@ -232,10 +232,13 @@ cases:
   - name: ssl-listen-port
     source:
       tests: [19]
+    serial: true
     runtime:
-      plugin_attr:
-        redirect:
-          https_port: 9445
+      apisix:
+        ssl:
+          enable: true
+          listen:
+            - port: 9445
     config:
       routes:
         - id: redirect-ssl-listen-port
@@ -259,10 +262,13 @@ cases:
   - name: single-ssl-listen-port
     source:
       tests: [20]
+    serial: true
     runtime:
-      plugin_attr:
-        redirect:
-          https_port: 9443
+      apisix:
+        ssl:
+          enable: true
+          listen:
+            - port: 9443
     config:
       routes:
         - id: redirect-single-ssl-listen-port
@@ -286,10 +292,16 @@ cases:
   - name: multiple-ssl-listen-ports
     source:
       tests: [21]
+    serial: true
     runtime:
-      plugin_attr:
-        redirect:
-          https_port: 8443
+      apisix:
+        ssl:
+          enable: true
+          listen:
+            - port: 6443
+            - port: 7443
+            - port: 8443
+            - port: 9443
     config:
       routes:
         - id: redirect-multiple-ssl-listen-ports
@@ -308,7 +320,7 @@ cases:
       status: 301
       headers:
         Location:
-          equals: https://foo.com:8443/hello
+          matches: '^https://foo.com:[6-9]443/hello$'
 
   - name: default-https-port
     source:

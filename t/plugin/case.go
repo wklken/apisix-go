@@ -41,6 +41,7 @@ type SourceSpec struct {
 type Case struct {
 	Name             string          `yaml:"name"`
 	Source           CaseSource      `yaml:"source"`
+	Serial           bool            `yaml:"serial,omitempty"`
 	Variants         []CaseVariant   `yaml:"variants,omitempty"`
 	Environment      Environment     `yaml:"environment,omitempty"`
 	EnvironmentUnset []string        `yaml:"environment_unset,omitempty"`

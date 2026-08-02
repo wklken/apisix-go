@@ -94,7 +94,9 @@ func TestPluginIntegration(t *testing.T) {
 		pluginName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		for _, spec := range manifest.Cases {
 			t.Run(pluginName+"/"+spec.Name, func(t *testing.T) {
-				t.Parallel()
+				if !spec.Serial {
+					t.Parallel()
+				}
 				caseSlots <- struct{}{}
 				defer func() { <-caseSlots }()
 

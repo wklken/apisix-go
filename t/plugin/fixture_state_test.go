@@ -739,7 +739,7 @@ func (f *redisFixture) writeLimitReqIncoming(writer io.Writer, command []string)
 	if err != nil {
 		last = nowMilliseconds
 	}
-	elapsed := float64(nowMilliseconds-last) / 1000
+	elapsed := math.Max(0, float64(nowMilliseconds-last)/1000)
 	excess = math.Max(0, excess-elapsed*rate) + 1
 	allowed := int64(1)
 	if maxExcess := burst + 1; excess > maxExcess {
@@ -1966,7 +1966,7 @@ local rate = tonumber(ARGV[2])
 local burst = tonumber(ARGV[3])
 local ttl = tonumber(ARGV[4])
 
-local elapsed = (now - last) / 1000
+local elapsed = math.max(0, (now - last) / 1000)
 excess = math.max(0, excess - elapsed * rate) + 1
 local max_excess = burst + 1
 local allowed = 1
@@ -2002,11 +2002,11 @@ return {allowed, math.floor(delay * 1000)}
 		return result
 	}
 
-	if got := incoming(1000); !equalRedisIntegers(got, 1, 0) {
+	if got := incoming(1001); !equalRedisIntegers(got, 1, 0) {
 		t.Fatalf("first incoming = %#v, want [1 0]", got)
 	}
 	if got := incoming(1000); !equalRedisIntegers(got, 1, 1000) {
-		t.Fatalf("burst incoming = %#v, want [1 1000]", got)
+		t.Fatalf("out-of-order burst incoming = %#v, want [1 1000]", got)
 	}
 	if got := incoming(1000); !equalRedisIntegers(got, 0, 0) {
 		t.Fatalf("rejected incoming = %#v, want [0 0]", got)

@@ -686,6 +686,27 @@ func TestManifestRejectsHTTPFixtureRequestCountMismatch(t *testing.T) {
 	}
 }
 
+func TestManifestValidatesUnorderedHTTPFixtureExpectations(t *testing.T) {
+	fixture := FixtureSpec{
+		Name:            "sink",
+		Kind:            "http",
+		ExpectUnordered: true,
+		Expect: []HTTPAssertion{
+			{Method: http.MethodPost},
+			{Method: http.MethodPost},
+		},
+		Respond: []HTTPResponse{{Status: http.StatusOK}},
+	}
+	if err := fixture.validate(); err != nil {
+		t.Fatalf("validate unordered HTTP fixture: %v", err)
+	}
+
+	fixture.Count = &FixtureCountAssertion{}
+	if err := fixture.validate(); err == nil || !strings.Contains(err.Error(), "expect_unordered") {
+		t.Fatalf("validate() error = %v, want unordered/count rejection", err)
+	}
+}
+
 func TestManifestRejectsMixedHTTPAndNetworkFixtureFields(t *testing.T) {
 	manifest := validManifest()
 	manifest.Cases[0].Fixtures = []FixtureSpec{{

@@ -73,8 +73,10 @@ const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 
 const maxParallelPluginCases = 6
 
+var integrationStartupMu sync.Mutex
+
 func TestPluginIntegration(t *testing.T) {
-	files, err := filepath.Glob("*.yaml")
+	files, err := manifestYAMLFiles()
 	if err != nil {
 		t.Fatalf("discover plugin manifests: %v", err)
 	}
@@ -2402,6 +2404,10 @@ func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
 		f.assertCount(t, spec)
 		return
 	}
+	if spec.ExpectUnordered {
+		f.assertUnordered(t, spec)
+		return
+	}
 	for i, expected := range spec.Expect {
 		select {
 		case received := <-f.requests:
@@ -2434,6 +2440,72 @@ func (f *fixtureServer) assert(t *testing.T, spec FixtureSpec) {
 		default:
 		}
 	}
+}
+
+func (f *fixtureServer) assertUnordered(t *testing.T, spec FixtureSpec) {
+	t.Helper()
+	remaining := append([]HTTPAssertion(nil), spec.Expect...)
+	for range spec.Expect {
+		select {
+		case received := <-f.requests:
+			matched := -1
+			for i, expected := range remaining {
+				if err := matchUnorderedHTTPRequest(expected, received); err == nil {
+					matched = i
+					break
+				}
+			}
+			if matched < 0 {
+				t.Errorf(
+					"fixture %s request %s %s did not match any remaining unordered expectation",
+					spec.Name,
+					received.method,
+					received.path,
+				)
+				continue
+			}
+			remaining = append(remaining[:matched], remaining[matched+1:]...)
+		case <-time.After(2 * time.Second):
+			t.Errorf("fixture %s did not receive all unordered expected requests", spec.Name)
+			return
+		}
+	}
+	select {
+	case extra := <-f.requests:
+		t.Errorf("fixture %s received unexpected extra request %s %s", spec.Name, extra.method, extra.path)
+	default:
+	}
+}
+
+func matchUnorderedHTTPRequest(expected HTTPAssertion, received capturedRequest) error {
+	if expected.Method != "" && received.method != expected.Method {
+		return fmt.Errorf("method = %q, want %q", received.method, expected.Method)
+	}
+	if expected.Protocol != "" && received.protocol != expected.Protocol {
+		return fmt.Errorf("protocol = %q, want %q", received.protocol, expected.Protocol)
+	}
+	if expected.Path != nil {
+		if err := expected.Path.match(received.path, true); err != nil {
+			return fmt.Errorf("path: %w", err)
+		}
+	}
+	if expected.Host != nil {
+		if err := expected.Host.match(received.host, true); err != nil {
+			return fmt.Errorf("host: %w", err)
+		}
+	}
+	for name, matcher := range expected.Headers {
+		values := received.headers[http.CanonicalHeaderKey(name)]
+		if err := matcher.matchHeader(received.headers.Get(name), values); err != nil {
+			return fmt.Errorf("header %s: %w", name, err)
+		}
+	}
+	if expected.Body != nil {
+		if err := expected.Body.match(received.body, true); err != nil {
+			return fmt.Errorf("body: %w", err)
+		}
+	}
+	return nil
 }
 
 func (f *fixtureServer) assertCount(t *testing.T, spec FixtureSpec) {
@@ -2831,6 +2903,17 @@ func runCase(t *testing.T, spec Case) {
 		t.Fatalf("validate case: %v", err)
 	}
 
+	// Keep the reserve-close-bind window private to this case. Otherwise another
+	// parallel case can claim an APISIX port for one of its fixtures before the
+	// child process starts listening, and protocol traffic is sent to that fixture.
+	integrationStartupMu.Lock()
+	startupLocked := true
+	defer func() {
+		if startupLocked {
+			integrationStartupMu.Unlock()
+		}
+	}()
+
 	replacements := make(map[string]string, len(spec.Fixtures)*2+1)
 	var fixture *fixtureServer
 	if spec.Upstream != nil {
@@ -2956,6 +3039,8 @@ func runCase(t *testing.T, spec Case) {
 			t.Fatalf("wait for APISIX TLS: %v\nchild logs:\n%s", err, logs)
 		}
 	}
+	integrationStartupMu.Unlock()
+	startupLocked = false
 
 	transport := &http.Transport{DisableCompression: true, ForceAttemptHTTP2: enableHTTP2}
 	dialer := &net.Dialer{}

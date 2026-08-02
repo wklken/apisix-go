@@ -224,7 +224,7 @@ local rate = tonumber(ARGV[2])
 local burst = tonumber(ARGV[3])
 local ttl = tonumber(ARGV[4])
 
-local elapsed = (now - last) / 1000
+local elapsed = math.max(0, (now - last) / 1000)
 excess = math.max(0, excess - elapsed * rate) + 1
 local max_excess = burst + 1
 local allowed = 1

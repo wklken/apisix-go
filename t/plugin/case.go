@@ -191,17 +191,18 @@ type ScenarioFile struct {
 }
 
 type FixtureSpec struct {
-	Name           string                    `yaml:"name"`
-	Kind           string                    `yaml:"kind"`
-	ExpectRequests *int                      `yaml:"expect_requests,omitempty"`
-	Expect         []HTTPAssertion           `yaml:"expect,omitempty"`
-	Respond        []HTTPResponse            `yaml:"respond,omitempty"`
-	NetworkExpect  []NetworkAssertion        `yaml:"network_expect,omitempty"`
-	NetworkRespond []NetworkResponse         `yaml:"network_respond,omitempty"`
-	Count          *FixtureCountAssertion    `yaml:"count,omitempty"`
-	Redis          *RedisFixtureAssertion    `yaml:"redis,omitempty"`
-	Kafka          *KafkaFixtureConfig       `yaml:"kafka,omitempty"`
-	RocketMQ       *RocketMQFixtureAssertion `yaml:"rocketmq,omitempty"`
+	Name            string                    `yaml:"name"`
+	Kind            string                    `yaml:"kind"`
+	ExpectRequests  *int                      `yaml:"expect_requests,omitempty"`
+	ExpectUnordered bool                      `yaml:"expect_unordered,omitempty"`
+	Expect          []HTTPAssertion           `yaml:"expect,omitempty"`
+	Respond         []HTTPResponse            `yaml:"respond,omitempty"`
+	NetworkExpect   []NetworkAssertion        `yaml:"network_expect,omitempty"`
+	NetworkRespond  []NetworkResponse         `yaml:"network_respond,omitempty"`
+	Count           *FixtureCountAssertion    `yaml:"count,omitempty"`
+	Redis           *RedisFixtureAssertion    `yaml:"redis,omitempty"`
+	Kafka           *KafkaFixtureConfig       `yaml:"kafka,omitempty"`
+	RocketMQ        *RocketMQFixtureAssertion `yaml:"rocketmq,omitempty"`
 }
 
 type FixtureCountAssertion struct {
@@ -1384,6 +1385,20 @@ func (f *FixtureSpec) validate() error {
 		}
 		if f.ExpectRequests != nil && f.Count != nil {
 			return errors.New("expect_requests and count must not both be configured")
+		}
+		if f.ExpectUnordered {
+			if len(f.Expect) < 2 {
+				return errors.New("expect_unordered requires at least two expectations")
+			}
+			if f.Count != nil || f.ExpectRequests != nil {
+				return errors.New("expect_unordered cannot be combined with count or expect_requests")
+			}
+			for i, expectation := range f.Expect {
+				if expectation.LokiPush != nil || expectation.SkyWalkingLogs != nil ||
+					expectation.OTLPTraces != nil || expectation.GRPC != nil {
+					return fmt.Errorf("expect_unordered expectation %d uses an unsupported assertion", i+1)
+				}
+			}
 		}
 		for i := range f.Respond {
 			if err := f.Respond[i].validate(); err != nil {

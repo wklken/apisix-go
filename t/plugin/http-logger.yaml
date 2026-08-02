@@ -603,7 +603,8 @@ cases:
             respond: [{status: 200}]
         steps:
           - {name: full-batch-of-three, repeat: 3, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}}
-          - {name: partial-batch-flushes-on-inactivity, repeat: 2, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}}
+          - {name: partial-batch-first-entry-stays-buffered, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}}
+          - {name: partial-batch-flushes-on-inactivity, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}, wait: 3s}
 
   - name: global-rule-http-logging
     source: {file: t/plugin/http-logger-new-line.t, tests: [8, 9, 10]}

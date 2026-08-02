@@ -494,7 +494,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/opentracing?bar=bar'}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=request-body-match'}, body: {matches: '(?s)request-body-match.*request.*body.*body-data'}}], respond: [{status: 200, body: ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: '/structuredlog?topic_id=request-body-match'}, body: {matches: '(?s)(request-body-match.*request.*body.*body-data|request.*body.*body-data.*request-body-match)'}}], respond: [{status: 200, body: ok}]}
     steps:
       - {name: matching-expression-includes-request-body, input: {method: POST, path: '/opentracing?bar=bar', body: body-data}, output: {status: 200, body: {equals: opentracing}}, wait: 1s}
 

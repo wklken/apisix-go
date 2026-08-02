@@ -349,6 +349,7 @@ func (b *Builder) Build() *chi.Mux {
 		return nil
 	}
 	mux := chi.NewRouter()
+	mux.Use(pinDecodedRoutePath)
 
 	for _, r := range routes {
 		// parse route
@@ -1901,4 +1902,16 @@ func newErrorHandler() pxy.ErrorHandler {
 		// ! here, not clean the body first, what will happen?
 		_ = render.New().JSON(w, status, err.Error())
 	}
+}
+
+func pinDecodedRoutePath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// APISIX matches the decoded $uri; chi prefers the encoded RawPath.
+		if r.URL.RawPath != "" {
+			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+				rctx.RoutePath = r.URL.Path
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -1,12 +1,23 @@
-source:
-  repository: https://github.com/apache/apisix
-  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
-  file: t/plugin/proxy-rewrite.t
-  tests: 57
+sources:
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-rewrite.t
+    tests: 57
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-rewrite2.t
+    tests: 6
+    test_numbers: [2, 3, 4, 6, 7, 8]
+  - repository: https://github.com/apache/apisix
+    commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7
+    file: t/plugin/proxy-rewrite3.t
+    tests: 41
+    test_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
 
 cases:
   - name: schema-sanity
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [1]
     config:
       routes:
@@ -38,6 +49,7 @@ cases:
 
   - name: add-plugin
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [2]
     config:
       routes:
@@ -61,6 +73,7 @@ cases:
 
   - name: update-plugin
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [3]
     config:
       routes:
@@ -84,6 +97,7 @@ cases:
 
   - name: disable-plugin
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [4]
     config:
       routes:
@@ -106,6 +120,7 @@ cases:
 
   - name: rewrite-host
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [5, 6]
     config:
       routes:
@@ -130,6 +145,7 @@ cases:
 
   - name: rewrite-scheme-https
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [7, 8]
     config:
       routes:
@@ -159,6 +175,7 @@ cases:
 
   - name: rewrite-headers
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [9, 10]
     config:
       routes:
@@ -186,6 +203,7 @@ cases:
 
   - name: add-headers
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [11, 12]
     config:
       routes:
@@ -211,6 +229,7 @@ cases:
 
   - name: rewrite-empty-headers
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [13, 14]
     config:
       routes:
@@ -236,6 +255,7 @@ cases:
 
   - name: rewrite-uri-query
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [15, 16]
     config:
       routes:
@@ -256,6 +276,7 @@ cases:
 
   - name: rewrite-uri-empty-query
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [17, 18]
     config:
       routes:
@@ -276,6 +297,7 @@ cases:
 
   - name: remove-empty-header
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [19, 20]
     config:
       routes:
@@ -305,6 +327,7 @@ cases:
 
   - name: regex-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [21, 22]
     config:
       routes:
@@ -325,6 +348,7 @@ cases:
 
   - name: regex-uri-no-route-match
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [23]
     config:
       routes:
@@ -347,6 +371,7 @@ cases:
 
   - name: uri-precedes-regex-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [24, 25]
     config:
       routes:
@@ -368,6 +393,7 @@ cases:
 
   - name: reject-odd-regex-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [26]
     config:
       routes:
@@ -385,6 +411,7 @@ cases:
 
   - name: reject-invalid-regex-pattern
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [27]
     config:
       routes:
@@ -399,6 +426,7 @@ cases:
 
   - name: reject-invalid-regex-replacement
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [28]
     config:
       routes:
@@ -413,6 +441,7 @@ cases:
 
   - name: reject-invalid-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [29]
     config:
       routes:
@@ -427,6 +456,7 @@ cases:
 
   - name: reject-non-string-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [30]
     config:
       routes:
@@ -441,6 +471,7 @@ cases:
 
   - name: reject-invalid-header-field
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [31]
     config:
       routes:
@@ -457,6 +488,7 @@ cases:
 
   - name: reject-invalid-header-value
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [32]
     config:
       routes:
@@ -473,6 +505,7 @@ cases:
 
   - name: rewrite-uri-with-arguments
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [33, 34]
     config:
       routes:
@@ -493,6 +526,7 @@ cases:
 
   - name: admin-etcd-clean-serialization
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [35]
     config:
       routes:
@@ -518,6 +552,7 @@ cases:
 
   - name: header-request-variables
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [36, 37]
     config:
       routes:
@@ -551,6 +586,7 @@ cases:
 
   - name: missing-request-variable
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [38, 39]
     config:
       routes:
@@ -583,6 +619,7 @@ cases:
 
   - name: context-uri-variable
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [40, 41]
     config:
       routes:
@@ -603,6 +640,7 @@ cases:
 
   - name: host-with-port-schema
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [42]
     config:
       routes:
@@ -623,6 +661,7 @@ cases:
 
   - name: host-with-port-and-rewritten-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [43, 44]
     config:
       routes:
@@ -647,6 +686,7 @@ cases:
 
   - name: unsafe-uri-with-query
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [45, 46]
     config:
       routes:
@@ -668,6 +708,7 @@ cases:
 
   - name: unsafe-uri-empty-query
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [47, 48]
     config:
       routes:
@@ -689,6 +730,7 @@ cases:
 
   - name: unsafe-configured-uri-query-merge
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [49, 50]
     config:
       routes:
@@ -710,6 +752,7 @@ cases:
 
   - name: unsafe-real-request-uri
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [51, 52]
     config:
       routes:
@@ -730,6 +773,7 @@ cases:
 
   - name: unsafe-special-query
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [53, 54]
     config:
       routes:
@@ -751,6 +795,7 @@ cases:
 
   - name: unsafe-multiple-question-marks
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [55]
     config:
       routes:
@@ -772,6 +817,7 @@ cases:
 
   - name: safe-configured-uri-query
     source:
+      file: t/plugin/proxy-rewrite.t
       tests: [56, 57]
     config:
       routes:
@@ -788,5 +834,629 @@ cases:
       expect:
         path:
           equals: /print_uri_detailed?name=a%20b&x=1
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-proto-default
+    source:
+      file: t/plugin/proxy-rewrite2.t
+      tests: [2]
+
+    runtime:
+      apisix:
+        trusted_addresses: [127.0.0.1]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-proto-default
+          uri: /echo
+
+          plugins:
+            proxy-rewrite: {}
+          upstream: *fixture_route
+    input:
+      path: /echo
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Proto:
+            equals: http
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-proto-pass
+    source:
+      file: t/plugin/proxy-rewrite2.t
+      tests: [3]
+
+    runtime:
+      apisix:
+        trusted_addresses: [127.0.0.1]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-proto-pass
+          uri: /echo
+
+          plugins:
+            proxy-rewrite: {}
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Forwarded-Proto: https
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Proto:
+            equals: https
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-proto-customize
+    source:
+      file: t/plugin/proxy-rewrite2.t
+      tests: [4]
+
+    runtime:
+      apisix:
+        trusted_addresses: [127.0.0.1]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-proto-custom
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                X-Forwarded-Proto: https
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Forwarded-Proto: grpc
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Proto:
+            equals: https
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-proto-duplicate
+    source:
+      file: t/plugin/proxy-rewrite2.t
+      tests: [6]
+
+    runtime:
+      apisix:
+        trusted_addresses: [127.0.0.1]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-proto-duplicate
+          uri: /echo
+
+          plugins:
+            proxy-rewrite: {}
+          upstream: *fixture_route
+    input:
+      path: /echo
+      header_values:
+        X-Forwarded-Proto: [http, grpc]
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Proto:
+            values: [http, grpc]
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-port-customize
+    source:
+      file: t/plugin/proxy-rewrite2.t
+      tests: [7]
+
+    runtime:
+      apisix:
+        trusted_addresses: [127.0.0.1]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-port-custom
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                X-Forwarded-Port: "10080"
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Forwarded-Port: "8080"
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Port:
+            equals: "10080"
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-proto-untrusted-keeps-first
+    source:
+      file: t/plugin/proxy-rewrite2.t
+      tests: [8]
+    runtime:
+      apisix:
+        trusted_addresses: []
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-proto-untrusted
+          uri: /echo
+
+          plugins:
+            proxy-rewrite: {}
+          upstream: *fixture_route
+    input:
+      path: /echo
+      header_values:
+        X-Forwarded-Proto: [http, grpc]
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Proto:
+            values: [http]
+      respond: *hello_response
+    output: *hello_output
+
+  - name: method-rewrite
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [1, 2]
+    config:
+      routes:
+        - id: proxy-rewrite-method
+          uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /plugin_proxy_rewrite
+              method: POST
+              host: apisix.iresty.com
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream:
+      expect:
+        method: POST
+        path:
+          equals: /plugin_proxy_rewrite
+        host:
+          equals: apisix.iresty.com
+      respond: *hello_response
+    output: *hello_output
+
+  - name: method-update
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [3, 4]
+    config:
+      routes:
+        - id: proxy-rewrite-method-update
+          uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /plugin_proxy_rewrite
+              method: GET
+              host: apisix.iresty.com
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream:
+      expect:
+        method: GET
+        path:
+          equals: /plugin_proxy_rewrite
+      respond: *hello_response
+    output: *hello_output
+
+  - name: schema-rejects-method
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [5]
+    config:
+      routes:
+        - id: proxy-rewrite-bad-method
+          uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /apisix/home
+              method: GET1
+              host: apisix.iresty.com
+          upstream: *fixture_route
+    upstream:
+      respond: *hello_response
+    output:
+      logs:
+        matches: 'build route proxy-rewrite-bad-method.*method'
+
+  - name: method-with-headers
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [6, 7]
+    config:
+      routes:
+        - id: proxy-rewrite-method-headers
+          uri: /hello
+          plugins:
+            proxy-rewrite:
+              uri: /plugin_proxy_rewrite
+              method: POST
+              host: apisix.iresty.com
+              headers:
+                x-api-version: v1
+          upstream: *fixture_route
+    input:
+      path: /hello
+    upstream:
+      expect:
+        method: POST
+        headers:
+          X-Api-Version:
+            equals: v1
+      respond: *hello_response
+    output: *hello_output
+
+  - name: unsafe-uri-preserved
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [8, 9]
+    config:
+      routes:
+        - id: proxy-rewrite-unsafe-uri
+          uri: /print_uri_detailed
+          plugins:
+            proxy-rewrite:
+              use_real_request_uri_unsafe: true
+          upstream: *fixture_route
+    input:
+      path: /print%5Furi%5Fdetailed
+    upstream:
+      expect:
+        path:
+          equals: /print%5Furi%5Fdetailed
+      respond: *hello_response
+    output: *hello_output
+
+  - name: safe-uri-preserved
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [10, 11]
+    config:
+      routes:
+        - id: proxy-rewrite-safe-uri
+          uri: /print_uri_detailed
+          plugins:
+            proxy-rewrite:
+              use_real_request_uri_unsafe: true
+          upstream: *fixture_route
+    input:
+      path: /print_uri_detailed
+    upstream:
+      expect:
+        path:
+          equals: /print_uri_detailed
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-host-rewrite
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [12, 13]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-host
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                X-Forwarded-Host: test.com
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Forwarded-Host: apisix.ai
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Host:
+            equals: test.com
+      respond: *hello_response
+    output: *hello_output
+
+  - name: add-set-remove-headers
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [14, 15, 16, 17, 18]
+    config:
+      routes:
+        - id: proxy-rewrite-header-ops
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                add: {test: "123"}
+                set: {test2: "2233"}
+                remove: [hello]
+          upstream: *fixture_route
+    input:
+      path: /echo
+      header_values:
+        test: [sssss, bbb]
+        hello: [word]
+    upstream:
+      expect:
+        headers:
+          test:
+            values: [sssss, bbb, 123]
+          test2:
+            equals: "2233"
+          hello:
+            absent: true
+      respond: *hello_response
+    output: *hello_output
+
+  - name: header-priority
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [19, 20]
+    config:
+      routes:
+        - id: proxy-rewrite-header-priority
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                add: {test: test_in_add}
+                set: {test: test_in_set}
+          upstream: *fixture_route
+    input:
+      path: /echo
+    upstream:
+      expect:
+        headers:
+          test:
+            equals: test_in_set
+      respond: *hello_response
+    output: *hello_output
+
+  - name: host-rewrite-crlf
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [21, 22]
+    config:
+      routes:
+        - id: proxy-rewrite-host-crlf
+          uri: /hello*
+          plugins:
+            proxy-rewrite:
+              host: test.xxxx.com
+          upstream: *fixture_route
+    input:
+      path: /hello%3f0z=700%26a=c%20HTTP/1.1%0D%0AHost:google.com%0d%0a%0d%0a
+    upstream:
+      expect:
+        host:
+          equals: test.xxxx.com
+      respond: *hello_response
+    output: *hello_output
+
+  - name: regex-uri-args
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [25, 26]
+    config:
+      routes:
+        - id: proxy-rewrite-regex-args
+          uri: /test/*
+          plugins:
+            proxy-rewrite:
+              regex_uri: ["^/test/(.*)/(.*)/(.*)", "/$1_$2_$3?a=c"]
+          upstream: *fixture_route
+    input:
+      path: /test/plugin/proxy/rewrite
+    upstream:
+      expect:
+        path:
+          equals: /plugin_proxy_rewrite?a=c
+      respond: *hello_response
+    output: *hello_output
+
+  - name: capture-header-vars
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [27, 28]
+    config:
+      routes:
+        - id: proxy-rewrite-capture-vars
+          uri: /test/*
+          plugins:
+            proxy-rewrite:
+              regex_uri: ["^/test/(.*)/(.*)/(.*)", "/echo"]
+              headers:
+                add:
+                  X-Request-ID: $1/$2/$3
+          upstream: *fixture_route
+    input:
+      path: /test/plugin/proxy/rewrite
+    upstream:
+      expect:
+        headers:
+          X-Request-ID:
+            equals: plugin/proxy/rewrite
+      respond: *hello_response
+    output: *hello_output
+
+  - name: unmatched-capture
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [29, 30]
+    config:
+      routes:
+        - id: proxy-rewrite-unmatched-capture
+          uri: /echo*
+          plugins:
+            proxy-rewrite:
+              regex_uri: ["^/test/(.*)/(.*)/(.*)", "/echo"]
+              headers:
+                add:
+                  X-Request-ID: $1/$2/$3
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Foo: Foo
+    upstream:
+      expect:
+        headers:
+          X-Foo:
+            equals: Foo
+      respond: *hello_response
+    output: *hello_output
+
+  - name: optional-capture
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [31, 32]
+    config:
+      routes:
+        - id: proxy-rewrite-optional-capture
+          uri: /test/*
+          plugins:
+            proxy-rewrite:
+              regex_uri: ["^/test/(not_matched)?.*", "/echo"]
+              headers:
+                add:
+                  X-Request-ID: test1/$1/$2/test2
+          upstream: *fixture_route
+    input:
+      path: /test/plugin/proxy/rewrite
+    upstream:
+      expect:
+        headers:
+          X-Request-ID:
+            equals: test1///test2
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-port-set
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [33, 34]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-port-set
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                X-Forwarded-Port: "9882"
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Forwarded-Port: "9881"
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-Port:
+            equals: "9882"
+      respond: *hello_response
+    output: *hello_output
+
+  - name: forwarded-for-set
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [35, 36]
+    config:
+      routes:
+        - id: proxy-rewrite-forwarded-for-set
+          uri: /echo
+          plugins:
+            proxy-rewrite:
+              headers:
+                X-Forwarded-For: 22.22.22.22
+          upstream: *fixture_route
+    input:
+      path: /echo
+      headers:
+        X-Forwarded-For: 11.11.11.11
+    upstream:
+      expect:
+        headers:
+          X-Forwarded-For:
+            matches: '22\.22\.22\.22'
+      respond: *hello_response
+    output: *hello_output
+
+  - name: multi-regex-uri
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [37, 38, 39]
+    config:
+      routes:
+        - id: proxy-rewrite-multi-regex
+          uri: /test/*
+          plugins:
+            proxy-rewrite:
+              regex_uri:
+                - "^/test/(.*)/(.*)/(.*)/hello"
+                - "/hello/$1_$2_$3"
+                - "^/test/(.*)/(.*)/(.*)/world"
+                - "/world/$1_$2_$3"
+          upstream: *fixture_route
+    input:
+      path: /test/plugin/proxy/rewrite/hello
+    upstream:
+      expect:
+        path:
+          equals: /hello/plugin_proxy_rewrite
+      respond: *hello_response
+    output: *hello_output
+
+  - name: regex-unsafe-variable
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [40, 41]
+    config:
+      routes:
+        - id: proxy-rewrite-regex-unsafe
+          uri: /hello/*
+          plugins:
+            proxy-rewrite:
+              regex_uri: ["/hello/(.+)", "/hello?unsafe_variable=$1"]
+              use_real_request_uri_unsafe: true
+          upstream: *fixture_route
+    input:
+      path: /hello/%ED%85%8C%EC%8A%A4%ED%8A%B8
+    upstream:
+      expect:
+        path:
+          equals: /hello?unsafe_variable=%ED%85%8C%EC%8A%A4%ED%8A%B8
+      respond: *hello_response
+    output: *hello_output
+
+  - name: unsafe-uri-normalized
+    source:
+      file: t/plugin/proxy-rewrite3.t
+      tests: [42, 43]
+    config:
+      routes:
+        - id: proxy-rewrite-unsafe-normalized
+          uri: /print_uri_detailed
+          plugins:
+            proxy-rewrite:
+              use_real_request_uri_unsafe: false
+          upstream: *fixture_route
+    input:
+      path: /print%5Furi%5Fdetailed
+    upstream:
+      expect:
+        path:
+          equals: /print_uri_detailed
       respond: *hello_response
     output: *hello_output

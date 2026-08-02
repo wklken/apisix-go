@@ -452,3 +452,40 @@ func TestRequestContextPreservesOriginalEmbeddedWildcardURI(t *testing.T) {
 		t.Fatalf("$matched_uri = %q, want original APISIX pattern", got)
 	}
 }
+
+func TestPinDecodedRoutePathMatchesEncodedRequestURI(t *testing.T) {
+	mux := chi.NewRouter()
+	mux.Use(pinDecodedRoutePath)
+	mux.Get("/print_uri_detailed", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/print%5Furi%5Fdetailed")
+	if err != nil {
+		t.Fatalf("send encoded request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for decoded route match", response.StatusCode)
+	}
+}
+
+func TestWithoutPinEncodedRequestURIDoesNotMatch(t *testing.T) {
+	mux := chi.NewRouter()
+	mux.Get("/print_uri_detailed", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/print%5Furi%5Fdetailed")
+	if err != nil {
+		t.Fatalf("send encoded request: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode == http.StatusOK {
+		t.Fatal("status = 200, want no match without pinDecodedRoutePath")
+	}
+}

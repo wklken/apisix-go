@@ -61,9 +61,11 @@ func NewServer() (*Server, error) {
 	storage := store.NewStore("apisix-go-store.db", events)
 	routes := newRouteHandler(http.NotFoundHandler(), nil)
 	var handler http.Handler = routes
-	if config.GlobalConfig != nil && len(config.GlobalConfig.Apisix.TrustedAddresses) > 0 {
-		handler = stripUntrustedForwardedFor(handler, config.GlobalConfig.Apisix.TrustedAddresses)
+	var trustedAddresses []string
+	if config.GlobalConfig != nil {
+		trustedAddresses = config.GlobalConfig.Apisix.TrustedAddresses
 	}
+	handler = normalizeForwardedHeaders(handler, trustedAddresses)
 	if config.GlobalConfig != nil && config.GlobalConfig.Apisix.NormalizeURILikeServlet {
 		handler = normalizeRequestPath(handler)
 	}
@@ -82,7 +84,7 @@ func NewServer() (*Server, error) {
 	}, nil
 }
 
-func stripUntrustedForwardedFor(next http.Handler, addresses []string) http.Handler {
+func normalizeForwardedHeaders(next http.Handler, addresses []string) http.Handler {
 	trustedNetworks := make([]*net.IPNet, 0, len(addresses))
 	for _, address := range addresses {
 		if _, network, err := net.ParseCIDR(address); err == nil {
@@ -100,9 +102,6 @@ func stripUntrustedForwardedFor(next http.Handler, addresses []string) http.Hand
 		}
 		trustedNetworks = append(trustedNetworks, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
 	}
-	if len(trustedNetworks) == 0 {
-		return next
-	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -117,13 +116,55 @@ func stripUntrustedForwardedFor(next http.Handler, addresses []string) http.Hand
 				break
 			}
 		}
-		if !trusted {
-			r.Header.Del("X-Forwarded-For")
-		} else {
+		if trusted {
 			r = apisixctx.WithTrustedProxy(r)
+			if r.Header.Get("X-Forwarded-Proto") == "" {
+				r.Header.Set("X-Forwarded-Proto", scheme(r))
+			}
+			if r.Header.Get("X-Forwarded-Host") == "" {
+				r.Header.Set("X-Forwarded-Host", r.Host)
+			}
+			if r.Header.Get("X-Forwarded-Port") == "" {
+				r.Header.Set("X-Forwarded-Port", listenPort(r))
+			}
+		} else {
+			// Untrusted peers cannot forge the observed values: overwrite with
+			// the trusted ones, mirroring APISIX handle_x_forwarded_headers.
+			r.Header.Set("X-Forwarded-Proto", scheme(r))
+			r.Header.Set("X-Forwarded-Host", r.Host)
+			r.Header.Set("X-Forwarded-Port", listenPort(r))
+			r.Header.Del("Forwarded")
+			// When a trust boundary is configured, drop the spoofable inbound
+			// chain; otherwise preserve the compatible default.
+			if len(trustedNetworks) > 0 {
+				r.Header.Del("X-Forwarded-For")
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func scheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func listenPort(r *http.Request) string {
+	_, port, err := net.SplitHostPort(r.Host)
+	if err == nil {
+		return port
+	}
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if _, port, err := net.SplitHostPort(local.String()); err == nil {
+			return port
+		}
+	}
+	if r.TLS != nil {
+		return "443"
+	}
+	return "80"
 }
 
 func normalizeRequestPath(next http.Handler) http.Handler {

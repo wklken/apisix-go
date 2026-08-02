@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -35,7 +37,7 @@ func TestNormalizeRequestPathCleansDotSegments(t *testing.T) {
 
 func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
 	var gotForwardedFor string
-	handler := stripUntrustedForwardedFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := normalizeForwardedHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotForwardedFor = r.Header.Get("X-Forwarded-For")
 		w.WriteHeader(http.StatusNoContent)
 	}), []string{"192.128.0.0/16"})
@@ -53,7 +55,7 @@ func TestStripUntrustedForwardedForDropsForgedHeader(t *testing.T) {
 func TestStripUntrustedForwardedForPreservesTrustedHeader(t *testing.T) {
 	var gotForwardedFor string
 	var trustedProxy bool
-	handler := stripUntrustedForwardedFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := normalizeForwardedHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotForwardedFor = r.Header.Get("X-Forwarded-For")
 		trustedProxy = apisixctx.IsTrustedProxy(r)
 		w.WriteHeader(http.StatusNoContent)
@@ -69,6 +71,82 @@ func TestStripUntrustedForwardedForPreservesTrustedHeader(t *testing.T) {
 	}
 	if !trustedProxy {
 		t.Fatal("trusted proxy context = false, want true")
+	}
+}
+
+func TestNormalizeForwardedHeadersSetsObservedHostAndPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		local    net.Addr
+		tls      bool
+		wantHost string
+		wantPort string
+	}{
+		{
+			name:     "explicit host port",
+			host:     "api.example.com:8443",
+			local:    &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9080},
+			wantHost: "api.example.com:8443",
+			wantPort: "8443",
+		},
+		{
+			name:     "listener port",
+			host:     "api.example.com",
+			local:    &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9080},
+			wantHost: "api.example.com",
+			wantPort: "9080",
+		},
+		{
+			name:     "TLS listener port",
+			host:     "api.example.com",
+			local:    &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9443},
+			tls:      true,
+			wantHost: "api.example.com",
+			wantPort: "9443",
+		},
+		{
+			name:     "HTTP fallback",
+			host:     "api.example.com",
+			wantHost: "api.example.com",
+			wantPort: "80",
+		},
+		{
+			name:     "TLS fallback",
+			host:     "api.example.com",
+			tls:      true,
+			wantHost: "api.example.com",
+			wantPort: "443",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotHost string
+			var gotPort string
+			handler := normalizeForwardedHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHost = r.Header.Get("X-Forwarded-Host")
+				gotPort = r.Header.Get("X-Forwarded-Port")
+			}), nil)
+			req := httptest.NewRequest(http.MethodGet, "http://api.example.com/hello", nil)
+			req.Host = test.host
+			req.RemoteAddr = "127.0.0.1:12345"
+			if test.local != nil {
+				req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, test.local))
+			}
+			if test.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if gotHost != test.wantHost {
+				t.Fatalf("X-Forwarded-Host = %q, want %q", gotHost, test.wantHost)
+			}
+			if gotPort != test.wantPort {
+				t.Fatalf("X-Forwarded-Port = %q, want %q", gotPort, test.wantPort)
+			}
+		})
 	}
 }
 

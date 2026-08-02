@@ -146,6 +146,14 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.Method != "" {
+		switch p.config.Method {
+		case "GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS",
+			"MKCOL", "COPY", "MOVE", "PROPFIND", "LOCK", "UNLOCK", "PATCH", "TRACE":
+		default:
+			return fmt.Errorf("property \"method\" validation failed: matches none of the enum values")
+		}
+	}
 	if p.config.Uri != "" && !strings.HasPrefix(p.config.Uri, "/") {
 		return fmt.Errorf("uri %q must begin with /", p.config.Uri)
 	}
@@ -182,6 +190,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		uri, captures := p.rewriteURI(p.rewriteSourceURI(r))
 		if p.config.Uri != "" {
 			uri = appendRequestQuery(resolveHeaderValue(r, p.config.Uri, nil), r.URL.RawQuery)
+		}
+		// Without use_real_request_uri_unsafe the upstream sees the normalized
+		// decoded URI, never the raw percent-encoded request target.
+		if !p.config.UseRealRequestURIUnsafe {
+			r.URL.RawPath = ""
 		}
 		p.config.Headers.apply(r, captures)
 

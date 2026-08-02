@@ -1742,12 +1742,19 @@ already-implemented branch.
   variables. The conversion fixed production defects: invalid Anthropic
   client requests return 400, streaming aborts log their exceeded
   limits, client disconnects are detected and logged, malformed
-  tool_call arguments fall back instead of aborting, tool_choice and
-  json_object formats are dropped when unrepresentable, strict
-  json_schema normalization matches APISIX, tool messages precede
-  trailing text, and `$llm_has_tool_calls`/`$llm_tool_count`/
-  `$llm_end_user_id`/`$llm_cache_*`/`$llm_reasoning_tokens` are
-  registered for streaming and non-streaming responses.
+   tool_call arguments fall back instead of aborting, tool_choice and
+   json_object formats are dropped when unrepresentable, strict
+   json_schema normalization matches APISIX, tool messages precede
+   trailing text, and `$llm_has_tool_calls`/`$llm_tool_count`/
+   `$llm_end_user_id`/`$llm_cache_*`/`$llm_reasoning_tokens` are
+   registered for streaming and non-streaming responses. Re-audit
+   restored the pinned Responses API token details (streaming cached 10 /
+   reasoning 3 and non-streaming cached 12 / reasoning 8 through
+   `input_tokens_details`/`output_tokens_details`), the pinned streaming
+   tool semantics (fragments set `$llm_has_tool_calls=true` with
+   `$llm_tool_count=0` while complete non-streaming calls count), and the
+   fixture-family error contracts (missing fixture header 401, nonexistent
+   fixture 500, traversal rejection).
 
 ### Updated Parallel Execution Waves
 
@@ -1782,3 +1789,80 @@ already-implemented branch.
 - `source .envrc && make build` passes.
 - `make lint` reports only five pre-existing findings in untouched Brotli,
   CORS, and request-validation files; the current diff adds no lint finding.
+
+### 2026-08-02 DeepSeek Review Re-Audit
+
+The four confirmed review defects passed the old count/corpus gates. The
+re-audit below covers every post-checkpoint manifest family with behavior
+evidence and adds semantic gates where the count gates could not fail.
+
+#### Redirect (`redirect.t`, 48 blocks)
+
+| Source tests | Standalone case | Behavior proof and failing assertion |
+|---|---|---|
+| 1–18 | `schema-sanity` … `plugin-attr-https-port` | Schema/uri/variable/absolute-uri cases assert exact status + Location; `plugin-attr-https-port` asserts `https://foo.com:8443/hello` (pinned `plugin_attr` value). |
+| 19 | `ssl-listen-port` | Restored `apisix.ssl.listen: [9445]`; asserts `Location: https://foo.com:9445/hello`; `serial: true` because the child binds 9445. Fails if the `ssl.listen` fallback is removed. |
+| 20 | `single-ssl-listen-port` | Restored single `apisix.ssl.listen: [9443]`; asserts `https://foo.com:9443/hello`. |
+| 21 | `multiple-ssl-listen-ports` | Restored four listen ports; asserts `Location` matches `^https://foo.com:[6-9]443/hello$`; `serial: true`. |
+| 22–24 | `default-https-port`, `http-to-https-ignores-ret-code` | Default port 443 without `https_port`; ret_code 302 ignored (asserts 301). |
+| 26–27, 30–33, 45–47 | `http-to-https-with-upstream`, `post/get/head-http-to-https`, `forwarded-*` | Assert exact 301/308 status and `https://<host>:9443/...` Locations matching pinned defaults; `plugin_attr.redirect.https_port: 9443` reproduces the pinned default-config port observably. |
+| 25, 48 | `reject-http-to-https-with-*` | Assert build-route rejection logs. |
+| 28–29 | `frontend-tls-handshake` | Real HTTPS handshake with SNI `test.com`, 200 + `hello world` body. |
+| 34–44 | `regex-uri-*`, `encoded-*`, `append-*` | Exact 301/302 + Location assertions including encoding and query append. |
+
+The manifest-level semantic test `TestManifestMapsSSLListenTestsToExactListenAndLocation`
+(pkg/plugin/redirect) rejects `plugin_attr.redirect.https_port` for tests 19–21 and
+asserts the exact `apisix.ssl.listen` shapes and Location behavior.
+
+#### `ai-proxy3.t` built-in variables (18 blocks)
+| Source test | Standalone case | Behavior proof |
+|---|---|---|
+| 13 | `llm-vars-streaming-tool-calls` | Chat streaming tool_calls delta: `X-LLM-Has-Tool-Calls: true`, `X-LLM-Tool-Count: 0` (pinned access-log `true true 0`). |
+| 15 | `llm-vars-responses-streaming-cache-and-reasoning` | Responses streaming fixture carries `input_tokens_details.cached_tokens: 10` and `output_tokens_details.reasoning_tokens: 3`; asserts 10/3 (pinned `… 10 0 3`). |
+| 16 | `llm-vars-responses-streaming-tool-call` | Responses streaming function_call: presence true, count 0 (pinned `true true 0`). |
+| 18 | `llm-vars-responses-nonstreaming-cache` | Responses non-streaming fixture carries cached 12 / reasoning 8; asserts 12/8 (pinned `… 12 0 8`). |
+| 9–12, 14, 17 | `llm-vars-*` | Non-streaming/streaming token and end-user variables with exact values. |
+
+Semantic gates `TestBuiltinVariablesManifestPreservesPinnedTokenDetails` and
+`TestBuiltinVariablesManifestPreservesPinnedStreamingToolSemantics` (pkg/plugin/ai_proxy)
+fail if detail maps or `X-LLM-Tool-Count: 0` are missing; unit test
+`TestRegisterLLMTokenDetailVarsSupportsResponsesDetails` and
+`TestRegisterLLMMetadataVarsCountsTopLevelResponsesToolCalls` pin the production
+decoders.
+
+The same streaming tool semantics apply to native Anthropic streaming:
+`ai-proxy-anthropic.t` test 49 (`anthropic-native-streaming-tool-use-detected`)
+pins `true true 0` (presence true, count 0 for `content_block_start` tool_use),
+and the standalone case asserts `X-LLM-Has-Tool-Calls: true` with
+`X-LLM-Tool-Count: 0`.
+
+#### `ai-proxy-fixture.t` (14 blocks)
+
+| Source test | Standalone case | Behavior proof |
+|---|---|---|
+| 4 | `fixture-missing-fixture-header-falls-back-to-auth` | Fixture asserts `Authorization: Bearer wrong-key`, responds 401 `Unauthorized`; case asserts 401 + body (pinned 401). |
+| 5 | `fixture-nonexistent-fixture-fails-closed` | Fixture responds 500 `fixture not found`; case asserts 500 + body (pinned 500). |
+| 12 | `fixture-path-traversal-rejected` | Fixture responds 200 `blocked: invalid fixture name`; case asserts exact body (pinned response_body). |
+| 2, 3, 6–11, 13, 14 | `fixture-*` | JSON/SSE content, model substitution, custom 429 status, embeddings `"object":"list"`, tool_calls body matches. |
+
+Semantic gate `TestFixtureFamilyManifestPreservesPinnedErrorBehavior` pins the
+fixture status/body and step output for tests 4, 5, and 12.
+
+#### `limit-count` (252 blocks) and `limit-req` (89 blocks)
+
+- The `TestStandaloneManifestMapsEvery*` gates in pkg/plugin/limit_count and
+  pkg/plugin/limit_req enforce one independent case per pinned block, behavior
+  names, exact upstream fixture counts, and Redis state/value assertions.
+- Redis cluster cases assert exact quota counters and headers; `limit-req`
+  cases assert exact 503/429 statuses, `X-RateLimit-*` headers, and error
+  paths per source block.
+- The only fixture relaxation since the checkpoint is `limit-count-redis5`
+  cleanup `at_most: 2 → 3`, caused by the `config_probe` polling the old route
+  before the delete applies; the behavioral assertions (200 + remaining 4,
+  then 404) are exact and stronger than the source's admin-delete-only block.
+
+Audit result: no additional behavior mismatches beyond the four confirmed
+defects, the three fixture-family status/body gaps, and the native Anthropic
+streaming tool-count expectation fixed above. All changed source mappings now
+carry behavior-level proof, and the completion text above matches the current
+tests.

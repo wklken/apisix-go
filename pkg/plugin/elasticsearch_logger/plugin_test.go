@@ -676,3 +676,62 @@ func extractBulkDocument(t *testing.T, body string) map[string]any {
 	}
 	return document
 }
+
+func TestHandlerResolvesBraceFormApisixVariableInIndex(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("X-Elastic-Product", "Elasticsearch")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read bulk body: %v", err)
+		}
+		received <- string(body)
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddrs: []string{server.URL},
+		Field:         FieldConfig{Index: "services-${arg_id}-{%Y.%m.%d}"},
+		LogFormat:     map[string]string{"path": "$uri"},
+		Timeout:       10,
+		BatchMaxSize:  1,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello?id=myservice", nil)
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	select {
+	case body := <-received:
+		wantIndex := `"services-myservice-` + time.Now().Format("2006.01.02") + `"`
+		if !strings.Contains(body, `"_index":`+wantIndex) {
+			t.Fatalf("bulk body = %q, want resolved brace-form index containing %s", body, wantIndex)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Elasticsearch bulk request")
+	}
+}
+
+func TestResolveIndexVariableReferencesMatchesAPISIXTemplateContract(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/orders?id=", nil)
+	req.Host = "logs.example"
+
+	got := resolveIndexVariableReferences(
+		`plain-$host-${ arg_id }-${arg_missing ?? fallback}-${arg_id ?? fallback}-${consumer_name ?? anonymous}-$foo.bar-\$host-${}`,
+		req,
+	)
+	const want = `plain-logs.example--fallback--anonymous--\$host-${}`
+	if got != want {
+		t.Fatalf("resolved index = %q, want %q", got, want)
+	}
+}

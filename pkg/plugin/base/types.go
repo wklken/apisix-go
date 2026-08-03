@@ -3,6 +3,7 @@ package base
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
@@ -66,6 +67,65 @@ type BaseLoggerPlugin struct {
 func (p *BaseLoggerPlugin) SetRouteContext(routeID string, serverAddr string) {
 	p.RouteID = routeID
 	p.ServerAddr = serverAddr
+}
+
+// InitLogger initializes the buffered fire channel, blocking policy and the
+// per-plugin Send function.
+func (p *BaseLoggerPlugin) InitLogger(send func(map[string]any)) {
+	p.FireChan = make(chan map[string]any, 1000)
+	p.AsyncBlock = true
+	p.SendFunc = send
+}
+
+// BatchDefaults carries the per-plugin batch configuration values in seconds.
+type BatchDefaults struct {
+	BatchMaxSize       int
+	MaxRetryCount      int
+	RetryDelaySec      int
+	RetryDelaySet      bool
+	BufferDurationSec  int
+	InactiveTimeoutSec int
+	MaxPendingEntries  int
+}
+
+// ApplyBatchDefaults fills zero batch values with logger_batch defaults.
+// RetryDelaySec is only defaulted when RetryDelaySet is false.
+func ApplyBatchDefaults(d *BatchDefaults) {
+	if d.BatchMaxSize == 0 {
+		d.BatchMaxSize = logger_batch.DefaultBatchMaxSize
+	}
+	if d.RetryDelaySec == 0 && !d.RetryDelaySet {
+		d.RetryDelaySec = int(logger_batch.DefaultRetryDelay / time.Second)
+	}
+	if d.BufferDurationSec == 0 {
+		d.BufferDurationSec = int(logger_batch.DefaultBufferDuration / time.Second)
+	}
+	if d.InactiveTimeoutSec == 0 {
+		d.InactiveTimeoutSec = int(logger_batch.DefaultInactiveTimeout / time.Second)
+	}
+}
+
+// NewBatchProcessor constructs a logger batch processor from second-based
+// batch defaults.
+func NewBatchProcessor(
+	name string,
+	d BatchDefaults,
+	routeID, serverAddr string,
+	deliver logger_batch.DeliveryFunc,
+) *logger_batch.Processor {
+	ApplyBatchDefaults(&d)
+	return logger_batch.New(logger_batch.Config{
+		Name:              name,
+		BatchMaxSize:      d.BatchMaxSize,
+		MaxRetryCount:     d.MaxRetryCount,
+		RetryDelay:        time.Duration(d.RetryDelaySec) * time.Second,
+		RetryDelaySet:     d.RetryDelaySet,
+		BufferDuration:    time.Duration(d.BufferDurationSec) * time.Second,
+		InactiveTimeout:   time.Duration(d.InactiveTimeoutSec) * time.Second,
+		MaxPendingEntries: d.MaxPendingEntries,
+		RouteID:           routeID,
+		ServerAddr:        serverAddr,
+	}, deliver)
 }
 
 func (p *BaseLoggerPlugin) Stop() {

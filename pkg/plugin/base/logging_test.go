@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
 
 func TestReadAndRestoreRequestBodyTruncatesOnlyReturnedValue(t *testing.T) {
@@ -145,5 +147,85 @@ func TestExprMatchedSupportsBothPluginExpressionShapes(t *testing.T) {
 				t.Fatalf("ExprMatched() = false, want true")
 			}
 		})
+	}
+}
+
+func TestInitLogger(t *testing.T) {
+	p := &BaseLoggerPlugin{}
+	send := func(map[string]any) {}
+	p.InitLogger(send)
+
+	if p.FireChan == nil {
+		t.Fatal("FireChan not initialized")
+	}
+	if !p.AsyncBlock {
+		t.Fatal("AsyncBlock = false, want true")
+	}
+	if p.SendFunc == nil {
+		t.Fatal("SendFunc not set")
+	}
+}
+
+func TestApplyBatchDefaults(t *testing.T) {
+	d := BatchDefaults{}
+	ApplyBatchDefaults(&d)
+	if d.BatchMaxSize != logger_batch.DefaultBatchMaxSize {
+		t.Fatalf("BatchMaxSize = %d, want %d", d.BatchMaxSize, logger_batch.DefaultBatchMaxSize)
+	}
+	if d.RetryDelaySec != int(logger_batch.DefaultRetryDelay/time.Second) {
+		t.Fatalf("RetryDelaySec = %d, want %d", d.RetryDelaySec, int(logger_batch.DefaultRetryDelay/time.Second))
+	}
+	if d.BufferDurationSec != int(logger_batch.DefaultBufferDuration/time.Second) {
+		t.Fatalf(
+			"BufferDurationSec = %d, want %d",
+			d.BufferDurationSec,
+			int(logger_batch.DefaultBufferDuration/time.Second),
+		)
+	}
+	if d.InactiveTimeoutSec != int(logger_batch.DefaultInactiveTimeout/time.Second) {
+		t.Fatalf(
+			"InactiveTimeoutSec = %d, want %d",
+			d.InactiveTimeoutSec,
+			int(logger_batch.DefaultInactiveTimeout/time.Second),
+		)
+	}
+
+	d = BatchDefaults{RetryDelaySec: 5, RetryDelaySet: false}
+	ApplyBatchDefaults(&d)
+	if d.RetryDelaySec != 5 {
+		t.Fatalf("RetryDelaySec = %d, want 5 (explicit value preserved)", d.RetryDelaySec)
+	}
+
+	d = BatchDefaults{RetryDelaySet: true}
+	ApplyBatchDefaults(&d)
+	if d.RetryDelaySec != 0 {
+		t.Fatalf("RetryDelaySec = %d, want 0 (set flag preserves zero)", d.RetryDelaySec)
+	}
+
+	d = BatchDefaults{BatchMaxSize: 42}
+	ApplyBatchDefaults(&d)
+	if d.BatchMaxSize != 42 {
+		t.Fatalf("BatchMaxSize = %d, want 42 (explicit value preserved)", d.BatchMaxSize)
+	}
+}
+
+func TestNewBatchProcessorDeliversPushedEntry(t *testing.T) {
+	var delivered []map[string]any
+	processor := NewBatchProcessor("test logger", BatchDefaults{}, "route-1", "server-1",
+		func(entries []map[string]any, _ int) (int, error) {
+			delivered = append(delivered, entries...)
+			return 0, nil
+		})
+
+	if !processor.Push(map[string]any{"message": "hello"}) {
+		t.Fatal("Push() = false, want true")
+	}
+	processor.Stop()
+
+	if len(delivered) != 1 {
+		t.Fatalf("delivered %d entries, want 1", len(delivered))
+	}
+	if got := delivered[0]["message"]; got != "hello" {
+		t.Fatalf("delivered message = %v, want hello", got)
 	}
 }

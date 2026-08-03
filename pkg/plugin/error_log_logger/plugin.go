@@ -259,14 +259,13 @@ func (p *Plugin) PostInit() error {
 		}
 		p.kafkaSender = &kafkaGoSender{writer: writer}
 	}
-	p.BatchProcessor = logger_batch.New(logger_batch.Config{
-		Name:            p.config.Name,
-		BatchMaxSize:    p.config.BatchMaxSize,
-		MaxRetryCount:   p.config.MaxRetryCount,
-		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
-		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
-		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
-	}, p.SendBatch)
+	p.BatchProcessor = base.NewBatchProcessor(p.config.Name, base.BatchDefaults{
+		BatchMaxSize:       p.config.BatchMaxSize,
+		MaxRetryCount:      p.config.MaxRetryCount,
+		RetryDelaySec:      p.config.RetryDelay,
+		BufferDurationSec:  p.config.BufferDuration,
+		InactiveTimeoutSec: p.config.InactiveTimeout,
+	}, "", "", p.SendBatch)
 
 	return nil
 }

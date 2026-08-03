@@ -255,17 +255,14 @@ func (p *Plugin) PostInit() error {
 	if p.config.Port != 0 {
 		p.metadata.Port = p.config.Port
 	}
-	p.BatchProcessor = logger_batch.New(logger_batch.Config{
-		Name:            p.config.BatchName,
-		BatchMaxSize:    p.config.BatchMaxSize,
-		MaxRetryCount:   p.config.MaxRetryCount,
-		RetryDelay:      time.Duration(p.config.RetryDelay) * time.Second,
-		RetryDelaySet:   p.config.retryDelaySet,
-		BufferDuration:  time.Duration(p.config.BufferDuration) * time.Second,
-		InactiveTimeout: time.Duration(p.config.InactiveTimeout) * time.Second,
-		RouteID:         p.RouteID,
-		ServerAddr:      p.ServerAddr,
-	}, p.deliver)
+	p.BatchProcessor = base.NewBatchProcessor(p.config.BatchName, base.BatchDefaults{
+		BatchMaxSize:       p.config.BatchMaxSize,
+		MaxRetryCount:      p.config.MaxRetryCount,
+		RetryDelaySec:      p.config.RetryDelay,
+		RetryDelaySet:      p.config.retryDelaySet,
+		BufferDurationSec:  p.config.BufferDuration,
+		InactiveTimeoutSec: p.config.InactiveTimeout,
+	}, p.RouteID, p.ServerAddr, p.deliver)
 	return nil
 }
 

@@ -11,6 +11,7 @@ import (
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
@@ -545,6 +546,14 @@ func TestHandlerReusesModerationSessionAcrossRequestAndResponse(t *testing.T) {
 
 	if len(sessionIDs) != 2 || sessionIDs[0] == "" || sessionIDs[0] != sessionIDs[1] {
 		t.Fatalf("moderation session IDs = %#v, want one reused ID", sessionIDs)
+	}
+}
+
+func TestExtractSSETextModeratesAllChoices(t *testing.T) {
+	const body = "data: " + `{"choices":[{"delta":{"content":"first"}},{"delta":{"content":"second"}}]}` + "\n"
+	got := extractSSEText(ai_protocols.OpenAIChat, []byte(body))
+	if got != "firstsecond" {
+		t.Fatalf("extractSSEText() = %q, want %q", got, "firstsecond")
 	}
 }
 

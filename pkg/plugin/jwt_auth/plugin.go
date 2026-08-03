@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/store"
@@ -108,12 +107,7 @@ type consumerConfig struct {
 	LifetimeGracePeriod int64  `json:"lifetime_grace_period,omitempty"`
 }
 
-type jwtToken struct {
-	header    map[string]any
-	payload   map[string]any
-	signing   string
-	signature []byte
-}
+type jwtToken = base.JWTToken
 
 func (p *Plugin) Init() error {
 	p.Name = name
@@ -171,7 +165,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if *p.config.StoreInCtx {
-			ctx.RegisterApisixVar(r, "$jwt_auth_payload", token.payload)
+			ctx.RegisterApisixVar(r, "$jwt_auth_payload", token.Payload)
 		}
 		ctx.AttachConsumer(r, consumer)
 		ctx.RunConsumerPlugins(w, r, next)
@@ -203,12 +197,12 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		return resource.Consumer{}, jwtToken{}, "Missing JWT token in request"
 	}
 
-	token, err := parseJWT(rawToken)
+	token, err := base.ParseJWT(rawToken)
 	if err != nil {
 		return resource.Consumer{}, jwtToken{}, "JWT token invalid"
 	}
 
-	userKey, ok := token.payload[p.config.KeyClaimName].(string)
+	userKey, ok := token.Payload[p.config.KeyClaimName].(string)
 	if !ok || userKey == "" {
 		return resource.Consumer{}, token, "missing user key in JWT token"
 	}
@@ -231,7 +225,7 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		authConfig.Algorithm = "HS256"
 	}
 
-	tokenAlgorithm, _ := token.header["alg"].(string)
+	tokenAlgorithm, _ := token.Header["alg"].(string)
 	if tokenAlgorithm != authConfig.Algorithm {
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
@@ -239,7 +233,7 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 	if !verifySignature(token, authConfig) {
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
-	if err := p.verifyClaims(token.payload, authConfig.LifetimeGracePeriod); err != nil {
+	if err := p.verifyClaims(token.Payload, authConfig.LifetimeGracePeriod); err != nil {
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
 
@@ -276,42 +270,6 @@ func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
 	return cookie.Value, true
 }
 
-func parseJWT(raw string) (jwtToken, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return jwtToken{}, fmt.Errorf("token must have three parts")
-	}
-
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return jwtToken{}, err
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return jwtToken{}, err
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return jwtToken{}, err
-	}
-
-	var header map[string]any
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return jwtToken{}, err
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-		return jwtToken{}, err
-	}
-
-	return jwtToken{
-		header:    header,
-		payload:   payload,
-		signing:   parts[0] + "." + parts[1],
-		signature: signature,
-	}, nil
-}
-
 func verifySignature(token jwtToken, authConfig consumerConfig) bool {
 	if strings.HasPrefix(authConfig.Algorithm, "HS") {
 		secret, ok := authConfig.secret()
@@ -344,10 +302,10 @@ func verifyHMAC(token jwtToken, algorithm string, secret []byte) bool {
 	}
 
 	mac := hmac.New(hashFunc, secret)
-	mac.Write([]byte(token.signing))
+	mac.Write([]byte(token.Signing))
 	expected := mac.Sum(nil)
 
-	return subtle.ConstantTimeCompare(token.signature, expected) == 1
+	return subtle.ConstantTimeCompare(token.Signature, expected) == 1
 }
 
 func hmacHash(algorithm string) (func() hash.Hash, bool) {
@@ -368,14 +326,14 @@ func verifyRSA(token jwtToken, algorithm string, publicKey any, pss bool) bool {
 	if !ok {
 		return false
 	}
-	hashAlg, digest, ok := signingDigest(algorithm, token.signing)
+	hashAlg, digest, ok := signingDigest(algorithm, token.Signing)
 	if !ok {
 		return false
 	}
 	if pss {
-		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.signature, nil) == nil
+		return rsa.VerifyPSS(rsaKey, hashAlg, digest, token.Signature, nil) == nil
 	}
-	return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.signature) == nil
+	return rsa.VerifyPKCS1v15(rsaKey, hashAlg, digest, token.Signature) == nil
 }
 
 func verifyECDSA(token jwtToken, algorithm string, publicKey any) bool {
@@ -383,18 +341,18 @@ func verifyECDSA(token jwtToken, algorithm string, publicKey any) bool {
 	if !ok {
 		return false
 	}
-	_, digest, ok := signingDigest(algorithm, token.signing)
+	_, digest, ok := signingDigest(algorithm, token.Signing)
 	if !ok {
 		return false
 	}
 
 	size, ok := ecdsaSignatureSize(algorithm)
-	if !ok || len(token.signature) != size*2 {
+	if !ok || len(token.Signature) != size*2 {
 		return false
 	}
 
-	r := new(big.Int).SetBytes(token.signature[:size])
-	s := new(big.Int).SetBytes(token.signature[size:])
+	r := new(big.Int).SetBytes(token.Signature[:size])
+	s := new(big.Int).SetBytes(token.Signature[size:])
 	return ecdsa.Verify(ecdsaKey, digest, r, s)
 }
 
@@ -403,7 +361,7 @@ func verifyEdDSA(token jwtToken, publicKey any) bool {
 	if !ok {
 		return false
 	}
-	return ed25519.Verify(edKey, []byte(token.signing), token.signature)
+	return ed25519.Verify(edKey, []byte(token.Signing), token.Signature)
 }
 
 func signingDigest(algorithm, signing string) (crypto.Hash, []byte, bool) {
@@ -452,7 +410,7 @@ func (p *Plugin) verifyClaims(payload map[string]any, gracePeriod int64) error {
 			return fmt.Errorf("claim %s is missing", claim)
 		}
 
-		ts, ok := numberClaim(value)
+		ts, ok := base.NumberClaim(value)
 		if !ok {
 			return fmt.Errorf("claim %s is not a number", claim)
 		}
@@ -471,19 +429,6 @@ func (p *Plugin) verifyClaims(payload map[string]any, gracePeriod int64) error {
 	}
 
 	return nil
-}
-
-func numberClaim(value any) (int64, bool) {
-	switch v := value.(type) {
-	case float64:
-		return int64(v), true
-	case int64:
-		return v, true
-	case int:
-		return int64(v), true
-	default:
-		return 0, false
-	}
 }
 
 func (c consumerConfig) secret() ([]byte, bool) {
